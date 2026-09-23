@@ -143,6 +143,10 @@ def en(value, decimals=2, thousands=True):
 
 ALLOWANCE_8 = 0.008    # ٨ بالألف
 ALLOWANCE_4 = 0.004    # ٤ بالألف
+
+# الحالات التي تُحتسب في الأرصدة (نفس الفلتر في كل الشاشات وفي السحابة):
+# SETTLED = حركات قسم أُقفلت فترته بالأرشفة القديمة، MEMO = سطر معلوماتي
+COUNTED_STATUSES = ("ACTIVE", "SETTLED_INOUT")
 # علامات تمييز حركات خياس الطقوم داخل حقل trees_count (المستخدم كعلامة داخلية
 # في هذا النظام أصلاً): تفصل خياس التلميع النهائي عن خياس البوليش عن الصافي
 # دون إضافة عمود جديد لقاعدة البيانات — فتبقى نسخ العملاء القديمة متوافقة.
@@ -3552,16 +3556,14 @@ class GoldSystemApp(ctk.CTk):
         self.set_setting("last_discount_pct", pct_str)
 
     def register_operation_period(self, date_val):
-        """تُستدعى بعد أي ترحيل: تُبقي الحركة في فترة تاريخها (شهرها) وتضيف الفترة لقائمة الفترات،
-        بدون تغيير الفترة المعروضة حالياً — وتنبّه المستخدم لو كان تاريخ الحركة يخص فترة أخرى."""
-        op_month = (date_val or "")[:7]
+        """تُستدعى بعد أي ترحيل: تحدّث قائمة الفترات فقط.
+
+        الحركة تُختم بالفترة المعروضة وقت تسجيلها (save_invoice_to_db) أياً كان
+        تاريخها — فتظهر في جدول الفترة الحالية دائماً. كانت هنا رسالة تقول إن
+        الحركة رُحّلت لفترة شهر تاريخها ولن تظهر في الفترة الحالية، وهذا عكس
+        ما يحدث فعلاً، فأُزيلت.
+        """
         self.update_period_selector()
-        if op_month and op_month != self.current_display_month:
-            messagebox.showinfo(
-                "فترة الحركة",
-                f"تم ترحيل الحركة إلى فترة ({op_month}) حسب تاريخها.\n"
-                f"أنت الآن تعرض فترة ({self.current_display_month})، لذلك لن تظهر في جدول الفترة الحالية.\n"
-                f"لعرضها اختر الفترة ({op_month}) من أعلى الشاشة.")
 
     @staticmethod
     def inv_period(inv):
@@ -3584,31 +3586,140 @@ class GoldSystemApp(ctk.CTk):
             return True
         return cls.inv_period(inv) == month
 
-    def treasury_effect(self, inv):
-        """أثر حركة واحدة على رصيد الخزينة (+ وارد، − صادر، 0 لا أثر).
+    def get_treasury_type_sets(self):
+        """أنواع صرف/قبض كل صناديق الخياس (الثابتة والمضافة) وأسماء مسترجعاتها."""
+        sarf_types, qabd_types, mustarja_names = set(), set(), set()
+        for cat in self.get_all_stage_categories():
+            madin, qabd, mustarja = self.get_stage_config(cat)
+            if madin:
+                sarf_types.add(madin)
+            if qabd:
+                qabd_types.add(qabd)
+            if mustarja:
+                mustarja_names.add(mustarja)
+        return sarf_types, qabd_types, mustarja_names
 
-        مصدر واحد لتعريف (ما الذي يمسّ الخزينة)، تستخدمه حلقة الرصيد الحي
-        وحساب رصيد أول المدة معاً — فلا ينحرف أحدهما عن الآخر.
+    def treasury_bucket(self, inv, type_sets=None):
+        """يصنّف حركة واحدة في بند من بنود الخزينة ويرجع (البند، الأثر بإشارته).
+
+        ══ المصدر الوحيد لتعريف ما يمسّ الخزينة ══
+        يستخدمه شريط الخزينة، ورصيد أول المدة، والتقرير الشهري، وكشف حساب
+        الخزينة — فيستحيل أن يختلف رقم شاشة عن رقم التقرير.
+
+        البنود:
+          opening  رصيد افتتاحي / قيد افتتاحي من شاشة الرصيد الافتتاحي   (+)
+          inbound  وارد ذهب                                               (+)
+          sales    مبيعات ذهب / صادر ذهب                                  (−)
+          boxes    صرف صناديق الخياس (−) وقبضها والذهب المسترجع منها (+)
+          closed   صرف خياس مقفل (إقفال الأرشفة القديم)                   (−)
+          journal  قيد يومي على «حساب الخزينة» (مدين + / دائن −)
+
+        (خياس المصنعين والمركبين لا يأتي من حركة واحدة بل من معادلة القسم،
+         فيُضاف في treasury_period_components.)
         """
-        if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"):
-            return 0.0
+        if inv.get("settled_status") not in COUNTED_STATUSES:
+            return None, 0.0
+        sarf_types, qabd_types, mustarja_names = type_sets or self.get_treasury_type_sets()
         t = inv.get("النوع")
         w = inv.get("الوزن", 0.0) or 0.0
 
-        if t in ("رصيد افتتاحي", "وارد ذهب (عيار 18)"):
-            return w
-        if t in ("صادر ذهب", "مبيعات ذهب", "مبيعات ذهب مع الماس",
-                 "صرف خياس مقفل", "خياس طقوم"):
-            return -w
+        if t == "رصيد افتتاحي":
+            return "opening", w
+        if t == "وارد ذهب (عيار 18)":
+            if inv.get("trees_count") == 1.0 and inv.get("البيان") == "قيد افتتاحي":
+                return "opening", w
+            if inv.get("الاسم") in mustarja_names:
+                return "boxes", w          # ذهب عاد من صندوق خياس: يخفّض خياسه
+            return "inbound", w
+        if t in ("مبيعات ذهب", "مبيعات ذهب مع الماس", "صادر ذهب"):
+            return "sales", -w
+        if t == "صرف خياس مقفل":
+            return "closed", -w
+        if t in sarf_types:
+            return "boxes", -w
+        if t in qabd_types:
+            return "boxes", w
+        if inv.get("الاسم") == "حساب الخزينة":
+            if t == "قيد يومي مدين":
+                return "journal", w
+            if t == "قيد يومي دائن":
+                return "journal", -w
+        return None, 0.0
 
-        # صرف/قبض صناديق الخياس الديناميكية
-        for cat in self.get_all_stage_categories():
-            madin, qabd, _m = self.get_stage_config(cat)
-            if t == madin:
-                return -w
-            if qabd and t == qabd:
-                return w
-        return 0.0
+    def treasury_effect(self, inv):
+        """أثر حركة واحدة على رصيد الخزينة (+ وارد، − صادر، 0 لا أثر)."""
+        return self.treasury_bucket(inv)[1]
+
+    def get_workers_khayas(self, month, invoices=None):
+        """الخياس الفعلي للمصنعين والمركبين في فترة — يُخصم من الخزينة سواء أُقفل أم لا.
+
+        الإقفال قيد مزدوج بين «حساب الخسائر» وحساب الصندوق فقط، ولا يمسّ الخزينة:
+        هو إعادة تصنيف للفاقد لا ذهبٌ عاد. لذلك يبقى الخياس مخصوماً بعد الإقفال —
+        في فترته، وفي رصيد أول المدة لكل ما بعدها.
+
+        (كان رصيد أول المدة يخصم «غير المُقفل» فقط، فإقفال خياس فترة ٨ كان يرفع
+        رصيد افتتاح فترة ٩ بقيمة المُقفل — فتختلف أرقام فترة ٩ عن نهاية فترة ٨.
+        والإقفال القديم بالأرشفة يحوّل السطور إلى SETTLED ويسجّل «صرف خياس مقفل»،
+        فيصير الخياس الحي صفراً ويُخصم عبر بند closed — لا يُخصم مرتين.)
+        """
+        return round(
+            self.get_actual_section_khayas("المصنعين", target_month=month, invoices=invoices)
+            + self.get_actual_section_khayas("المركبين", target_month=month, invoices=invoices), 2)
+
+    def treasury_period_components(self, month, invoices=None, type_sets=None):
+        """بنود حركة الخزينة داخل فترة واحدة (بإشاراتها) وصافيها.
+
+        invoices: حركات الفترة إن كانت مجمّعة مسبقاً (تسريع)، وإلا تُقرأ هنا.
+        """
+        type_sets = type_sets or self.get_treasury_type_sets()
+        if invoices is None:
+            invoices = [inv for inv in self.invoices.values() if self.inv_in_period(inv, month)]
+        comp = {"opening": 0.0, "inbound": 0.0, "sales": 0.0,
+                "boxes": 0.0, "closed": 0.0, "journal": 0.0}
+        for inv in invoices:
+            if not inv.get("التاريخ"):
+                continue
+            bucket, amount = self.treasury_bucket(inv, type_sets)
+            if bucket:
+                comp[bucket] += amount
+        comp["workers"] = -self.get_workers_khayas(month, invoices=invoices)
+        comp = {k: round(v, 2) for k, v in comp.items()}
+        comp["net"] = round(sum(comp.values()), 2)
+        return comp
+
+    def get_treasury_ledger(self, before=None):
+        """دفتر الخزينة لكل الفترات بالترتيب.
+
+        لكل فترة: carry (رصيد أولها = نهاية سابقتها بالضبط)، وبنودها، و closing.
+        كل حركة تنتمي لفترتها (عمود period) لا لشهر تاريخها، والفترة لا تتأثر
+        بالفترة المعروضة حالياً — فالتقرير يعطي الأرقام نفسها من أي فترة فُتح.
+
+        before: يقصر الحساب على الفترات السابقة لها (يكفي لرصيد أول المدة).
+        """
+        by_period = {}
+        for inv in self.invoices.values():
+            period = self.inv_period(inv)
+            if period:
+                by_period.setdefault(period, []).append(inv)
+        periods = {p for p, invs in by_period.items()
+                   if any(i.get("settled_status") in COUNTED_STATUSES for i in invs)}
+        if getattr(self, "current_display_month", None):
+            periods.add(self.current_display_month)
+
+        type_sets = self.get_treasury_type_sets()
+        ledger, carry = [], 0.0
+        for period in sorted(periods):
+            if before and period >= before:
+                break
+            comp = self.treasury_period_components(period, invoices=by_period.get(period, []),
+                                                   type_sets=type_sets)
+            row = dict(comp)
+            row["period"] = period
+            row["carry"] = round(carry, 2)
+            row["closing"] = round(carry + comp["net"], 2)
+            ledger.append(row)
+            carry = row["closing"]
+        return ledger
 
     def period_closing_datetime(self, month):
         """آخر لحظة في الفترة: تاريخ مناسب لقيود إقفالها.
@@ -3624,29 +3735,16 @@ class GoldSystemApp(ctk.CTk):
             return f"{self.get_smart_default_date()} {datetime.datetime.now().strftime('%H:%M:%S')}"
 
     def get_opening_treasury_balance(self, month):
-        """رصيد أول المدة: صافي حركات الخزينة في كل الفترات السابقة لهذه الفترة.
+        """رصيد أول المدة = رصيد نهاية الفترة السابقة بالضبط.
 
-        يُرحَّل تلقائياً فيبدأ رصيد الفترة الجديدة من رصيد إقفال سابقتها،
-        بدل الصفر — وهو السلوك المحاسبي الصحيح.
+        يُقرأ من دفتر الخزينة الموحّد (get_treasury_ledger)، الذي يبني شريط
+        الخزينة والتقرير الشهري أيضاً — فرصيد افتتاح فترة ٩ = آخر رصيد في
+        فترة ٨ دائماً، سواء أُقفل خياس فترة ٨ أم لا.
         """
         if not month:
             return 0.0
-        total = 0.0
-        for inv in self.invoices.values():
-            p = self.inv_period(inv)
-            if p and p < month:
-                total += self.treasury_effect(inv)
-
-        # الخياس الفعلي غير المُقفل في الفترات السابقة يُخصم أيضاً:
-        # هو ذهب خرج فعلاً ولم يعد، وكشف الخزينة يعرضه سطراً حياً لكل فترة.
-        # بدون خصمه هنا يختلف رصيد افتتاح الفترة عن آخر رصيد في كشف سابقتها.
-        for period in self.get_recorded_periods():
-            if not period or period >= month:
-                continue
-            for cat in ("المصنعين", "المركبين"):
-                total -= self.get_current_unclosed_khayas(cat, month=period)
-
-        return round(total, 2)
+        ledger = self.get_treasury_ledger(before=month)
+        return round(ledger[-1]["closing"], 2) if ledger else 0.0
 
     def get_smart_default_date(self):
         """تاريخ العملية الافتراضي: **تاريخ اليوم الحقيقي** دائماً.
@@ -6545,10 +6643,10 @@ class GoldSystemApp(ctk.CTk):
             return
 
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == madin_type for inv in self.invoices.values()):
+        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == madin_type for inv in self.invoices.values()):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == qabd_type for inv in self.invoices.values()):
+        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == qabd_type for inv in self.invoices.values()):
             skipped.append("القبض")
             qabd_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -6780,10 +6878,10 @@ class GoldSystemApp(ctk.CTk):
             return
 
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف كاستنج" for inv in self.invoices.values()):
+        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف كاستنج" for inv in self.invoices.values()):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض كاستنج" for inv in self.invoices.values()):
+        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض كاستنج" for inv in self.invoices.values()):
             skipped.append("القبض")
             qabd_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -6997,10 +7095,10 @@ class GoldSystemApp(ctk.CTk):
             return
 
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف تلميع" for inv in self.invoices.values()):
+        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف تلميع" for inv in self.invoices.values()):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض تلميع" for inv in self.invoices.values()):
+        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض تلميع" for inv in self.invoices.values()):
             skipped.append("القبض")
             qabd_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -7209,10 +7307,10 @@ class GoldSystemApp(ctk.CTk):
             return
 
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف تلميع بف" for inv in self.invoices.values()):
+        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف تلميع بف" for inv in self.invoices.values()):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, date_val[:7]) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض تلميع بف" for inv in self.invoices.values()):
+        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض تلميع بف" for inv in self.invoices.values()):
             skipped.append("القبض")
             qabd_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -7566,7 +7664,7 @@ class GoldSystemApp(ctk.CTk):
                     # منع تكرار نفس العملية أكثر من مرة بنفس رقم الصف (لو كان مسجل بالفعل)
                     is_dup = any(
                         inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE"
-                        and self.inv_in_period(inv, date_val[:7])
+                        and self.inv_in_period(inv, self.current_display_month)
                         and (inv.get("row_number", "") or "") == row_num
                         and inv.get("النوع") == op_type
                         for inv in self.invoices.values()
@@ -8524,7 +8622,8 @@ class GoldSystemApp(ctk.CTk):
             if name in names: return True
         return False
 
-    def calculate_single_ledger(self, name, category=None, target_month=None, include_settled=False):
+    def calculate_single_ledger(self, name, category=None, target_month=None, include_settled=False,
+                                invoices=None):
         ledger = {
             "الصرف": 0.0, "القبض": 0.0, "الليز": 0.0, "البوليش": 0.0, "المفنش ٨ بالالف": 0.0, 
             "المفنش ٤ بالالف": 0.0, "السلك الراجع": 0.0, "العيار بعد الفحص": 0.0,
@@ -8540,7 +8639,9 @@ class GoldSystemApp(ctk.CTk):
 
         m_check = target_month if target_month else self.current_display_month
 
-        for inv in self.invoices.values():
+        # invoices: حركات الفترة مجمّعة مسبقاً (يمررها دفتر الخزينة لتسريع الحساب)
+        source = invoices if invoices is not None else self.invoices.values()
+        for inv in source:
             if inv.get("التاريخ") and inv["الاسم"] == name and self.inv_in_period(inv, m_check):
                 if not include_settled and inv["settled_status"] != "ACTIVE":
                     continue
@@ -8633,7 +8734,8 @@ class GoldSystemApp(ctk.CTk):
         faqid, marja, pos = round(faqid, 2), round(marja, 2), round(pos, 2)
         return faqid, marja, pos, round(faqid - marja - pos, 2)
 
-    def get_actual_section_khayas(self, cat_name, target_month=None, include_settled=False):
+    def get_actual_section_khayas(self, cat_name, target_month=None, include_settled=False,
+                                  invoices=None):
         # ══════════════════════════════════════════════════════════════
         #  المعادلة المعتمدة للخياس الفعلي (لكل الأقسام بما فيها
         #  المصنعين والمركبين):
@@ -8649,7 +8751,8 @@ class GoldSystemApp(ctk.CTk):
         sum_faqid = sum_marja = sum_pos_khayas = sum_mach_khayas = 0.0
         
         for n in names_list:
-            res = self.calculate_single_ledger(n, cat_name, target_month=target_month, include_settled=include_settled)
+            res = self.calculate_single_ledger(n, cat_name, target_month=target_month,
+                                               include_settled=include_settled, invoices=invoices)
             if cat_name == "الآلة/المكائن":
                 sum_mach_khayas += res["الخياس"]
             else:
@@ -8675,13 +8778,9 @@ class GoldSystemApp(ctk.CTk):
         
         total_mufanish_4 = 0.0
 
-        # أنواع الصرف/القبض لكل صناديق الخياس (الثابتة والديناميكية) تُبنى مرة واحدة هنا لتُعتمد كحركات خزينة فعلية
-        dynamic_sarf_types = set()
-        dynamic_qabd_types = set()
-        for _stage_cat in self.get_all_stage_categories():
-            _madin_t, _qabd_t, _ = self.get_stage_config(_stage_cat)
-            if _madin_t: dynamic_sarf_types.add(_madin_t)
-            if _qabd_t: dynamic_qabd_types.add(_qabd_t)
+        # تصنيف الحركات من المصدر الموحّد نفسه الذي يبني رصيد أول المدة والتقرير
+        # الشهري وكشف حساب الخزينة (treasury_bucket) — فلا يختلف الشريط عنها أبداً
+        type_sets = self.get_treasury_type_sets()
 
         for inv in sorted_invoices:
             if not inv.get("التاريخ"): continue
@@ -8691,50 +8790,32 @@ class GoldSystemApp(ctk.CTk):
             if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
             # كل فترة مستقلة بأرصدتها: الشريط يعرض رصيد الفترة المعروضة وحدها
             if not self.inv_in_period(inv, self.current_display_month): continue
-            _t = inv["النوع"]
-            if _t in ["رصيد افتتاحي", "صرف خياس مقفل", "وارد ذهب (عيار 18)", "صادر ذهب", "مبيعات ذهب", "مبيعات ذهب مع الماس"] or _t in dynamic_sarf_types or _t in dynamic_qabd_types:
-                w_qabd = w_sarf = w_in = w_out = 0.0
-                
-                if inv["النوع"] == "رصيد افتتاحي":
-                    running_balance = inv["الوزن"]
-                    w_qabd = inv["الوزن"]
-                elif inv["النوع"] in ["صرف خياس مقفل", "مبيعات ذهب", "مبيعات ذهب مع الماس"] or inv["النوع"] in dynamic_sarf_types:
-                    running_balance -= inv["الوزن"]
-                    w_sarf = inv["الوزن"]
-                elif inv["النوع"] == "صادر ذهب":
-                    running_balance -= inv["الوزن"]
-                    w_out = inv["الوزن"]
-                elif inv["النوع"] in dynamic_qabd_types:
-                    running_balance += inv["الوزن"]
-                    w_qabd = inv["الوزن"]
-                elif inv["النوع"] == "وارد ذهب (عيار 18)":
-                    running_balance += inv["الوزن"]
-                    w_in = inv["الوزن"]
-                
-                if hasattr(self, 'treasury_tree') and self.treasury_tree:
-                    self.treasury_tree.insert("", "end", values=(
-                        inv["رقم الفاتورة"], inv["التاريخ"], inv["الاسم"],
-                        f"{w_qabd:.2f}" if w_qabd > 0 else "-",
-                        f"{w_sarf:.2f}" if w_sarf > 0 else "-",
-                        f"{w_in:.2f}" if w_in > 0 else "-",
-                        f"{w_out:.2f}" if w_out > 0 else "-",
-                        f"{running_balance:.2f} جم"
-                    ))
+            bucket, amount = self.treasury_bucket(inv, type_sets)
+            if not bucket:
+                continue
+            # «رصيد افتتاحي» يُضاف كأي حركة — كان يستبدل الرصيد الجاري كله
+            # (running = الوزن) فيمحو رصيد أول المدة وما سبقه من حركات الفترة
+            running_balance += amount
 
-        # الخياس الفعلي للمصنعين والمركبين يُخصم من رصيد الخزينة الحي مباشرة، ويتحدّث مع كل عملية (لا ينتظر الإقفال)
-        khayas_mfg_treasury = self.get_actual_section_khayas("المصنعين")
-        khayas_mer_treasury = self.get_actual_section_khayas("المركبين")
-        running_balance -= (khayas_mfg_treasury + khayas_mer_treasury)
+            if hasattr(self, 'treasury_tree') and self.treasury_tree:
+                w_in = amount if bucket in ("opening", "inbound") else 0.0
+                w_qabd = amount if bucket in ("boxes", "journal") and amount > 0 else 0.0
+                w_sarf = -amount if bucket in ("boxes", "closed", "journal") and amount < 0 else 0.0
+                w_out = -amount if bucket == "sales" else 0.0
+                self.treasury_tree.insert("", "end", values=(
+                    inv["رقم الفاتورة"], inv["التاريخ"], inv["الاسم"],
+                    f"{w_qabd:.2f}" if w_qabd > 0 else "-",
+                    f"{w_sarf:.2f}" if w_sarf > 0 else "-",
+                    f"{w_in:.2f}" if w_in > 0 else "-",
+                    f"{w_out:.2f}" if w_out > 0 else "-",
+                    f"{running_balance:.2f} جم"
+                ))
 
-        # أي قيد يومي يستهدف "حساب الخزينة" مباشرة يؤثر أيضاً في الرصيد الحي (مدين يزيد، دائن ينقص) - ليطابق كشف حسابها
-        for inv in self.invoices.values():
-            if inv.get("settled_status") != "ACTIVE": continue
-            if inv.get("الاسم") != "حساب الخزينة": continue
-            t = inv.get("النوع")
-            if t == "قيد يومي مدين":
-                running_balance += inv["الوزن"]
-            elif t == "قيد يومي دائن":
-                running_balance -= inv["الوزن"]
+        # الخياس الفعلي للمصنعين والمركبين يُخصم من رصيد الخزينة الحي مباشرة،
+        # ويتحدّث مع كل عملية (لا ينتظر الإقفال، ولا يعود بعد الإقفال).
+        # قيود «حساب الخزينة» اليومية صارت ضمن الحلقة أعلاه — **لفترتها فقط**:
+        # كانت تُجمع من كل الفترات وتُضاف لكل فترة معروضة.
+        running_balance -= self.get_workers_khayas(self.current_display_month)
 
         self.current_treasury_balance = round(running_balance, 2)
         if hasattr(self, 'lbl_live_treasury'):
@@ -9581,32 +9662,6 @@ class GoldSystemApp(ctk.CTk):
             closed_total = self.get_box_closed_total(cat, month=month)
             return round(live_total - closed_total, 2)
         return self.get_box_khayas_cumulative(cat, month=month)
-
-    def get_stage_khayas_for_report(self, cat, month):
-        """للتقرير الشهري: إذا تم إقفال الصندوق خلال هذا الشهر، يُعتمد المبلغ المُقفل كخياس فعلي لهذا الشهر
-        (لأن الصندوق يبدأ من جديد برصيد صفر بعد الإقفال)، وإلا يُستخدم الخياس الخام (صرف - قبض مباشر) لنفس الشهر"""
-        madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
-        box_account_name = self.get_box_account_name(cat)
-        in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
-
-        raw_madin = raw_daen = 0.0
-        closed_this_month = 0.0
-        for inv in self.invoices.values():
-            if inv.get("settled_status") != "ACTIVE": continue
-            if not self.inv_in_period(inv, month): continue
-            t = inv.get("النوع")
-            if t == madin_type:
-                raw_madin += inv["الوزن"]
-            elif qabd_type and t == qabd_type:
-                raw_daen += inv["الوزن"]
-            elif t in in_types and inv.get("الاسم") == mustarja_name:
-                raw_daen += inv["الوزن"]
-            elif t == "قيد يومي دائن" and inv.get("الاسم") == box_account_name:
-                closed_this_month += inv["الوزن"]
-
-        if closed_this_month > 0:
-            return round(closed_this_month, 2)
-        return round(raw_madin - raw_daen, 2)
 
     def get_sets_net_rows(self, month):
         """صافي كل طقم (رقم تشغيل) خلال شهر معيّن، من سطور الصافي المرحّلة
@@ -11049,8 +11104,36 @@ class GoldSystemApp(ctk.CTk):
         names += sorted(extra_names)
         return names
 
+    # حسابات رصيدها = مدين − دائن (الخزينة والمواد)، وبقية الحسابات دائن − مدين
+    MADIN_DAEN_ACCOUNTS = frozenset({"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار"})
+
     def get_account_ledger_rows(self, account_key, from_m, to_m):
-        """يرجع صفوف كشف الحساب (رقم فاتورة/تاريخ/اسم/مدين/دائن/بيان) لأي نوع حساب، ضمن فترة اختيارية"""
+        """صفوف كشف الحساب (رقم فاتورة/تاريخ/اسم/مدين/دائن/بيان/فترة) لأي حساب، ضمن نطاق فترات اختياري.
+
+        النطاق بالفترة المحاسبية (عمود period) لا بشهر التاريخ — مثل كل الشاشات:
+        حركة سُجّلت وأنت على فترة ٨ تظهر في كشف فترة ٨ ولو كان تاريخها ٢٠٢٦-٠٩-٠١.
+        وعند تحديد «من فترة» يُضاف أولاً سطر «رصيد أول المدة» = رصيد الحساب في
+        نهاية الفترة السابقة، فيبدأ الكشف من رصيد الحساب الفعلي لا من الصفر.
+        """
+        all_rows = self._account_ledger_rows_all(account_key)
+        rows = [r for r in all_rows
+                if (not from_m or r["period"] >= from_m) and (not to_m or r["period"] <= to_m)]
+        if from_m:
+            use_madin_daen = account_key in self.MADIN_DAEN_ACCOUNTS
+            opening = round(sum((r["مدين"] - r["دائن"]) if use_madin_daen else (r["دائن"] - r["مدين"])
+                                for r in all_rows if r["period"] < from_m), 2)
+            debit_side = (opening > 0) == use_madin_daen
+            rows.insert(0, {
+                "رقم الفاتورة": "-", "التاريخ": from_m, "الاسم": "رصيد أول المدة",
+                "مدين": abs(opening) if debit_side else 0.0,
+                "دائن": 0.0 if debit_side else abs(opening),
+                "البيان": "رصيد نهاية الفترة السابقة (مُرحَّل)",
+                "period": from_m, "is_opening": True,
+            })
+        return rows
+
+    def _account_ledger_rows_all(self, account_key):
+        """كل صفوف الحساب في كل الفترات مرتّبة (فترة ← تاريخ ← رقم)، ولكل صف فترته."""
         rows = []
         material_map = {
             "حساب الذهب": (None, ["مبيعات ذهب", "مبيعات ذهب مع الماس"]),
@@ -11061,74 +11144,68 @@ class GoldSystemApp(ctk.CTk):
         sale_material_label = {"مبيعات ذهب": "ذهب", "مبيعات ذهب مع الماس": "ذهب", "مبيعات فصوص وأحجار": "فصوص وأحجار", "مبيعات الماس": "الماس"}
         in_material_label = {"وارد ذهب (عيار 18)": "ذهب", "وارد فصوص وأحجار": "فصوص وأحجار", "وارد الماس": "الماس"}
 
+        def add(inv, madin_v, daen_v, bayan, name=None):
+            rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": inv.get("التاريخ", ""),
+                         "الاسم": inv.get("الاسم", "") if name is None else name,
+                         "مدين": madin_v, "دائن": daen_v, "البيان": bayan,
+                         "period": self.inv_period(inv)})
+
         if account_key in material_map:
             in_type, sale_types = material_map[account_key]
             for inv in self.invoices.values():
                 if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
                 t = inv.get("النوع")
                 if t != in_type and t not in sale_types: continue
-                dt = inv.get("التاريخ", "")
-                if from_m and dt[:7] < from_m: continue
-                if to_m and dt[:7] > to_m: continue
-                madin_v = inv["الوزن"] if (in_type and t == in_type) else 0.0
-                daen_v = inv["الوزن"] if t in sale_types else 0.0
-                bayan = "وارد" if (in_type and t == in_type) else "مبيعات"
-                rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": madin_v, "دائن": daen_v, "البيان": bayan})
+                is_in = bool(in_type and t == in_type)
+                add(inv, inv["الوزن"] if is_in else 0.0, inv["الوزن"] if t in sale_types else 0.0,
+                    "وارد" if is_in else "مبيعات")
 
         elif account_key == "المبيعات":
             for inv in self.invoices.values():
                 if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
                 t = inv.get("النوع")
                 if t not in sale_material_label: continue
-                dt = inv.get("التاريخ", "")
-                if from_m and dt[:7] < from_m: continue
-                if to_m and dt[:7] > to_m: continue
-                display_name = f"{inv.get('الاسم', '')} - {sale_material_label[t]}"
-                rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": display_name, "مدين": 0.0, "دائن": inv["الوزن"], "البيان": f"مبيعات {sale_material_label[t]}"})
+                add(inv, 0.0, inv["الوزن"], f"مبيعات {sale_material_label[t]}",
+                    name=f"{inv.get('الاسم', '')} - {sale_material_label[t]}")
 
         elif account_key == "حساب الخزينة":
-            _dynamic_qabd_types_tr = set()
-            _dynamic_sarf_types_tr = set()
-            for _stage_cat in self.get_all_stage_categories():
-                _madin_t, _qabd_t, _ = self.get_stage_config(_stage_cat)
-                if _madin_t: _dynamic_sarf_types_tr.add(_madin_t)
-                if _qabd_t: _dynamic_qabd_types_tr.add(_qabd_t)
-            treasury_in = {"رصيد افتتاحي", "وارد ذهب (عيار 18)"} | _dynamic_qabd_types_tr
-            treasury_out = {"صرف خياس مقفل", "مبيعات ذهب", "مبيعات ذهب مع الماس", "صادر ذهب"} | _dynamic_sarf_types_tr
+            # من المصدر الموحّد نفسه الذي يبني شريط الخزينة ورصيد أول المدة
+            # والتقرير الشهري (treasury_bucket) — فرصيد الكشف في نهاية أي فترة
+            # = رصيد نهاية تلك الفترة في التقرير = الشريط عند عرضها.
+            type_sets = self.get_treasury_type_sets()
+            by_period = {}
             for inv in self.invoices.values():
-                if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
-                t = inv.get("النوع")
-                if t not in treasury_in and t not in treasury_out: continue
-                dt = inv.get("التاريخ", "")
-                if from_m and dt[:7] < from_m: continue
-                if to_m and dt[:7] > to_m: continue
-                madin_v = inv["الوزن"] if t in treasury_in else 0.0
-                daen_v = inv["الوزن"] if t in treasury_out else 0.0
-                rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": madin_v, "دائن": daen_v, "البيان": inv.get("البيان", "")})
+                if not inv.get("التاريخ"): continue
+                period = self.inv_period(inv)
+                if period:
+                    by_period.setdefault(period, []).append(inv)
+                bucket, amount = self.treasury_bucket(inv, type_sets)
+                # قيود «حساب الخزينة» اليومية تُضاف في القسم الموحّد أسفل الدالة
+                if not bucket or bucket == "journal": continue
+                add(inv, amount if amount > 0 else 0.0, -amount if amount < 0 else 0.0, inv.get("البيان", ""))
 
-            # الخياس الفعلي (الحي) للمصنعين والمركبين — **سطر لكل فترة**.
-            #
-            # لماذا لكل فترة: خياس كل شهر مستقل، فلا يصحّ عرض خياس الشهر
-            # المعروض وحده ثم اختفاء خياس الشهور السابقة من كشف الخزينة.
-            # وكانت الدالة تُحسب للفترة المعروضة فقط، فبمجرد الانتقال لشهر
-            # جديد بلا عمليات يختفي السطر تماماً.
-            #
-            # ويُعرض **غير المُقفل** منه فقط: الجزء المُقفل له قيد حقيقي
-            # ظاهر في الكشف أصلاً، فعرضه مرتين يُضاعف الخصم من الرصيد.
-            for _period in self.get_recorded_periods():
-                for _cat, _label in (("المصنعين", "الخياس الفعلي - المصنعين"),
-                                     ("المركبين", "الخياس الفعلي - المركبين")):
-                    _amount = self.get_current_unclosed_khayas(_cat, month=_period)
-                    if abs(_amount) < 0.005:
+            # الخياس الفعلي للمصنعين والمركبين — سطر لكل فترة بقيمته **كاملة**.
+            # الإقفال قيد بين «حساب الخسائر» والصندوق لا يمسّ الخزينة، فالخياس
+            # يبقى مخصوماً بعده (كان يُعرض غير المُقفل فقط، فيرتفع رصيد الخزينة
+            # بمجرد الإقفال وتبدأ الفترة التالية برصيد مختلف عن نهاية سابقتها).
+            for period, invs in sorted(by_period.items()):
+                for cat, label in (("المصنعين", "الخياس الفعلي - المصنعين"),
+                                   ("المركبين", "الخياس الفعلي - المركبين")):
+                    amount = self.get_actual_section_khayas(cat, target_month=period, invoices=invs)
+                    if abs(amount) < 0.005:
                         continue
+                    bayan = f"خياس فعلي — فترة {period}"
+                    closed = self.get_box_closed_total(cat, month=period)
+                    if abs(closed) >= 0.005:
+                        bayan += f" (أُقفل منه {closed:.2f} لحساب الخسائر)"
                     rows.append({
                         "رقم الفاتورة": "-",
-                        # يُؤرَّخ في آخر فترته فيقع في مكانه الصحيح من الكشف
-                        "التاريخ": self.period_closing_datetime(_period)[:16],
-                        "الاسم": _label,
-                        "مدين": 0.0 if _amount > 0 else abs(_amount),
-                        "دائن": _amount if _amount > 0 else 0.0,
-                        "البيان": f"خياس فعلي محسوب لحظياً — فترة {_period}",
+                        # يُؤرَّخ في آخر فترته فيقع في نهايتها من الكشف
+                        "التاريخ": self.period_closing_datetime(period)[:16],
+                        "الاسم": label,
+                        "مدين": 0.0 if amount > 0 else abs(amount),
+                        "دائن": amount if amount > 0 else 0.0,
+                        "البيان": bayan, "period": period, "_last": True,
                     })
 
         elif account_key in ([self.get_box_account_name(c) for c in self.get_all_stage_categories()] +
@@ -11145,27 +11222,20 @@ class GoldSystemApp(ctk.CTk):
                     if inv.get("الاسم") not in names_in_cat: continue
                     t = inv.get("النوع")
                     if t not in worker_types_madin and t not in worker_types_daen: continue
-                    dt = inv.get("التاريخ", "")
-                    if from_m and dt[:7] < from_m: continue
-                    if to_m and dt[:7] > to_m: continue
-                    madin_v = inv["الوزن"] if t in worker_types_madin else 0.0
-                    daen_v = inv["الوزن"] if t in worker_types_daen else 0.0
-                    rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": madin_v, "دائن": daen_v, "البيان": t})
+                    add(inv, inv["الوزن"] if t in worker_types_madin else 0.0,
+                        inv["الوزن"] if t in worker_types_daen else 0.0, t)
             else:
                 madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
                 in_types_local = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
                 for inv in self.invoices.values():
                     if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
                     t = inv.get("النوع")
-                    dt = inv.get("التاريخ", "")
-                    if from_m and dt[:7] < from_m: continue
-                    if to_m and dt[:7] > to_m: continue
                     if t == madin_type:
-                        rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": inv["الوزن"], "دائن": 0.0, "البيان": inv.get("البيان") or "صرف"})
+                        add(inv, inv["الوزن"], 0.0, inv.get("البيان") or "صرف")
                     elif qabd_type and t == qabd_type:
-                        rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": 0.0, "دائن": inv["الوزن"], "البيان": "قبض"})
+                        add(inv, 0.0, inv["الوزن"], "قبض")
                     elif t in in_types_local and inv.get("الاسم") == mustarja_name:
-                        rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": 0.0, "دائن": inv["الوزن"], "البيان": "وارد مسترجع"})
+                        add(inv, 0.0, inv["الوزن"], "وارد مسترجع")
 
         else:  # مورد عادي أو اسم مسترجع
             sale_types_all = ["مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس"]
@@ -11174,33 +11244,28 @@ class GoldSystemApp(ctk.CTk):
                 if inv.get("الاسم") != account_key: continue
                 t = inv.get("النوع")
                 if t not in in_types_all and t != "صادر ذهب" and t not in sale_types_all: continue
-                dt = inv.get("التاريخ", "")
-                if from_m and dt[:7] < from_m: continue
-                if to_m and dt[:7] > to_m: continue
-                madin_v = inv["الوزن"] if (t == "صادر ذهب" or t in sale_types_all) else 0.0
-                daen_v = inv["الوزن"] if t in in_types_all else 0.0
                 if t in sale_types_all:
                     bayan = f"مبيعات {sale_material_label[t]}"
                 elif t in in_types_all:
                     bayan = f"وارد {in_material_label[t]}"
                 else:
                     bayan = inv.get("البيان", "")
-                rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": madin_v, "دائن": daen_v, "البيان": bayan})
+                add(inv, inv["الوزن"] if (t == "صادر ذهب" or t in sale_types_all) else 0.0,
+                    inv["الوزن"] if t in in_types_all else 0.0, bayan)
 
-        # القيود اليومية: تُضاف لأي حساب في النظام أياً كان نوعه (موحّد على كل الحسابات)
+        # القيود اليومية: تُضاف لأي حساب في النظام أياً كان نوعه (موحّد على كل الحسابات)،
+        # بفلتر الحالة نفسه الذي يحتسبها في الأرصدة
         for inv in self.invoices.values():
-            if inv.get("settled_status") != "ACTIVE": continue
+            if inv.get("settled_status") not in COUNTED_STATUSES: continue
             if inv.get("الاسم") != account_key: continue
+            if account_key == "حساب الخزينة" and not inv.get("التاريخ"): continue
             t = inv.get("النوع")
             if t not in ("قيد يومي مدين", "قيد يومي دائن"): continue
-            dt = inv.get("التاريخ", "")
-            if from_m and dt[:7] < from_m: continue
-            if to_m and dt[:7] > to_m: continue
-            madin_v = inv["الوزن"] if t == "قيد يومي مدين" else 0.0
-            daen_v = inv["الوزن"] if t == "قيد يومي دائن" else 0.0
-            rows.append({"رقم الفاتورة": inv["رقم الفاتورة"], "التاريخ": dt, "الاسم": inv.get("الاسم", ""), "مدين": madin_v, "دائن": daen_v, "البيان": inv.get("البيان") or "قيد يومي"})
+            add(inv, inv["الوزن"] if t == "قيد يومي مدين" else 0.0,
+                inv["الوزن"] if t == "قيد يومي دائن" else 0.0, inv.get("البيان") or "قيد يومي")
 
-        rows.sort(key=lambda r: (r["التاريخ"], r["رقم الفاتورة"] if isinstance(r["رقم الفاتورة"], int) else 0))
+        rows.sort(key=lambda r: (r["period"], r.get("_last", False), r["التاريخ"],
+                                 r["رقم الفاتورة"] if isinstance(r["رقم الفاتورة"], int) else 0))
         return rows
 
     def build_account_statement_tab(self):
@@ -11257,8 +11322,7 @@ class GoldSystemApp(ctk.CTk):
         to_m = self.kh_to_month.get().strip()
 
         rows = self.get_account_ledger_rows(account_key, from_m, to_m)
-        madin_daen_accounts = {"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار"}
-        use_madin_daen = account_key in madin_daen_accounts
+        use_madin_daen = account_key in self.MADIN_DAEN_ACCOUNTS
 
         out_dir = INVOICES_DIR
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in account_key)[:30]
@@ -11445,99 +11509,93 @@ class GoldSystemApp(ctk.CTk):
         rows = self.get_account_ledger_rows(account_key, from_m, to_m)
         # الرصيد = مدين - دائن لحسابات الخزينة والذهب والألماس وفصوص وأحجار تحديداً (حسب الاعتماد الأخير)
         # وبقية الحسابات (الموردين، المسترجعات، المبيعات) تبقى على صيغة دائن - مدين
-        madin_daen_accounts = {"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار"}
-        use_madin_daen = account_key in madin_daen_accounts
+        use_madin_daen = account_key in self.MADIN_DAEN_ACCOUNTS
+        self.account_statement_tree.tag_configure("opening_tag", foreground="#1f77b4", font=("Cairo", 13, "bold"))
         running = 0.0
+        opening = None
         tot_madin = tot_daen = 0.0
         for r in rows:
             running += (r["مدين"] - r["دائن"]) if use_madin_daen else (r["دائن"] - r["مدين"])
-            tot_madin += r["مدين"]
-            tot_daen += r["دائن"]
+            if r.get("is_opening"):
+                # رصيد مُرحَّل لا حركة فترة: لا يدخل إجمالي المدين/الدائن
+                opening = running
+            else:
+                tot_madin += r["مدين"]
+                tot_daen += r["دائن"]
             self.account_statement_tree.insert("", "end", values=(
                 r["رقم الفاتورة"], r["التاريخ"], r["الاسم"],
                 f"{r['مدين']:.2f}" if r["مدين"] else "-",
                 f"{r['دائن']:.2f}" if r["دائن"] else "-",
                 f"{running:.2f}",
                 r.get("البيان", "")
-            ))
+            ), tags=("opening_tag",) if r.get("is_opening") else ())
 
         if rows:
             self.account_statement_tree.insert("", "end", values=("-", "-", "الرصيد الحالي", "-", "-", f"{running:.2f}", "-"), tags=("total_tag",))
 
         if hasattr(self, 'lbl_account_statement_balance'):
-            self.lbl_account_statement_balance.configure(text=f"إجمالي المدين: {tot_madin:.2f}   |   إجمالي الدائن: {tot_daen:.2f}   |   الرصيد: {round(running, 2):.2f}")
+            opening_txt = f"رصيد أول المدة: {opening:.2f}   |   " if opening is not None else ""
+            self.lbl_account_statement_balance.configure(text=f"{opening_txt}إجمالي المدين: {tot_madin:.2f}   |   إجمالي الدائن: {tot_daen:.2f}   |   الرصيد: {round(running, 2):.2f}")
 
     def build_monthly_report_tab(self):
         tab = self.tabview.tab("التقرير الشهري")
 
-        lbl_desc = ctk.CTkLabel(tab, text="📊 التقرير الشهري لرصيد الذهب (نهاية الفترة = بداية الفترة - المبيعات/الصادر - الخياس + الوارد)", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#1f77b4")
-        lbl_desc.pack(pady=15)
-        
+        lbl_desc = ctk.CTkLabel(tab, text="📊 التقرير الشهري لرصيد الخزينة (نهاية الفترة = بداية الفترة − المبيعات/الصادر − الخياس + الوارد ± قيود الخزينة)", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#1f77b4")
+        lbl_desc.pack(pady=(15, 2))
+        ctk.CTkLabel(tab, text="كل فترة تبدأ برصيد نهاية الفترة التي قبلها تلقائياً، والأرقام لا تتغيّر بتغيير الفترة المعروضة — ورصيد نهاية الفترة المعروضة = شريط رصيد الخزينة",
+                     font=("Cairo", 12), text_color="#aaaaaa").pack(pady=(0, 10))
+
         t_frame = ttk.Frame(tab)
         t_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
-        cols = ("الشهر", "رصيد بداية الفترة", "المبيعات / الصادر ➖", "الخياس ➖", "الوارد ➕", "رصيد نهاية الفترة ⚖️")
+        cols = ("الشهر", "رصيد بداية الفترة", "المبيعات / الصادر ➖", "الخياس ➖", "الوارد ➕", "قيود الخزينة ±", "رصيد نهاية الفترة ⚖️")
         self.report_tree = self.create_standard_treeview(t_frame, cols, height=16)
         self.report_tree.tag_configure("highlight_row", foreground="#d4af37", font=("Cairo", 13, "bold"))
-        
+
         for c in cols:
-            self.report_tree.column(c, width=190, anchor="center")
+            self.report_tree.column(c, width=170, anchor="center")
 
         self.calculate_and_refresh_monthly_report()
+
+    def get_monthly_report_rows(self):
+        """صفوف التقرير الشهري — مبنية من دفتر الخزينة الموحّد وحده.
+
+        كان التقرير يحسب بمعادلته الخاصة (ACTIVE فقط، والذهب المسترجع يُعدّ
+        مرتين: وارداً وخصماً من خياس الصندوق، وبلا صادر ولا قيود خزينة، ورصيد
+        البداية من القيود الافتتاحية المعلَّمة فقط)، بينما يبني شريط الخزينة
+        رصيد أول المدة بطريقة ثالثة. فتطابقت فترة ٨ صدفةً واختلفت فترة ٩.
+        الآن: رصيد بداية كل فترة = رصيد نهاية سابقتها بالضبط، ورصيد نهاية
+        الفترة المعروضة = شريط الخزينة، من أي فترة فُتح التقرير.
+        """
+        rows = []
+        for r in self.get_treasury_ledger():
+            rows.append({
+                "period": r["period"],
+                # «رصيد افتتاحي» والقيود الافتتاحية جزء من رصيد البداية لا من حركة الفترة
+                "start": round(r["carry"] + r["opening"], 2),
+                "sales": round(-r["sales"], 2),
+                "khayas": round(-(r["boxes"] + r["workers"] + r["closed"]), 2),
+                "inbound": round(r["inbound"], 2),
+                "journal": round(r["journal"], 2),
+                "end": r["closing"],
+            })
+        return rows
 
     def calculate_and_refresh_monthly_report(self):
         if not hasattr(self, 'report_tree') or not self.report_tree: return
         for item in self.report_tree.get_children(): self.report_tree.delete(item)
 
-        all_months = set()
-        for inv in self.invoices.values():
-            if inv.get("التاريخ") and len(inv["التاريخ"]) >= 7:
-                all_months.add(self.inv_period(inv))
-        sorted_months = sorted(list(all_months))
-        if not sorted_months: return
-
-        # رصيد بداية الفترة الأولى = مجموع القيود الافتتاحية من نوع ذهب فقط (المقيّدة للخزينة)
-        opening_gold_total = 0.0
-        for inv in self.invoices.values():
-            if (inv.get("trees_count") == 1.0 and inv.get("البيان") == "قيد افتتاحي"
-                    and inv.get("النوع") == "وارد ذهب (عيار 18)" and inv.get("settled_status") == "ACTIVE"):
-                opening_gold_total += inv["الوزن"]
-
-        current_start_balance = round(opening_gold_total, 2)
-        sale_gold_types = ["مبيعات ذهب", "مبيعات ذهب مع الماس"]
-
-        for m_str in sorted_months:
-            m_inbound = 0.0
-            m_sales = 0.0
-
-            for inv in self.invoices.values():
-                if self.inv_in_period(inv, m_str) and inv.get("settled_status") == "ACTIVE":
-                    t = inv["النوع"]
-                    if t == "وارد ذهب (عيار 18)" and inv.get("trees_count") != 1.0:
-                        m_inbound += inv["الوزن"]
-                    elif t in sale_gold_types:
-                        m_sales += inv["الوزن"]
-
-            m_khayas_mfg = self.get_actual_section_khayas("المصنعين", target_month=m_str, include_settled=True)
-            m_khayas_mer = self.get_actual_section_khayas("المركبين", target_month=m_str, include_settled=True)
-            stage_khayas = 0.0
-            for cat in self.get_all_stage_categories():
-                stage_khayas += self.get_stage_khayas_for_report(cat, m_str)
-            total_period_khayas = round(m_khayas_mfg + m_khayas_mer + stage_khayas, 2)
-
-            m_end_balance = round(current_start_balance - m_sales - total_period_khayas + m_inbound, 2)
-
-            tag = ("highlight_row",) if m_str == self.current_display_month else ()
+        for r in self.get_monthly_report_rows():
+            tag = ("highlight_row",) if r["period"] == self.current_display_month else ()
             self.report_tree.insert("", "end", values=(
-                f"شهر {m_str}",
-                f"{current_start_balance:.2f} جم",
-                f"{m_sales:.2f} جم",
-                f"{total_period_khayas:.2f} جم",
-                f"{m_inbound:.2f} جم",
-                f"{m_end_balance:.2f} جم"
+                f"شهر {r['period']}",
+                f"{r['start']:.2f} جم",
+                f"{r['sales']:.2f} جم",
+                f"{r['khayas']:.2f} جم",
+                f"{r['inbound']:.2f} جم",
+                f"{r['journal']:+.2f} جم" if abs(r["journal"]) >= 0.005 else "-",
+                f"{r['end']:.2f} جم"
             ), tags=tag)
-
-            current_start_balance = m_end_balance
 
     def get_supplier_name_values(self):
         """قائمة أسماء الموردين: المصنع + أسماء المسترجعات (كل اسم يخص صندوقه، بما فيها الأقسام الديناميكية) + الموردون المسجلون"""

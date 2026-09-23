@@ -8,20 +8,28 @@ cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Go
 seg = lambda n: ast.get_source_segment(src, next(m for m in cls.body
                                                  if isinstance(m, ast.FunctionDef) and m.name == n))
 
-# ═══ ١) ترحيل الرصيد ═══
-ns = {}
+# ═══ ١) ترحيل الرصيد — بالدوال الحقيقية ═══
+lines = src.split("\n")
+
+
+def method_src(name):
+    """نص الدالة مع مزخرفاتها (@staticmethod/@classmethod)"""
+    node = next(m for m in cls.body if isinstance(m, ast.FunctionDef) and m.name == name)
+    start = min([d.lineno for d in node.decorator_list] + [node.lineno])
+    return textwrap.indent(textwrap.dedent("\n".join(lines[start - 1:node.end_lineno])), "    ")
+
+
+ns = {"COUNTED_STATUSES": ("ACTIVE", "SETTLED_INOUT")}
 exec("class S:\n"
-     "    @staticmethod\n    def inv_period(inv):\n"
-     '        p = (inv.get("period") or "").strip()\n'
-     '        return p if p else str(inv.get("التاريخ", ""))[:7]\n'
-     + textwrap.indent(textwrap.dedent(seg("get_opening_treasury_balance")), "    ")
+     + "\n".join(method_src(m) for m in (
+         "inv_period", "inv_in_period", "get_treasury_type_sets", "treasury_bucket",
+         "treasury_effect", "get_workers_khayas", "treasury_period_components",
+         "get_treasury_ledger", "get_opening_treasury_balance"))
      + "\n"
-     + textwrap.indent(textwrap.dedent(seg("treasury_effect")), "    ")
-     + "\n"
+     "    current_display_month = '2026-09'\n"
      "    def get_all_stage_categories(self): return []\n"
      "    def get_stage_config(self, c): return ('', '', '')\n"
-     "    def get_recorded_periods(self): return ['2026-09', '2026-08', '2026-07']\n"
-     "    def get_current_unclosed_khayas(self, cat, month=None): return 0.0\n", ns)
+     "    def get_actual_section_khayas(self, cat, target_month=None, invoices=None): return 0.0\n", ns)
 app = ns["S"]()
 
 

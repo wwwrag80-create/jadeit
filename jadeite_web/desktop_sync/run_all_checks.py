@@ -45,6 +45,7 @@ CHECKS = [
     ("خياس كل فترة",        [PY, "test_khayas_per_period.py"]),
     ("ختم فترة الإقفال",    [PY, "test_closing_period_stamp.py"]),
     ("خياس فعلي لكل فترة",  [PY, "test_live_khayas_rows.py"]),
+    ("دفتر الفترات الموحّد", [PY, "test_period_ledger.py"]),
     ("معادلة الخياس الفعلي", [PY, "test_khayas_formula.py"]),
     ("قالب الطباعة",        [PY, "test_print_template.py"]),
     ("الشريط الجانبي",      [PY, "test_sidebar_ui.py"]),

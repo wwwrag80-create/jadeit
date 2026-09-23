@@ -14,7 +14,7 @@ ns = {}
 exec("class S:\n"
      + textwrap.indent(textwrap.dedent(seg("get_section_khayas_parts")), "    ") + "\n"
      + textwrap.indent(textwrap.dedent(seg("get_actual_section_khayas")), "    ") + "\n"
-     "    def calculate_single_ledger(self, n, cat, target_month=None, include_settled=False):\n"
+     "    def calculate_single_ledger(self, n, cat, target_month=None, include_settled=False, invoices=None):\n"
      "        return self._led[n]\n", ns)
 app = ns["S"]()
 app.categories = {"المصنعين": ["أ", "ب", "ج"], "المركبين": ["س", "ص"]}

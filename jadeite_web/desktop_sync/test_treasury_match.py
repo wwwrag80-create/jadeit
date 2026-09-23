@@ -22,10 +22,16 @@ assert 'settled_status") not in ("ACTIVE", "SETTLED_INOUT")' in loop_head, \
 print("✔ حلقة الرصيد الحي تفلتر الحالة كما يفلترها كشف الحساب")
 
 # ---------- ٢) كشف حساب الخزينة يستخدم الفلتر نفسه ----------
+# الشريط والكشف كلاهما يصنّفان الحركات عبر treasury_bucket — مصدر واحد للفلتر
 stmt = ast.get_source_segment(src, next(m for m in cls.body if isinstance(m, ast.FunctionDef)
-                                        and m.name == "get_account_ledger_rows"))
-assert 'settled_status") not in ("ACTIVE", "SETTLED_INOUT")' in stmt
-print("✔ كشف حساب الخزينة يستخدم الفلتر نفسه")
+                                        and m.name == "_account_ledger_rows_all"))
+bucket = ast.get_source_segment(src, next(m for m in cls.body if isinstance(m, ast.FunctionDef)
+                                          and m.name == "treasury_bucket"))
+assert "self.treasury_bucket(inv, type_sets)" in stmt
+assert "self.treasury_bucket(inv, type_sets)" in recalc
+assert 'settled_status") not in COUNTED_STATUSES' in bucket
+assert re.search(r'^COUNTED_STATUSES = \("ACTIVE", "SETTLED_INOUT"\)', src, re.M)
+print("✔ كشف حساب الخزينة يستخدم الفلتر نفسه (treasury_bucket)")
 
 # ---------- ٣) محاكاة عددية: الشريط والكشف يجب أن يتطابقا ----------
 MEMO = "MEMO"
