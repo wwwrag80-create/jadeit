@@ -23,10 +23,13 @@ i_guard = work.find("if not IS_ADMIN_BUILD:")
 i_down = work.find("sync_down(")
 assert i_guard != -1, "لا يوجد فصل بين نسختي العميل والمدير"
 assert i_down == -1 or i_guard < i_down, "العميل قد يصل إلى السحب!"
-assert "return" in work[i_guard:i_guard + 700]
+# فرع العميل كاملاً: من الشرط حتى بداية قسم نسخة المدير (لا نافذة نصية بطول ثابت)
+i_admin = work.find("# نسخة المدير", i_guard)
+assert i_admin != -1, "لم يُعثر على بداية قسم نسخة المدير"
+seg_guard = work[i_guard:i_admin]
+assert "return" in seg_guard
 print("✔ نسخة العميل: ترفع بياناتها ثم تعود فوراً — لا تصل إلى السحب إطلاقاً")
 
-seg_guard = work[i_guard:i_guard + 700]
 assert "uploader.flush" in seg_guard
 print("✔ ومع ذلك ترفع حركاتها للسحابة كالمعتاد (المدير يراها)")
 

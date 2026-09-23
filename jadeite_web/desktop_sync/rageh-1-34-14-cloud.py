@@ -511,21 +511,69 @@ def cloud_upload_backup(client_id, db_path):
         return False
 
 
-def cloud_download_backup(client_id, target_db_path):
-    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً. يرجع True لو نجح"""
+def cloud_fetch_backup(client_id, target_db_path):
+    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً.
+
+    يرجع: "restored" (نُزّلت) | "none" (لا نسخة على السحابة لهذا الحساب) |
+          "error" (تعذّر الاتصال أو القراءة — قد تكون على السحابة نسخة سليمة)
+    التمييز بين الأخيرين هو ما يمنع البدء بقاعدة فارغة تُرفع فوق نسخة سليمة.
+    """
     sb = get_supabase_public_client()
     if sb is None or not client_id:
-        return False
+        return "error"
     try:
         res = sb.rpc("download_backup", {"p_client_id": client_id}).execute()
         if res.data and res.data[0].get("out_backup_data"):
             raw = base64.b64decode(res.data[0]["out_backup_data"])
             with open(target_db_path, "wb") as f:
                 f.write(raw)
-            return True
+            return "restored"
+        return "none"
     except Exception as e:
         log_cloud_error("تعذر تنزيل النسخة الاحتياطية من السحابة", e)
+    return "error"
+
+
+def cloud_download_backup(client_id, target_db_path):
+    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً. يرجع True لو نجح"""
+    return cloud_fetch_backup(client_id, target_db_path) == "restored"
+
+
+def local_client_data_exists(client_id, db_path):
+    """هل على هذا الجهاز بيانات لهذا العميل؟
+
+    قاعدته في مجلد البيانات، أو ملف قديم بجوار البرنامج يُرحَّل تلقائياً عند
+    الفتح (migrate_legacy_file) — وفي الحالتين لا يُسترجع شيء من السحابة.
+    """
+    if os.path.exists(db_path):
+        return True
+    for folder in {os.getcwd(), get_app_base_dir(), DATA_DIR}:
+        for name in (f"client_data_{client_id}.db", "gold_workshop.db"):
+            if os.path.exists(os.path.join(folder, name)):
+                return True
     return False
+
+
+def restore_client_database(client_id, db_path, ask_retry, ask_start_empty):
+    """تثبيت جديد / جهاز جديد / حُذف مجلد البيانات: يسترجع آخر نسخة من السحابة
+    **قبل** أي خطوة تُنشئ ملف القاعدة.
+
+    (كانت شاشة الرفع عند الدخول تُنشئ ملفاً فارغاً أولاً، فيظن البرنامج أن
+     البيانات موجودة ويتخطّى الاسترجاع، ثم يرفع القاعدة الفارغة فوق آخر نسخة
+     سليمة على السحابة خلال ثوانٍ.)
+
+    ask_retry / ask_start_empty: أسئلة للمستخدم عند تعذّر الاتصال (تُمرَّر من
+    الواجهة). يرجع True للمتابعة وفتح البرنامج، و False للعودة لشاشة الدخول.
+    """
+    if not client_id or local_client_data_exists(client_id, db_path):
+        return True
+    while True:
+        status = cloud_fetch_backup(client_id, db_path)
+        if status in ("restored", "none"):
+            return True
+        if ask_retry():
+            continue
+        return bool(ask_start_empty())
 
 
 def cloud_create_client_account(business_name, username, password):
@@ -15551,6 +15599,13 @@ class SyncDownWindow(ctk.CTkToplevel):
             #      ولا ترفع شيئاً أبداً.
             # ═══════════════════════════════════════════════════════════════
             if not IS_ADMIN_BUILD:
+                # لا قاعدة على الجهاز = لا شيء يُرفع. ولا نُنشئ ملفاً فارغاً هنا:
+                # وجوده كان يجعل البرنامج يتخطّى استرجاع البيانات من السحابة
+                # ثم يرفع القاعدة الفارغة فوق آخر نسخة سليمة.
+                if not os.path.exists(self.db_path):
+                    self.ok = True
+                    self._ui(self.destroy)
+                    return
                 self._progress("جارٍ رفع بياناتك للسحابة…", 0.15)
                 install_sync_schema(self.db_path)
                 uploader = CloudSync(db_path=self.db_path, api=self.api,
@@ -15650,10 +15705,31 @@ class LoginWindow(ctk.CTk):
 
         client_id, business_name, can_edit = cloud_verify_client_login(username, password)
         if client_id:
+            # بعد إعادة التثبيت يبقى مجلد البيانات على القرص فتُفتح البيانات كما هي.
+            # أما لو لم توجد بيانات على الجهاز (جهاز جديد أو حُذف المجلد) فتُسترجع
+            # آخر نسخة من السحابة أولاً — ولا يبدأ البرنامج ببيانات فارغة بصمت.
+            db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
+            if not restore_client_database(
+                    client_id, db_path,
+                    ask_retry=lambda: messagebox.askretrycancel(
+                        "استرجاع بياناتك",
+                        "لا توجد بيانات لهذا الحساب على هذا الجهاز، وتعذّر تنزيل آخر نسخة "
+                        "محفوظة لها على السحابة الآن.\n\nتأكد من الاتصال بالإنترنت ثم أعد المحاولة.",
+                        parent=self),
+                    ask_start_empty=lambda: messagebox.askyesno(
+                        "البدء ببيانات فارغة؟",
+                        "لم تُسترجع بياناتك السابقة.\n\n"
+                        "هل تريد فتح البرنامج ببيانات فارغة؟\n"
+                        "⚠️ لا تختر (نعم) إلا لو كان هذا حساباً جديداً فعلاً: البيانات الفارغة "
+                        "ستُرفع للسحابة مكان آخر نسخة محفوظة.",
+                        icon="warning", default="no", parent=self)):
+                self.btn_login.configure(state="normal", text="دخول")
+                self.lbl_status.configure(text="لم تُسترجع البيانات — أعد المحاولة عند توفر الإنترنت")
+                return
+
             # تجهيز بيانات المصنع من السحابة قبل فتح النظام
             if SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:
                 try:
-                    db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
                     api = _RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)
                     win = SyncDownWindow(self, db_path, api, client_id, business_name)
                     self.wait_window(win)
