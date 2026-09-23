@@ -6,9 +6,11 @@ class Fmt {
 
   static final NumberFormat _weight = NumberFormat('#,##0.00', 'en');
   static final NumberFormat _carat = NumberFormat('#,##0.0', 'en');
-  static final DateFormat _dateTime = DateFormat('yyyy-MM-dd HH:mm', 'en');
-  static final DateFormat _date = DateFormat('yyyy-MM-dd', 'en');
-  static final DateFormat _period = DateFormat('yyyy-MM', 'en');
+  // en_US مدمجة في intl دائماً؛ أما 'en' فتحتاج تهيئة بيانات اللغة أولاً
+  // (initializeDateFormatting) وإلا رمت LocaleDataException قبل تحميل الترجمات.
+  static final DateFormat _dateTime = DateFormat('yyyy-MM-dd HH:mm', 'en_US');
+  static final DateFormat _date = DateFormat('yyyy-MM-dd', 'en_US');
+  static final DateFormat _period = DateFormat('yyyy-MM', 'en_US');
 
   static String weight(num? value) => _weight.format(value ?? 0);
   static String carat(num? value) => _carat.format(value ?? 0);
@@ -32,9 +34,18 @@ class Fmt {
     return DateTime(int.parse(parts[0]), int.parse(parts[1]), 1);
   }
 
-  /// تاريخ افتراضي ذكي: اليوم إن كنا في الشهر الحالي، وإلا أول الشهر المعروض
-  static DateTime smartDefaultDate(String period) =>
-      period == currentPeriod() ? DateTime.now() : firstDayOfPeriod(period);
+  /// تاريخ العملية الحقيقي: اليوم المختار بساعة التسجيل الفعلية.
+  ///
+  /// مثل برنامج سطح المكتب: التاريخ لا يُزوَّر ليدخل الفترة المعروضة، بل تُرسل
+  /// الفترة المحاسبية صراحةً مع الحركة (عمود period) — فتظهر الحركة في الفترة
+  /// التي سُجّلت فيها مهما كان شهر تاريخها.
+  static DateTime operationDate(DateTime day, {DateTime? now}) {
+    final t = now ?? DateTime.now();
+    return DateTime(day.year, day.month, day.day, t.hour, t.minute, t.second);
+  }
+
+  /// هل الفترة بصيغة YYYY-MM صحيحة؟
+  static bool isValidPeriod(String period) => RegExp(r'^\d{4}-\d{2}$').hasMatch(period);
 
   static String shiftPeriod(String period, int months) {
     final base = firstDayOfPeriod(period);

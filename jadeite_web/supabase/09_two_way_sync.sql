@@ -132,7 +132,12 @@ begin
 end $$;
 
 grant execute on function public.sync_pull_changes(uuid, timestamptz, int) to anon, authenticated;
-grant execute on function public.purge_sync_deletions() to authenticated;
+-- التنظيف للمدير فقط (من SQL Editor أو بمفتاح الخدمة) — لا يُمنح للعملاء ولا لـ anon
+revoke execute on function public.purge_sync_deletions() from public, anon, authenticated;
+grant  execute on function public.purge_sync_deletions() to service_role;
+
+-- سجل الحذف لا يُقرأ إلا عبر sync_pull_changes — لا وصول مباشر لـ anon
+revoke all on public.sync_deletions from anon;
 
 -- ----------------------------------------------------------------------------
 --  ٥) وسم مصدر التعديل

@@ -40,9 +40,37 @@ import json
 
 SUPABASE_URL = "https://ttpqksvtnhoulghgovob.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ymRG7rKUf-704V3j1bNwgg_b1IvlMlX"
-# ⚠️ هام: هذا المفتاح يمنح صلاحيات كاملة على بيانات كل العملاء (يتخطى كل الحمايات).
-# يجب أن يبقى فقط في نسخة المدير من البرنامج، ويُحذف قبل إرسال أي نسخة تنفيذية للعملاء.
-SUPABASE_SECRET_KEY = ""   # [redacted: the leaked key was removed from the repository — revoke it in Supabase]
+
+
+def _load_admin_secret_key():
+    """يقرأ المفتاح السري لنسخة المدير من خارج الكود — لا يُكتب في الملف أبداً.
+
+    ⚠️ هذا المفتاح يمنح صلاحيات كاملة على بيانات كل العملاء (يتخطى كل الحمايات).
+    كتابته داخل الكود تعني تسريبه مع أي نسخة أو رفع للمستودع، لذلك يُقرأ من:
+      ١) متغيّر البيئة JADEITE_SUPABASE_SECRET_KEY، أو
+      ٢) ملف admin_secret.key بجانب البرنامج (مستبعد من git في .gitignore).
+    بدونهما تعمل نسخة المدير بلا صلاحيات إدارية وتظهر رسالة واضحة عند الحاجة.
+    """
+    key = os.environ.get("JADEITE_SUPABASE_SECRET_KEY", "").strip()
+    if key:
+        return key
+    folders = [os.path.dirname(os.path.abspath(sys.argv[0] or "."))]
+    try:
+        folders.append(os.path.dirname(os.path.abspath(__file__)))
+    except NameError:
+        pass
+    for folder in folders:
+        try:
+            with open(os.path.join(folder, "admin_secret.key"), encoding="utf-8") as f:
+                key = f.read().strip()
+            if key:
+                return key
+        except OSError:
+            continue
+    return ""
+
+
+SUPABASE_SECRET_KEY = _load_admin_secret_key()
 
 # ================= وحدات المزامنة السحابية =================
 try:
@@ -81,7 +109,9 @@ class _RpcBridge:
 
 
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin"
+# كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
+# (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
+ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
 APP_VERSION = "1.43.0"
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -357,6 +387,11 @@ def get_supabase_public_client():
 def get_supabase_admin_client():
     """عميل سحابي بصلاحيات كاملة (المدير فقط) — يتخطى كل الحمايات"""
     if not SUPABASE_AVAILABLE:
+        return None
+    if not SUPABASE_SECRET_KEY:
+        log_cloud_error("مفتاح المدير غير مضبوط",
+                        "ضع المفتاح في متغيّر البيئة JADEITE_SUPABASE_SECRET_KEY "
+                        "أو في ملف admin_secret.key بجانب البرنامج")
         return None
     try:
         return _sb_create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)

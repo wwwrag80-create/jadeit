@@ -63,6 +63,11 @@ class OpTypes {
   static const String journalDebit = 'قيد يومي مدين';
   static const String journalCredit = 'قيد يومي دائن';
 
+  // ---------- حالات الحركة ----------
+  /// الحالات التي تُحتسب في الأرصدة — نفس فلتر برنامج سطح المكتب حرفياً
+  /// (SETTLED: قسم أُقفلت فترته، MEMO: سطر معلوماتي — كلاهما لا يُحتسب)
+  static const List<String> countedStatuses = ['ACTIVE', 'SETTLED_INOUT'];
+
   // ---------- الحسابات النظامية ----------
   static const String factoryAccount = 'المصنع';
   static const String treasuryAccount = 'حساب الخزينة';
@@ -170,5 +175,9 @@ class AppScreens {
     (key: 'losses', label: 'الخسائر والهالك', icon: '⚠️'),
     (key: 'opening', label: 'الرصيد الافتتاحي', icon: '⚖️'),
     (key: 'reports', label: 'التقرير الشهري', icon: '📊'),
+    (key: 'audit', label: 'سجل التعديلات', icon: '🕵️'),
   ];
+
+  /// شاشات تظهر للمدير فقط (أثناء تصفّح حساب عميل)
+  static const Set<String> adminOnly = {'audit'};
 }

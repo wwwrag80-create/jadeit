@@ -13,6 +13,7 @@ import '../../widgets/data_table_card.dart';
 final allBoxesTotalsProvider =
     FutureProvider.autoDispose<Map<String, ({double madin, double daen, double khayas})>>(
         (ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return {};

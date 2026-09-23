@@ -19,16 +19,20 @@ OUT = "rageh-CLIENT.py"
 src = io.open(SRC, encoding="utf-8").read()
 
 # ---------- ١) إزالة المفتاح السري ----------
+# نسخة المدير تقرأ المفتاح من خارج الكود (_load_admin_secret_key)، ونسخة العميل
+# لا تحاول قراءته إطلاقاً: السطر يُستبدل بقيمة فارغة ثابتة. ونعالج الصيغة القديمة
+# (مفتاح حرفي بين علامتي تنصيص) أيضاً للاحتياط.
 before = re.search(r'SUPABASE_SECRET_KEY\s*=\s*"([^"]*)"', src)
-src = re.sub(
-    r'SUPABASE_SECRET_KEY\s*=\s*"[^"]*"',
-    'SUPABASE_SECRET_KEY = ""   # مُزال عمداً من نسخة العميل (يتخطى كل الحمايات)',
-    src)
+CLIENT_KEY_LINE = 'SUPABASE_SECRET_KEY = ""   # مُزال عمداً من نسخة العميل (يتخطى كل الحمايات)'
+src, n_key = re.subn(r'^SUPABASE_SECRET_KEY\s*=.*$', CLIENT_KEY_LINE, src, flags=re.M)
+assert n_key == 1, f"سطر SUPABASE_SECRET_KEY يجب أن يظهر مرة واحدة بالضبط (وُجد {n_key})"
 
 # ---------- ١-ب) ضبط نوع النسخة: العميل يستعيد بياناته المحلية ----------
-assert 'IS_ADMIN_BUILD = True' in src, "علم نوع النسخة غير موجود — راجع السكربت"
-src = src.replace('IS_ADMIN_BUILD = True',
-                  'IS_ADMIN_BUILD = False   # نسخة العميل: تستعيد بياناتها المحلية ثم ترفعها')
+# السطر نفسه فقط (بداية السطر) — لا النص المذكور داخل التعليقات
+src, n_flag = re.subn(r'^IS_ADMIN_BUILD = True\b.*$',
+                      'IS_ADMIN_BUILD = False   # نسخة العميل: تستعيد بياناتها المحلية ثم ترفعها',
+                      src, flags=re.M)
+assert n_flag == 1, "علم نوع النسخة غير موجود — راجع السكربت"
 
 # ---------- ٢) تعطيل دخول لوحة المدير من نسخة العميل ----------
 old_admin = '''        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
@@ -48,11 +52,12 @@ io.open(OUT, "w", encoding="utf-8").write(src)
 
 # ---------- التحقق ----------
 check = io.open(OUT, encoding="utf-8").read()
-key = re.search(r'SUPABASE_SECRET_KEY\s*=\s*"([^"]*)"', check)
+key = re.search(r'^SUPABASE_SECRET_KEY\s*=\s*"([^"]*)"', check, flags=re.M)
 assert key and key.group(1) == "", "لم يُزل المفتاح السري!"
-assert "IS_ADMIN_BUILD = False" in check, "نسخة العميل ما زالت مضبوطة كنسخة مدير!"
+assert re.search(r"^IS_ADMIN_BUILD = False", check, flags=re.M), "نسخة العميل ما زالت مضبوطة كنسخة مدير!"
 if before and before.group(1):
     assert before.group(1) not in check, "بقيت نسخة أخرى من المفتاح السري في الملف!"
+assert not re.search(r"sb_secret_[A-Za-z0-9_-]{8,}", check), "مفتاح سري حرفي ما زال في الملف!"
 
 import ast
 ast.parse(check)

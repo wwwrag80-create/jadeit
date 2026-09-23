@@ -20,6 +20,7 @@
 
 import os
 import sqlite3
+from datetime import datetime
 
 PULL_PAGE_SIZE = 1000
 
@@ -234,10 +235,25 @@ def _align_counter(con):
 
 
 def _sqlite_dt(iso_text):
-    """يحوّل تاريخ السحابة (ISO) لصيغة قاعدة العميل: YYYY-MM-DD HH:MM:SS"""
+    """يحوّل تاريخ السحابة (ISO) لصيغة قاعدة العميل بتوقيت هذا الجهاز: YYYY-MM-DD HH:MM:SS
+
+    برنامج العميل يرفع التاريخ بإزاحة توقيته المحلي (cloud_sync._to_iso)، والسحابة
+    تخزّنه لحظةً زمنية وترجعه بتوقيت UTC (مثلاً 20:00+00:00 لحركة سُجّلت 23:00
+    بتوقيت الرياض). قصّ الإزاحة بدل التحويل كان يعرض الوقت متأخراً ٣ ساعات،
+    ويغيّر اليوم نفسه للحركات المسجّلة بعد منتصف الليل.
+    """
     if not iso_text:
         return ""
-    text = str(iso_text).replace("T", " ")
+    text = str(iso_text).strip()
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)   # إلى توقيت هذا الجهاز
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    # صيغة غير قياسية: نحتفظ بالسلوك القديم (قصّ الإزاحة والكسور)
+    text = text.replace("T", " ")
     for cut in ("+", "Z", "."):
         idx = text.find(cut)
         if idx > 10:

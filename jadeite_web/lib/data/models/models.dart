@@ -109,6 +109,7 @@ class Txn {
     this.setNumber = '',
     this.rowNumber = '',
     this.manualNo = '',
+    this.period = '',
   });
 
   final int id;
@@ -126,8 +127,9 @@ class Txn {
   final String rowNumber;
   final String manualNo;
 
-  String get period =>
-      '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}';
+  /// الفترة المحاسبية (YYYY-MM) — قرار محاسبي مستقل عن التاريخ، كما في
+  /// برنامج سطح المكتب. فارغة = تُشتق من التاريخ في قاعدة البيانات.
+  final String period;
 
   bool get isOpening =>
       treesCount == OpTypes.openingMarker && note == OpTypes.openingNote;
@@ -150,6 +152,7 @@ class Txn {
         setNumber: (m['set_number'] ?? '') as String,
         rowNumber: (m['row_number'] ?? '') as String,
         manualNo: (m['manual_no'] ?? '') as String,
+        period: (m['period'] ?? '') as String,
       );
 
   /// حركة جديدة لم تُرحَّل بعد — الرقم المتسلسل تمنحه قاعدة البيانات عند الترحيل
@@ -165,6 +168,7 @@ class Txn {
     String setNumber = '',
     String rowNumber = '',
     String manualNo = '',
+    String period = '',
   }) =>
       Txn(
         id: 0,
@@ -180,22 +184,45 @@ class Txn {
         setNumber: setNumber,
         rowNumber: rowNumber,
         manualNo: manualNo,
+        period: period,
       );
 
-  Map<String, dynamic> toInsertMap(String tenantId) => {
-        'tenant_id': tenantId,
-        'txn_date': date.toIso8601String(),
+  /// نسخة من الحركة بفترة محاسبية محدّدة
+  Txn withPeriod(String value) => Txn(
+        id: id,
+        seqNo: seqNo,
+        date: date,
+        accountName: accountName,
+        opType: opType,
+        weight: weight,
+        weightBefore: weightBefore,
+        weightAfter: weightAfter,
+        note: note,
+        status: status,
+        treesCount: treesCount,
+        setNumber: setNumber,
+        rowNumber: rowNumber,
+        manualNo: manualNo,
+        period: value,
+      );
+
+  /// صف جاهز لدالة post_transactions_batch.
+  ///
+  /// التاريخ يُرسل لحظةً زمنية كاملة بتوقيت UTC (مثل برنامج سطح المكتب الذي
+  /// يرسل التوقيت المحلي بإزاحته)، فيُعرض عند أي جهاز بتوقيته الصحيح.
+  Map<String, dynamic> toRpcRow() => {
+        'txn_date': date.toUtc().toIso8601String(),
         'account_name': accountName,
         'op_type': opType,
         'weight': weight,
         'weight_before': weightBefore,
         'weight_after': weightAfter,
         'note': note,
-        'status': status,
         'trees_count': treesCount,
         'set_number': setNumber,
         'row_number': rowNumber,
         'manual_no': manualNo,
+        if (period.isNotEmpty) 'period': period,
       };
 }
 
@@ -608,7 +635,82 @@ class SyncOverview {
       );
 }
 
-double _num(dynamic v) => v == null ? 0.0 : (v as num).toDouble();
+/// PostgREST يرجع numeric رقماً عادةً، لكنه قد يرجعه نصاً للأرقام الكبيرة جداً
+/// سطر في سجل التدقيق: من غيّر ماذا ومتى
+class AuditEntry {
+  const AuditEntry({
+    required this.id,
+    required this.action,
+    required this.createdAt,
+    this.actorId,
+    this.before,
+    this.after,
+  });
+
+  final int id;
+  final String action; // INSERT | UPDATE | DELETE
+  final DateTime createdAt;
+  final String? actorId;
+  final Map<String, dynamic>? before;
+  final Map<String, dynamic>? after;
+
+  /// بلا مستخدم = جاءت من برنامج سطح المكتب عبر المزامنة
+  bool get fromDesktop => actorId == null;
+
+  /// رقم الحركة المعنية (من الصف المحذوف أو من السياق المحفوظ مع التعديل)
+  String get seqNo => '${after?['seq_no'] ?? before?['seq_no'] ?? '-'}';
+
+  static const _fieldLabels = {
+    'weight': 'الوزن',
+    'weight_before': 'الوزن الخام',
+    'weight_after': 'العيار/بعد',
+    'account_name': 'الاسم',
+    'op_type': 'النوع',
+    'note': 'البيان',
+    'txn_date': 'التاريخ',
+    'period': 'الفترة',
+    'status': 'الحالة',
+    'set_number': 'رقم التشغيل',
+    'row_number': 'رقم الصف',
+    'manual_no': 'رقم الفاتورة',
+    'trees_count': 'الأشجار/العلامة',
+  };
+
+  /// وصف مختصر مقروء للتغيير
+  String get summary {
+    switch (action) {
+      case 'INSERT':
+        return 'إضافة حركة';
+      case 'DELETE':
+        final b = before ?? const {};
+        return 'حذف: ${b['account_name'] ?? ''} — ${b['op_type'] ?? ''} — ${b['weight'] ?? ''}';
+      default:
+        final changes = <String>[];
+        (after ?? const {}).forEach((key, value) {
+          if (key == 'seq_no' && !(before?.containsKey('seq_no') ?? false)) return;
+          final label = _fieldLabels[key];
+          if (label == null) return;
+          changes.add('$label: ${before?[key] ?? '-'} ← $value');
+        });
+        return changes.isEmpty ? 'تعديل' : changes.join(' | ');
+    }
+  }
+
+  factory AuditEntry.fromMap(Map<String, dynamic> m) => AuditEntry(
+        id: ((m['id'] ?? 0) as num).toInt(),
+        action: (m['action'] ?? '') as String,
+        createdAt: _date(m['created_at']) ?? DateTime.now(),
+        actorId: m['actor_id'] as String?,
+        before: m['before_data'] == null ? null : Map<String, dynamic>.from(m['before_data'] as Map),
+        after: m['after_data'] == null ? null : Map<String, dynamic>.from(m['after_data'] as Map),
+      );
+}
+
+double _num(dynamic v) {
+  if (v == null) return 0.0;
+  if (v is num) return v.toDouble();
+  return double.tryParse(v.toString()) ?? 0.0;
+}
 
 DateTime? _date(dynamic v) {
   if (v == null) return null;

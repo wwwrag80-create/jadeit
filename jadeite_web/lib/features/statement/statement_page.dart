@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants/op_types.dart';
-import '../../core/theme/app_theme.dart';
 import '../../core/utils/formatters.dart';
 import '../../data/models/models.dart';
 import '../../printing/statement_pdf.dart';
@@ -13,6 +12,7 @@ import '../../widgets/data_table_card.dart';
 final statementAccountProvider = StateProvider<String?>((_) => null);
 
 final statementRowsProvider = FutureProvider.autoDispose<List<Txn>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final account = ref.watch(statementAccountProvider);
   final period = ref.watch(periodProvider);
@@ -20,12 +20,28 @@ final statementRowsProvider = FutureProvider.autoDispose<List<Txn>>((ref) async 
   return ref.read(txnRepoProvider).byAccount(tenantId, account, period);
 });
 
+/// رصيد الحساب قبل الفترة المعروضة — يبدأ منه الرصيد المتحرك، فلا يبدأ كل شهر
+/// من الصفر كأن الحساب بلا تاريخ
+final statementOpeningProvider = FutureProvider.autoDispose<double>((ref) async {
+  ref.watch(dataRevisionProvider);
+  final tenantId = ref.watch(activeTenantIdProvider);
+  final account = ref.watch(statementAccountProvider);
+  final period = ref.watch(periodProvider);
+  if (tenantId == null || account == null) return 0;
+  return ref.read(ledgerRepoProvider).accountOpeningBalance(
+        tenantId,
+        account,
+        period,
+        StatementPage.debitTypes.toList(),
+      );
+});
+
 /// كشف حساب أي طرف: مدين/دائن/رصيد متحرك، مع تصدير PDF عربي.
 class StatementPage extends ConsumerWidget {
   const StatementPage({super.key});
 
   /// الأنواع التي تُعتبر مديناً على الحساب (خرج من الخزينة إليه)
-  static const _debitTypes = {
+  static const debitTypes = {
     OpTypes.issueGold,
     OpTypes.saleGold,
     OpTypes.saleGoldWithDiamond,
@@ -39,6 +55,7 @@ class StatementPage extends ConsumerWidget {
     final accounts = ref.watch(accountsProvider);
     final account = ref.watch(statementAccountProvider);
     final rows = ref.watch(statementRowsProvider);
+    final opening = ref.watch(statementOpeningProvider);
     final period = ref.watch(periodProvider);
 
     final names = accounts.maybeWhen(
@@ -95,9 +112,10 @@ class StatementPage extends ConsumerWidget {
                   child: Padding(padding: EdgeInsets.all(30), child: CircularProgressIndicator())),
               error: (e, _) => Center(child: Text('$e')),
               data: (list) {
-                double running = 0, tDebit = 0, tCredit = 0;
+                final openingBalance = opening.valueOrNull ?? 0;
+                double running = openingBalance, tDebit = 0, tCredit = 0;
                 final dataRows = list.map((t) {
-                  final isDebit = _debitTypes.contains(t.opType);
+                  final isDebit = debitTypes.contains(t.opType);
                   final debit = isDebit ? t.weight : 0.0;
                   final credit = isDebit ? 0.0 : t.weight;
                   running += debit - credit;
@@ -119,7 +137,19 @@ class StatementPage extends ConsumerWidget {
                   columns: const [
                     'رقم الحركة', 'التاريخ', 'النوع', 'مدين', 'دائن', 'الرصيد', 'البيان',
                   ],
-                  rows: dataRows,
+                  rows: [
+                    if (openingBalance != 0 || dataRows.isNotEmpty)
+                      DataRow(cells: [
+                        const DataCell(Text('-')),
+                        const DataCell(Text('-')),
+                        const DataCell(Text('رصيد أول المدة')),
+                        const DataCell(Text('-')),
+                        const DataCell(Text('-')),
+                        DataCell(Text(Fmt.weight(openingBalance))),
+                        const DataCell(Text('مُرحَّل من الفترات السابقة')),
+                      ]),
+                    ...dataRows,
+                  ],
                   totalsRow: dataRows.isEmpty
                       ? null
                       : [
@@ -136,17 +166,27 @@ class StatementPage extends ConsumerWidget {
 
   Future<void> _print(
       BuildContext context, WidgetRef ref, String account, String period) async {
-    final list = await ref.read(statementRowsProvider.future);
-    if (list.isEmpty) {
+    final List<Txn> list;
+    final double openingBalance;
+    try {
+      list = await ref.read(statementRowsProvider.future);
+      openingBalance = await ref.read(statementOpeningProvider.future);
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+      return;
+    }
+    if (list.isEmpty && openingBalance == 0) {
       if (context.mounted) AppSnack.warn(context, 'لا توجد حركات لطباعتها في هذه الفترة.');
       return;
     }
     final tenant = ref.read(sessionProvider).activeTenant;
-    double running = 0, tDebit = 0, tCredit = 0;
-    final rows = <List<String>>[];
+    double running = openingBalance, tDebit = 0, tCredit = 0;
+    final rows = <List<String>>[
+      ['-', '-', 'رصيد أول المدة', '-', '-', Fmt.weight(openingBalance), 'مُرحَّل من الفترات السابقة'],
+    ];
 
     for (final t in list) {
-      final isDebit = _debitTypes.contains(t.opType);
+      final isDebit = debitTypes.contains(t.opType);
       final debit = isDebit ? t.weight : 0.0;
       final credit = isDebit ? 0.0 : t.weight;
       running += debit - credit;

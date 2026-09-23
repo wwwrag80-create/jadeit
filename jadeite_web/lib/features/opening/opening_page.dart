@@ -11,6 +11,7 @@ import '../../widgets/data_table_card.dart';
 
 /// القيود الافتتاحية (كل الفترات — لأنها أساس الأرصدة وليست حركة شهرية)
 final openingTxnsProvider = FutureProvider.autoDispose<List<Txn>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   if (tenantId == null) return const [];
   return ref.read(txnRepoProvider).openingEntries(tenantId);
@@ -70,7 +71,7 @@ class _OpeningPageState extends ConsumerState<OpeningPage> {
       await ref.read(txnRepoProvider).post(
             tenantId,
             Txn.newEntry(
-              date: _date,
+              date: Fmt.operationDate(_date),
               accountName: _name!,
               opType: _type,
               weight: _finalWeight,
@@ -80,12 +81,12 @@ class _OpeningPageState extends ConsumerState<OpeningPage> {
                   : 0,
               note: OpTypes.openingNote,
               treesCount: OpTypes.openingMarker,
+              period: ref.read(periodProvider),
             ),
           );
       _weight.clear();
       _carat.clear();
-      ref.invalidate(openingTxnsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم تسجيل القيد الافتتاحي وتحديث الخزينة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');
@@ -122,7 +123,8 @@ class _OpeningPageState extends ConsumerState<OpeningPage> {
                         fontSize: 17, fontWeight: FontWeight.bold, color: AppTheme.gold)),
                 const SizedBox(height: 6),
                 const Text(
-                  'القيد الافتتاحي هو رصيدك قبل بدء التسجيل في النظام، ويدخل مباشرة في الخزينة.',
+                  'القيد الافتتاحي هو رصيدك قبل بدء التسجيل في النظام، ويدخل مباشرة في الخزينة. '
+                  'يُثبَّت في الفترة المعروضة أعلاه — سجّله في أول فترة تبدأ منها العمل.',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
                 const SizedBox(height: 14),
@@ -268,8 +270,7 @@ class _OpeningPageState extends ConsumerState<OpeningPage> {
     if (!ok) return;
     try {
       await ref.read(txnRepoProvider).delete(txn.id);
-      ref.invalidate(openingTxnsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم الحذف وتحديث كل الأرصدة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');
@@ -322,8 +323,7 @@ class _OpeningPageState extends ConsumerState<OpeningPage> {
         'weight_before': raw,
         'weight_after': c,
       });
-      ref.invalidate(openingTxnsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم التعديل وإعادة حساب كل الأرصدة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');

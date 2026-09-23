@@ -20,6 +20,7 @@ class SalePostingService {
     required String customerName,
     required DateTime date,
     required String manualInvoiceNo,
+    String period = '',
   }) {
     final result = <Txn>[];
 
@@ -55,6 +56,7 @@ class SalePostingService {
           setNumber: line.setNumber,
           rowNumber: line.rowNumber,
           manualNo: manualInvoiceNo,
+          period: period,
         ));
       }
 
@@ -70,6 +72,7 @@ class SalePostingService {
           setNumber: line.setNumber,
           rowNumber: line.rowNumber,
           manualNo: manualInvoiceNo,
+          period: period,
         ));
       }
     }

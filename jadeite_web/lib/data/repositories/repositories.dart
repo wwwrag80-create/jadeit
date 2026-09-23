@@ -15,8 +15,16 @@ class RepoException implements Exception {
   String toString() => message;
 }
 
+/// نص الخطأ الفعلي: رسالة PostgrestException وحدها (دوال SQL ترمي رسائل عربية
+/// واضحة)، بدل النص الطويل «PostgrestException(message: …, code: …, …)».
+String _errorText(Object error) {
+  if (error is PostgrestException) return error.message;
+  if (error is AuthException) return error.message;
+  return error.toString();
+}
+
 Never _rethrowFriendly(Object error) {
-  final text = error.toString();
+  final text = _errorText(error);
   if (text.contains('row-level security') || text.contains('violates row-level')) {
     throw RepoException(
       'العملية مرفوضة: إما أن التعديل مقفول من المدير، أو أنك تحاول الوصول لحساب غير حسابك.',
@@ -25,8 +33,15 @@ Never _rethrowFriendly(Object error) {
   if (text.contains('duplicate key')) {
     throw RepoException('هذا السجل مسجّل من قبل — راجع الأرقام المكررة.');
   }
-  if (text.contains('Failed host lookup') || text.contains('SocketException')) {
+  if (text.contains('Failed host lookup') ||
+      text.contains('SocketException') ||
+      text.contains('XMLHttpRequest') ||
+      text.contains('ClientException')) {
     throw RepoException('لا يوجد اتصال بالإنترنت. تحقق من الشبكة وحاول مجدداً.');
+  }
+  // رسائل دوال قاعدة البيانات عربية أصلاً — تُعرض كما هي
+  if (RegExp(r'[\u0600-\u06FF]').hasMatch(text)) {
+    throw RepoException(text);
   }
   throw RepoException('تعذّر تنفيذ العملية: $text');
 }
@@ -46,6 +61,9 @@ class AuthRepository {
   }
 
   Future<void> signOut() => _db.auth.signOut();
+
+  /// أحداث الجلسة (خروج من تبويب آخر، انتهاء صلاحية الرمز…)
+  Stream<AuthState> get authChanges => _db.auth.onAuthStateChange;
 
   Future<AppUser?> currentAppUser() async {
     final user = _db.auth.currentUser;
@@ -115,8 +133,12 @@ class TenantRepository {
   }
 
   Future<String> create(String businessName) async {
-    final id = await _db.rpc('admin_create_tenant', params: {'p_business_name': businessName});
-    return id as String;
+    try {
+      final id = await _db.rpc('admin_create_tenant', params: {'p_business_name': businessName});
+      return id as String;
+    } catch (e) {
+      _rethrowFriendly(e);
+    }
   }
 
   Future<void> touchActivity(String tenantId, {bool isLogin = false}) async {
@@ -179,7 +201,8 @@ class TxnRepository {
     try {
       final id = await _db.rpc('post_transaction', params: {
         'p_tenant': tenantId,
-        'p_date': txn.date.toIso8601String(),
+        // لحظة زمنية كاملة بتوقيت UTC — تُعرض بتوقيت كل جهاز صحيحاً
+        'p_date': txn.date.toUtc().toIso8601String(),
         'p_account': txn.accountName,
         'p_op_type': txn.opType,
         'p_weight': txn.weight,
@@ -190,6 +213,7 @@ class TxnRepository {
         'p_set_number': txn.setNumber,
         'p_row_number': txn.rowNumber,
         'p_manual_no': txn.manualNo,
+        'p_period': txn.period.isEmpty ? null : txn.period,
       });
       return (id as num).toInt();
     } catch (e) {
@@ -197,10 +221,32 @@ class TxnRepository {
     }
   }
 
-  /// تسجيل عدة حركات (فاتورة كاملة) — تُنفَّذ بالتتابع لضمان تسلسل الأرقام
+  /// تسجيل عدة حركات (فاتورة كاملة) داخل معاملة واحدة في قاعدة البيانات:
+  /// إما تُسجَّل كلها أو لا شيء — فلا تبقى فاتورة ناقصة لو انقطع الاتصال.
   Future<void> postMany(String tenantId, List<Txn> txns) async {
-    for (final t in txns) {
-      await post(tenantId, t);
+    if (txns.isEmpty) return;
+    try {
+      await _db.rpc('post_transactions_batch', params: {
+        'p_tenant': tenantId,
+        'p_rows': txns.map((t) => t.toRpcRow()).toList(),
+      });
+    } catch (e) {
+      _rethrowFriendly(e);
+    }
+  }
+
+  /// استبدال حركات مرحّلة بأخرى (تعديل فاتورة) في معاملة واحدة:
+  /// الحذف والإدراج معاً، فلا توجد لحظة تكون فيها الفاتورة محذوفة دون بديل.
+  /// يخضع لقفل التعديل من المدير (يُفرض في قاعدة البيانات).
+  Future<void> replaceMany(String tenantId, List<int> oldIds, List<Txn> txns) async {
+    try {
+      await _db.rpc('post_transactions_batch', params: {
+        'p_tenant': tenantId,
+        'p_rows': txns.map((t) => t.toRpcRow()).toList(),
+        'p_replace_ids': oldIds,
+      });
+    } catch (e) {
+      _rethrowFriendly(e);
     }
   }
 
@@ -236,7 +282,7 @@ class TxnRepository {
         .select()
         .eq('tenant_id', tenantId)
         .eq('period', period)
-        .eq('status', 'ACTIVE');
+        .inFilter('status', OpTypes.countedStatuses);
     if (opTypes != null && opTypes.isNotEmpty) {
       query = query.inFilter('op_type', opTypes);
     }
@@ -251,7 +297,7 @@ class TxnRepository {
         .eq('tenant_id', tenantId)
         .eq('account_name', accountName)
         .eq('period', period)
-        .eq('status', 'ACTIVE')
+        .inFilter('status', OpTypes.countedStatuses)
         .order('txn_date');
     return (rows as List).map((r) => Txn.fromMap(Map<String, dynamic>.from(r))).toList();
   }
@@ -262,7 +308,7 @@ class TxnRepository {
         .from('transactions')
         .select()
         .eq('tenant_id', tenantId)
-        .eq('status', 'ACTIVE')
+        .inFilter('status', OpTypes.countedStatuses)
         .eq('trees_count', OpTypes.openingMarker)
         .eq('note', OpTypes.openingNote)
         .order('txn_date');
@@ -275,7 +321,7 @@ class TxnRepository {
         .select()
         .eq('tenant_id', tenantId)
         .eq('set_number', setNumber)
-        .eq('status', 'ACTIVE')
+        .inFilter('status', OpTypes.countedStatuses)
         .order('seq_no');
     return (rows as List).map((r) => Txn.fromMap(Map<String, dynamic>.from(r))).toList();
   }
@@ -315,16 +361,18 @@ class JournalRepository {
     required String fromAccount,
     required String toAccount,
     required double weight,
+    required String period,
     String note = '',
   }) async {
     try {
       final ref = await _db.rpc('post_journal_entry', params: {
         'p_tenant': tenantId,
-        'p_date': date.toIso8601String(),
+        'p_date': date.toUtc().toIso8601String(),
         'p_from': fromAccount,
         'p_to': toAccount,
         'p_weight': weight,
         'p_note': note,
+        'p_period': period,
       });
       return ref as String;
     } catch (e) {
@@ -475,11 +523,44 @@ class LedgerRepository {
         .toList();
   }
 
+  /// رصيد الحساب قبل الفترة (رصيد أول المدة) — يبدأ منه الرصيد المتحرك في الكشف
+  Future<double> accountOpeningBalance(
+    String tenantId,
+    String account,
+    String period,
+    List<String> debitTypes,
+  ) async {
+    final value = await _db.rpc('account_opening_balance', params: {
+      'p_tenant': tenantId,
+      'p_account': account,
+      'p_period': period,
+      'p_debit_types': debitTypes,
+    });
+    return (value as num?)?.toDouble() ?? 0;
+  }
+
   Future<double> workshopLosses(String tenantId, String period) async {
     final value = await _db.rpc('workshop_losses', params: {
       'p_tenant': tenantId,
       'p_period': period,
     });
     return (value as num?)?.toDouble() ?? 0;
+  }
+}
+
+// ============================================================================
+//  سجل التدقيق — قراءة فقط (يكتبه محفّز قاعدة البيانات)
+// ============================================================================
+class AuditRepository {
+  /// آخر التغييرات على حركات المستأجر، الأحدث أولاً
+  Future<List<AuditEntry>> latest(String tenantId, {int limit = 300, String? action}) async {
+    var query = _db
+        .from('audit_log')
+        .select('id, action, created_at, actor_id, before_data, after_data')
+        .eq('tenant_id', tenantId)
+        .eq('table_name', 'transactions');
+    if (action != null) query = query.eq('action', action);
+    final rows = await query.order('id', ascending: false).limit(limit);
+    return (rows as List).map((r) => AuditEntry.fromMap(Map<String, dynamic>.from(r))).toList();
   }
 }

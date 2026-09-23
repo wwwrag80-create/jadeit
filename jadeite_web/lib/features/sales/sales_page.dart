@@ -8,11 +8,11 @@ class SalesPage extends StatelessWidget {
   const SalesPage({super.key});
 
   @override
-  Widget build(BuildContext context) => DefaultTabController(
+  Widget build(BuildContext context) => const DefaultTabController(
         length: 2,
         child: Column(
           children: [
-            const Material(
+            Material(
               child: TabBar(
                 tabs: [
                   Tab(text: '🧾  المبيعات', height: 46),
@@ -20,7 +20,7 @@ class SalesPage extends StatelessWidget {
                 ],
               ),
             ),
-            const Expanded(
+            Expanded(
               child: TabBarView(
                 children: [SalesEntryTab(), SalesOpsTab()],
               ),

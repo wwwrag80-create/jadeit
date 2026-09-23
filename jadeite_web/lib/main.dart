@@ -10,6 +10,8 @@ Future<void> main() async {
 
   await Supabase.initialize(
     url: SupabaseConfig.url,
+    // anonKey تعمل في كل إصدارات supabase_flutter 2.x (publishableKey أُضيفت لاحقاً)
+    // ignore: deprecated_member_use
     anonKey: SupabaseConfig.anonKey,
     authOptions: const FlutterAuthClientOptions(
       authFlowType: AuthFlowType.pkce,

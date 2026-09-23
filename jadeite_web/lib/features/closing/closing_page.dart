@@ -12,6 +12,7 @@ import '../../widgets/data_table_card.dart';
 /// حالة إقفال كل الصناديق للفترة المعروضة
 final closingStatusProvider =
     FutureProvider.autoDispose<List<BoxClosingStatus>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return const [];
@@ -229,9 +230,5 @@ class ClosingPage extends ConsumerWidget {
     }
   }
 
-  void _refresh(WidgetRef ref) {
-    ref.invalidate(closingStatusProvider);
-    ref.invalidate(treasuryProvider);
-    ref.invalidate(workshopLossesProvider);
-  }
+  void _refresh(WidgetRef ref) => bumpDataRevision(ref);
 }

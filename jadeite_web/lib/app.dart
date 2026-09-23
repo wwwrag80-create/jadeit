@@ -47,6 +47,20 @@ class JadeiteApp extends ConsumerWidget {
     if (!session.isSignedIn) {
       return const LoginPage();
     }
+    if (session.hasNoTenant) {
+      return const _BlockedPage(
+        icon: Icons.link_off,
+        message: 'تم الدخول، لكن حسابك غير مربوط بأي مصنع بعد.\n'
+            'تواصل مع الإدارة لربط حسابك.',
+      );
+    }
+    if (session.isTenantSuspended) {
+      return const _BlockedPage(
+        icon: Icons.block,
+        message: 'حساب المصنع موقوف حالياً من الإدارة.\n'
+            'بياناتك محفوظة كما هي — تواصل مع الإدارة لإعادة التفعيل.',
+      );
+    }
     // المدير بلا مستأجر مُختار => لوحة الإدارة.
     // بمجرد اختياره عميلاً يتغيّر activeTenantId فينتقل تلقائياً لواجهة العميل.
     if (session.isAdmin && session.activeTenantId == null) {
@@ -54,4 +68,35 @@ class JadeiteApp extends ConsumerWidget {
     }
     return const ShellPage();
   }
+}
+
+/// شاشة بديلة عندما لا يصح فتح النظام (حساب غير مربوط أو موقوف)
+class _BlockedPage extends ConsumerWidget {
+  const _BlockedPage({required this.icon, required this.message});
+
+  final IconData icon;
+  final String message;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 56, color: AppTheme.warn),
+                const SizedBox(height: 16),
+                Text(message, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: () => ref.read(sessionProvider.notifier).signOut(),
+                  icon: const Icon(Icons.logout),
+                  label: const Text('تسجيل الخروج'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
 }

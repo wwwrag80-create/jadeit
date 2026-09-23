@@ -10,6 +10,7 @@ import '../../widgets/period_selector.dart';
 import '../../widgets/status_bar.dart';
 import '../accounts/accounts_page.dart';
 import '../archive/archive_page.dart';
+import '../audit/audit_page.dart';
 import '../closing/closing_page.dart';
 import '../journal/journal_page.dart';
 import '../losses/losses_page.dart';
@@ -53,6 +54,7 @@ class _ShellPageState extends ConsumerState<ShellPage> {
         'losses' => const LossesPage(),
         'opening' => const OpeningPage(),
         'reports' => const ReportsPage(),
+        'audit' => const AuditPage(),
         _ => const SalesPage(),
       };
 
@@ -60,6 +62,9 @@ class _ShellPageState extends ConsumerState<ShellPage> {
   Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider);
     final treasury = ref.watch(treasuryProvider);
+    // شاشات المدير لا تُعرض لغيره حتى لو بقي اختيارها من جلسة سابقة
+    final screen =
+        !session.isAdmin && AppScreens.adminOnly.contains(_screen) ? 'sales' : _screen;
     final width = MediaQuery.sizeOf(context).width;
     final isWide = width >= 1100;     // القائمة الجانبية ثابتة
     final isPhone = width < 700;      // تخطيط الجوال المضغوط
@@ -115,10 +120,11 @@ class _ShellPageState extends ConsumerState<ShellPage> {
               children: [
                 if (isWide)
                   _SideNav(
-                    current: _screen,
+                    current: screen,
+                    isAdmin: session.isAdmin,
                     onSelect: (key) => setState(() => _screen = key),
                   ),
-                Expanded(child: _bodyFor(_screen)),
+                Expanded(child: _bodyFor(screen)),
               ],
             ),
           ),
@@ -128,12 +134,22 @@ class _ShellPageState extends ConsumerState<ShellPage> {
           ? null
           : Drawer(
               child: SafeArea(
-                child: _SideNav(
-                  current: _screen,
-                  onSelect: (key) {
-                    setState(() => _screen = key);
-                    Navigator.pop(context);
-                  },
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: _SideNav(
+                        current: screen,
+                        isAdmin: session.isAdmin,
+                        onSelect: (key) {
+                          setState(() => _screen = key);
+                          Navigator.pop(context);
+                        },
+                      ),
+                    ),
+                    // على الجوال لا يتسع الشريط العلوي لحالة القفل وزر الخروج،
+                    // فينزلان هنا — بدونهما لا يستطيع العميل الخروج من الجوال
+                    if (isPhone) const _DrawerFooter(),
+                  ],
                 ),
               ),
             ),
@@ -151,13 +167,14 @@ class _ImpersonationBanner extends ConsumerWidget {
     final isPhone = MediaQuery.sizeOf(context).width < 700;
     final deviceSync = ref.watch(activeTenantSyncProvider);
 
-    // يوضّح للمدير هل سيصل تعديله لجهاز العميل الآن أم عند فتحه البرنامج
+    // المزامنة باتجاه واحد (جهاز العميل ← السحابة) منذ حادثة تلف البيانات
+    // (راجع RECOVERY_AR.md): تعديل المدير هنا يغيّر نسخة السحابة فقط ولا ينزل
+    // لجهاز العميل، وقد يكتب العميل فوقه لو عدّل الحركة نفسها لاحقاً.
     final syncNote = deviceSync.maybeWhen(
       data: (row) {
-        if (row == null) return '';
-        return row.isOnline
-            ? '🟢 جهاز العميل متصل — تعديلك يصله خلال ثوانٍ'
-            : '⚫ جهاز العميل غير متصل — تعديلك يصله عند فتحه البرنامج';
+        if (row == null || row.devices == 0) return '';
+        final state = row.isOnline ? '🟢 جهازه متصل الآن' : '⚫ جهازه غير متصل';
+        return '$state — يعمل ببرنامج سطح المكتب: تعديلك هنا لا يصل لجهازه (نسخة السحابة فقط)';
       },
       orElse: () => '',
     );
@@ -192,7 +209,7 @@ class _ImpersonationBanner extends ConsumerWidget {
                     ),
                     if (syncNote.isNotEmpty)
                       Text(syncNote,
-                          maxLines: 1,
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               color: Colors.black.withValues(alpha: 0.65),
@@ -222,10 +239,53 @@ class _ImpersonationBanner extends ConsumerWidget {
   }
 }
 
+/// أسفل القائمة الجانبية على الجوال: حالة قفل التعديل + تحديثها + الخروج
+class _DrawerFooter extends ConsumerWidget {
+  const _DrawerFooter();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(sessionProvider);
+    final locked = session.isEditLocked;
+    final color = locked ? AppTheme.warn : AppTheme.success;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Divider(height: 1),
+        ListTile(
+          dense: true,
+          leading: Icon(locked ? Icons.lock : Icons.lock_open, color: color, size: 20),
+          title: Text(
+            locked ? 'التعديل مقفول (الحذف والتسجيل متاحان)' : 'التعديل مفتوح',
+            style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+          trailing: IconButton(
+            tooltip: 'تحديث الصلاحية',
+            icon: const Icon(Icons.refresh, size: 20),
+            onPressed: () => ref.read(sessionProvider.notifier).refreshPermission(),
+          ),
+        ),
+        if (!session.isImpersonating)
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.logout, size: 20),
+            title: const Text('تسجيل الخروج'),
+            onTap: () {
+              Navigator.pop(context);
+              ref.read(sessionProvider.notifier).signOut();
+            },
+          ),
+      ],
+    );
+  }
+}
+
 class _SideNav extends StatelessWidget {
-  const _SideNav({required this.current, required this.onSelect});
+  const _SideNav({required this.current, required this.isAdmin, required this.onSelect});
 
   final String current;
+  final bool isAdmin;
   final ValueChanged<String> onSelect;
 
   @override
@@ -236,28 +296,29 @@ class _SideNav extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 12),
           children: [
             for (final s in AppScreens.all)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                child: Material(
-                  color: current == s.key
-                      ? AppTheme.gold.withValues(alpha: 0.16)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                  child: ListTile(
-                    dense: true,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    leading: Text(s.icon, style: const TextStyle(fontSize: 18)),
-                    title: Text(
-                      s.label,
-                      style: TextStyle(
-                        fontWeight: current == s.key ? FontWeight.bold : FontWeight.normal,
-                        color: current == s.key ? AppTheme.gold : null,
+              if (isAdmin || !AppScreens.adminOnly.contains(s.key))
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  child: Material(
+                    color: current == s.key
+                        ? AppTheme.gold.withValues(alpha: 0.16)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                    child: ListTile(
+                      dense: true,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      leading: Text(s.icon, style: const TextStyle(fontSize: 18)),
+                      title: Text(
+                        s.label,
+                        style: TextStyle(
+                          fontWeight: current == s.key ? FontWeight.bold : FontWeight.normal,
+                          color: current == s.key ? AppTheme.gold : null,
+                        ),
                       ),
+                      onTap: () => onSelect(s.key),
                     ),
-                    onTap: () => onSelect(s.key),
                   ),
                 ),
-              ),
           ],
         ),
       );

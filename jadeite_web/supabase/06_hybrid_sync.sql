@@ -53,9 +53,72 @@ alter table public.accounts
     add column if not exists source text not null default 'desktop';
 
 -- ----------------------------------------------------------------------------
+--  ١-أ) حماية أعمدة المزامنة من العميل نفسه
+--      سياسة tenants_self_touch تسمح للعميل بتحديث صفّه (لآخر ظهور)، فبدون هذا
+--      يستطيع إعادة تفعيل مزامنة أوقفها المدير أو تغيير رمزها بنفسه.
+-- ----------------------------------------------------------------------------
+create or replace function public.guard_tenant_self_update()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+    -- المدير، ومفتاح الخدمة، والجلسة المباشرة على القاعدة (SQL Editor — بلا JWT
+    -- إطلاقاً، بخلاف طلبات PostgREST التي تحمل دوماً دور anon أو authenticated)
+    if public.is_admin() or public.is_service_role()
+       or coalesce(current_setting('request.jwt.claims', true), '') = '' then
+        return new;
+    end if;
+    new.can_edit      := old.can_edit;
+    new.is_active     := old.is_active;
+    new.business_name := old.business_name;
+    new.slug          := old.slug;
+    new.sync_token    := old.sync_token;
+    new.sync_enabled  := old.sync_enabled;
+    new.last_sync_at  := old.last_sync_at;
+    return new;
+end $$;
+
+-- ----------------------------------------------------------------------------
+--  ١-ب) ترقيم حركات الويب عند مصانع سطح المكتب
+--
+--  برنامج سطح المكتب يرقّم حركاته محلياً (invoice_id) ويرفعها بالرقم نفسه،
+--  والرفع upsert على (tenant_id, seq_no). لو أخذت حركة من الويب الرقم التالي
+--  (max + 1) لاصطدمت بأول حركة جديدة يسجّلها العميل على جهازه، فيكتب الرفعُ
+--  فوقها ويمحوها بصمت. الحل: حركات الويب لمصنع يعمل ببرنامج سطح المكتب
+--  تأخذ أرقاماً من نطاق مستقل يبدأ من مليار، لا يصل إليه ترقيم الجهاز أبداً.
+-- ----------------------------------------------------------------------------
+create or replace function public.next_seq_no(p_tenant uuid)
+returns bigint
+language plpgsql security definer set search_path = public as $$
+declare
+    c_web_base constant bigint := 1000000000;
+    v_next    bigint;
+    v_desktop boolean;
+begin
+    if not public.has_tenant_access(p_tenant) then
+        raise exception 'ليس لديك صلاحية على هذا الحساب';
+    end if;
+
+    -- القفل على مستوى المستأجر يمنع تكرار الأرقام عند التسجيل من جهازين معاً
+    perform pg_advisory_xact_lock(hashtext(p_tenant::text));
+
+    select coalesce(max(seq_no), 0) + 1 into v_next
+      from public.transactions where tenant_id = p_tenant;
+
+    v_desktop := exists (select 1 from public.tenant_devices d where d.tenant_id = p_tenant)
+              or exists (select 1 from public.transactions x
+                          where x.tenant_id = p_tenant and coalesce(x.device_id, '') <> '');
+
+    if v_desktop then
+        v_next := greatest(v_next, c_web_base);
+    end if;
+    return v_next;
+end $$;
+
+-- ----------------------------------------------------------------------------
 --  ٢) التحقق من رمز المزامنة — أساس أمان كل الدوال التالية
 -- ----------------------------------------------------------------------------
-create or replace function public.assert_sync_token(p_tenant uuid, p_token uuid)
+-- القيمة الافتراضية مطابقة لتعريفه في 07/11: بدونها تفشل إعادة تشغيل التثبيت
+-- بالخطأ «cannot remove parameter defaults from existing function»
+create or replace function public.assert_sync_token(p_tenant uuid, p_token uuid default null)
 returns void
 language plpgsql security definer set search_path = public as $$
 declare

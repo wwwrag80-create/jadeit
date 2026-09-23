@@ -139,15 +139,13 @@ class _SalesEntryTabState extends ConsumerState<SalesEntryTab> {
       final txns = _service.buildTransactions(
         lines: _pending,
         customerName: _customer!,
-        date: _date,
+        date: Fmt.operationDate(_date),
         manualInvoiceNo: invoiceNo,
+        period: ref.read(periodProvider),
       );
+      // كل سطور الفاتورة في معاملة واحدة — لا فاتورة ناقصة لو انقطع الاتصال
       await ref.read(txnRepoProvider).postMany(tenantId, txns);
-
-      ref
-        ..invalidate(treasuryProvider)
-        ..invalidate(salesInvoicesProvider)
-        ..invalidate(workshopLossesProvider);
+      bumpDataRevision(ref);
 
       if (mounted) {
         AppSnack.success(context, 'تم ترحيل الفاتورة وتحديث الخزينة وكل الحسابات.');
@@ -184,7 +182,6 @@ class _SalesEntryTabState extends ConsumerState<SalesEntryTab> {
   @override
   Widget build(BuildContext context) {
     final accounts = ref.watch(accountsProvider);
-    final locked = ref.watch(sessionProvider).isEditLocked;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(18),
@@ -351,7 +348,8 @@ class _SalesEntryTabState extends ConsumerState<SalesEntryTab> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: _busy || locked ? null : _commit,
+                  // قفل التعديل يمنع تعديل المرحّل فقط — الترحيل الجديد مسموح دائماً
+                  onPressed: _busy ? null : _commit,
                   icon: const Icon(Icons.check_circle_outline),
                   label: Text(_busy ? 'جاري الترحيل…' : 'اعتماد وترحيل الفاتورة'),
                 ),
@@ -364,14 +362,6 @@ class _SalesEntryTabState extends ConsumerState<SalesEntryTab> {
               ),
             ],
           ),
-          if (locked)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text(
-                'ملاحظة: التعديل مقفول من المدير — يمكنك الحذف، ويلزم فتح التعديل للترحيل.',
-                style: TextStyle(color: AppTheme.warn),
-              ),
-            ),
         ],
       ),
     );

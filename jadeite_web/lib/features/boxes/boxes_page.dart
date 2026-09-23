@@ -13,6 +13,7 @@ final selectedBoxProvider = StateProvider<String>((_) => 'الكاستنج');
 /// إجماليات الصندوق للفترة المعروضة (مدين/دائن/الخياس)
 final boxTotalsProvider =
     FutureProvider.autoDispose<({double madin, double daen, double khayas})>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   final box = ref.watch(selectedBoxProvider);
@@ -22,6 +23,7 @@ final boxTotalsProvider =
 
 /// تفاصيل حركات الصندوق للفترة المعروضة
 final boxDetailProvider = FutureProvider.autoDispose<List<Txn>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   final boxName = ref.watch(selectedBoxProvider);

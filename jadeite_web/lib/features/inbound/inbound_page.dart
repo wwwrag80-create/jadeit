@@ -11,6 +11,7 @@ import '../../widgets/data_table_card.dart';
 
 /// حركات الوارد للفترة المعروضة
 final inboundTxnsProvider = FutureProvider.autoDispose<List<Txn>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return const [];
@@ -35,12 +36,6 @@ class _InboundPageState extends ConsumerState<InboundPage> {
   String? _supplier;
   DateTime _date = DateTime.now();
   bool _busy = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _date = Fmt.smartDefaultDate(ref.read(periodProvider));
-  }
 
   @override
   void dispose() {
@@ -88,7 +83,7 @@ class _InboundPageState extends ConsumerState<InboundPage> {
       await ref.read(txnRepoProvider).post(
             tenantId,
             Txn.newEntry(
-              date: _date,
+              date: Fmt.operationDate(_date),
               accountName: _supplier!,
               opType: _type,
               weight: _finalWeight,
@@ -99,6 +94,8 @@ class _InboundPageState extends ConsumerState<InboundPage> {
               // البيان يبقى فارغاً إلا لو سجّل المستخدم بياناً فعلياً
               note: _note.text.trim(),
               setNumber: voucher,
+              // الحركة تُثبَّت في الفترة المعروضة مهما كان شهر تاريخها
+              period: ref.read(periodProvider),
             ),
           );
 
@@ -106,8 +103,7 @@ class _InboundPageState extends ConsumerState<InboundPage> {
       _carat.clear();
       _note.clear();
       // رقم الفاتورة يبقى كما هو ليُكمل المستخدم أسطر نفس الفاتورة
-      ref.invalidate(inboundTxnsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم ترحيل حركة الوارد وتحديث الخزينة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');
@@ -128,8 +124,7 @@ class _InboundPageState extends ConsumerState<InboundPage> {
     if (!ok) return;
     try {
       await ref.read(txnRepoProvider).delete(txn.id);
-      ref.invalidate(inboundTxnsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم الحذف وتحديث الأرصدة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');
@@ -371,8 +366,7 @@ class _InboundPageState extends ConsumerState<InboundPage> {
         'weight_after': c,
         'note': note.text.trim(),
       });
-      ref.invalidate(inboundTxnsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم التعديل وتحديث الأرصدة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');

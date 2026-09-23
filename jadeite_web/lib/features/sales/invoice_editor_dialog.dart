@@ -132,24 +132,26 @@ class _InvoiceEditorDialogState extends ConsumerState<InvoiceEditorDialog> {
     );
     if (!ok) return;
 
+    // الفاتورة المعدّلة تبقى في فترتها الأصلية (لا في الفترة المعروضة الآن)
+    final period = widget.existing
+        .map((t) => t.period)
+        .firstWhere((p) => p.isNotEmpty, orElse: () => ref.read(periodProvider));
+
     setState(() => _busy = true);
     try {
-      final repo = ref.read(txnRepoProvider);
-      await repo.deleteMany(widget.existing.map((t) => t.id).toList());
-      await repo.postMany(
-        tenantId,
-        _service.buildTransactions(
-          lines: _lines,
-          customerName: widget.summary.accountName,
-          date: widget.summary.date,
-          manualInvoiceNo: invoiceNo,
-        ),
-      );
-
-      ref
-        ..invalidate(salesInvoicesProvider)
-        ..invalidate(treasuryProvider)
-        ..invalidate(workshopLossesProvider);
+      // الحذف والإعادة في معاملة واحدة: لو فشل أي جزء تبقى الفاتورة الأصلية كما هي
+      await ref.read(txnRepoProvider).replaceMany(
+            tenantId,
+            widget.existing.map((t) => t.id).toList(),
+            _service.buildTransactions(
+              lines: _lines,
+              customerName: widget.summary.accountName,
+              date: widget.summary.date,
+              manualInvoiceNo: invoiceNo,
+              period: period,
+            ),
+          );
+      bumpDataRevision(ref);
 
       if (mounted) {
         Navigator.pop(context);

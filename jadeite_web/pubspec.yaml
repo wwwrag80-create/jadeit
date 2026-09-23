@@ -23,7 +23,7 @@ dependencies:
   printing: ^5.13.4
 
   # أدوات
-  intl: ^0.20.2
+  intl: ">=0.19.0 <0.21.0"   # يتبع النسخة التي يثبّتها flutter_localizations
   collection: ^1.19.0
 
 dev_dependencies:

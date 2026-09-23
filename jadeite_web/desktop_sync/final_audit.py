@@ -105,6 +105,9 @@ if "SUPABASE_SECRET_KEY" in src:
     m = re.search(r'SUPABASE_SECRET_KEY\s*=\s*"([^"]*)"', src)
     if m and m.group(1).strip():
         warnings.append("⚠️ المفتاح السري ما زال في الملف — احذفه قبل تسليم exe للعملاء")
+# أي مفتاح سري حرفي داخل الكود خطأ حاسم — حتى في نسخة المدير (يتسرّب مع أي رفع للمستودع)
+if re.search(r"sb_secret_[A-Za-z0-9_-]{8,}", src) or re.search(r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.", src):
+    errors.append("مفتاح سري مكتوب داخل الكود — انقله إلى admin_secret.key أو متغيّر البيئة")
 
 # ---------- النتيجة ----------
 print()

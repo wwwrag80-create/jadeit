@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/formatters.dart';
 import '../../data/models/models.dart';
 import '../../state/providers.dart';
+import '../../widgets/app_snack.dart';
 import 'sync_monitor_page.dart';
 
 /// لوحة المدير: قائمة العملاء مع حالتهم، والضغط على أي عميل يدخل لواجهته فوراً.
@@ -14,6 +15,14 @@ class AdminDashboardPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tenantsAsync = ref.watch(adminTenantsProvider);
+
+    // أخطاء الدخول لحساب عميل (شبكة، حساب محذوف…) تظهر هنا بدل أن تضيع بصمت
+    ref.listen<String?>(sessionProvider.select((s) => s.error), (_, next) {
+      if (next != null && next.isNotEmpty) {
+        AppSnack.error(context, next);
+        ref.read(sessionProvider.notifier).clearError();
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -83,8 +92,13 @@ class AdminDashboardPage extends ConsumerWidget {
       ),
     );
     if (name == null || name.isEmpty) return;
-    await ref.read(tenantRepoProvider).create(name);
-    ref.invalidate(adminTenantsProvider);
+    try {
+      await ref.read(tenantRepoProvider).create(name);
+      ref.invalidate(adminTenantsProvider);
+      if (context.mounted) AppSnack.success(context, 'تم إنشاء حساب ($name) بحساباته الافتراضية.');
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+    }
   }
 }
 
@@ -164,12 +178,24 @@ class _TenantCard extends ConsumerWidget {
                   ),
                   OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(minimumSize: const Size(130, 46)),
-                    onPressed: () async {
-                      await ref.read(tenantRepoProvider).setCanEdit(tenant.id, !tenant.canEdit);
-                      ref.invalidate(adminTenantsProvider);
-                    },
+                    onPressed: () => _run(
+                      context,
+                      ref,
+                      () => ref.read(tenantRepoProvider).setCanEdit(tenant.id, !tenant.canEdit),
+                      tenant.canEdit ? 'تم إغلاق التعديل.' : 'تم فتح التعديل.',
+                    ),
                     icon: Icon(tenant.canEdit ? Icons.lock_outline : Icons.lock_open, size: 18),
                     label: Text(tenant.canEdit ? 'إغلاق التعديل' : 'فتح التعديل'),
+                  ),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(120, 46),
+                      foregroundColor: tenant.isActive ? AppTheme.warn : AppTheme.success,
+                    ),
+                    onPressed: () => _toggleActive(context, ref),
+                    icon: Icon(tenant.isActive ? Icons.pause_circle_outline : Icons.play_circle_outline,
+                        size: 18),
+                    label: Text(tenant.isActive ? 'إيقاف الحساب' : 'تفعيل الحساب'),
                   ),
                   IconButton(
                     tooltip: 'حذف الحساب نهائياً',
@@ -205,9 +231,47 @@ class _TenantCard extends ConsumerWidget {
         ],
       ),
     );
-    if (ok != true) return;
-    await ref.read(tenantRepoProvider).delete(tenant.id);
-    ref.invalidate(adminTenantsProvider);
+    if (ok != true || !context.mounted) return;
+    await _run(context, ref, () => ref.read(tenantRepoProvider).delete(tenant.id),
+        'تم حذف الحساب نهائياً.');
+  }
+
+  /// إيقاف الحساب يمنع العميل من الدخول ومن المزامنة، دون حذف أي بيانات
+  Future<void> _toggleActive(BuildContext context, WidgetRef ref) async {
+    if (tenant.isActive) {
+      final ok = await confirmDialog(
+        context,
+        title: 'إيقاف حساب ${tenant.businessName}',
+        message: 'لن يستطيع العميل الدخول ولا رفع بياناته حتى تعيد تفعيله.\n'
+            'بياناته تبقى محفوظة كما هي.',
+        confirmLabel: 'إيقاف',
+        danger: true,
+      );
+      if (!ok || !context.mounted) return;
+    }
+    await _run(
+      context,
+      ref,
+      () => ref.read(tenantRepoProvider).setActive(tenant.id, !tenant.isActive),
+      tenant.isActive ? 'تم إيقاف الحساب.' : 'تم تفعيل الحساب.',
+    );
+  }
+
+  /// تنفيذ إجراء إداري مع رسالة نجاح/فشل واضحة بدل استثناء صامت
+  Future<void> _run(
+    BuildContext context,
+    WidgetRef ref,
+    Future<void> Function() action,
+    String successMessage,
+  ) async {
+    try {
+      await action();
+      ref.invalidate(adminTenantsProvider);
+      ref.invalidate(syncOverviewProvider);
+      if (context.mounted) AppSnack.success(context, successMessage);
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+    }
   }
 }
 

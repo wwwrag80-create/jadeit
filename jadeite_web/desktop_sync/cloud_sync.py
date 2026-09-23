@@ -38,6 +38,14 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+try:
+    # تحويل تاريخ السحابة لتوقيت الجهاز — مصدر واحد مع السحب الكامل
+    from sync_down import _sqlite_dt
+except ImportError:  # pragma: no cover — sync_down يُشحن دائماً مع هذا الملف
+    def _sqlite_dt(iso_text):
+        text = str(iso_text or "").replace("T", " ")
+        return text[:19]
+
 BATCH_SIZE = 200          # عدد الحركات في الدفعة الواحدة
 IDLE_INTERVAL = 10        # ثواني بين دورات الفحص عند عدم وجود جديد
 BUSY_INTERVAL = 1         # ثواني بين الدفعات عند وجود متراكم
@@ -73,7 +81,8 @@ def install_sync_schema(db_path):
                 trees_count REAL DEFAULT 0,
                 set_number TEXT DEFAULT '',
                 row_number TEXT DEFAULT '',
-                manual_no TEXT DEFAULT ''
+                manual_no TEXT DEFAULT '',
+                period TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS sync_outbox (
@@ -87,6 +96,12 @@ def install_sync_schema(db_path):
 
             CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT);
         """)
+
+        # قواعد قديمة بلا عمود الفترة: يُضاف فارغاً (الخادم يشتقّها من التاريخ عند
+        # الرفع). بدونه يفشل أي إدراج يحمل الفترة.
+        cols = [c[1] for c in cur.execute("PRAGMA table_info(invoices)")]
+        if "period" not in cols:
+            cur.execute("ALTER TABLE invoices ADD COLUMN period TEXT DEFAULT ''")
 
         # المحفّزات تُعاد دائماً لضمان وجود شرط الكتم
         # (بدونه يُعيد البرنامج رفع ما سحبه للتو، فيدخل في حلقة رفع/سحب لا تنتهي)
@@ -154,11 +169,21 @@ class CloudSync:
     """خيط خلفي يرفع حركات SQLite إلى Supabase ولا يوقف واجهة البرنامج أبداً."""
 
     def __init__(self, db_path, api, tenant_id, app_version="", on_status=None,
-                 on_remote_change=None):
+                 on_remote_change=None, pull_enabled=False):
         self.db_path = db_path
         self.api = api
         self.tenant_id = tenant_id
         self.app_version = app_version
+
+        # ⚠️ السحب الدوري معطّل افتراضياً — قاعدة «اتجاه واحد» (RECOVERY_AR.md):
+        # بيانات جهاز العميل هي مصدر الحقيقة ولا تكتب السحابة فوقها أبداً.
+        # قبل هذا كان المحرك يسحب كل ١٥ ثانية ويكتب في قاعدة العميل رغم القاعدة،
+        # ولا يوقفه إلا خطأ برمجي. يُفعَّل فقط صراحةً (pull_enabled=True).
+        self.pull_enabled = pull_enabled
+
+        # السحابة القديمة (قبل تحديث SQL) لا تعرف حالة MEMO — نتحوّل تلقائياً
+        # لـ SETTLED (لا تُحتسب أيضاً) بدل ACTIVE التي كانت تُدخلها في الأرصدة
+        self._memo_supported = True
 
         # ⚠️ تُستدعى من الخيط الخلفي — لا تلمس Tkinter داخلها مباشرة،
         #    مرّرها عبر root.after(0, ...) كما في دليل الدمج.
@@ -281,12 +306,12 @@ class CloudSync:
 
                 now = time.time()
 
-                # سحب تعديلات لوحة الويب — بعد الرفع دائماً، فلا تُطمس حركة محلية
-                # لم تُرفع بعد بنسخة أقدم من السحابة
-                if now - last_pull >= PULL_EVERY:
+                # سحب تعديلات لوحة الويب — فقط لو فُعّل صراحةً، وبعد الرفع دائماً
+                # فلا تُطمس حركة محلية لم تُرفع بعد بنسخة أقدم من السحابة
+                if self.pull_enabled and now - last_pull >= PULL_EVERY:
+                    last_pull = now
                     if self._pull_changes():
                         worked = True
-                    last_pull = now
 
                 if now - last_heartbeat >= HEARTBEAT_EVERY:
                     self._heartbeat()
@@ -317,12 +342,7 @@ class CloudSync:
         if upserts:
             rows = self._load_invoices(upserts)
             if rows:
-                self._rpc("sync_push_transactions", {
-                    "p_tenant": self.tenant_id,
-                    "p_token": None,
-                    "p_device": self.device_id,
-                    "p_rows": rows,
-                })
+                self._push_rows(rows)
                 self._pushed_total += len(rows)
 
         if deletes:
@@ -336,6 +356,29 @@ class CloudSync:
         self._clear_outbox(row_ids)
         self.last_success_at = datetime.now()
         return True
+
+    def _push_rows(self, rows):
+        """يرفع دفعة حركات. لو رفضت السحابة حالة MEMO (قاعدة لم تُحدَّث بعد)
+        يعيد المحاولة مرة واحدة بحالة SETTLED بدل إسقاط الدفعة كلها."""
+        if not self._memo_supported:
+            rows = [_downgrade_memo(r) for r in rows]
+        payload = {
+            "p_tenant": self.tenant_id,
+            "p_token": None,
+            "p_device": self.device_id,
+            "p_rows": rows,
+        }
+        try:
+            self._rpc("sync_push_transactions", payload)
+        except Exception as e:
+            text = str(e)
+            has_memo = any(r.get("status") == "MEMO" for r in rows)
+            if has_memo and "txn_status" in text and "MEMO" in text:
+                self._memo_supported = False
+                payload["p_rows"] = [_downgrade_memo(r) for r in rows]
+                self._rpc("sync_push_transactions", payload)
+            else:
+                raise
 
     # ---------------------------------------------------------------- السحب
     def _get_state(self, key, default=None):
@@ -583,7 +626,7 @@ class CloudSync:
         finally:
             con.close()
 
-        return [{
+        payload = [{
             "seq_no": r[0],
             "txn_date": _to_iso(r[1]),
             "account_name": r[2] or "",
@@ -606,7 +649,7 @@ class CloudSync:
         deduped = {}
         for row in payload:
             deduped[row["seq_no"]] = row
-        payload = list(deduped.values())
+        return list(deduped.values())
 
     def _clear_outbox(self, row_ids):
         if not row_ids:
@@ -674,6 +717,18 @@ def _to_iso(value):
 
 
 def _map_status(value):
-    """حالات النظام القديم تُنقل كما هي، وأي حالة غير معروفة تُعامل كنشطة."""
+    """حالات البرنامج تُنقل كما هي، وأي حالة غير معروفة تُعامل كنشطة.
+
+    MEMO (السطور المعلوماتية: خياس البوليش/المركب/صافي الطقم) تُنقل بحالتها:
+    كانت تُحوَّل إلى ACTIVE فتدخل خطأً في رصيد الخزينة والصناديق عند المدير.
+    """
     text = (value or "ACTIVE").strip().upper()
-    return text if text in ("ACTIVE", "SETTLED", "SETTLED_INOUT") else "ACTIVE"
+    return text if text in ("ACTIVE", "SETTLED", "SETTLED_INOUT", "MEMO") else "ACTIVE"
+
+
+def _downgrade_memo(row):
+    """للسحابة القديمة فقط: MEMO → SETTLED (كلاهما لا يُحتسب في الأرصدة)."""
+    if row.get("status") == "MEMO":
+        row = dict(row)
+        row["status"] = "SETTLED"
+    return row

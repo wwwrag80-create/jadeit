@@ -30,7 +30,7 @@ class StatusBar extends ConsumerWidget {
                   size: 15, color: locked ? AppTheme.warn : AppTheme.success),
               const SizedBox(width: 6),
               Text(
-                locked ? 'التعديل مقفول (الحذف متاح)' : 'التعديل مفتوح',
+                locked ? 'التعديل مقفول (الحذف والتسجيل متاحان)' : 'التعديل مفتوح',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,

@@ -29,11 +29,31 @@ language sql stable security definer set search_path = public as $$
     );
 $$;
 
+-- هل الطلب الحالي بمفتاح الخدمة (service_role)؟
+-- نقرأ الدور من مطالبات JWT التي يضبطها PostgREST — ثابتة طوال الطلب بخلاف
+-- current_user الذي يتغيّر داخل دوال SECURITY DEFINER.
+create or replace function public.is_service_role()
+returns boolean
+language plpgsql stable as $$
+declare
+    v_role text;
+begin
+    begin
+        v_role := current_setting('request.jwt.claims', true)::json ->> 'role';
+    exception when others then
+        v_role := null;
+    end;
+    return coalesce(v_role, '') = 'service_role';
+end $$;
+
 -- هل يملك المستخدم الحالي صلاحية الوصول لهذا المستأجر؟
+-- هذا الفحص هو خط الدفاع الوحيد داخل دوال SECURITY DEFINER (التي تتخطى RLS)،
+-- لذلك يجب أن تستدعيه كل دالة تقرأ أو تكتب بيانات مستأجر.
 create or replace function public.has_tenant_access(p_tenant uuid)
 returns boolean
 language sql stable security definer set search_path = public as $$
     select public.is_admin()
+        or public.is_service_role()
         or (
             p_tenant is not null
             and p_tenant = public.current_tenant_id()

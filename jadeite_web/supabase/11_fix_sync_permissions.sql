@@ -19,25 +19,8 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
---  ١) هل الطلب الحالي يستخدم مفتاح الخدمة (service_role)؟
---
---  نقرأ ذلك من إعداد الجلسة الذي يضبطه PostgREST قبل تنفيذ أي استعلام،
---  وهو ثابت طوال تنفيذ الدالة بخلاف current_user الذي يتغيّر مع
---  SECURITY DEFINER — لذلك هذه هي الطريقة الموثوقة للتحقق داخل مثل هذه الدوال.
+--  ١) is_service_role() — نُقلت إلى 02_rls.sql لأن has_tenant_access تعتمد عليها
 -- ----------------------------------------------------------------------------
-create or replace function public.is_service_role()
-returns boolean
-language plpgsql stable as $$
-declare
-    v_role text;
-begin
-    begin
-        v_role := current_setting('request.jwt.claims', true)::json ->> 'role';
-    exception when others then
-        v_role := null;
-    end;
-    return coalesce(v_role, '') = 'service_role';
-end $$;
 
 -- ----------------------------------------------------------------------------
 --  ٢) الإصلاح الذاتي لربط الحساب بمزامنته
@@ -94,7 +77,28 @@ end $$;
 -- لا نمنحها لـ anon مباشرة (تمنع أي شخص من استكشاف بيانات حساب بمجرد تخمين
 -- معرّفه)؛ العميل يصل إليها فقط بشكل غير مباشر عبر client_login_full أدناه،
 -- والمدير يصل إليها مباشرة بمفتاح الخدمة.
-grant execute on function public.ensure_tenant_link(uuid) to authenticated, service_role;
+--
+-- ⚠️ كانت ممنوحة لـ authenticated، فكان أي مستخدم مسجّل (أي عميل) يستطيع قراءة
+-- رمز مزامنة أي مصنع آخر بمعرّفه، ثم الكتابة في بياناته عبر دوال المزامنة.
+revoke execute on function public.ensure_tenant_link(uuid) from public, anon, authenticated;
+grant  execute on function public.ensure_tenant_link(uuid) to service_role;
+
+-- ----------------------------------------------------------------------------
+--  ٢-أ) سجل محاولات الدخول — يحدّ من تخمين كلمات المرور عبر client_login_full
+--       (الدالة متاحة لـ anon لأن برنامج العميل يدخل بها قبل أي جلسة)
+-- ----------------------------------------------------------------------------
+create table if not exists public.login_attempts (
+    id           bigserial primary key,
+    username     text        not null,
+    attempted_at timestamptz not null default now(),
+    succeeded    boolean     not null default false
+);
+
+create index if not exists idx_login_attempts_user
+    on public.login_attempts (lower(username), attempted_at desc);
+
+alter table public.login_attempts enable row level security;
+revoke all on public.login_attempts from anon, authenticated;
 
 -- ----------------------------------------------------------------------------
 --  ٣) دخول العميل — الآن يستدعي الإصلاح الذاتي دائماً، لا الترحيل لمرة واحدة
@@ -123,21 +127,37 @@ declare
     v_active    boolean;
     v_token     uuid;
     v_enabled   boolean;
+    v_user      text := lower(btrim(coalesce(p_username, '')));
+    v_fails     integer;
 begin
     if to_regclass('public.clients') is null then
         return;   -- لا نظام عملاء قديم في هذه القاعدة
     end if;
 
+    -- ١٠ محاولات فاشلة خلال ١٥ دقيقة توقف الاسم مؤقتاً. نرجع «بلا صفوف» (مثل
+    -- كلمة مرور خاطئة) بدل رمي خطأ، حتى لا يلجأ البرنامج للدالة القديمة.
+    select count(*) into v_fails
+      from public.login_attempts
+     where lower(username) = v_user
+       and not succeeded
+       and attempted_at > now() - interval '15 minutes';
+    if v_fails >= 10 then
+        return;
+    end if;
+
     select c.client_id, c.business_name, c.can_edit, c.is_active
       into v_client_id, v_business, v_can_edit, v_active
       from public.clients c
-     where lower(c.username) = lower(btrim(p_username))
+     where lower(c.username) = v_user
        and c.password_hash = p_password_hash
      limit 1;
 
     if v_client_id is null or not coalesce(v_active, true) then
+        insert into public.login_attempts (username, succeeded) values (v_user, false);
         return;   -- بيانات دخول خاطئة أو حساب موقوف: بلا صفوف
     end if;
+
+    insert into public.login_attempts (username, succeeded) values (v_user, true);
 
     -- الإصلاح الذاتي: يضمن الربط والرمز بغض النظر عن كيف أو متى أُنشئ الحساب
     select e.out_sync_token, e.out_sync_enabled
@@ -230,8 +250,11 @@ begin
     return query select 'صف tenants مطابق موجود؟',
         case when exists (select 1 from public.tenants where id = v_client_id) then 'نعم' else 'لا (سيُنشأ تلقائياً عند أول دخول بعد هذا الإصلاح)' end;
 
+    -- الرمز نفسه لا يُعرض أبداً — وجوده فقط
     return query select 'رمز المزامنة موجود؟',
-        coalesce((select sync_token::text from public.tenants where id = v_client_id), 'لا');
+        case when exists (select 1 from public.tenants
+                           where id = v_client_id and sync_token is not null)
+             then 'نعم' else 'لا' end;
 
     return query select 'المزامنة مفعّلة؟',
         coalesce((select case when sync_enabled then 'نعم' else 'لا — موقوفة يدوياً' end from public.tenants where id = v_client_id), 'لا يوجد صف بعد');
@@ -240,7 +263,9 @@ begin
         (select count(*)::text from public.transactions where tenant_id = v_client_id);
 end $$;
 
-grant execute on function public.diagnose_client_sync(text) to authenticated, service_role;
+-- للتشخيص من SQL Editor أو بمفتاح الخدمة فقط — كانت تكشف بيانات أي عميل لأي مستخدم مسجّل
+revoke execute on function public.diagnose_client_sync(text) from public, anon, authenticated;
+grant  execute on function public.diagnose_client_sync(text) to service_role;
 
 notify pgrst, 'reload schema';
 

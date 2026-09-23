@@ -40,6 +40,14 @@ remote = seg(cls, "_on_remote_change")
 assert "if not IS_ADMIN_BUILD:" in remote and "return" in remote
 print("✔ تعديلات المدير لا تنزل لجهاز العميل")
 
+# ═══ ٢-ب) محرك المزامنة نفسه لا يسحب إلا لو فُعّل صراحةً ═══
+# (كان يسحب كل ١٥ ثانية ويكتب في قاعدة العميل رغم القاعدة أعلاه)
+cs_src = io.open("cloud_sync.py", encoding="utf-8").read()
+assert "pull_enabled=False" in cs_src, "السحب يجب أن يكون معطّلاً افتراضياً في CloudSync"
+assert "if self.pull_enabled and" in cs_src, "حلقة المحرك تسحب بلا شرط"
+assert "pull_enabled=True" not in src, "برنامج العميل فعّل السحب من السحابة!"
+print("✔ محرك المزامنة لا يسحب من السحابة افتراضياً — ولا يفعّله البرنامج")
+
 # ═══ ٣) المدير لا يرفع شيئاً ═══
 engine = seg(cls, "start_cloud_sync_engine")
 i_admin = engine.find("if IS_ADMIN_BUILD:")

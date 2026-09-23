@@ -14,6 +14,9 @@ for pos, name in defs:
 
 for name, pos in first_def.items():
     for m in re.finditer(r"public\.%s\s*\(" % re.escape(name), raw):
+        # حذف توقيع قديم قبل إعادة التعريف ليس استدعاءً
+        if raw[max(0, m.start() - 40):m.start()].rstrip().endswith("drop function if exists"):
+            continue
         if m.start() < pos:
             errors.append(f"استدعاء قبل التعريف: public.{name}()")
             break

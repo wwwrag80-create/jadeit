@@ -12,6 +12,7 @@ import '../../widgets/data_table_card.dart';
 /// القيود اليومية للفترة المعروضة، مجمّعة في قيد واحد بطرفيه
 final journalEntriesProvider =
     FutureProvider.autoDispose<List<JournalEntry>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return const [];
@@ -33,12 +34,6 @@ class _JournalPageState extends ConsumerState<JournalPage> {
   String? _to;
   DateTime _date = DateTime.now();
   bool _busy = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _date = Fmt.smartDefaultDate(ref.read(periodProvider));
-  }
 
   @override
   void dispose() {
@@ -79,16 +74,16 @@ class _JournalPageState extends ConsumerState<JournalPage> {
     try {
       final ref0 = await ref.read(journalRepoProvider).post(
             tenantId: tenantId,
-            date: _date,
+            date: Fmt.operationDate(_date),
             fromAccount: _from!,
             toAccount: _to!,
             weight: weight,
+            period: ref.read(periodProvider),
             note: _note.text.trim(),
           );
       _weight.clear();
       _note.clear();
-      ref.invalidate(journalEntriesProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم ترحيل القيد ($ref0) بطرفيه.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');
@@ -113,8 +108,7 @@ class _JournalPageState extends ConsumerState<JournalPage> {
     if (tenantId == null) return;
     try {
       final count = await ref.read(journalRepoProvider).delete(tenantId, entry.ref);
-      ref.invalidate(journalEntriesProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم حذف $count حركة وتحديث الأرصدة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');

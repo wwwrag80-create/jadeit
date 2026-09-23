@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show AuthChangeEvent;
 
 import '../core/config/supabase_config.dart';
 import '../core/utils/error_text.dart';
@@ -37,6 +38,12 @@ class SessionState {
   /// التعديل مقفول؟ المدير غير مقيّد إطلاقاً
   bool get isEditLocked => !isAdmin && !canEdit;
 
+  /// عميل مسجّل الدخول لكن حسابه غير مربوط بمصنع
+  bool get hasNoTenant => isSignedIn && !isAdmin && user?.tenantId == null;
+
+  /// عميل أوقف المدير حسابه
+  bool get isTenantSuspended => !isAdmin && activeTenant != null && !activeTenant!.isActive;
+
   SessionState copyWith({
     AppUser? user,
     Tenant? activeTenant,
@@ -57,6 +64,14 @@ class SessionState {
 
 class SessionController extends StateNotifier<SessionState> {
   SessionController(this._auth, this._tenants) : super(const SessionState()) {
+    // خروج من تبويب آخر أو انتهاء صلاحية الجلسة: نعود لشاشة الدخول فوراً
+    // بدل أن تبقى الشاشات مفتوحة وكل طلباتها تفشل بصمت
+    _authSub = _auth.authChanges.listen((event) {
+      if (event.event == AuthChangeEvent.signedOut && state.isSignedIn) {
+        _stopTimers();
+        state = const SessionState();
+      }
+    }, onError: (_) {});
     restore();
   }
 
@@ -65,6 +80,7 @@ class SessionController extends StateNotifier<SessionState> {
 
   Timer? _heartbeat;
   Timer? _permissionPoll;
+  StreamSubscription<dynamic>? _authSub;
 
   /// استعادة الجلسة عند فتح التطبيق (المتصفح يحتفظ بها)
   Future<void> restore() async {
@@ -110,13 +126,22 @@ class SessionController extends StateNotifier<SessionState> {
 
   /// الدخول لمستأجر: يستخدمه العميل عند تسجيل دخوله، ويستخدمه المدير للانتحال.
   Future<void> enterTenant(String tenantId, {bool isLogin = false}) async {
-    final tenant = await _tenants.byId(tenantId);
+    final Tenant? tenant;
+    try {
+      tenant = await _tenants.byId(tenantId);
+    } catch (e) {
+      state = state.copyWith(error: ErrorText.friendly(e));
+      return;
+    }
     if (tenant == null) {
       state = state.copyWith(error: 'تعذّر الوصول لهذا المصنع — تأكد أنه موجود ومفعّل.');
       return;
     }
     state = state.copyWith(activeTenant: tenant, canEdit: tenant.canEdit, clearError: true);
 
+    // المدير المتصفّح لحساب عميل لا يُرسل نبض حضور — وإلا ظهر العميل «متصلاً
+    // الآن» في لوحة المتابعة وهو غير متصل. والقفل لا يقيّد المدير أصلاً.
+    if (state.isAdmin) return;
     await _tenants.touchActivity(tenantId, isLogin: isLogin);
     _startTimers(tenantId);
   }
@@ -131,10 +156,19 @@ class SessionController extends StateNotifier<SessionState> {
   Future<void> refreshPermission() async {
     final tenantId = state.activeTenantId;
     if (tenantId == null) return;
-    final value = await _tenants.canEdit(tenantId);
-    if (value != state.canEdit) {
-      state = state.copyWith(canEdit: value);
+    try {
+      final value = await _tenants.canEdit(tenantId);
+      if (mounted && value != state.canEdit) {
+        state = state.copyWith(canEdit: value);
+      }
+    } catch (_) {
+      // انقطاع مؤقت: نُبقي آخر حالة معروفة ونعيد المحاولة في الدورة التالية
     }
+  }
+
+  /// مسح رسالة الخطأ بعد عرضها للمستخدم
+  void clearError() {
+    if (state.error != null) state = state.copyWith(clearError: true);
   }
 
   void _startTimers(String tenantId) {
@@ -160,13 +194,18 @@ class SessionController extends StateNotifier<SessionState> {
 
   Future<void> signOut() async {
     _stopTimers();
-    await _auth.signOut();
+    try {
+      await _auth.signOut();
+    } catch (_) {
+      // حتى لو فشل إبلاغ الخادم (انقطاع)، نخرج محلياً
+    }
     state = const SessionState();
   }
 
   @override
   void dispose() {
     _stopTimers();
+    _authSub?.cancel();
     super.dispose();
   }
 }

@@ -1,0 +1,90 @@
+# فحص آلي لكل دفعة: تطبيق الويب + قاعدة البيانات + برنامج سطح المكتب
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: تطبيق الويب (Flutter)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jadeite_web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: python3 tools/check_project.py
+      - name: البناء (يتأكد أن الخطوط والأصول موجودة)
+        run: flutter build web --release
+
+  database:
+    name: قاعدة البيانات (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    defaults:
+      run:
+        working-directory: jadeite_web
+    steps:
+      - uses: actions/checkout@v4
+      - name: INSTALL_ALL.sql مطابق للملفات المرقّمة
+        run: python3 tools/build_install_all.py --check
+      - run: python3 tools/check_sql.py
+      - name: تثبيت مرتين + اختبارات العزل والصلاحيات والمحاسبة
+        run: bash supabase/tests/run_sql_tests.sh
+
+  desktop:
+    name: برنامج سطح المكتب + أداة الترحيل (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jadeite_web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pillow pyflakes
+      - name: أخطاء صامتة (متغيّرات غير معرّفة، كود لا يُنفَّذ)
+        run: >-
+          python -m pyflakes desktop_sync/cloud_sync.py desktop_sync/sync_down.py
+          desktop_sync/supabase_api.py desktop_sync/login_screen.py
+          desktop_sync/gold_price.py migration/migrate_sqlite_to_supabase.py
+      - name: نسخة العميل مطابقة لمصدرها (مولَّدة آلياً بلا مفتاح سري)
+        working-directory: jadeite_web/desktop_sync
+        run: |
+          python make_client_build.py
+          git diff --exit-code rageh-CLIENT.py
+      - name: فحوص نسخة المدير
+        working-directory: jadeite_web/desktop_sync
+        run: python run_all_checks.py
+      - name: فحوص نسخة العميل
+        working-directory: jadeite_web/desktop_sync
+        run: python run_all_checks.py rageh-CLIENT.py
+      - name: أداة الترحيل
+        working-directory: jadeite_web/migration
+        run: python test_migration.py

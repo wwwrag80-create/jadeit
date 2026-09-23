@@ -10,6 +10,9 @@ pubspec.lock
 .env
 *.env
 migration/.env
+# المفتاح السري لنسخة المدير (يقرؤه rageh-1-34-14-cloud.py من بجانب البرنامج)
+admin_secret.key
+*.key
 
 # Python
 __pycache__/
@@ -24,3 +27,8 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# ملفات البناء والسجلات المحلية لبرنامج سطح المكتب
+*.spec
+dist/
+cloud_errors.log

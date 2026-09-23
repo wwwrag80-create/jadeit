@@ -86,11 +86,13 @@ class SalesOpsTab extends ConsumerWidget {
     );
   }
 
+  /// حركات الفاتورة من الفترة المعروضة نفسها (التي جاءت منها قائمة الفواتير)
+  /// — لا من شهر تاريخها، فالفترة قد تختلف عن شهر التاريخ.
   Future<List<Txn>> _invoiceTxns(WidgetRef ref, SalesInvoiceSummary inv) async {
     final tenantId = ref.read(activeTenantIdProvider)!;
     final all = await ref.read(txnRepoProvider).byPeriod(
           tenantId,
-          Fmt.periodOf(inv.date),
+          ref.read(periodProvider),
           opTypes: [...OpTypes.sales, OpTypes.setsKhayas],
         );
     return all
@@ -107,7 +109,13 @@ class SalesOpsTab extends ConsumerWidget {
           'التعديل مقفول من المدير. يمكنك الحذف، ولتعديل فاتورة اطلب فتح التعديل.');
       return;
     }
-    final txns = await _invoiceTxns(ref, inv);
+    final List<Txn> txns;
+    try {
+      txns = await _invoiceTxns(ref, inv);
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+      return;
+    }
     if (!context.mounted) return;
     await showDialog<void>(
       context: context,
@@ -116,23 +124,33 @@ class SalesOpsTab extends ConsumerWidget {
   }
 
   Future<void> _print(BuildContext context, WidgetRef ref, SalesInvoiceSummary inv) async {
-    final txns = await _invoiceTxns(ref, inv);
-    final tenant = ref.read(sessionProvider).activeTenant;
-    final lines = const SalePostingRebuilder().rebuild(txns);
-    await const SalesInvoicePdf().printSummary(
-      businessName: tenant?.businessName ?? 'جاديت',
-      customerName: inv.accountName,
-      invoiceNo: inv.manualNo,
-      date: inv.date,
-      lines: lines,
-      crNumber: tenant?.crNumber,
-      vatNumber: tenant?.vatNumber,
-      city: tenant?.city,
-    );
+    try {
+      final txns = await _invoiceTxns(ref, inv);
+      final tenant = ref.read(sessionProvider).activeTenant;
+      final lines = const SalePostingService().rebuildLines(txns);
+      await const SalesInvoicePdf().printSummary(
+        businessName: tenant?.businessName ?? 'جاديت',
+        customerName: inv.accountName,
+        invoiceNo: inv.manualNo,
+        date: inv.date,
+        lines: lines,
+        crNumber: tenant?.crNumber,
+        vatNumber: tenant?.vatNumber,
+        city: tenant?.city,
+      );
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+    }
   }
 
   Future<void> _delete(BuildContext context, WidgetRef ref, SalesInvoiceSummary inv) async {
-    final txns = await _invoiceTxns(ref, inv);
+    final List<Txn> txns;
+    try {
+      txns = await _invoiceTxns(ref, inv);
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+      return;
+    }
     if (!context.mounted) return;
 
     final ok = await confirmDialog(
@@ -148,20 +166,10 @@ class SalesOpsTab extends ConsumerWidget {
 
     try {
       await ref.read(txnRepoProvider).deleteMany(txns.map((t) => t.id).toList());
-      ref
-        ..invalidate(salesInvoicesProvider)
-        ..invalidate(treasuryProvider)
-        ..invalidate(workshopLossesProvider);
+      bumpDataRevision(ref);
       if (context.mounted) AppSnack.success(context, 'تم حذف الفاتورة وتحديث كل الأرصدة.');
     } catch (e) {
       if (context.mounted) AppSnack.error(context, '$e');
     }
   }
-}
-
-/// غلاف صغير لإعادة بناء السطور من الحركات المسجّلة
-class SalePostingRebuilder {
-  const SalePostingRebuilder();
-  List<SaleLine> rebuild(List<Txn> txns) =>
-      const SalePostingService().rebuildLines(txns);
 }

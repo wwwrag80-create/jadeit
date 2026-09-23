@@ -234,12 +234,14 @@ class LoginScreen(ctk.CTk):
             }
             self._ui(self._finish)
 
-        except AuthError as e:
-            self._ui(lambda: self._fail(str(e)))
-        except NetworkError as e:
-            self._ui(lambda: self._fail(str(e)))
+        # الرسالة تُحفظ في متغيّر قبل تمريرها: بايثون يحذف `e` بنهاية كتلة except،
+        # والدالة تُنفَّذ لاحقاً في خيط الواجهة — فكانت ترمي NameError وتعلق الشاشة
+        except (AuthError, NetworkError) as e:
+            msg = str(e)
+            self._ui(lambda: self._fail(msg))
         except Exception as e:
-            self._ui(lambda: self._fail(f"تعذّر إكمال الدخول:\n{e}"))
+            msg = f"تعذّر إكمال الدخول:\n{e}"
+            self._ui(lambda: self._fail(msg))
 
     # -------------------------------------------------- تحديثات خيط الواجهة
     def _ui(self, fn):

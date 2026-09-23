@@ -15,6 +15,7 @@ final archiveAllPeriodsProvider = StateProvider<bool>((_) => false);
 
 final invoiceArchiveProvider =
     FutureProvider.autoDispose<List<ArchivedInvoice>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   final allPeriods = ref.watch(archiveAllPeriodsProvider);
@@ -32,6 +33,7 @@ final searchSourceProvider = StateProvider<String>((_) => SearchSource.sales);
 final searchQueryProvider = StateProvider<String>((_) => '');
 
 final unifiedSearchProvider = FutureProvider.autoDispose<List<Txn>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final source = ref.watch(searchSourceProvider);
   final query = ref.watch(searchQueryProvider);
@@ -49,11 +51,11 @@ class ArchivePage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return DefaultTabController(
+    return const DefaultTabController(
       length: 2,
       child: Column(
         children: [
-          const Material(
+          Material(
             color: Colors.transparent,
             child: TabBar(
               tabs: [
@@ -62,7 +64,7 @@ class ArchivePage extends ConsumerWidget {
               ],
             ),
           ),
-          const Expanded(
+          Expanded(
             child: TabBarView(
               children: [_ArchiveTab(), _SearchTab()],
             ),
@@ -366,9 +368,7 @@ class _SearchTabState extends ConsumerState<_SearchTab> {
     if (!ok) return;
     try {
       await ref.read(txnRepoProvider).delete(txn.id);
-      ref.invalidate(unifiedSearchProvider);
-      ref.invalidate(invoiceArchiveProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (mounted) AppSnack.success(context, 'تم الحذف وتحديث الأرصدة.');
     } catch (e) {
       if (mounted) AppSnack.error(context, '$e');

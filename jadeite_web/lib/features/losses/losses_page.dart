@@ -11,6 +11,7 @@ import '../../widgets/data_table_card.dart';
 
 /// تفصيل الخسائر والهالك للفترة المعروضة (صناديق + عمال)
 final lossesBreakdownProvider = FutureProvider.autoDispose<List<LossRow>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return const [];

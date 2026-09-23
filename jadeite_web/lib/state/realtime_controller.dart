@@ -107,11 +107,10 @@ class RealtimeController extends StateNotifier<RealtimeState> {
     _ref.invalidate(adminTenantsProvider);
   }
 
+  /// زيادة إصدار البيانات تُحدّث كل الشاشات المفتوحة معاً (الوارد، الصناديق،
+  /// الكشوف…) لا الخزينة والفواتير فقط كما كان سابقاً
   void _refreshData() {
-    _ref.invalidate(treasuryProvider);
-    _ref.invalidate(workshopLossesProvider);
-    _ref.invalidate(salesInvoicesProvider);
-    _ref.invalidate(accountsProvider);
+    _ref.read(dataRevisionProvider.notifier).state++;
   }
 
   Future<void> _unsubscribe() async {

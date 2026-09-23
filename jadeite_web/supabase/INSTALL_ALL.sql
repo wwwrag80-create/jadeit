@@ -9,19 +9,12 @@
 --
 --  ⚠️ إن ظهر خطأ 500 "Database error querying schema" عند الدخول،
 --     شغّل أولاً الملف: 00_repair_auth.sql
+--
+--  ⚙️ هذا الملف مُولَّد آلياً من الملفات المرقّمة (tools/build_install_all.py)
+--     — عدّل الملف المرقّم لا هذا الملف.
 -- ============================================================================
 
 set client_min_messages = warning;
-
-
-
-
-
-
-
-
-
-
 
 
 -- ############################################################################
@@ -122,9 +115,16 @@ create index if not exists idx_accounts_tenant_cat on public.accounts(tenant_id,
 --  ٤) الحركات — دفتر الأستاذ الموحّد لكل النظام
 --     كل شيء حركة: وارد، مبيعات، عمليات تصنيع، خياس، قيود يومية، قيود افتتاحية
 -- ============================================================================
+--  ACTIVE / SETTLED_INOUT: حركات تُحتسب في الأرصدة (نفس فلتر برنامج سطح المكتب)
+--  SETTLED: حركات قسم أُقفلت فترته وحلّ محلّها قيد الإقفال — لا تُحتسب
+--  MEMO: سطور معلوماتية (خياس البوليش/المركب/صافي الطقم) — لا تُحتسب أبداً
 do $$ begin
-    create type public.txn_status as enum ('ACTIVE', 'SETTLED', 'SETTLED_INOUT');
+    create type public.txn_status as enum ('ACTIVE', 'SETTLED', 'SETTLED_INOUT', 'MEMO');
 exception when duplicate_object then null; end $$;
+
+-- القواعد القديمة أُنشئ فيها النوع بلا MEMO، فكان البرنامج يرفع السطور المعلوماتية
+-- كـ ACTIVE فتدخل خطأً في رصيد الخزينة والصناديق عند المدير
+alter type public.txn_status add value if not exists 'MEMO';
 
 create table if not exists public.transactions (
     id              bigserial primary key,
@@ -134,8 +134,11 @@ create table if not exists public.transactions (
     seq_no          bigint not null,
 
     txn_date        timestamptz not null,
-    -- شهر الحركة المحاسبي (YYYY-MM) — مُولَّد تلقائياً لعزل الفترات وتسريع الاستعلام
-    period          text generated always as (to_char(txn_date, 'YYYY-MM')) stored,
+    -- شهر الحركة المحاسبي (YYYY-MM) — عمود عادي يُملأ تلقائياً من التاريخ بمحفّز
+    -- (trg_txn_period أدناه) إن لم يُرسَل صراحةً. لا يصح أن يكون عموداً مُولَّداً:
+    -- to_char على timestamptz ليست immutable فيرفضها PostgreSQL، وبرنامج سطح
+    -- المكتب يرسل الفترة صراحةً لأنها قرار محاسبي قد يختلف عن شهر التاريخ.
+    period          text,
 
     account_name    text not null,               -- الاسم (عامل/مورد/صندوق/حساب)
     op_type         text not null,               -- النوع (صرف ذهب، وارد ذهب، مبيعات ذهب ...)
@@ -228,6 +231,21 @@ drop trigger if exists trg_txn_touch on public.transactions;
 create trigger trg_txn_touch before update on public.transactions
     for each row execute function public.touch_updated_at();
 
+-- الفترة تُشتق من التاريخ فقط عندما لا تُرسل صراحةً — بدونها تُسجَّل حركات
+-- الويب بفترة فارغة فتختفي من كل الشاشات والأرصدة المبنية على الفترة.
+create or replace function public.fill_txn_period()
+returns trigger language plpgsql as $$
+begin
+    if new.period is null or btrim(new.period) = '' then
+        new.period := to_char(new.txn_date, 'YYYY-MM');
+    end if;
+    return new;
+end $$;
+
+drop trigger if exists trg_txn_period on public.transactions;
+create trigger trg_txn_period before insert or update on public.transactions
+    for each row execute function public.fill_txn_period();
+
 -- ============================================================================
 --  ٩) تسجيل التدقيق على الحركات
 -- ============================================================================
@@ -290,11 +308,31 @@ language sql stable security definer set search_path = public as $$
     );
 $$;
 
+-- هل الطلب الحالي بمفتاح الخدمة (service_role)؟
+-- نقرأ الدور من مطالبات JWT التي يضبطها PostgREST — ثابتة طوال الطلب بخلاف
+-- current_user الذي يتغيّر داخل دوال SECURITY DEFINER.
+create or replace function public.is_service_role()
+returns boolean
+language plpgsql stable as $$
+declare
+    v_role text;
+begin
+    begin
+        v_role := current_setting('request.jwt.claims', true)::json ->> 'role';
+    exception when others then
+        v_role := null;
+    end;
+    return coalesce(v_role, '') = 'service_role';
+end $$;
+
 -- هل يملك المستخدم الحالي صلاحية الوصول لهذا المستأجر؟
+-- هذا الفحص هو خط الدفاع الوحيد داخل دوال SECURITY DEFINER (التي تتخطى RLS)،
+-- لذلك يجب أن تستدعيه كل دالة تقرأ أو تكتب بيانات مستأجر.
 create or replace function public.has_tenant_access(p_tenant uuid)
 returns boolean
 language sql stable security definer set search_path = public as $$
     select public.is_admin()
+        or public.is_service_role()
         or (
             p_tenant is not null
             and p_tenant = public.current_tenant_id()
@@ -464,6 +502,13 @@ create policy audit_select on public.audit_log for select to authenticated
 -- ============================================================================
 --  جاديت ERP — الدوال المحاسبية (RPC)
 --  كل الحسابات تتم في قاعدة البيانات لضمان رقم واحد صحيح لكل الأجهزة
+--
+--  قاعدتان تلتزم بهما كل دالة هنا:
+--   ١) كل دالة SECURITY DEFINER تتخطى RLS، فلا بد أن تتحقق بنفسها من
+--      public.has_tenant_access(p_tenant) — وإلا قرأ أي عميل (بل أي زائر بمفتاح
+--      anon) بيانات مصنع غيره بمجرد معرفة معرّفه.
+--   ٢) الحركات المحتسبة في الأرصدة هي (ACTIVE, SETTLED_INOUT) — نفس فلتر برنامج
+--      سطح المكتب حرفياً — فلا يختلف رقم المدير عن رقم العميل.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -492,6 +537,8 @@ $$;
 
 -- ----------------------------------------------------------------------------
 --  الرقم المتسلسل للحركة داخل كل مستأجر (آمن مع التزامن)
+--  (يُعاد تعريفه في 06_hybrid_sync.sql ليحجز نطاقاً مستقلاً لحركات الويب
+--   عند المصانع التي تعمل ببرنامج سطح المكتب)
 -- ----------------------------------------------------------------------------
 create or replace function public.next_seq_no(p_tenant uuid)
 returns bigint
@@ -512,7 +559,16 @@ end $$;
 
 -- ----------------------------------------------------------------------------
 --  تسجيل حركة واحدة (يتكفّل بالرقم المتسلسل تلقائياً)
+--
+--  p_period: الفترة المحاسبية صراحةً (YYYY-MM). الفترة قرار محاسبي مستقل عن
+--  التاريخ — تماماً كما في برنامج سطح المكتب — فلو غابت تُشتق من التاريخ.
+--
+--  التوقيع القديم (بلا p_period) يُحذف أولاً: بقاء النسختين معاً يجعل
+--  PostgREST عاجزاً عن اختيار إحداهما (PGRST203).
 -- ----------------------------------------------------------------------------
+drop function if exists public.post_transaction(
+    uuid, timestamptz, text, text, numeric, text, numeric, numeric, numeric, text, text, text);
+
 create or replace function public.post_transaction(
     p_tenant        uuid,
     p_date          timestamptz,
@@ -525,7 +581,8 @@ create or replace function public.post_transaction(
     p_trees         numeric default 0,
     p_set_number    text default '',
     p_row_number    text default '',
-    p_manual_no     text default ''
+    p_manual_no     text default '',
+    p_period        text default null
 ) returns bigint
 language plpgsql security definer set search_path = public as $$
 declare
@@ -534,23 +591,115 @@ begin
     if not public.has_tenant_access(p_tenant) then
         raise exception 'ليس لديك صلاحية على هذا الحساب';
     end if;
+    if coalesce(btrim(p_account), '') = '' or coalesce(btrim(p_op_type), '') = '' then
+        raise exception 'الاسم ونوع الحركة مطلوبان';
+    end if;
+    if p_period is not null and btrim(p_period) <> '' and p_period !~ '^\d{4}-\d{2}$' then
+        raise exception 'صيغة الفترة غير صحيحة (المتوقع YYYY-MM): %', p_period;
+    end if;
 
     insert into public.transactions(
         tenant_id, seq_no, txn_date, account_name, op_type, weight,
         weight_before, weight_after, note, trees_count,
-        set_number, row_number, manual_no, created_by)
+        set_number, row_number, manual_no, period, created_by)
     values (
-        p_tenant, public.next_seq_no(p_tenant), p_date, p_account, p_op_type, p_weight,
+        p_tenant, public.next_seq_no(p_tenant), coalesce(p_date, now()),
+        btrim(p_account), p_op_type, coalesce(p_weight, 0),
         coalesce(p_before, 0), coalesce(p_after, 0), coalesce(p_note, ''), coalesce(p_trees, 0),
-        coalesce(p_set_number, ''), coalesce(p_row_number, ''), coalesce(p_manual_no, ''), auth.uid())
+        coalesce(p_set_number, ''), coalesce(p_row_number, ''), coalesce(p_manual_no, ''),
+        nullif(btrim(coalesce(p_period, '')), ''), auth.uid())
     returning id into v_id;
 
     return v_id;
 end $$;
 
 -- ----------------------------------------------------------------------------
+--  ترحيل عدة حركات دفعة واحدة — داخل معاملة واحدة: إما تُسجَّل كلها أو لا شيء.
+--
+--  p_rows: مصفوفة JSON، كل عنصر فيه مفاتيح أعمدة الحركة:
+--    txn_date, account_name, op_type, weight, weight_before, weight_after,
+--    note, trees_count, set_number, row_number, manual_no, period
+--
+--  p_replace_ids: (اختياري) أرقام حركات تُحذف في المعاملة نفسها قبل الإدراج —
+--  هكذا يُعدَّل قيد مرحّل (فاتورة مثلاً) بلا أي لحظة تكون فيها الفاتورة ناقصة.
+--  الاستبدال تعديلٌ، فيخضع لقفل التعديل من المدير.
+-- ----------------------------------------------------------------------------
+create or replace function public.post_transactions_batch(
+    p_tenant      uuid,
+    p_rows        jsonb,
+    p_replace_ids bigint[] default null
+) returns integer
+language plpgsql security definer set search_path = public as $$
+declare
+    r          jsonb;
+    v_count    integer := 0;
+    v_deleted  integer := 0;
+    v_expected integer := coalesce(array_length(p_replace_ids, 1), 0);
+begin
+    if not public.has_tenant_access(p_tenant) then
+        raise exception 'ليس لديك صلاحية على هذا الحساب';
+    end if;
+    if p_rows is null or jsonb_typeof(p_rows) <> 'array' then
+        raise exception 'صيغة الحركات غير صحيحة';
+    end if;
+
+    if v_expected > 0 then
+        if not public.can_edit_tenant(p_tenant) then
+            raise exception 'التعديل مقفول من المدير — لا يمكن تعديل حركات مرحّلة';
+        end if;
+
+        delete from public.transactions
+         where tenant_id = p_tenant
+           and id = any(p_replace_ids);
+        get diagnostics v_deleted = row_count;
+
+        -- حُذف بعضها من جهاز آخر أثناء التعديل: نتوقف بدل إعادة كتابة نسخة قديمة
+        if v_deleted <> v_expected then
+            raise exception 'تغيّرت الحركات من جهاز آخر أثناء التعديل — أعد فتحها وحاول مجدداً';
+        end if;
+    end if;
+
+    for r in select * from jsonb_array_elements(p_rows)
+    loop
+        if coalesce(btrim(r ->> 'account_name'), '') = ''
+           or coalesce(btrim(r ->> 'op_type'), '') = '' then
+            raise exception 'كل حركة تحتاج اسماً ونوعاً';
+        end if;
+        if coalesce(r ->> 'period', '') <> '' and (r ->> 'period') !~ '^\d{4}-\d{2}$' then
+            raise exception 'صيغة الفترة غير صحيحة (المتوقع YYYY-MM): %', r ->> 'period';
+        end if;
+
+        insert into public.transactions(
+            tenant_id, seq_no, txn_date, account_name, op_type, weight,
+            weight_before, weight_after, note, trees_count,
+            set_number, row_number, manual_no, period, created_by)
+        values (
+            p_tenant,
+            public.next_seq_no(p_tenant),
+            coalesce((r ->> 'txn_date')::timestamptz, now()),
+            btrim(r ->> 'account_name'),
+            r ->> 'op_type',
+            coalesce((r ->> 'weight')::numeric, 0),
+            coalesce((r ->> 'weight_before')::numeric, 0),
+            coalesce((r ->> 'weight_after')::numeric, 0),
+            coalesce(r ->> 'note', ''),
+            coalesce((r ->> 'trees_count')::numeric, 0),
+            coalesce(r ->> 'set_number', ''),
+            coalesce(r ->> 'row_number', ''),
+            coalesce(r ->> 'manual_no', ''),
+            nullif(btrim(coalesce(r ->> 'period', '')), ''),
+            auth.uid());
+        v_count := v_count + 1;
+    end loop;
+
+    return v_count;
+end $$;
+
+-- ----------------------------------------------------------------------------
 --  رصيد الخزينة (ذهب عيار ١٨) حتى نهاية فترة معيّنة
---  = الوارد − المبيعات − خياس الصناديق − صافي القيود اليومية على الخزينة
+--  = الوارد + الرصيد الافتتاحي − المبيعات − الصادر − الخياس المقفل
+--    ± صرف/قبض صناديق الخياس ± القيود اليومية على حساب الخزينة
+--  (مطابق لدالة treasury_effect في برنامج سطح المكتب)
 -- ----------------------------------------------------------------------------
 create or replace function public.treasury_balance(p_tenant uuid, p_until_period text default null)
 returns numeric
@@ -559,13 +708,15 @@ language sql stable security definer set search_path = public as $$
         select op_type, weight, account_name
           from public.transactions
          where tenant_id = p_tenant
-           and status = 'ACTIVE'
+           and (select public.has_tenant_access(p_tenant))
+           and status in ('ACTIVE', 'SETTLED_INOUT')
            and (p_until_period is null or period <= p_until_period)
     )
     select coalesce(sum(
         case
-            when op_type = 'وارد ذهب (عيار 18)'                              then  weight
-            when op_type in ('مبيعات ذهب', 'مبيعات ذهب مع الماس')            then -weight
+            when op_type in ('وارد ذهب (عيار 18)', 'رصيد افتتاحي')             then  weight
+            when op_type in ('مبيعات ذهب', 'مبيعات ذهب مع الماس',
+                             'صادر ذهب', 'صرف خياس مقفل')                    then -weight
             when op_type in (select madin_type from public.khayas_boxes())    then -weight
             when op_type in (select qabd_type  from public.khayas_boxes())    then  weight
             when op_type = 'قيد يومي مدين'  and account_name = 'حساب الخزينة' then  weight
@@ -585,22 +736,22 @@ language sql stable security definer set search_path = public as $$
     t as (
         select x.op_type, x.weight, x.account_name
           from public.transactions x
-         where x.tenant_id = p_tenant and x.status = 'ACTIVE' and x.period = p_period
+         where x.tenant_id = p_tenant
+           and (select public.has_tenant_access(p_tenant))
+           and x.status in ('ACTIVE', 'SETTLED_INOUT')
+           and x.period = p_period
+    ),
+    s as (
+        select
+            coalesce(sum(case when t.op_type = (select madin_type from cfg) then t.weight else 0 end), 0) as madin,
+            coalesce(sum(case
+                when t.op_type = (select qabd_type from cfg) then t.weight
+                when t.op_type = any(public.inbound_types())
+                     and t.account_name = (select mustarja_name from cfg) then t.weight
+                else 0 end), 0) as daen
+          from t
     )
-    select
-        coalesce(sum(case when t.op_type = (select madin_type from cfg) then t.weight else 0 end), 0),
-        coalesce(sum(case
-            when t.op_type = (select qabd_type from cfg) then t.weight
-            when t.op_type = any(public.inbound_types())
-                 and t.account_name = (select mustarja_name from cfg) then t.weight
-            else 0 end), 0),
-        coalesce(sum(case when t.op_type = (select madin_type from cfg) then t.weight else 0 end), 0)
-      - coalesce(sum(case
-            when t.op_type = (select qabd_type from cfg) then t.weight
-            when t.op_type = any(public.inbound_types())
-                 and t.account_name = (select mustarja_name from cfg) then t.weight
-            else 0 end), 0)
-      from t;
+    select s.madin, s.daen, s.madin - s.daen from s;
 $$;
 
 -- ----------------------------------------------------------------------------
@@ -631,7 +782,9 @@ language sql stable security definer set search_path = public as $$
             max(case when t.op_type = 'العيار بعد الفحص'   then t.weight else 0 end) as carat,
             string_agg(distinct nullif(t.note, ''), ' | ') as note
           from public.transactions t
-         where t.tenant_id = p_tenant and t.status = 'ACTIVE'
+         where t.tenant_id = p_tenant
+           and (select public.has_tenant_access(p_tenant))
+           and t.status in ('ACTIVE', 'SETTLED_INOUT')
            and t.account_name = p_worker and t.period = p_period
          group by t.row_number
     )
@@ -666,7 +819,8 @@ language sql stable security definer set search_path = public as $$
         count(distinct nullif(t.set_number, ''))
       from public.transactions t
      where t.tenant_id = p_tenant
-       and t.status = 'ACTIVE'
+       and (select public.has_tenant_access(p_tenant))
+       and t.status in ('ACTIVE', 'SETTLED_INOUT')
        and t.period = p_period
        and (t.op_type = any(public.sale_types()) or t.op_type = 'خياس طقوم')
      group by t.manual_no, t.txn_date, t.account_name
@@ -685,13 +839,39 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- ----------------------------------------------------------------------------
+--  رصيد حساب قبل فترة معيّنة (رصيد أول المدة في كشف الحساب)
+--  p_debit_types: الأنواع التي تُعدّ مديناً على الحساب — تُمرَّر من التطبيق
+--  حتى يبقى تعريف المدين/الدائن في مكان واحد مع شاشة الكشف نفسها.
+-- ----------------------------------------------------------------------------
+create or replace function public.account_opening_balance(
+    p_tenant      uuid,
+    p_account     text,
+    p_period      text,
+    p_debit_types text[]
+) returns numeric
+language sql stable security definer set search_path = public as $$
+    select coalesce(sum(case when t.op_type = any(p_debit_types) then t.weight else -t.weight end), 0)
+      from public.transactions t
+     where t.tenant_id = p_tenant
+       and (select public.has_tenant_access(p_tenant))
+       and t.status in ('ACTIVE', 'SETTLED_INOUT')
+       and t.account_name = p_account
+       and t.period < p_period;
+$$;
+
+-- ----------------------------------------------------------------------------
 --  تسجيل نشاط العميل (آخر دخول / آخر ظهور)
+--  المدير المتصفّح لحساب عميل لا يُحسب حضوراً للعميل — وإلا ظهر العميل
+--  «متصلاً الآن» في لوحة المتابعة وهو غير متصل أصلاً.
 -- ----------------------------------------------------------------------------
 create or replace function public.touch_activity(p_tenant uuid, p_is_login boolean default false)
 returns void
 language plpgsql security definer set search_path = public as $$
 begin
     if not public.has_tenant_access(p_tenant) then
+        return;
+    end if;
+    if public.is_admin() and public.current_tenant_id() is distinct from p_tenant then
         return;
     end if;
     update public.tenants
@@ -725,12 +905,14 @@ grant execute on function public.inbound_types()                  to authenticat
 grant execute on function public.sale_types()                     to authenticated;
 grant execute on function public.khayas_boxes()                   to authenticated;
 grant execute on function public.next_seq_no(uuid)                to authenticated;
-grant execute on function public.post_transaction(uuid, timestamptz, text, text, numeric, text, numeric, numeric, numeric, text, text, text) to authenticated;
+grant execute on function public.post_transaction(uuid, timestamptz, text, text, numeric, text, numeric, numeric, numeric, text, text, text, text) to authenticated;
+grant execute on function public.post_transactions_batch(uuid, jsonb, bigint[]) to authenticated;
 grant execute on function public.treasury_balance(uuid, text)     to authenticated;
 grant execute on function public.box_period_totals(uuid, text, text) to authenticated;
 grant execute on function public.worker_ledger(uuid, text, text)  to authenticated;
 grant execute on function public.sales_invoices(uuid, text)       to authenticated;
 grant execute on function public.workshop_losses(uuid, text)      to authenticated;
+grant execute on function public.account_opening_balance(uuid, text, text, text[]) to authenticated;
 grant execute on function public.touch_activity(uuid, boolean)    to authenticated;
 grant execute on function public.admin_tenants_overview()         to authenticated;
 
@@ -825,13 +1007,17 @@ grant execute on function public.admin_create_tenant(text, uuid, text) to authen
 --     الترحيل داخل معاملة واحدة — إما يُسجَّل الطرفان معاً أو لا شيء إطلاقاً،
 --     فلا يبقى قيد غير متوازن في الدفاتر أبداً.
 -- ----------------------------------------------------------------------------
+-- التوقيع القديم (بلا p_period) يُحذف أولاً حتى لا يلتبس الاستدعاء على PostgREST
+drop function if exists public.post_journal_entry(uuid, timestamptz, text, text, numeric, text);
+
 create or replace function public.post_journal_entry(
     p_tenant     uuid,
     p_date       timestamptz,
     p_from       text,          -- الحساب الدائن (خرج منه)
     p_to         text,          -- الحساب المدين (دخل إليه)
     p_weight     numeric,
-    p_note       text default ''
+    p_note       text default '',
+    p_period     text default null   -- الفترة المحاسبية صراحةً (YYYY-MM)
 )
 returns text
 language plpgsql security definer set search_path = public as $$
@@ -851,24 +1037,29 @@ begin
     if btrim(p_from) = btrim(p_to) then
         raise exception 'لا يصح أن يكون الطرف المدين هو نفسه الطرف الدائن';
     end if;
+    if p_period is not null and btrim(p_period) <> '' and p_period !~ '^\d{4}-\d{2}$' then
+        raise exception 'صيغة الفترة غير صحيحة (المتوقع YYYY-MM): %', p_period;
+    end if;
 
     v_seq := public.next_seq_no(p_tenant);
     v_ref := 'JE-' || v_seq::text;
 
     -- الطرف المدين (الحساب المستلم)
     insert into public.transactions
-        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, created_by)
+        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, period, created_by)
     values
         (p_tenant, v_seq, p_date, btrim(p_to), 'قيد يومي مدين', p_weight,
-         coalesce(nullif(btrim(p_note), ''), 'قيد يومي'), v_ref, auth.uid());
+         coalesce(nullif(btrim(p_note), ''), 'قيد يومي'), v_ref,
+         nullif(btrim(coalesce(p_period, '')), ''), auth.uid());
 
     -- الطرف الدائن (الحساب المصدر)
     v_seq := public.next_seq_no(p_tenant);
     insert into public.transactions
-        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, created_by)
+        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, period, created_by)
     values
         (p_tenant, v_seq, p_date, btrim(p_from), 'قيد يومي دائن', p_weight,
-         coalesce(nullif(btrim(p_note), ''), 'قيد يومي'), v_ref, auth.uid());
+         coalesce(nullif(btrim(p_note), ''), 'قيد يومي'), v_ref,
+         nullif(btrim(coalesce(p_period, '')), ''), auth.uid());
 
     return v_ref;
 end $$;
@@ -884,6 +1075,12 @@ declare
 begin
     if not public.has_tenant_access(p_tenant) then
         raise exception 'غير مصرّح بالوصول لهذا الحساب';
+    end if;
+
+    -- قيد الإقفال مرتبط بسجل في box_closings: حذفه من هنا يترك الصندوق
+    -- «مُقفلاً» بلا قيد، فيُلغى فقط من شاشة الإقفال (reopen_khayas_box)
+    if p_ref like 'CLOSE-%' then
+        raise exception 'هذا قيد إقفال صندوق — ألغِه من شاشة إقفال الصناديق (زر التراجع)';
     end if;
 
     delete from public.transactions
@@ -921,7 +1118,8 @@ language sql stable security definer set search_path = public as $$
          and coalesce(sum(case when t.op_type = 'قيد يومي مدين' then t.weight else -t.weight end), 1) = 0)
       from public.transactions t
      where t.tenant_id = p_tenant
-       and t.status = 'ACTIVE'
+       and (select public.has_tenant_access(p_tenant))
+       and t.status in ('ACTIVE', 'SETTLED_INOUT')
        and t.period = p_period
        and t.op_type in ('قيد يومي مدين', 'قيد يومي دائن')
      group by t.set_number
@@ -950,6 +1148,13 @@ begin
         raise exception 'غير مصرّح بالوصول لهذا الحساب';
     end if;
 
+    if p_period is null or p_period !~ '^\d{4}-\d{2}$' then
+        raise exception 'صيغة الفترة غير صحيحة (المتوقع YYYY-MM): %', p_period;
+    end if;
+    if not exists (select 1 from public.khayas_boxes() k where k.box_name = p_box) then
+        raise exception 'صندوق غير معروف: %', p_box;
+    end if;
+
     if exists (select 1 from public.box_closings
                 where tenant_id = p_tenant and box_name = p_box and period = p_period) then
         raise exception 'صندوق (%) مُقفل مسبقاً لفترة (%)', p_box, p_period;
@@ -970,19 +1175,19 @@ begin
 
     -- الرصيد الموجب (خياس/فاقد) يُحمَّل على حساب الخسائر، والسالب (فائض) يُرد منه
     insert into public.transactions
-        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, created_by)
+        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, period, created_by)
     values
         (p_tenant, v_seq, v_date, 'حساب الخسائر',
          case when v_khayas > 0 then 'قيد يومي مدين' else 'قيد يومي دائن' end,
-         abs(v_khayas), 'إقفال صندوق ' || p_box || ' — ' || p_period, v_ref, auth.uid());
+         abs(v_khayas), 'إقفال صندوق ' || p_box || ' — ' || p_period, v_ref, p_period, auth.uid());
 
     v_seq := public.next_seq_no(p_tenant);
     insert into public.transactions
-        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, created_by)
+        (tenant_id, seq_no, txn_date, account_name, op_type, weight, note, set_number, period, created_by)
     values
         (p_tenant, v_seq, v_date, p_box,
          case when v_khayas > 0 then 'قيد يومي دائن' else 'قيد يومي مدين' end,
-         abs(v_khayas), 'إقفال صندوق ' || p_box || ' — ' || p_period, v_ref, auth.uid());
+         abs(v_khayas), 'إقفال صندوق ' || p_box || ' — ' || p_period, v_ref, p_period, auth.uid());
 
     insert into public.box_closings (tenant_id, box_name, period, closed_khayas, closed_by)
     values (p_tenant, p_box, p_period, v_khayas, auth.uid());
@@ -1040,6 +1245,7 @@ language sql stable security definer set search_path = public as $$
      cross join lateral public.box_period_totals(p_tenant, k.box_name, p_period) b
       left join public.box_closings c
              on c.tenant_id = p_tenant and c.box_name = k.box_name and c.period = p_period
+     where (select public.has_tenant_access(p_tenant))
      order by k.box_name;
 $$;
 
@@ -1068,6 +1274,7 @@ language sql stable security definer set search_path = public as $$
       left join public.box_closings c
              on c.tenant_id = p_tenant and c.box_name = k.box_name and c.period = p_period
      where b.khayas <> 0
+       and (select public.has_tenant_access(p_tenant))
 
     union all
 
@@ -1096,19 +1303,20 @@ language sql stable security definer set search_path = public as $$
                 end)
               from public.transactions t
              where t.tenant_id = p_tenant
-               and t.status = 'ACTIVE'
+               and t.status in ('ACTIVE', 'SETTLED_INOUT')
                and t.period = p_period
                and t.account_name = a.name
         ), 0),
         false
       from public.accounts a
      where a.tenant_id = p_tenant
+       and (select public.has_tenant_access(p_tenant))
        and a.is_active
        and a.category::text in ('المصنعين', 'المركبين')
        and coalesce((
             select sum(case t.op_type when 'صرف ذهب' then t.weight else 0 end)
               from public.transactions t
-             where t.tenant_id = p_tenant and t.status = 'ACTIVE'
+             where t.tenant_id = p_tenant and t.status in ('ACTIVE', 'SETTLED_INOUT')
                and t.period = p_period and t.account_name = a.name
        ), 0) <> 0
      order by 3, 4 desc;
@@ -1148,7 +1356,8 @@ language sql stable security definer set search_path = public as $$
         string_agg(distinct nullif(t.set_number, ''), '، ')
       from public.transactions t
      where t.tenant_id = p_tenant
-       and t.status = 'ACTIVE'
+       and (select public.has_tenant_access(p_tenant))
+       and t.status in ('ACTIVE', 'SETTLED_INOUT')
        and (t.op_type = any(public.sale_types()) or t.op_type = 'خياس طقوم')
        and (p_period is null or t.period = p_period)
        and (
@@ -1176,7 +1385,8 @@ language sql stable security definer set search_path = public as $$
     select t.*
       from public.transactions t
      where t.tenant_id = p_tenant
-       and t.status = 'ACTIVE'
+       and (select public.has_tenant_access(p_tenant))
+       and t.status in ('ACTIVE', 'SETTLED_INOUT')
        and btrim(coalesce(p_query, '')) <> ''
        and case p_source
             when 'المبيعات' then
@@ -1206,7 +1416,7 @@ $$;
 -- ----------------------------------------------------------------------------
 --  الصلاحيات
 -- ----------------------------------------------------------------------------
-grant execute on function public.post_journal_entry(uuid, timestamptz, text, text, numeric, text) to authenticated;
+grant execute on function public.post_journal_entry(uuid, timestamptz, text, text, numeric, text, text) to authenticated;
 grant execute on function public.delete_journal_entry(uuid, text)          to authenticated;
 grant execute on function public.journal_entries(uuid, text)               to authenticated;
 grant execute on function public.close_khayas_box(uuid, text, text)        to authenticated;
@@ -1276,9 +1486,72 @@ alter table public.accounts
     add column if not exists source text not null default 'desktop';
 
 -- ----------------------------------------------------------------------------
+--  ١-أ) حماية أعمدة المزامنة من العميل نفسه
+--      سياسة tenants_self_touch تسمح للعميل بتحديث صفّه (لآخر ظهور)، فبدون هذا
+--      يستطيع إعادة تفعيل مزامنة أوقفها المدير أو تغيير رمزها بنفسه.
+-- ----------------------------------------------------------------------------
+create or replace function public.guard_tenant_self_update()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+    -- المدير، ومفتاح الخدمة، والجلسة المباشرة على القاعدة (SQL Editor — بلا JWT
+    -- إطلاقاً، بخلاف طلبات PostgREST التي تحمل دوماً دور anon أو authenticated)
+    if public.is_admin() or public.is_service_role()
+       or coalesce(current_setting('request.jwt.claims', true), '') = '' then
+        return new;
+    end if;
+    new.can_edit      := old.can_edit;
+    new.is_active     := old.is_active;
+    new.business_name := old.business_name;
+    new.slug          := old.slug;
+    new.sync_token    := old.sync_token;
+    new.sync_enabled  := old.sync_enabled;
+    new.last_sync_at  := old.last_sync_at;
+    return new;
+end $$;
+
+-- ----------------------------------------------------------------------------
+--  ١-ب) ترقيم حركات الويب عند مصانع سطح المكتب
+--
+--  برنامج سطح المكتب يرقّم حركاته محلياً (invoice_id) ويرفعها بالرقم نفسه،
+--  والرفع upsert على (tenant_id, seq_no). لو أخذت حركة من الويب الرقم التالي
+--  (max + 1) لاصطدمت بأول حركة جديدة يسجّلها العميل على جهازه، فيكتب الرفعُ
+--  فوقها ويمحوها بصمت. الحل: حركات الويب لمصنع يعمل ببرنامج سطح المكتب
+--  تأخذ أرقاماً من نطاق مستقل يبدأ من مليار، لا يصل إليه ترقيم الجهاز أبداً.
+-- ----------------------------------------------------------------------------
+create or replace function public.next_seq_no(p_tenant uuid)
+returns bigint
+language plpgsql security definer set search_path = public as $$
+declare
+    c_web_base constant bigint := 1000000000;
+    v_next    bigint;
+    v_desktop boolean;
+begin
+    if not public.has_tenant_access(p_tenant) then
+        raise exception 'ليس لديك صلاحية على هذا الحساب';
+    end if;
+
+    -- القفل على مستوى المستأجر يمنع تكرار الأرقام عند التسجيل من جهازين معاً
+    perform pg_advisory_xact_lock(hashtext(p_tenant::text));
+
+    select coalesce(max(seq_no), 0) + 1 into v_next
+      from public.transactions where tenant_id = p_tenant;
+
+    v_desktop := exists (select 1 from public.tenant_devices d where d.tenant_id = p_tenant)
+              or exists (select 1 from public.transactions x
+                          where x.tenant_id = p_tenant and coalesce(x.device_id, '') <> '');
+
+    if v_desktop then
+        v_next := greatest(v_next, c_web_base);
+    end if;
+    return v_next;
+end $$;
+
+-- ----------------------------------------------------------------------------
 --  ٢) التحقق من رمز المزامنة — أساس أمان كل الدوال التالية
 -- ----------------------------------------------------------------------------
-create or replace function public.assert_sync_token(p_tenant uuid, p_token uuid)
+-- القيمة الافتراضية مطابقة لتعريفه في 07/11: بدونها تفشل إعادة تشغيل التثبيت
+-- بالخطأ «cannot remove parameter defaults from existing function»
+create or replace function public.assert_sync_token(p_tenant uuid, p_token uuid default null)
 returns void
 language plpgsql security definer set search_path = public as $$
 declare
@@ -2019,7 +2292,12 @@ begin
 end $$;
 
 grant execute on function public.sync_pull_changes(uuid, timestamptz, int) to anon, authenticated;
-grant execute on function public.purge_sync_deletions() to authenticated;
+-- التنظيف للمدير فقط (من SQL Editor أو بمفتاح الخدمة) — لا يُمنح للعملاء ولا لـ anon
+revoke execute on function public.purge_sync_deletions() from public, anon, authenticated;
+grant  execute on function public.purge_sync_deletions() to service_role;
+
+-- سجل الحذف لا يُقرأ إلا عبر sync_pull_changes — لا وصول مباشر لـ anon
+revoke all on public.sync_deletions from anon;
 
 -- ----------------------------------------------------------------------------
 --  ٥) وسم مصدر التعديل
@@ -2093,6 +2371,14 @@ begin
     return query select 'سجل التدقيق'::text, public.purge_audit_log(180);
     return query select 'سجل الحذف'::text,  public.purge_sync_deletions();
 
+    -- محاولات الدخول (تُنشأ في 11_fix_sync_permissions.sql) — أقدم من ٣٠ يوماً
+    if to_regclass('public.login_attempts') is not null then
+        return query execute
+            'with d as (delete from public.login_attempts
+                         where attempted_at < now() - interval ''30 days'' returning 1)
+             select ''محاولات الدخول''::text, count(*)::int from d';
+    end if;
+
     -- استرجاع المساحة فعلياً بعد الحذف (بدونها تبقى المساحة محجوزة)
     analyze public.audit_log;
     analyze public.sync_deletions;
@@ -2150,10 +2436,18 @@ language sql stable security definer set search_path = public as $$
        and public.is_admin();
 $$;
 
-grant execute on function public.purge_audit_log(int)   to authenticated;
-grant execute on function public.run_maintenance()      to authenticated;
-grant execute on function public.storage_report()       to authenticated;
-grant execute on function public.storage_summary()      to authenticated;
+-- الحذف والصيانة للمدير فقط (SQL Editor أو مفتاح الخدمة): دوال SECURITY DEFINER
+-- بلا فحص داخلي، ولو بقيت متاحة لكان أي زائر بمفتاح anon يستطيع تشغيلها.
+revoke execute on function public.purge_audit_log(int) from public, anon, authenticated;
+revoke execute on function public.run_maintenance()    from public, anon, authenticated;
+grant  execute on function public.purge_audit_log(int) to service_role;
+grant  execute on function public.run_maintenance()    to service_role;
+
+-- التقارير مفلترة داخلياً بـ is_admin()، فتبقى للمستخدمين المسجّلين فقط
+revoke execute on function public.storage_report()  from public, anon;
+revoke execute on function public.storage_summary() from public, anon;
+grant  execute on function public.storage_report()  to authenticated;
+grant  execute on function public.storage_summary() to authenticated;
 
 -- ----------------------------------------------------------------------------
 --  ٥) تقليل حجم سجل التدقيق من الأساس
@@ -2198,17 +2492,31 @@ begin
           into v_old
           from jsonb_each(v_diff);
         v_new := v_diff;
+
+        -- رقم الحركة للسياق فقط (لتعرف شاشة السجل أي حركة عُدّلت)
+        if to_jsonb(new) ? 'seq_no' and not (v_new ? 'seq_no') then
+            v_new := v_new || jsonb_build_object('seq_no', to_jsonb(new) -> 'seq_no');
+        end if;
     end if;
 
-    insert into public.audit_log (tenant_id, table_name, record_id, action, actor, old_data, new_data)
+    -- أسماء الأعمدة مطابقة لجدول audit_log في 01_schema.sql، ورقم السجل نصّي
+    -- لأن id في transactions رقم (bigint) وليس uuid
+    insert into public.audit_log (tenant_id, actor_id, action, table_name, record_id, before_data, after_data)
     values (
-        v_tenant, tg_table_name,
-        (case when tg_op = 'DELETE' then (to_jsonb(old) ->> 'id') else (to_jsonb(new) ->> 'id') end)::uuid,
-        tg_op, auth.uid(), v_old, v_new
+        v_tenant, auth.uid(), tg_op, tg_table_name,
+        case when tg_op = 'DELETE' then to_jsonb(old) ->> 'id' else to_jsonb(new) ->> 'id' end,
+        v_old, v_new
     );
 
     return case when tg_op = 'DELETE' then old else new end;
 end $$;
+
+-- تفعيل التدقيق المختصر فعلياً على الحركات (كان المحفّز ما زال على النسخة الكاملة)
+-- أهم أثر: رفع برنامج سطح المكتب يعيد كتابة الصفوف دون تغيير حقيقي، فكانت كل
+-- دورة رفع تضيف نسختين كاملتين لكل صف في السجل.
+drop trigger if exists trg_txn_audit on public.transactions;
+create trigger trg_txn_audit after insert or update or delete on public.transactions
+    for each row execute function public.write_audit();
 
 notify pgrst, 'reload schema';
 
@@ -2244,25 +2552,8 @@ select * from public.storage_summary();
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
---  ١) هل الطلب الحالي يستخدم مفتاح الخدمة (service_role)؟
---
---  نقرأ ذلك من إعداد الجلسة الذي يضبطه PostgREST قبل تنفيذ أي استعلام،
---  وهو ثابت طوال تنفيذ الدالة بخلاف current_user الذي يتغيّر مع
---  SECURITY DEFINER — لذلك هذه هي الطريقة الموثوقة للتحقق داخل مثل هذه الدوال.
+--  ١) is_service_role() — نُقلت إلى 02_rls.sql لأن has_tenant_access تعتمد عليها
 -- ----------------------------------------------------------------------------
-create or replace function public.is_service_role()
-returns boolean
-language plpgsql stable as $$
-declare
-    v_role text;
-begin
-    begin
-        v_role := current_setting('request.jwt.claims', true)::json ->> 'role';
-    exception when others then
-        v_role := null;
-    end;
-    return coalesce(v_role, '') = 'service_role';
-end $$;
 
 -- ----------------------------------------------------------------------------
 --  ٢) الإصلاح الذاتي لربط الحساب بمزامنته
@@ -2319,7 +2610,28 @@ end $$;
 -- لا نمنحها لـ anon مباشرة (تمنع أي شخص من استكشاف بيانات حساب بمجرد تخمين
 -- معرّفه)؛ العميل يصل إليها فقط بشكل غير مباشر عبر client_login_full أدناه،
 -- والمدير يصل إليها مباشرة بمفتاح الخدمة.
-grant execute on function public.ensure_tenant_link(uuid) to authenticated, service_role;
+--
+-- ⚠️ كانت ممنوحة لـ authenticated، فكان أي مستخدم مسجّل (أي عميل) يستطيع قراءة
+-- رمز مزامنة أي مصنع آخر بمعرّفه، ثم الكتابة في بياناته عبر دوال المزامنة.
+revoke execute on function public.ensure_tenant_link(uuid) from public, anon, authenticated;
+grant  execute on function public.ensure_tenant_link(uuid) to service_role;
+
+-- ----------------------------------------------------------------------------
+--  ٢-أ) سجل محاولات الدخول — يحدّ من تخمين كلمات المرور عبر client_login_full
+--       (الدالة متاحة لـ anon لأن برنامج العميل يدخل بها قبل أي جلسة)
+-- ----------------------------------------------------------------------------
+create table if not exists public.login_attempts (
+    id           bigserial primary key,
+    username     text        not null,
+    attempted_at timestamptz not null default now(),
+    succeeded    boolean     not null default false
+);
+
+create index if not exists idx_login_attempts_user
+    on public.login_attempts (lower(username), attempted_at desc);
+
+alter table public.login_attempts enable row level security;
+revoke all on public.login_attempts from anon, authenticated;
 
 -- ----------------------------------------------------------------------------
 --  ٣) دخول العميل — الآن يستدعي الإصلاح الذاتي دائماً، لا الترحيل لمرة واحدة
@@ -2348,21 +2660,37 @@ declare
     v_active    boolean;
     v_token     uuid;
     v_enabled   boolean;
+    v_user      text := lower(btrim(coalesce(p_username, '')));
+    v_fails     integer;
 begin
     if to_regclass('public.clients') is null then
         return;   -- لا نظام عملاء قديم في هذه القاعدة
     end if;
 
+    -- ١٠ محاولات فاشلة خلال ١٥ دقيقة توقف الاسم مؤقتاً. نرجع «بلا صفوف» (مثل
+    -- كلمة مرور خاطئة) بدل رمي خطأ، حتى لا يلجأ البرنامج للدالة القديمة.
+    select count(*) into v_fails
+      from public.login_attempts
+     where lower(username) = v_user
+       and not succeeded
+       and attempted_at > now() - interval '15 minutes';
+    if v_fails >= 10 then
+        return;
+    end if;
+
     select c.client_id, c.business_name, c.can_edit, c.is_active
       into v_client_id, v_business, v_can_edit, v_active
       from public.clients c
-     where lower(c.username) = lower(btrim(p_username))
+     where lower(c.username) = v_user
        and c.password_hash = p_password_hash
      limit 1;
 
     if v_client_id is null or not coalesce(v_active, true) then
+        insert into public.login_attempts (username, succeeded) values (v_user, false);
         return;   -- بيانات دخول خاطئة أو حساب موقوف: بلا صفوف
     end if;
+
+    insert into public.login_attempts (username, succeeded) values (v_user, true);
 
     -- الإصلاح الذاتي: يضمن الربط والرمز بغض النظر عن كيف أو متى أُنشئ الحساب
     select e.out_sync_token, e.out_sync_enabled
@@ -2455,8 +2783,11 @@ begin
     return query select 'صف tenants مطابق موجود؟',
         case when exists (select 1 from public.tenants where id = v_client_id) then 'نعم' else 'لا (سيُنشأ تلقائياً عند أول دخول بعد هذا الإصلاح)' end;
 
+    -- الرمز نفسه لا يُعرض أبداً — وجوده فقط
     return query select 'رمز المزامنة موجود؟',
-        coalesce((select sync_token::text from public.tenants where id = v_client_id), 'لا');
+        case when exists (select 1 from public.tenants
+                           where id = v_client_id and sync_token is not null)
+             then 'نعم' else 'لا' end;
 
     return query select 'المزامنة مفعّلة؟',
         coalesce((select case when sync_enabled then 'نعم' else 'لا — موقوفة يدوياً' end from public.tenants where id = v_client_id), 'لا يوجد صف بعد');
@@ -2465,7 +2796,9 @@ begin
         (select count(*)::text from public.transactions where tenant_id = v_client_id);
 end $$;
 
-grant execute on function public.diagnose_client_sync(text) to authenticated, service_role;
+-- للتشخيص من SQL Editor أو بمفتاح الخدمة فقط — كانت تكشف بيانات أي عميل لأي مستخدم مسجّل
+revoke execute on function public.diagnose_client_sync(text) from public, anon, authenticated;
+grant  execute on function public.diagnose_client_sync(text) to service_role;
 
 notify pgrst, 'reload schema';
 
@@ -3041,6 +3374,115 @@ select t.business_name as المصنع,
  where a.is_active
  group by 1, 2
  order by 1, 2;
+
+
+-- ############################################################################
+-- ##  المصدر: 14_security_hardening.sql
+-- ############################################################################
+
+-- ============================================================================
+--  جاديت ERP — تحصين الصلاحيات (يُشغَّل آخر شيء، ضمن INSTALL_ALL.sql)
+--
+--  المشكلة التي يحلّها:
+--    PostgreSQL يمنح تنفيذ أي دالة جديدة لـ PUBLIC تلقائياً، وSupabase يمنحها
+--    أيضاً لـ anon صراحةً. ومفتاح anon علني بطبيعته (داخل تطبيق الويب وبرنامج
+--    العميل). النتيجة قبل هذا الملف: أي شخص على الإنترنت كان يستطيع استدعاء
+--    دوال الحسابات والبحث مباشرةً بمفتاح anon، ودوال SECURITY DEFINER تتخطى RLS.
+--
+--  القاعدة بعد هذا الملف:
+--    • anon لا يستدعي إلا دوال المزامنة ودخول العميل (وكلها تتحقق من رمز سرّي).
+--    • كل دوال الويب للمستخدمين المسجّلين فقط، وكل واحدة منها تتحقق داخلياً
+--      من has_tenant_access — فالعميل لا يصل لمصنع غيره حتى لو عرف معرّفه.
+--
+--  آمن لإعادة التشغيل، ولا يمس أي دالة قديمة خارج نظام جاديت (مثل
+--  verify_client_login أو upload_backup) — تلك تظهر في تقرير المراجعة أدناه.
+-- ============================================================================
+
+do $$
+declare
+    -- دوال تطبيق الويب والدوال الداخلية: لا يستدعيها anon إطلاقاً
+    v_web_only text[] := array[
+        'current_tenant_id', 'current_role_name', 'is_admin', 'is_service_role',
+        'has_tenant_access', 'can_edit_tenant',
+        'inbound_types', 'sale_types', 'khayas_boxes',
+        'next_seq_no', 'post_transaction', 'post_transactions_batch',
+        'treasury_balance', 'box_period_totals', 'worker_ledger', 'sales_invoices',
+        'workshop_losses', 'account_opening_balance', 'touch_activity',
+        'admin_tenants_overview', 'seed_tenant_defaults', 'admin_create_tenant',
+        'post_journal_entry', 'delete_journal_entry', 'journal_entries',
+        'close_khayas_box', 'reopen_khayas_box', 'boxes_closing_status',
+        'losses_breakdown', 'invoice_archive', 'search_transactions',
+        'admin_sync_overview', 'admin_rotate_sync_token', 'my_session',
+        'storage_report', 'storage_summary',
+        -- الصيانة والتشخيص والربط: للمدير عبر SQL Editor أو مفتاح الخدمة فقط
+        'purge_audit_log', 'run_maintenance', 'purge_sync_deletions',
+        'ensure_tenant_link', 'diagnose_client_sync', 'assert_sync_token',
+        -- دوال المحفّزات (لا تحتاج صلاحية تنفيذ أصلاً)
+        'touch_updated_at', 'fill_txn_period', 'log_txn_audit', 'write_audit',
+        'guard_tenant_self_update', 'log_txn_deletion', 'mark_web_source'
+    ];
+    r record;
+begin
+    for r in
+        select p.oid::regprocedure as sig
+          from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'public'
+           and p.proname = any(v_web_only)
+    loop
+        execute format('revoke execute on function %s from public, anon', r.sig);
+    end loop;
+end $$;
+
+-- دوال لا يستدعيها إلا المدير عبر SQL Editor أو مفتاح الخدمة — تُسحب من
+-- authenticated أيضاً (سحبها من PUBLIC أعلاه لا يكفي لأن Supabase يمنحها صراحةً)
+revoke execute on function public.purge_audit_log(int)      from authenticated;
+revoke execute on function public.run_maintenance()         from authenticated;
+revoke execute on function public.purge_sync_deletions()    from authenticated;
+revoke execute on function public.ensure_tenant_link(uuid)  from authenticated;
+revoke execute on function public.diagnose_client_sync(text) from authenticated;
+revoke execute on function public.assert_sync_token(uuid, uuid) from authenticated;
+
+-- الجداول: لا وصول مباشر لـ anon لأي جدول من جداول النظام
+revoke all on public.transactions    from anon;
+revoke all on public.accounts        from anon;
+revoke all on public.tenants         from anon;
+revoke all on public.app_users       from anon;
+revoke all on public.tenant_settings from anon;
+revoke all on public.box_closings    from anon;
+revoke all on public.audit_log       from anon;
+revoke all on public.tenant_devices  from anon;
+revoke all on public.sync_deletions  from anon;
+revoke all on public.login_attempts  from anon, authenticated;
+
+-- سجل التدقيق يكتبه المحفّز فقط — المستخدم يقرأ سجلّ مصنعه (RLS) ولا يعدّله
+revoke insert, update, delete on public.audit_log from authenticated;
+
+notify pgrst, 'reload schema';
+
+-- ----------------------------------------------------------------------------
+--  تقرير المراجعة: كل دالة ما زال anon يستطيع تنفيذها
+--
+--  المتوقع: دوال المزامنة (sync_*) و client_login_full فقط، وهي محمية برمز.
+--  أي دالة أخرى تظهر هنا (غالباً من النظام القديم: verify_client_login،
+--  check_client_can_edit، upload_backup، download_backup، verify_sub_admin_login)
+--  راجِع تعريفها: هل تتحقق من كلمة مرور أو رمز قبل أن تُرجع بيانات عميل؟
+-- ----------------------------------------------------------------------------
+select p.proname                                  as الدالة,
+       pg_get_function_identity_arguments(p.oid)  as المعاملات,
+       case when p.prosecdef then 'SECURITY DEFINER' else 'INVOKER' end as النوع,
+       case when p.proname like 'sync\_%' or p.proname = 'client_login_full'
+            then '✔ متوقعة (محمية برمز المزامنة/كلمة المرور)'
+            else '⚠️ راجعها — متاحة لأي زائر بمفتاح anon'
+       end                                        as الحالة
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public'
+   and has_function_privilege('anon', p.oid, 'execute')
+   -- دوال الإضافات (pgcrypto وغيرها) ليست من النظام — تُستبعد من التقرير
+   and not exists (select 1 from pg_depend d
+                    where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+ order by 4 desc, 1;
 
 
 notify pgrst, 'reload schema';

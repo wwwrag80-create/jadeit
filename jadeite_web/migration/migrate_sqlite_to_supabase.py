@@ -29,7 +29,7 @@ import os
 import sqlite3
 import sys
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 BATCH_SIZE = 500
 
@@ -49,7 +49,17 @@ NON_ACCOUNT_CATEGORIES = {"نسب_خصم_احجار"}
 OLD_INVOICE_COLUMNS = [
     "invoice_id", "date_time", "name", "op_type", "weight", "before_w", "after_w",
     "note", "settled_status", "trees_count", "set_number", "row_number", "manual_no",
+    "period",
 ]
+
+# الحالات التي تعرفها السحابة (txn_status). MEMO سطر معلوماتي لا يُحتسب —
+# تحويله إلى ACTIVE كان يُدخله خطأً في رصيد الخزينة والصناديق.
+KNOWN_STATUSES = ("ACTIVE", "SETTLED", "SETTLED_INOUT", "MEMO")
+
+
+def map_status(raw: Any) -> str:
+    text = str(raw or "ACTIVE").strip().upper()
+    return text if text in KNOWN_STATUSES else "ACTIVE"
 
 
 # ============================================================================
@@ -63,18 +73,23 @@ def _table_columns(con: sqlite3.Connection, table: str) -> List[str]:
 
 
 def normalize_date(raw: Any) -> str:
-    """يحوّل التاريخ القديم إلى ISO 8601 مقبول في PostgreSQL."""
+    """يحوّل التاريخ القديم إلى ISO 8601 بإزاحة التوقيت المحلي لهذا الجهاز.
+
+    مطابق لما يرفعه برنامج العميل نفسه (cloud_sync._to_iso): التاريخ المحلي
+    بإزاحته (مثلاً +03:00). بدون الإزاحة يخزّنه الخادم كأنه UTC فيظهر متأخراً
+    ٣ ساعات في كل الشاشات — شغّل الأداة على جهاز بتوقيت المصنع نفسه.
+    """
     text = str(raw or "").strip()
     if not text:
-        return dt.datetime.now().isoformat(timespec="seconds")
+        return dt.datetime.now().astimezone().isoformat(timespec="seconds")
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            return dt.datetime.strptime(text, fmt).isoformat(timespec="seconds")
+            return dt.datetime.strptime(text, fmt).astimezone().isoformat(timespec="seconds")
         except ValueError:
             continue
     # صيغة غير متوقعة: نحاول ISO مباشرة، وإلا نُبقيها كما هي ليرفضها الخادم بوضوح
     try:
-        return dt.datetime.fromisoformat(text).isoformat(timespec="seconds")
+        return dt.datetime.fromisoformat(text).astimezone().isoformat(timespec="seconds")
     except ValueError:
         return text
 
@@ -111,6 +126,9 @@ def read_legacy_db(db_path: str, tenant_id: str) -> Dict[str, Any]:
         transactions: List[Dict[str, Any]] = []
         for r in rows:
             row = {c: (r[c] if c in r.keys() else None) for c in available}
+            # الفترة المحاسبية كما هي عند العميل (قد تختلف عن شهر التاريخ)،
+            # أو شهر التاريخ للقواعد القديمة بلا عمود فترة — نفس سلوك البرنامج
+            period = str(row.get("period") or "").strip() or str(row.get("date_time") or "")[:7]
             transactions.append({
                 "tenant_id":     tenant_id,
                 "seq_no":        int(row.get("invoice_id") or 0),
@@ -121,11 +139,12 @@ def read_legacy_db(db_path: str, tenant_id: str) -> Dict[str, Any]:
                 "weight_before": to_num(row.get("before_w")),
                 "weight_after":  to_num(row.get("after_w")),
                 "note":          str(row.get("note") or ""),
-                "status":        str(row.get("settled_status") or "ACTIVE") or "ACTIVE",
+                "status":        map_status(row.get("settled_status")),
                 "trees_count":   to_num(row.get("trees_count")),
                 "set_number":    str(row.get("set_number") or ""),
                 "row_number":    str(row.get("row_number") or ""),
                 "manual_no":     str(row.get("manual_no") or ""),
+                "period":        period,
             })
 
         accounts: List[Dict[str, Any]] = []
@@ -149,6 +168,8 @@ def read_legacy_db(db_path: str, tenant_id: str) -> Dict[str, Any]:
                     "tenant_id": tenant_id,
                     "name": name,
                     "category": new_cat,
+                    # القسم الحقيقي حرفياً (13_fix_admin_mirror.sql) — يعتمده برنامج المدير
+                    "category_raw": old_cat,
                     "box_key": name if new_cat == "صناديق الخياس" else None,
                     "is_system": False,
                 })
@@ -190,7 +211,7 @@ def build_report(transactions: List[Dict[str, Any]]) -> Dict[str, Any]:
         entry = by_type[t["op_type"]]
         entry["count"] += 1
         entry["weight"] = round(entry["weight"] + t["weight"], 3)
-        by_period[t["txn_date"][:7]] += 1
+        by_period[t.get("period") or t["txn_date"][:7]] += 1
 
         if t["seq_no"] in seen_seq:
             issues.append(f"رقم حركة مكرر في الملف القديم: {t['seq_no']}")

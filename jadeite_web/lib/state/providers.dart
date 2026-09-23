@@ -13,6 +13,7 @@ final txnRepoProvider = Provider((_) => TxnRepository());
 final ledgerRepoProvider = Provider((_) => LedgerRepository());
 final journalRepoProvider = Provider((_) => JournalRepository());
 final closingRepoProvider = Provider((_) => ClosingRepository());
+final auditRepoProvider = Provider((_) => AuditRepository());
 
 // ---------- الجلسة ----------
 final sessionProvider = StateNotifierProvider<SessionController, SessionState>(
@@ -38,14 +39,25 @@ final periodProvider = StateNotifierProvider<PeriodController, String>(
   (_) => PeriodController(),
 );
 
+// ---------- إصدار البيانات ----------
+/// عدّاد يزداد كلما تغيّرت بيانات المستأجر (بث لحظي من جهاز العميل، أو ترحيل
+/// من هذه الشاشة). كل provider يقرأ بيانات يراقبه، فتتحدّث كل الشاشات المفتوحة
+/// معاً بزيادة واحدة — بدل أن تعرف كل شاشة قائمة بما يجب إبطاله في غيرها.
+final dataRevisionProvider = StateProvider<int>((_) => 0);
+
+/// يُستدعى بعد أي ترحيل أو حذف أو تعديل
+void bumpDataRevision(WidgetRef ref) => ref.read(dataRevisionProvider.notifier).state++;
+
 // ---------- بيانات مشتقّة ----------
 final accountsProvider = FutureProvider.autoDispose<List<Account>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   if (tenantId == null) return const [];
   return ref.read(accountRepoProvider).list(tenantId);
 });
 
 final treasuryProvider = FutureProvider.autoDispose<double>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return 0;
@@ -53,6 +65,7 @@ final treasuryProvider = FutureProvider.autoDispose<double>((ref) async {
 });
 
 final workshopLossesProvider = FutureProvider.autoDispose<double>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return 0;
@@ -61,6 +74,7 @@ final workshopLossesProvider = FutureProvider.autoDispose<double>((ref) async {
 
 final salesInvoicesProvider =
     FutureProvider.autoDispose<List<SalesInvoiceSummary>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   if (tenantId == null) return const [];
@@ -68,6 +82,7 @@ final salesInvoicesProvider =
 });
 
 final adminTenantsProvider = FutureProvider.autoDispose<List<Tenant>>((ref) async {
+  ref.watch(dataRevisionProvider);
   return ref.read(tenantRepoProvider).adminOverview();
 });
 
@@ -85,6 +100,7 @@ final activeTenantSyncProvider = FutureProvider.autoDispose<SyncOverview?>((ref)
 
 /// حالة مزامنة كل العملاء — تتحدّث لحظياً مع نبضات أجهزتهم
 final syncOverviewProvider = FutureProvider.autoDispose<List<SyncOverview>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final session = ref.watch(sessionProvider);
   if (!(session.user?.isAdmin ?? false)) return const [];
   return ref.read(tenantRepoProvider).syncOverview();

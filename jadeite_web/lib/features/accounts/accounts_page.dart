@@ -94,7 +94,7 @@ class AccountsPage extends ConsumerWidget {
                 if (!ok) return;
                 try {
                   await ref.read(accountRepoProvider).remove(account.id);
-                  ref.invalidate(accountsProvider);
+                  bumpDataRevision(ref);
                   if (context.mounted) AppSnack.success(context, 'تم حذف الحساب.');
                 } catch (e) {
                   if (context.mounted) AppSnack.error(context, '$e');
@@ -144,7 +144,7 @@ class AccountsPage extends ConsumerWidget {
     if (tenantId == null) return;
     try {
       await ref.read(accountRepoProvider).add(tenantId, name.text.trim(), category);
-      ref.invalidate(accountsProvider);
+      bumpDataRevision(ref);
       if (context.mounted) AppSnack.success(context, 'تمت إضافة الحساب.');
     } catch (e) {
       if (context.mounted) AppSnack.error(context, '$e');

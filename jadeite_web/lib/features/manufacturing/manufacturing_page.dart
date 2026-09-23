@@ -18,6 +18,7 @@ final selectedWorkerProvider = StateProvider<String?>((_) => null);
 /// كشف حركة العامل (يُحسب في قاعدة البيانات لضمان رقم واحد لكل الأجهزة)
 final workerLedgerProvider =
     FutureProvider.autoDispose<List<WorkerLedgerRow>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final worker = ref.watch(selectedWorkerProvider);
   final period = ref.watch(periodProvider);
@@ -27,6 +28,7 @@ final workerLedgerProvider =
 
 /// حركات صندوق (كاستنج/تلميع/بف) للفترة المعروضة، مجمّعة في صفوف
 final stageRowsProvider = FutureProvider.autoDispose<List<StageRow>>((ref) async {
+  ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);
   final period = ref.watch(periodProvider);
   final stage = ref.watch(stageSelectionProvider);
@@ -219,8 +221,9 @@ class _WorkerSection extends ConsumerWidget {
     final rowNo = TextEditingController();
     final setNo = TextEditingController();
     final note = TextEditingController();
+    // التاريخ حقيقي (الآن)، والفترة المعروضة تُرسل صراحةً مع الحركة
     final period = ref.read(periodProvider);
-    DateTime date = Fmt.smartDefaultDate(period);
+    final date = DateTime.now();
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -294,6 +297,7 @@ class _WorkerSection extends ConsumerWidget {
         note: note.text.trim(),
         setNumber: setNo.text.trim(),
         rowNumber: rowNo.text.trim(),
+        period: period,
       ));
     }
 
@@ -304,8 +308,7 @@ class _WorkerSection extends ConsumerWidget {
 
     try {
       await ref.read(txnRepoProvider).postMany(tenantId, entries);
-      ref.invalidate(workerLedgerProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (context.mounted) AppSnack.success(context, 'تم ترحيل ${entries.length} حركة.');
     } catch (e) {
       if (context.mounted) AppSnack.error(context, '$e');
@@ -379,9 +382,12 @@ class _StageSection extends ConsumerWidget {
                           message: 'حذف كل حركات هذا الصف (${r.ids.length} حركة)؟',
                           danger: true);
                       if (!ok) return;
-                      await ref.read(txnRepoProvider).deleteMany(r.ids);
-                      ref.invalidate(stageRowsProvider);
-                      ref.invalidate(treasuryProvider);
+                      try {
+                        await ref.read(txnRepoProvider).deleteMany(r.ids);
+                        bumpDataRevision(ref);
+                      } catch (e) {
+                        if (context.mounted) AppSnack.error(context, '$e');
+                      }
                     },
                   )),
                 ]);
@@ -422,7 +428,8 @@ class _StageSection extends ConsumerWidget {
     final qabd = TextEditingController();
     final trees = TextEditingController();
     final note = TextEditingController();
-    final date = Fmt.smartDefaultDate(ref.read(periodProvider));
+    final period = ref.read(periodProvider);
+    final date = DateTime.now();
 
     final ok = await showDialog<bool>(
       context: context,
@@ -495,6 +502,7 @@ class _StageSection extends ConsumerWidget {
           note: note.text.trim(),
           rowNumber: rowNo.text.trim(),
           treesCount: treesV,
+          period: period,
         ),
       if (qabdV > 0)
         Txn.newEntry(
@@ -505,13 +513,13 @@ class _StageSection extends ConsumerWidget {
           note: note.text.trim(),
           rowNumber: rowNo.text.trim(),
           treesCount: treesV,
+          period: period,
         ),
     ];
 
     try {
       await ref.read(txnRepoProvider).postMany(tenantId, entries);
-      ref.invalidate(stageRowsProvider);
-      ref.invalidate(treasuryProvider);
+      bumpDataRevision(ref);
       if (context.mounted) AppSnack.success(context, 'تم الترحيل وتحديث الأرصدة.');
     } catch (e) {
       if (context.mounted) AppSnack.error(context, '$e');

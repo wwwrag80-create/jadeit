@@ -92,9 +92,16 @@ create index if not exists idx_accounts_tenant_cat on public.accounts(tenant_id,
 --  ٤) الحركات — دفتر الأستاذ الموحّد لكل النظام
 --     كل شيء حركة: وارد، مبيعات، عمليات تصنيع، خياس، قيود يومية، قيود افتتاحية
 -- ============================================================================
+--  ACTIVE / SETTLED_INOUT: حركات تُحتسب في الأرصدة (نفس فلتر برنامج سطح المكتب)
+--  SETTLED: حركات قسم أُقفلت فترته وحلّ محلّها قيد الإقفال — لا تُحتسب
+--  MEMO: سطور معلوماتية (خياس البوليش/المركب/صافي الطقم) — لا تُحتسب أبداً
 do $$ begin
-    create type public.txn_status as enum ('ACTIVE', 'SETTLED', 'SETTLED_INOUT');
+    create type public.txn_status as enum ('ACTIVE', 'SETTLED', 'SETTLED_INOUT', 'MEMO');
 exception when duplicate_object then null; end $$;
+
+-- القواعد القديمة أُنشئ فيها النوع بلا MEMO، فكان البرنامج يرفع السطور المعلوماتية
+-- كـ ACTIVE فتدخل خطأً في رصيد الخزينة والصناديق عند المدير
+alter type public.txn_status add value if not exists 'MEMO';
 
 create table if not exists public.transactions (
     id              bigserial primary key,
@@ -104,8 +111,11 @@ create table if not exists public.transactions (
     seq_no          bigint not null,
 
     txn_date        timestamptz not null,
-    -- شهر الحركة المحاسبي (YYYY-MM) — مُولَّد تلقائياً لعزل الفترات وتسريع الاستعلام
-    period          text generated always as (to_char(txn_date, 'YYYY-MM')) stored,
+    -- شهر الحركة المحاسبي (YYYY-MM) — عمود عادي يُملأ تلقائياً من التاريخ بمحفّز
+    -- (trg_txn_period أدناه) إن لم يُرسَل صراحةً. لا يصح أن يكون عموداً مُولَّداً:
+    -- to_char على timestamptz ليست immutable فيرفضها PostgreSQL، وبرنامج سطح
+    -- المكتب يرسل الفترة صراحةً لأنها قرار محاسبي قد يختلف عن شهر التاريخ.
+    period          text,
 
     account_name    text not null,               -- الاسم (عامل/مورد/صندوق/حساب)
     op_type         text not null,               -- النوع (صرف ذهب، وارد ذهب، مبيعات ذهب ...)
@@ -197,6 +207,21 @@ create trigger trg_tenants_touch before update on public.tenants
 drop trigger if exists trg_txn_touch on public.transactions;
 create trigger trg_txn_touch before update on public.transactions
     for each row execute function public.touch_updated_at();
+
+-- الفترة تُشتق من التاريخ فقط عندما لا تُرسل صراحةً — بدونها تُسجَّل حركات
+-- الويب بفترة فارغة فتختفي من كل الشاشات والأرصدة المبنية على الفترة.
+create or replace function public.fill_txn_period()
+returns trigger language plpgsql as $$
+begin
+    if new.period is null or btrim(new.period) = '' then
+        new.period := to_char(new.txn_date, 'YYYY-MM');
+    end if;
+    return new;
+end $$;
+
+drop trigger if exists trg_txn_period on public.transactions;
+create trigger trg_txn_period before insert or update on public.transactions
+    for each row execute function public.fill_txn_period();
 
 -- ============================================================================
 --  ٩) تسجيل التدقيق على الحركات

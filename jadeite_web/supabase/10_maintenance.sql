@@ -37,6 +37,14 @@ begin
     return query select 'سجل التدقيق'::text, public.purge_audit_log(180);
     return query select 'سجل الحذف'::text,  public.purge_sync_deletions();
 
+    -- محاولات الدخول (تُنشأ في 11_fix_sync_permissions.sql) — أقدم من ٣٠ يوماً
+    if to_regclass('public.login_attempts') is not null then
+        return query execute
+            'with d as (delete from public.login_attempts
+                         where attempted_at < now() - interval ''30 days'' returning 1)
+             select ''محاولات الدخول''::text, count(*)::int from d';
+    end if;
+
     -- استرجاع المساحة فعلياً بعد الحذف (بدونها تبقى المساحة محجوزة)
     analyze public.audit_log;
     analyze public.sync_deletions;
@@ -94,10 +102,18 @@ language sql stable security definer set search_path = public as $$
        and public.is_admin();
 $$;
 
-grant execute on function public.purge_audit_log(int)   to authenticated;
-grant execute on function public.run_maintenance()      to authenticated;
-grant execute on function public.storage_report()       to authenticated;
-grant execute on function public.storage_summary()      to authenticated;
+-- الحذف والصيانة للمدير فقط (SQL Editor أو مفتاح الخدمة): دوال SECURITY DEFINER
+-- بلا فحص داخلي، ولو بقيت متاحة لكان أي زائر بمفتاح anon يستطيع تشغيلها.
+revoke execute on function public.purge_audit_log(int) from public, anon, authenticated;
+revoke execute on function public.run_maintenance()    from public, anon, authenticated;
+grant  execute on function public.purge_audit_log(int) to service_role;
+grant  execute on function public.run_maintenance()    to service_role;
+
+-- التقارير مفلترة داخلياً بـ is_admin()، فتبقى للمستخدمين المسجّلين فقط
+revoke execute on function public.storage_report()  from public, anon;
+revoke execute on function public.storage_summary() from public, anon;
+grant  execute on function public.storage_report()  to authenticated;
+grant  execute on function public.storage_summary() to authenticated;
 
 -- ----------------------------------------------------------------------------
 --  ٥) تقليل حجم سجل التدقيق من الأساس
@@ -142,17 +158,31 @@ begin
           into v_old
           from jsonb_each(v_diff);
         v_new := v_diff;
+
+        -- رقم الحركة للسياق فقط (لتعرف شاشة السجل أي حركة عُدّلت)
+        if to_jsonb(new) ? 'seq_no' and not (v_new ? 'seq_no') then
+            v_new := v_new || jsonb_build_object('seq_no', to_jsonb(new) -> 'seq_no');
+        end if;
     end if;
 
-    insert into public.audit_log (tenant_id, table_name, record_id, action, actor, old_data, new_data)
+    -- أسماء الأعمدة مطابقة لجدول audit_log في 01_schema.sql، ورقم السجل نصّي
+    -- لأن id في transactions رقم (bigint) وليس uuid
+    insert into public.audit_log (tenant_id, actor_id, action, table_name, record_id, before_data, after_data)
     values (
-        v_tenant, tg_table_name,
-        (case when tg_op = 'DELETE' then (to_jsonb(old) ->> 'id') else (to_jsonb(new) ->> 'id') end)::uuid,
-        tg_op, auth.uid(), v_old, v_new
+        v_tenant, auth.uid(), tg_op, tg_table_name,
+        case when tg_op = 'DELETE' then to_jsonb(old) ->> 'id' else to_jsonb(new) ->> 'id' end,
+        v_old, v_new
     );
 
     return case when tg_op = 'DELETE' then old else new end;
 end $$;
+
+-- تفعيل التدقيق المختصر فعلياً على الحركات (كان المحفّز ما زال على النسخة الكاملة)
+-- أهم أثر: رفع برنامج سطح المكتب يعيد كتابة الصفوف دون تغيير حقيقي، فكانت كل
+-- دورة رفع تضيف نسختين كاملتين لكل صف في السجل.
+drop trigger if exists trg_txn_audit on public.transactions;
+create trigger trg_txn_audit after insert or update or delete on public.transactions
+    for each row execute function public.write_audit();
 
 notify pgrst, 'reload schema';
 
