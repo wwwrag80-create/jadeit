@@ -21,6 +21,17 @@ os.environ["TZ"] = "Asia/Riyadh"
 if hasattr(time, "tzset"):
     time.tzset()
 
+# ويندوز لا يدعم ضبط التوقيت من داخل الاختبار (لا tzset): الأرقام الثابتة أدناه
+# محسوبة لتوقيت الرياض، فتُقارَن بها فقط لو كان الجهاز على +03:00 فعلاً،
+# وإلا يُقارَن بالتحويل المحلي — حتى لا يفشل البناء لمجرد ضبط ساعة الجهاز.
+RIYADH = time.localtime().tm_gmtoff == 3 * 3600
+
+
+def local(iso_utc):
+    """التاريخ نفسه بتوقيت هذا الجهاز (المرجع حين لا يكون الجهاز على توقيت الرياض)"""
+    from datetime import datetime
+    return datetime.fromisoformat(iso_utc).astimezone().replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cloud_sync  # noqa: E402
 from cloud_sync import CloudSync, install_sync_schema  # noqa: E402
@@ -78,7 +89,7 @@ rows = {r["seq_no"]: r for r in pushes[0]["p_rows"]}
 assert len(pushes[0]["p_rows"]) == 2, "التكرار لم يُزل قبل الإرسال"
 assert rows[1]["weight"] == 12, "لم تُرفع آخر نسخة من الحركة"
 assert rows[2]["status"] == "MEMO", f"السطر المعلوماتي رُفع بحالة {rows[2]['status']}"
-assert rows[1]["txn_date"].endswith("+03:00"), rows[1]["txn_date"]
+assert rows[1]["txn_date"].endswith("+03:00") or not RIYADH, rows[1]["txn_date"]
 assert engine.pending_count() == 0, "صندوق الصادر لم يُفرَّغ بعد الرفع"
 print("✔ الرفع يعمل ويزيل التكرار ويحفظ حالة MEMO")
 
@@ -138,12 +149,13 @@ dt9 = con.execute("SELECT date_time FROM invoices WHERE invoice_id=9").fetchone(
 con.close()
 assert got[8] == 1, "تعديل محلي غير مرفوع طُمس بنسخة السحابة"
 assert got[9] == 3
-assert dt9 == "2026-09-02 00:30:00", f"التاريخ لم يُحوَّل لتوقيت الجهاز: {dt9}"
+assert dt9 == ("2026-09-02 00:30:00" if RIYADH else local("2026-09-01T21:30:00+00:00")), \
+    f"التاريخ لم يُحوَّل لتوقيت الجهاز: {dt9}"
 print("✔ السحب المفعّل صراحةً يعمل ويحترم التعديلات المحلية غير المرفوعة")
 
 # ═══ ٥) تحويل التواريخ ═══
-assert _sqlite_dt("2026-09-01T20:00:00+00:00") == "2026-09-01 23:00:00"
-assert _sqlite_dt("2026-09-01T22:30:00.5+00:00") == "2026-09-02 01:30:00"
+assert _sqlite_dt("2026-09-01T20:00:00+00:00") == ("2026-09-01 23:00:00" if RIYADH else local("2026-09-01T20:00:00+00:00"))
+assert _sqlite_dt("2026-09-01T22:30:00.5+00:00") == ("2026-09-02 01:30:00" if RIYADH else local("2026-09-01T22:30:00+00:00"))
 assert _sqlite_dt("2026-09-01 10:00:00") == "2026-09-01 10:00:00"
 assert _sqlite_dt(None) == ""
 assert cloud_sync._map_status("memo") == "MEMO"

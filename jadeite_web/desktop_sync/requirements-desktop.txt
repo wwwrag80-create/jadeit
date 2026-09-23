@@ -1,0 +1,9 @@
+# مكتبات برنامج جاديت لسطح المكتب (نسخة العميل ونسخة المدير) + أداة البناء
+# تُثبَّت تلقائياً بواسطة build_client.bat / build_admin.bat داخل بيئة بناء مستقلة
+customtkinter>=5.2,<6
+Pillow>=10.0
+reportlab>=4.0
+arabic-reshaper>=3.0
+python-bidi>=0.4
+supabase>=2.0,<3
+pyinstaller>=6.0

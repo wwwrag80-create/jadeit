@@ -32,13 +32,9 @@ python rageh-1-34-14-cloud.py
 
 ## البناء كملف تنفيذي
 
-```
-pyinstaller --onefile --noconsole ^
-  --add-data "cloud_sync.py;." ^
-  --add-data "sync_down.py;." ^
-  --add-data "supabase_api.py;." ^
-  rageh-1-34-14-cloud.py
-```
+نقرة مزدوجة على **`build_client.bat`** (للعملاء) أو **`build_admin.bat`** (لك) —
+التفاصيل في [`BUILD_AR.md`](BUILD_AR.md). السكربت يولّد نسخة العميل الآمنة، ويشغّل
+كل الفحوص، ويبني exe ويتحقق منه.
 
 > ⚠️ **المفتاح السري لم يعد مكتوباً داخل الكود إطلاقاً.** نسخة المدير تقرأه عند
 > التشغيل من أحد مكانين:
