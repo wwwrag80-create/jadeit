@@ -497,6 +497,10 @@ def cloud_set_client_can_edit(client_id, value):
 
 def cloud_upload_backup(client_id, db_path):
     """يرفع نسخة كاملة من قاعدة البيانات المحلية للسحابة — تعمل في الخلفية ولا تعطّل البرنامج عند فشلها"""
+    # نسخة المدير مرآة للقراءة: قاعدتها مبنية مما رفعه العميل، فرفعها كان يطمس
+    # نسخة العميل الاحتياطية على السحابة بنسخة المدير (كل ١٠ دقائق أثناء التصفّح)
+    if IS_ADMIN_BUILD:
+        return False
     sb = get_supabase_public_client()
     if sb is None or not client_id or not os.path.exists(db_path):
         return False
@@ -511,69 +515,21 @@ def cloud_upload_backup(client_id, db_path):
         return False
 
 
-def cloud_fetch_backup(client_id, target_db_path):
-    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً.
-
-    يرجع: "restored" (نُزّلت) | "none" (لا نسخة على السحابة لهذا الحساب) |
-          "error" (تعذّر الاتصال أو القراءة — قد تكون على السحابة نسخة سليمة)
-    التمييز بين الأخيرين هو ما يمنع البدء بقاعدة فارغة تُرفع فوق نسخة سليمة.
-    """
+def cloud_download_backup(client_id, target_db_path):
+    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً. يرجع True لو نجح"""
     sb = get_supabase_public_client()
     if sb is None or not client_id:
-        return "error"
+        return False
     try:
         res = sb.rpc("download_backup", {"p_client_id": client_id}).execute()
         if res.data and res.data[0].get("out_backup_data"):
             raw = base64.b64decode(res.data[0]["out_backup_data"])
             with open(target_db_path, "wb") as f:
                 f.write(raw)
-            return "restored"
-        return "none"
+            return True
     except Exception as e:
         log_cloud_error("تعذر تنزيل النسخة الاحتياطية من السحابة", e)
-    return "error"
-
-
-def cloud_download_backup(client_id, target_db_path):
-    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً. يرجع True لو نجح"""
-    return cloud_fetch_backup(client_id, target_db_path) == "restored"
-
-
-def local_client_data_exists(client_id, db_path):
-    """هل على هذا الجهاز بيانات لهذا العميل؟
-
-    قاعدته في مجلد البيانات، أو ملف قديم بجوار البرنامج يُرحَّل تلقائياً عند
-    الفتح (migrate_legacy_file) — وفي الحالتين لا يُسترجع شيء من السحابة.
-    """
-    if os.path.exists(db_path):
-        return True
-    for folder in {os.getcwd(), get_app_base_dir(), DATA_DIR}:
-        for name in (f"client_data_{client_id}.db", "gold_workshop.db"):
-            if os.path.exists(os.path.join(folder, name)):
-                return True
     return False
-
-
-def restore_client_database(client_id, db_path, ask_retry, ask_start_empty):
-    """تثبيت جديد / جهاز جديد / حُذف مجلد البيانات: يسترجع آخر نسخة من السحابة
-    **قبل** أي خطوة تُنشئ ملف القاعدة.
-
-    (كانت شاشة الرفع عند الدخول تُنشئ ملفاً فارغاً أولاً، فيظن البرنامج أن
-     البيانات موجودة ويتخطّى الاسترجاع، ثم يرفع القاعدة الفارغة فوق آخر نسخة
-     سليمة على السحابة خلال ثوانٍ.)
-
-    ask_retry / ask_start_empty: أسئلة للمستخدم عند تعذّر الاتصال (تُمرَّر من
-    الواجهة). يرجع True للمتابعة وفتح البرنامج، و False للعودة لشاشة الدخول.
-    """
-    if not client_id or local_client_data_exists(client_id, db_path):
-        return True
-    while True:
-        status = cloud_fetch_backup(client_id, db_path)
-        if status in ("restored", "none"):
-            return True
-        if ask_retry():
-            continue
-        return bool(ask_start_empty())
 
 
 def cloud_create_client_account(business_name, username, password):
@@ -2468,10 +2424,15 @@ class GoldSystemApp(ctk.CTk):
             except Exception as e:
                 log_cloud_error("فشل ترحيل قاعدة البيانات القديمة للاسم الجديد الخاص بالعميل", e)
 
-        # لو مفيش نسخة محلية للعميل ده (تنصيب جديد/تم حذف البرنامج وإرجاعه) حاول استرجاعها من السحابة تلقائياً
+        # لا توجد قاعدة لهذا الحساب على الجهاز:
+        #   • نسخة العميل: تُسترجع من أحدث نسخة احتياطية سليمة في مجلد النسخ على
+        #     جهازه نفسه (Backups). لا تسحب من السحابة أبداً — بياناتها المحلية
+        #     هي مصدر الحقيقة، والسحابة تستقبل منها فقط (RECOVERY_AR.md).
+        #   • نسخة المدير (مرآة للقراءة): تنزّل آخر نسخة من السحابة كما كانت.
         if self.client_id and not os.path.exists(self.db_path):
-            restored = cloud_download_backup(self.client_id, self.db_path)
-            if not restored:
+            if not IS_ADMIN_BUILD:
+                self.restore_missing_db_from_local_backup()
+            elif not cloud_download_backup(self.client_id, self.db_path):
                 # تحذير صريح بدل البدء الصامت بقاعدة بيانات فارغة وكأن مفيش مشكلة
                 self.after(500, lambda: messagebox.showwarning(
                     "تنبيه استرجاع البيانات",
@@ -2489,7 +2450,9 @@ class GoldSystemApp(ctk.CTk):
         self.perform_backup()       # أخذ نسخة احتياطية عند تشغيل البرنامج
         self.schedule_backup()      # جدولة النسخ الاحتياطي التلقائي كل 15 دقيقة
         if self.client_id:
-            self.schedule_cloud_backup()   # دورة المزامنة السحابية كل ١٠ ثواني
+            if not IS_ADMIN_BUILD:
+                # الرفع الدوري لنسخة العميل وحدها (المدير يقرأ فقط، ولا يُحسب ظهوره حضوراً للعميل)
+                self.schedule_cloud_backup()   # دورة المزامنة السحابية كل ١٠ ثواني
             self.protocol("WM_DELETE_WINDOW", self.on_app_closing)
             if not self.is_admin_session:
                 self.schedule_permission_refresh()   # تحديث دوري لصلاحية التعديل (كل دقيقة)
@@ -2737,10 +2700,11 @@ class GoldSystemApp(ctk.CTk):
         except Exception:
             pass
         """يحاول رفع نسخة أخيرة للسحابة قبل إغلاق البرنامج (بدون تعطيل الإغلاق لو فشل الاتصال)"""
-        try:
-            threading.Thread(target=cloud_upload_backup, args=(self.client_id, self.db_path), daemon=True).start()
-        except Exception:
-            pass
+        if not IS_ADMIN_BUILD:
+            try:
+                threading.Thread(target=cloud_upload_backup, args=(self.client_id, self.db_path), daemon=True).start()
+            except Exception:
+                pass
         self.destroy()
 
     def list_local_backups(self):
@@ -2922,9 +2886,36 @@ class GoldSystemApp(ctk.CTk):
         except Exception as e:
             messagebox.showinfo("المسار", f"{path}\n\n({e})")
 
+    def restore_missing_db_from_local_backup(self):
+        """ملف قاعدة العميل غير موجود على الجهاز: تُسترجع من أحدث نسخة احتياطية
+        سليمة في مجلد النسخ على الجهاز نفسه (النسخ تُؤخذ كل ١٥ دقيقة).
+
+        نسخ فقط — لا يُحذف ولا يُعاد تسمية أي ملف في مجلد العميل. ولا يُنزَّل
+        شيء من السحابة. يرجع مسار النسخة المستعادة، أو None إن لم توجد.
+        """
+        for backup in self.list_local_backups():
+            if not is_sqlite_db_healthy(backup):
+                continue
+            try:
+                shutil.copy2(backup, self.db_path)
+            except Exception:
+                continue
+            name = os.path.basename(backup)
+            log_cloud_error("استرجاع قاعدة العميل من نسخة احتياطية محلية", Exception(backup))
+            try:
+                self.after(600, lambda: messagebox.showinfo(
+                    "استرجاع البيانات",
+                    "لم يُعثر على ملف بياناتك، فتم استرجاعها تلقائياً من آخر نسخة احتياطية "
+                    f"على جهازك:\n{name}"))
+            except Exception:
+                pass
+            return backup
+        return None
+
     def recover_corrupt_database(self):
         """يُستدعى تلقائياً لو كان ملف قاعدة البيانات تالفاً:
-        يعزل الملف التالف، ثم يسترجع من أحدث نسخة احتياطية محلية سليمة، وإلا من السحابة."""
+        يعزل الملف التالف، ثم يسترجع من أحدث نسخة احتياطية محلية سليمة على الجهاز
+        (ونسخة المدير وحدها تلجأ للسحابة إن لم توجد نسخة محلية)."""
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         broken_path = f"{self.db_path}.corrupt_{stamp}"
         try:
@@ -2945,7 +2936,8 @@ class GoldSystemApp(ctk.CTk):
                 except Exception:
                     continue
 
-        if not restored_from and self.client_id:
+        # السحابة ملاذ نسخة المدير فقط — نسخة العميل لا تسحب منها أبداً
+        if not restored_from and self.client_id and IS_ADMIN_BUILD:
             if cloud_download_backup(self.client_id, self.db_path) and is_sqlite_db_healthy(self.db_path):
                 restored_from = "النسخة المحفوظة على السحابة"
             elif os.path.exists(self.db_path):
@@ -2957,7 +2949,7 @@ class GoldSystemApp(ctk.CTk):
         msg = (f"تم اكتشاف تلف في ملف قاعدة البيانات، وتم عزله في:\n{broken_path}\n\n"
                + (f"✅ وتم استرجاع بياناتك من: {restored_from}"
                   if restored_from else
-                  "⚠️ لم يتم العثور على نسخة سليمة (محلية أو سحابية)، وسيبدأ البرنامج بقاعدة بيانات جديدة.\n"
+                  "⚠️ لم يتم العثور على نسخة احتياطية سليمة، وسيبدأ البرنامج بقاعدة بيانات جديدة.\n"
                   "لا تُدخل بيانات جديدة قبل التواصل مع المدير لمحاولة الاسترجاع."))
         log_cloud_error("استرجاع قاعدة بيانات تالفة", msg.replace("\n", " | "))
         try:
@@ -3050,8 +3042,9 @@ class GoldSystemApp(ctk.CTk):
         btns.pack(pady=10)
         ctk.CTkButton(btns, text="💾 نسخة احتياطية الآن", font=("Cairo", 14, "bold"), width=185, height=42,
                       fg_color="#1e8449", hover_color="#145a32", command=do_backup_now).pack(side="right", padx=6)
-        ctk.CTkButton(btns, text="⬆️ رفع للسحابة الآن", font=("Cairo", 14, "bold"), width=185, height=42,
-                      fg_color="#1f77b4", hover_color="#144d75", command=do_upload_now).pack(side="right", padx=6)
+        if not IS_ADMIN_BUILD:
+            ctk.CTkButton(btns, text="⬆️ رفع للسحابة الآن", font=("Cairo", 14, "bold"), width=185, height=42,
+                          fg_color="#1f77b4", hover_color="#144d75", command=do_upload_now).pack(side="right", padx=6)
 
         # الاستعادة المحلية أولاً وأبرز: النسخ على جهازك هي الأوثق، والسحابة
         # قد تحمل حالة لا تريدها
@@ -3059,8 +3052,11 @@ class GoldSystemApp(ctk.CTk):
                       width=340, height=48, fg_color="#1e8449", hover_color="#145a32",
                       command=lambda: (win.destroy(), self.open_backup_restore_window())).pack(pady=(10, 6))
 
-        ctk.CTkButton(win, text="⬇️ استرجاع آخر نسخة من السحابة", font=("Cairo", 14, "bold"), width=300, height=44,
-                      fg_color="#b8860b", hover_color="#daa520", command=do_cloud_restore).pack(pady=8)
+        # نسخة العميل لا تسحب من السحابة أبداً: بياناتها على جهازها هي مصدر الحقيقة،
+        # وتستعيد من نسخها المحلية فقط (الزر أعلاه). السحب لنسخة المدير وحدها.
+        if IS_ADMIN_BUILD:
+            ctk.CTkButton(win, text="⬇️ استرجاع آخر نسخة من السحابة", font=("Cairo", 14, "bold"), width=300, height=44,
+                          fg_color="#b8860b", hover_color="#daa520", command=do_cloud_restore).pack(pady=8)
 
         ctk.CTkButton(win, text="📂 فتح مجلد ملفات النظام", font=("Cairo", 13, "bold"), width=240, height=38,
                       fg_color="#555555", hover_color="#333333", command=self.open_app_data_folder).pack(pady=(4, 14))
@@ -15600,8 +15596,8 @@ class SyncDownWindow(ctk.CTkToplevel):
             # ═══════════════════════════════════════════════════════════════
             if not IS_ADMIN_BUILD:
                 # لا قاعدة على الجهاز = لا شيء يُرفع. ولا نُنشئ ملفاً فارغاً هنا:
-                # وجوده كان يجعل البرنامج يتخطّى استرجاع البيانات من السحابة
-                # ثم يرفع القاعدة الفارغة فوق آخر نسخة سليمة.
+                # وجوده كان يجعل البرنامج يظن أن البيانات موجودة، فلا يسترجعها
+                # من مجلد النسخ الاحتياطية على الجهاز، ثم يرفع القاعدة الفارغة.
                 if not os.path.exists(self.db_path):
                     self.ok = True
                     self._ui(self.destroy)
@@ -15705,31 +15701,10 @@ class LoginWindow(ctk.CTk):
 
         client_id, business_name, can_edit = cloud_verify_client_login(username, password)
         if client_id:
-            # بعد إعادة التثبيت يبقى مجلد البيانات على القرص فتُفتح البيانات كما هي.
-            # أما لو لم توجد بيانات على الجهاز (جهاز جديد أو حُذف المجلد) فتُسترجع
-            # آخر نسخة من السحابة أولاً — ولا يبدأ البرنامج ببيانات فارغة بصمت.
-            db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
-            if not restore_client_database(
-                    client_id, db_path,
-                    ask_retry=lambda: messagebox.askretrycancel(
-                        "استرجاع بياناتك",
-                        "لا توجد بيانات لهذا الحساب على هذا الجهاز، وتعذّر تنزيل آخر نسخة "
-                        "محفوظة لها على السحابة الآن.\n\nتأكد من الاتصال بالإنترنت ثم أعد المحاولة.",
-                        parent=self),
-                    ask_start_empty=lambda: messagebox.askyesno(
-                        "البدء ببيانات فارغة؟",
-                        "لم تُسترجع بياناتك السابقة.\n\n"
-                        "هل تريد فتح البرنامج ببيانات فارغة؟\n"
-                        "⚠️ لا تختر (نعم) إلا لو كان هذا حساباً جديداً فعلاً: البيانات الفارغة "
-                        "ستُرفع للسحابة مكان آخر نسخة محفوظة.",
-                        icon="warning", default="no", parent=self)):
-                self.btn_login.configure(state="normal", text="دخول")
-                self.lbl_status.configure(text="لم تُسترجع البيانات — أعد المحاولة عند توفر الإنترنت")
-                return
-
             # تجهيز بيانات المصنع من السحابة قبل فتح النظام
             if SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:
                 try:
+                    db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
                     api = _RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)
                     win = SyncDownWindow(self, db_path, api, client_id, business_name)
                     self.wait_window(win)
