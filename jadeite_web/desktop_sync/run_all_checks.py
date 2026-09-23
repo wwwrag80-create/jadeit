@@ -14,6 +14,7 @@ CHECKS = [
     ("استعادة بيانات العميل", [PY, "test_client_upgrade.py"]),
     ("الرفع والسحب",        [PY, "test_restore.py"]),
     ("الاسترجاع بعد إعادة التثبيت", [PY, "test_reinstall_restore.py"]),
+    ("المدير يطابق العميل",  [PY, "test_admin_parity.py"]),
     ("الرصيد الحالي",       [PY, "test_total_balance.py"]),
     ("الذهب عند القسم",     [PY, "test_gold_at_section.py"]),
     ("سعر الذهب",           [PY, "test_gold_price.py"]),

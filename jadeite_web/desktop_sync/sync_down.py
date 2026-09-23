@@ -74,7 +74,7 @@ def sync_down(db_path, api, tenant_id, on_progress=None):
     accounts_count = int(summary.get("accounts_count") or 0)
 
     con = sqlite3.connect(db_path, timeout=60)
-    stats = {"transactions": 0, "accounts": 0, "total_cloud": total_rows}
+    stats = {"transactions": 0, "accounts": 0, "settings": 0, "total_cloud": total_rows}
 
     try:
         _ensure_tables(con)
@@ -97,6 +97,23 @@ def sync_down(db_path, api, tenant_id, on_progress=None):
             stats["accounts"] += 1
         con.commit()
 
+        # ---------- إعدادات العميل: نسب الاسترجاع، أسماء الأعمدة، الترتيب… ----------
+        # (سحابة لم تُحدَّث بعد لا تعرف الدالة: نكمل بالحركات كما كان)
+        try:
+            settings = api.rpc("sync_pull_settings", {"p_tenant": tenant_id, "p_token": None}) or []
+        except Exception:
+            settings = []
+        for s in settings:
+            key = (s.get("key") or "").strip()
+            if not key or key == "invoice_counter":
+                continue
+            con.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, s.get("value") or ""))
+        stats["settings"] = len(settings)
+        con.commit()
+
         # ---------- الحركات على دفعات ----------
         after_seq = 0
         pulled = 0
@@ -116,7 +133,9 @@ def sync_down(db_path, api, tenant_id, on_progress=None):
 
             rows = [(
                 int(r["seq_no"]),
-                _sqlite_dt(r.get("txn_date")),
+                # التاريخ كما هو على جهاز العميل حرفياً؛ وإلا (حركات قديمة أو من
+                # الويب) يُحوَّل من السحابة لتوقيت هذا الجهاز
+                r.get("local_date") or _sqlite_dt(r.get("txn_date")),
                 r.get("account_name") or "",
                 r.get("op_type") or "",
                 float(r.get("weight") or 0),

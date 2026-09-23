@@ -31,6 +31,8 @@
     self.cloud_sync.start()
 """
 
+import hashlib
+import json
 import os
 import sqlite3
 import threading
@@ -52,6 +54,10 @@ BUSY_INTERVAL = 1         # ثواني بين الدفعات عند وجود م�
 HEARTBEAT_EVERY = 60      # ثواني بين نبضات الحضور
 PULL_EVERY = 15           # ثواني بين عمليات سحب تعديلات الويب
 MAX_BACKOFF = 300         # أقصى انتظار بعد فشل متكرر (٥ دقائق)
+SETTINGS_RETRY_EVERY = 600  # إعادة محاولة رفع الإعدادات بعد فشل (سحابة لم تُحدَّث بعد مثلاً)
+
+# إعدادات تخص هذا الجهاز وحده فلا تُرفع (عدّاد الترقيم يضبطه كل جهاز لنفسه)
+LOCAL_ONLY_SETTINGS = frozenset({"invoice_counter"})
 
 
 # ==============================================================================
@@ -149,12 +155,23 @@ def install_sync_schema(db_path):
         """)
 
         # أول تشغيل على جهاز فيه بيانات قديمة: نُدرجها كلها للرفع فلا يضيع تاريخ العميل
+        queue_names = False
         if cur.execute("SELECT value FROM sync_state WHERE key='seeded'").fetchone() is None:
             cur.execute("""INSERT INTO sync_outbox(entity, ref_id, action, queued_at)
                            SELECT 'invoice', invoice_id, 'upsert', datetime('now') FROM invoices""")
-            cur.execute("""INSERT INTO sync_outbox(entity, ref_id, action, queued_at)
-                           SELECT 'name', name || '||' || category, 'upsert', datetime('now') FROM names""")
             cur.execute("INSERT INTO sync_state(key, value) VALUES('seeded', datetime('now'))")
+            queue_names = True
+
+        # ترتيب الأسماء لم يكن يُرفع، فكان المدير يراها مرتّبة أبجدياً لا بترتيب
+        # العميل: تُعاد الأسماء كلها للرفع مرة واحدة ومعها ترتيبها
+        if cur.execute("SELECT value FROM sync_state WHERE key='names_order_seeded'").fetchone() is None:
+            queue_names = True
+            cur.execute("INSERT INTO sync_state(key, value) VALUES('names_order_seeded', datetime('now'))")
+
+        if queue_names:
+            cur.execute("""INSERT INTO sync_outbox(entity, ref_id, action, queued_at)
+                           SELECT 'name', name || '||' || category, 'upsert', datetime('now')
+                             FROM names ORDER BY rowid""")
 
         con.commit()
     finally:
@@ -184,6 +201,9 @@ class CloudSync:
         # السحابة القديمة (قبل تحديث SQL) لا تعرف حالة MEMO — نتحوّل تلقائياً
         # لـ SETTLED (لا تُحتسب أيضاً) بدل ACTIVE التي كانت تُدخلها في الأرصدة
         self._memo_supported = True
+
+        # رفع إعدادات العميل: لا يُعاد قبل هذا الوقت بعد فشل (لا يعطّل رفع الحركات)
+        self._settings_retry_at = 0.0
 
         # ⚠️ تُستدعى من الخيط الخلفي — لا تلمس Tkinter داخلها مباشرة،
         #    مرّرها عبر root.after(0, ...) كما في دليل الدمج.
@@ -334,10 +354,11 @@ class CloudSync:
     def _sync_cycle(self):
         """دورة واحدة: يرفع دفعة واحدة على الأكثر. يرجع True لو كان هناك عمل."""
         did_names = self._sync_names()
+        did_settings = self._sync_settings()
 
         upserts, deletes, row_ids = self._read_batch()
         if not upserts and not deletes:
-            return did_names
+            return did_names or did_settings
 
         if upserts:
             rows = self._load_invoices(upserts)
@@ -523,12 +544,20 @@ class CloudSync:
         return applied > 0
 
     def _sync_names(self):
-        """يرفع الأسماء والأقسام قبل الحركات، حتى لا تصل حركة باسم غير مسجّل."""
+        """يرفع الأسماء والأقسام قبل الحركات، حتى لا تصل حركة باسم غير مسجّل.
+
+        مع كل اسم ترتيبه على جهاز العميل (rowid) — البرنامج يعرض الأسماء
+        بترتيب إضافتها، فيعرضها المدير بالترتيب نفسه لا أبجدياً.
+        """
         con = sqlite3.connect(self.db_path, timeout=20)
         try:
             rows = con.execute(
                 "SELECT id, ref_id, action FROM sync_outbox WHERE entity='name' ORDER BY id LIMIT ?",
                 (BATCH_SIZE,)).fetchall()
+            order = {}
+            if rows:
+                order = {(n, c): rid for rid, n, c in
+                         con.execute("SELECT rowid, name, category FROM names")}
         finally:
             con.close()
 
@@ -542,6 +571,8 @@ class CloudSync:
             if not name.strip():
                 continue
             entry = {"name": name, "category": category}
+            if action != "delete" and (name, category) in order:
+                entry["sort_order"] = order[(name, category)]
             (removed if action == "delete" else added).append(entry)
 
         # نفس المعالجة للحسابات: اسم واحد بنفس القسم مرتين يُسبب 21000
@@ -565,6 +596,47 @@ class CloudSync:
             })
 
         self._clear_outbox(row_ids)
+        return True
+
+    def _sync_settings(self):
+        """يرفع لقطة كاملة من إعدادات العميل عند تغيّرها — باتجاه واحد.
+
+        منها ما يغيّر الأرقام (نسب استرجاع الخياس في شاشة ربح/خسارة الطقم)،
+        ومنها ما يغيّر العرض (أسماء الأعمدة، ترتيب الشاشات والأقسام، تلوين
+        السالب). بدونها كان المدير يرى أرقاماً وشاشات تختلف عن جهاز العميل.
+
+        لا يرمي أي خطأ: فشله (سحابة لم تُحدَّث بعد أو انقطاع) لا يوقف رفع
+        الحركات، ويُعاد بعد ١٠ دقائق.
+        """
+        now = time.time()
+        if now < self._settings_retry_at:
+            return False
+        try:
+            con = sqlite3.connect(self.db_path, timeout=10)
+            try:
+                rows = con.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
+            finally:
+                con.close()
+        except Exception:
+            return False
+
+        snapshot = [{"key": k, "value": "" if v is None else str(v)}
+                    for k, v in rows if k and k not in LOCAL_ONLY_SETTINGS]
+        sig = hashlib.sha1(json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+                           .encode("utf-8")).hexdigest()
+        if sig == self._get_state("settings_sig"):
+            return False
+
+        try:
+            self._rpc("sync_push_settings", {
+                "p_tenant": self.tenant_id,
+                "p_token": None,
+                "p_rows": snapshot,
+            })
+            self._set_state("settings_sig", sig)
+        except Exception:
+            self._settings_retry_at = now + SETTINGS_RETRY_EVERY
+            return False
         return True
 
     def _read_batch(self):
@@ -641,6 +713,9 @@ class CloudSync:
             "row_number": r[11] or "",
             "manual_no": r[12] or "",
             "period": (r[13] or "") if len(r) > 13 else "",
+            # نص التاريخ كما هو على هذا الجهاز: يعرضه المدير حرفياً بدل تحويله
+            # لتوقيت جهازه (فلا تختلف الساعة أو اليوم لو اختلف ضبط التوقيت)
+            "local_date": str(r[1] or ""),
         } for r in records]
 
         # إزالة التكرار قبل الإرسال: صندوق الصادر قد يحمل نفس الحركة مرتين

@@ -39,7 +39,8 @@ declare
         'ensure_tenant_link', 'diagnose_client_sync', 'assert_sync_token',
         -- دوال المحفّزات (لا تحتاج صلاحية تنفيذ أصلاً)
         'touch_updated_at', 'fill_txn_period', 'log_txn_audit', 'write_audit',
-        'guard_tenant_self_update', 'log_txn_deletion', 'mark_web_source'
+        'guard_tenant_self_update', 'log_txn_deletion', 'mark_web_source',
+        'clear_stale_local_date'
     ];
     r record;
 begin

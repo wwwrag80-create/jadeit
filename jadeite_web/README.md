@@ -13,7 +13,7 @@
 jadeite_web/
 ├── supabase/                  سكربتات قاعدة البيانات
 │   ├── INSTALL_ALL.sql        ⭐ ما تشغّله فعلاً — مُولَّد من الملفات المرقّمة
-│   ├── 01_schema.sql … 15_period_ledger.sql       المصدر (عدّل هنا ثم ولّد INSTALL_ALL)
+│   ├── 01_schema.sql … 16_admin_mirror_parity.sql المصدر (عدّل هنا ثم ولّد INSTALL_ALL)
 │   ├── 00_repair_auth.sql     إصلاح خدمة الدخول عند خطأ 500 فقط
 │   ├── 01_create_admin.sql    ربط المدير وإنشاء أول مصنع
 │   └── tests/                 اختبارات العزل والصلاحيات والمحاسبة (PostgreSQL محلي/CI)
