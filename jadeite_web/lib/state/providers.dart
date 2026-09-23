@@ -64,6 +64,16 @@ final treasuryProvider = FutureProvider.autoDispose<double>((ref) async {
   return ref.read(ledgerRepoProvider).treasuryBalance(tenantId, untilPeriod: period);
 });
 
+/// دفتر الخزينة لكل الفترات — أرقامه لا تتغيّر بتغيير الفترة المعروضة؛
+/// الفترة المعروضة تُضاف فقط لتظهر حتى لو كانت جديدة بلا حركات.
+final periodLedgerProvider = FutureProvider.autoDispose<List<PeriodLedgerRow>>((ref) async {
+  ref.watch(dataRevisionProvider);
+  final tenantId = ref.watch(activeTenantIdProvider);
+  final period = ref.watch(periodProvider);
+  if (tenantId == null) return const [];
+  return ref.read(ledgerRepoProvider).periodLedger(tenantId, includePeriod: period);
+});
+
 final workshopLossesProvider = FutureProvider.autoDispose<double>((ref) async {
   ref.watch(dataRevisionProvider);
   final tenantId = ref.watch(activeTenantIdProvider);

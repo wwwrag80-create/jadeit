@@ -308,6 +308,64 @@ class SalesInvoiceSummary {
       );
 }
 
+/// صف فترة في دفتر الخزينة (treasury_period_ledger) — مطابق للتقرير الشهري
+/// في برنامج سطح المكتب: رصيد بداية كل فترة = رصيد نهاية سابقتها بالضبط.
+///
+/// البنود تصل بإشاراتها المحاسبية (المبيعات سالبة، الوارد موجب ...)، والمعروض
+/// في التقرير أعمدة موجبة: البداية − المبيعات − الخياس + الوارد ± القيود = النهاية.
+class PeriodLedgerRow {
+  const PeriodLedgerRow({
+    required this.period,
+    required this.carry,
+    required this.opening,
+    required this.inbound,
+    required this.sales,
+    required this.boxes,
+    required this.closed,
+    required this.journal,
+    required this.workers,
+    required this.net,
+    required this.closing,
+  });
+
+  final String period;
+  final double carry;
+  final double opening;
+  final double inbound;
+  final double sales;
+  final double boxes;
+  final double closed;
+  final double journal;
+  final double workers;
+  final double net;
+  final double closing;
+
+  /// رصيد بداية الفترة: المُرحَّل من سابقتها + القيود الافتتاحية المسجّلة فيها
+  double get startBalance => _r2(carry + opening);
+
+  /// المبيعات والصادر (موجبة للعرض)
+  double get salesOut => _r2(-sales);
+
+  /// كل الخياس: صناديق الخياس + خياس المصنعين والمركبين + الخياس المقفل القديم
+  double get khayas => _r2(-(boxes + workers + closed));
+
+  factory PeriodLedgerRow.fromMap(Map<String, dynamic> m) => PeriodLedgerRow(
+        period: (m['period'] ?? '') as String,
+        carry: _num(m['carry']),
+        opening: _num(m['opening']),
+        inbound: _num(m['inbound']),
+        sales: _num(m['sales']),
+        boxes: _num(m['boxes']),
+        closed: _num(m['closed']),
+        journal: _num(m['journal']),
+        workers: _num(m['workers']),
+        net: _num(m['net']),
+        closing: _num(m['closing']),
+      );
+}
+
+double _r2(double v) => (v * 100).roundToDouble() / 100;
+
 /// صف في كشف حركة عامل (مصنّع/مركّب)
 class WorkerLedgerRow {
   const WorkerLedgerRow({

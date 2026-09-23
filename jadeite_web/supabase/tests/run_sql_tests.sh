@@ -2,7 +2,7 @@
 # =============================================================================
 #  يشغّل اختبارات قاعدة البيانات على PostgreSQL محلي أو في CI:
 #    ١) محاكاة بيئة Supabase   ٢) INSTALL_ALL.sql مرتين (إعادة التشغيل آمنة)
-#    ٣) اختبارات العزل والصلاحيات والمنطق المحاسبي
+#    ٣) اختبارات العزل والصلاحيات والمنطق المحاسبي ودفتر الفترات (tests/NN_*.sql)
 #
 #  المتغيرات: PGHOST PGPORT PGUSER PGPASSWORD (اتصال psql المعتاد)
 #             TEST_DB (افتراضياً jadeit_test — تُحذف وتُعاد في كل تشغيل)
@@ -26,4 +26,7 @@ echo "→ التثبيت (المرة الثانية — يجب أن ينجح د�
 psql -v ON_ERROR_STOP=1 -q -d "$DB" -f supabase/INSTALL_ALL.sql > /dev/null
 
 echo "→ الاختبارات"
-psql -v ON_ERROR_STOP=1 -q -d "$DB" -f supabase/tests/10_security_and_logic_tests.sql
+for f in supabase/tests/[1-9][0-9]_*.sql; do
+    echo "   • $(basename "$f")"
+    psql -v ON_ERROR_STOP=1 -q -d "$DB" -f "$f"
+done

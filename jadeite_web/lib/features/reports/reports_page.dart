@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/op_types.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/formatters.dart';
+import '../../data/models/models.dart';
 import '../../printing/statement_pdf.dart';
 import '../../state/providers.dart';
 import '../../widgets/app_snack.dart';
@@ -37,6 +38,7 @@ class ReportsPage extends ConsumerWidget {
     final losses = ref.watch(workshopLossesProvider);
     final invoices = ref.watch(salesInvoicesProvider);
     final boxes = ref.watch(allBoxesTotalsProvider);
+    final ledger = ref.watch(periodLedgerProvider);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -89,6 +91,46 @@ class ReportsPage extends ConsumerWidget {
                   color: AppTheme.success,
                 ),
               ]),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ---------- رصيد الخزينة لكل الفترات ----------
+          ledger.when(
+            loading: () => const Center(
+                child: Padding(padding: EdgeInsets.all(30), child: CircularProgressIndicator())),
+            error: (e, _) => Center(child: Text('$e')),
+            data: (list) => DataTableCard(
+              title: 'رصيد الخزينة لكل الفترات',
+              columns: _ledgerColumns,
+              emptyMessage: 'لا توجد حركات بعد',
+              actions: [
+                TextButton.icon(
+                  onPressed: list.isEmpty ? null : () => _printLedger(context, ref, list),
+                  icon: const Icon(Icons.print_outlined, size: 18),
+                  label: const Text('طباعة'),
+                ),
+              ],
+              rows: list.map((r) {
+                final current = r.period == period;
+                final style = current
+                    ? const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.gold)
+                    : null;
+                return DataRow(
+                  color: current
+                      ? WidgetStatePropertyAll(AppTheme.gold.withValues(alpha: 0.08))
+                      : null,
+                  cells: _ledgerCells(r).map((c) => DataCell(Text(c, style: style))).toList(),
+                );
+              }).toList(),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(4, 6, 4, 0),
+            child: Text(
+              'كل فترة تبدأ برصيد نهاية الفترة التي قبلها تلقائياً، والأرقام لا تتغيّر '
+              'بتغيير الفترة المعروضة — مطابقة للتقرير الشهري في برنامج سطح المكتب.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),
           const SizedBox(height: 16),
@@ -169,6 +211,37 @@ class ReportsPage extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  static const _ledgerColumns = [
+    'الفترة', 'رصيد بداية الفترة', 'المبيعات / الصادر ➖', 'الخياس ➖', 'الوارد ➕',
+    'قيود الخزينة ±', 'رصيد نهاية الفترة',
+  ];
+
+  static List<String> _ledgerCells(PeriodLedgerRow r) => [
+        r.period,
+        Fmt.weight(r.startBalance),
+        Fmt.weight(r.salesOut),
+        Fmt.weight(r.khayas),
+        Fmt.weight(r.inbound),
+        r.journal.abs() < 0.005 ? '-' : '${r.journal > 0 ? '+' : ''}${Fmt.weight(r.journal)}',
+        Fmt.weight(r.closing),
+      ];
+
+  Future<void> _printLedger(
+      BuildContext context, WidgetRef ref, List<PeriodLedgerRow> list) async {
+    final tenant = ref.read(sessionProvider).activeTenant;
+    try {
+      await const StatementPdf().print(
+        businessName: tenant?.businessName ?? 'جاديت',
+        title: 'رصيد الخزينة لكل الفترات',
+        subtitle: 'نهاية الفترة = بداية الفترة − المبيعات/الصادر − الخياس + الوارد ± قيود الخزينة',
+        columns: _ledgerColumns,
+        rows: list.map(_ledgerCells).toList(),
+      );
+    } catch (e) {
+      if (context.mounted) AppSnack.error(context, '$e');
+    }
   }
 
   Future<void> _print(BuildContext context, WidgetRef ref) async {

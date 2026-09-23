@@ -24,6 +24,7 @@ language sql immutable as $$
 $$;
 
 -- صناديق الخياس: (اسم الصندوق، نوع المدين، نوع الدائن، اسم المسترجع)
+-- (يُعاد تعريفها في 15_period_ledger.sql بأسماء المسترجع كما يكتبها برنامج سطح المكتب)
 create or replace function public.khayas_boxes()
 returns table (box_name text, madin_type text, qabd_type text, mustarja_name text)
 language sql immutable as $$
@@ -198,7 +199,8 @@ end $$;
 --  رصيد الخزينة (ذهب عيار ١٨) حتى نهاية فترة معيّنة
 --  = الوارد + الرصيد الافتتاحي − المبيعات − الصادر − الخياس المقفل
 --    ± صرف/قبض صناديق الخياس ± القيود اليومية على حساب الخزينة
---  (مطابق لدالة treasury_effect في برنامج سطح المكتب)
+--  (يُعاد تعريفها في 15_period_ledger.sql لتقرأ دفتر الفترات — فتخصم خياس
+--   المصنعين والمركبين الفعلي وتطابق شريط الخزينة في البرنامج)
 -- ----------------------------------------------------------------------------
 create or replace function public.treasury_balance(p_tenant uuid, p_until_period text default null)
 returns numeric

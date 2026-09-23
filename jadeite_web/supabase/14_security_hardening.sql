@@ -32,6 +32,8 @@ declare
         'losses_breakdown', 'invoice_archive', 'search_transactions',
         'admin_sync_overview', 'admin_rotate_sync_token', 'my_session',
         'storage_report', 'storage_summary',
+        'box_mustarja_names', 'tenant_khayas_boxes', 'section_actual_khayas',
+        'treasury_period_ledger',
         -- الصيانة والتشخيص والربط: للمدير عبر SQL Editor أو مفتاح الخدمة فقط
         'purge_audit_log', 'run_maintenance', 'purge_sync_deletions',
         'ensure_tenant_link', 'diagnose_client_sync', 'assert_sync_token',

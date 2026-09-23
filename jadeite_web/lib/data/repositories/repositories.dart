@@ -438,6 +438,18 @@ class LedgerRepository {
     return (value as num?)?.toDouble() ?? 0;
   }
 
+  /// دفتر الخزينة لكل الفترات (رصيد بداية كل فترة = نهاية سابقتها).
+  /// includePeriod: فترة تظهر حتى لو خلت من الحركات (الفترة المفتوحة حالياً).
+  Future<List<PeriodLedgerRow>> periodLedger(String tenantId, {String? includePeriod}) async {
+    final rows = await _db.rpc('treasury_period_ledger', params: {
+      'p_tenant': tenantId,
+      'p_include_period': includePeriod,
+    }) as List<dynamic>;
+    return rows
+        .map((r) => PeriodLedgerRow.fromMap(Map<String, dynamic>.from(r as Map)))
+        .toList();
+  }
+
   Future<({double madin, double daen, double khayas})> boxTotals(
       String tenantId, String boxName, String period) async {
     final rows = await _db.rpc('box_period_totals', params: {

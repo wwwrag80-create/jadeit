@@ -107,6 +107,34 @@ void main() {
     });
   });
 
+  group('PeriodLedgerRow', () {
+    // نفس أرقام test_period_ledger.py و 20_period_ledger_tests.sql (فترتا ٨ و ٩)
+    final p8 = PeriodLedgerRow.fromMap({
+      'period': '2026-08', 'carry': 0, 'opening': '1000.00', 'inbound': 200,
+      'sales': -200, 'boxes': -10, 'closed': 0, 'journal': 3, 'workers': -10,
+      'net': 983, 'closing': 983,
+    });
+    final p9 = PeriodLedgerRow.fromMap({
+      'period': '2026-09', 'carry': 983, 'opening': 0, 'inbound': 50,
+      'sales': -10, 'boxes': 0, 'closed': 0, 'journal': 0, 'workers': -5,
+      'net': 35, 'closing': 1018,
+    });
+
+    test('أعمدة التقرير موجبة: البداية − المبيعات − الخياس + الوارد ± القيود = النهاية', () {
+      for (final r in [p8, p9]) {
+        final end = r.startBalance - r.salesOut - r.khayas + r.inbound + r.journal;
+        expect(end, closeTo(r.closing, 0.001), reason: r.period);
+      }
+      expect(p8.startBalance, 1000);
+      expect(p8.salesOut, 200);
+      expect(p8.khayas, 20); // صناديق ١٠ + خياس المصنعين ١٠
+    });
+
+    test('بداية الفترة = نهاية سابقتها', () {
+      expect(p9.startBalance, p8.closing);
+    });
+  });
+
   group('Fmt', () {
     test('تنقّل الفترات عبر السنوات', () {
       expect(Fmt.shiftPeriod('2026-01', -1), '2025-12');

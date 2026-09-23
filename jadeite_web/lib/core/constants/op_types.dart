@@ -101,6 +101,10 @@ class SearchSource {
 }
 
 /// تعريف صندوق خياس: نوع المدين، نوع الدائن، وحساب المسترجع المرتبط.
+///
+/// أسماء المسترجع هي ما يكتبه برنامج سطح المكتب حرفياً (get_stage_config) —
+/// وإلا لم يُخصم الذهب العائد من خياس صندوقه عند مزامنة الحركات بين الطرفين.
+/// (قاعدة البيانات تقبل الأسماء القديمة أيضاً: box_mustarja_names)
 class KhayasBox {
   const KhayasBox({
     required this.name,
@@ -121,21 +125,21 @@ class KhayasBox {
       name: 'الكاستنج',
       madinType: 'صرف كاستنج',
       qabdType: 'قبض كاستنج',
-      mustarjaName: 'مسترجع الكاستنج',
+      mustarjaName: 'مسترجع كاستنج',
       icon: '🏗️',
     ),
     KhayasBox(
       name: 'التلميع',
       madinType: 'صرف تلميع',
       qabdType: 'قبض تلميع',
-      mustarjaName: 'مسترجع التلميع',
+      mustarjaName: 'مسترجع التلميع/البف',
       icon: '✨',
     ),
     KhayasBox(
       name: 'التلميع/البف',
       madinType: 'صرف تلميع بف',
       qabdType: 'قبض تلميع بف',
-      mustarjaName: 'مسترجع التلميع/البف',
+      mustarjaName: 'مسترجع البوليش',
       icon: '🪄',
     ),
     KhayasBox(
