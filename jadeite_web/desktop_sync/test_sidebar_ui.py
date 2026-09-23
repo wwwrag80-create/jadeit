@@ -53,12 +53,14 @@ print("✔ ولا زر يشير لشاشة غير موجودة")
 
 # ═══ ٣) المظهر الزجاجي ═══
 sb = seg("build_sidebar")
-assert 'border_color="#2e86de"' in sb
-print("✔ حواف زرقاء على الأزرار")
+assert 'edge = "#9DB9E6"' in sb and "border_color=edge if primary else edge_more" in sb
+print("✔ حواف زرقاء هادئة على الأزرار الأساسية، ورمادية لأزرار (أخرى)")
 assert 'fg_color=("#ffffff", "#ffffff")' in sb
 print("✔ خلفية بيضاء بالكامل في المظهرين")
-assert "def glow" in sb and 'border_color="#5dade2"' in sb
-print("✔ الحافة تلمع عند مرور الفأرة")
+assert "def glow" in sb and 'border_color=UI["primary"]' in sb
+print("✔ الحافة تلمع بلون النظام الأساسي عند مرور الفأرة")
+assert "Ctrl+" in sb and "Esc" in sb
+print("✔ اختصارات لوحة المفاتيح ظاهرة بجانب الأزرار (Ctrl+رقم، Esc للرئيسية)")
 assert 'text=f"{icon}  {label}"' in sb
 print("✔ لكل شاشة أيقونة واسم واضح")
 

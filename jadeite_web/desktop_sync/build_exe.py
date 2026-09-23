@@ -19,7 +19,7 @@
   ٣) نسخة العميل: يولّد rageh-CLIENT.py (بلا مفتاح سري وبلا لوحة مدير)
      نسخة المدير: يتأكد أن المفتاح السري غير مكتوب داخل الكود
   ٤) يشغّل كل فحوص البرنامج على الملف الذي سيُبنى
-  ٥) يبني exe واحداً بالأيقونة والشعار ووحدات المزامنة
+  ٥) يبني exe واحداً بالأيقونة والشعار وخط Cairo ووحدات المزامنة
   ٦) يتحقق من الناتج: موجود، وحجمه معقول، ولا مفتاح سري بداخله
 """
 import argparse
@@ -42,6 +42,9 @@ TARGETS = {
 LOCAL_MODULES = ("cloud_sync", "sync_down", "supabase_api", "gold_price")
 # ملفات يقرؤها البرنامج وقت التشغيل عبر resource_path
 DATA_FILES = ("jadeite.ico", "jadeite_logo.png")
+# مجلدات تُضمَّن كما هي (خط Cairo العربي للواجهة)
+DATA_DIRS = ("fonts",)
+FONT_FILES = ("fonts/Cairo-Regular.ttf", "fonts/Cairo-Bold.ttf")
 # مكتبات خارجية لازمة للتشغيل: (اسم الاستيراد، اسم الحزمة في pip)
 RUNTIME_PACKAGES = (("customtkinter", "customtkinter"), ("PIL", "Pillow"),
                     ("reportlab", "reportlab"), ("arabic_reshaper", "arabic-reshaper"),
@@ -109,7 +112,7 @@ def main():
     except ImportError:
         fail("tkinter غير مثبّت — أعد تثبيت بايثون من python.org مع خيار tcl/tk")
     ok("tkinter موجود")
-    needed = [f"{m}.py" for m in LOCAL_MODULES] + list(DATA_FILES) + ["run_all_checks.py"]
+    needed = [f"{m}.py" for m in LOCAL_MODULES] + list(DATA_FILES) + list(FONT_FILES) + ["run_all_checks.py"]
     needed += ["make_client_build.py", "rageh-1-34-14-cloud.py"] if args.target == "client" else [t["source"]]
     missing = [f for f in needed if not os.path.exists(os.path.join(HERE, f))]
     if missing:
@@ -181,6 +184,8 @@ def main():
         cmd += ["--hidden-import", m]
     for f in DATA_FILES:
         cmd += ["--add-data", f"{f}{os.pathsep}."]
+    for d in DATA_DIRS:
+        cmd += ["--add-data", f"{d}{os.pathsep}{d}"]
     cmd.append(t["source"])
     run(cmd, "PyInstaller")
 

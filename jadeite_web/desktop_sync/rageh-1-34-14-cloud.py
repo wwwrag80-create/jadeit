@@ -37,6 +37,9 @@ import re
 import hashlib
 import threading
 import json
+import math
+import random
+import time
 
 SUPABASE_URL = "https://ttpqksvtnhoulghgovob.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ymRG7rKUf-704V3j1bNwgg_b1IvlMlX"
@@ -764,6 +767,192 @@ if REPORTLAB_AVAILABLE:
 # تفعيل الوضع الداكن الفخم افتراضياً
 ctk.set_appearance_mode("Light")   # الوضع الفاتح هو الافتراضي عند فتح النظام
 ctk.set_default_color_theme("blue")
+
+# ══════════════════════════════════════════════════════════════════════════
+#  نظام التصميم الموحّد — «منتصف الليل والذهب»
+#
+#  مصدر واحد للألوان والخط لكل شاشات البرنامج:
+#   • خط Cairo مرفق مع البرنامج نفسه (مجلد fonts) — فيظهر بالخط نفسه على كل
+#     جهاز، بدل خط بديل غير متناسق حين لا يكون مثبّتاً في ويندوز.
+#   • لوحة ألوان بمعانٍ ثابتة: أزرق للعرض والبحث، أخضر للترحيل والحفظ، أحمر
+#     للحذف، ذهبي للتعديل، رمادي للمحايد، كحلي للطباعة.
+#   • الأزرار القديمة المكتوبة بألوان صريحة تُترجَم تلقائياً لهذه اللوحة
+#     (ThemedButton أدناه) — فتتوحّد ١٥٠ زراً دون المساس بمنطق أي شاشة.
+# ══════════════════════════════════════════════════════════════════════════
+UI = {
+    "gold": "#C9A227", "gold_dark": "#9C7A12", "gold_soft": "#FBF4DC", "gold_line": "#E9D48C",
+    "ink": "#1F2937", "muted": "#6B7280", "line": "#E1E6ED",
+    "canvas": "#EEF1F5", "surface": "#FFFFFF", "surface_alt": "#F6F8FB",
+    "primary": "#1E5BB8", "primary_hover": "#174A96", "primary_soft": "#E8F0FC",
+    "success": "#128A5B", "success_hover": "#0E6E48", "success_soft": "#E3F5EC",
+    "danger": "#C8373F", "danger_hover": "#A42A31", "danger_soft": "#FCEAEA",
+    "neutral": "#5B6472", "neutral_hover": "#454D5A",
+    "edit": "#B07D12", "edit_hover": "#8F650C",
+    "navy": "#1F3A5F", "navy_hover": "#152A46",
+    "warning": "#D9771C", "warning_hover": "#B5610F", "warning_soft": "#FDF0E1",
+    "violet": "#7A4BB5", "violet_hover": "#613A93",
+    "midnight": "#0B1220", "midnight_2": "#13203A",
+}
+
+# لون الزر القديم ← (لونه في اللوحة، لون المرور عليه)
+_LEGACY_BUTTON_COLORS = {
+    "#1f77b4": "primary", "#2e86de": "primary", "#3b8ed0": "primary",
+    "#1e8449": "success", "#2ecc71": "success", "#27ae60": "success",
+    "#8b0000": "danger", "#b03a2e": "danger", "#c0392b": "danger", "#e74c3c": "danger",
+    "#555555": "neutral", "#444444": "neutral", "#5f6368": "neutral",
+    "#b8860b": "edit", "#8b6d00": "edit", "#7d6608": "edit",
+    "#144d75": "navy",
+    "#e67e22": "warning", "#ff7f0e": "warning",
+    "#8e44ad": "violet",
+}
+_LEGACY_HOVER_COLORS = {
+    "#144d75": "primary_hover", "#1b5e91": "primary_hover",
+    "#145a32": "success_hover", "#27ae60": "success_hover",
+    "#a52a2a": "danger_hover", "#7b241c": "danger_hover", "#922b21": "danger_hover",
+    "#333333": "neutral_hover", "#666666": "neutral_hover", "#42464a": "neutral_hover",
+    "#daa520": "edit_hover", "#6b5400": "edit_hover", "#5a4a06": "edit_hover",
+    "#0d3350": "navy_hover",
+    "#b35f10": "warning_hover", "#b85c0a": "warning_hover",
+    "#6c3483": "violet_hover",
+}
+
+
+def _themed_button_kwargs(kw):
+    """يترجم ألوان الزر الصريحة القديمة إلى لوحة التصميم الموحّدة."""
+    fg = kw.get("fg_color")
+    if isinstance(fg, str):
+        role = _LEGACY_BUTTON_COLORS.get(fg.lower())
+        if role:
+            kw["fg_color"] = UI[role]
+            kw["hover_color"] = UI.get(role + "_hover", kw.get("hover_color"))
+        elif fg.lower() in ("#d4af37", "#b8952e"):
+            kw["fg_color"] = UI["gold"]
+            kw.setdefault("text_color", UI["midnight"])
+            kw["hover_color"] = UI["gold_line"]
+    hv = kw.get("hover_color")
+    if isinstance(hv, str) and hv.lower() in _LEGACY_HOVER_COLORS:
+        kw["hover_color"] = UI[_LEGACY_HOVER_COLORS[hv.lower()]]
+    cr = kw.get("corner_radius")
+    if isinstance(cr, int) and cr < 8:
+        kw["corner_radius"] = 8
+    return kw
+
+
+class ThemedButton(ctk.CTkButton):
+    """كل أزرار البرنامج تمرّ من هنا: ألوان اللوحة الموحّدة وحواف أنعم."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **_themed_button_kwargs(kwargs))
+
+    def configure(self, require_redraw=False, **kwargs):
+        return super().configure(require_redraw=require_redraw, **_themed_button_kwargs(kwargs))
+
+
+ctk.CTkButton = ThemedButton
+
+# لون النص القديم ← (بديله الواضح على الخلفية الفاتحة، بديله على الخلفية الداكنة)
+# الذهبي والأخضر الفاتحان كانا يُقرآن بصعوبة على البطاقات البيضاء (تباين ٢:١)
+_LEGACY_TEXT_COLORS = {
+    "#d4af37": ("#8A6A0E", "#E9C75C"),
+    "#1f77b4": ("#1E5BB8", "#8FB6F2"),
+    "#2ecc71": ("#0F7A50", "#6FD6A2"),
+    "#e74c3c": ("#C0343C", "#F08A8F"),
+    "#e67e22": ("#B5610F", "#F5A35C"),
+    "#ff7f0e": ("#B5610F", "#F5A35C"),
+    "#8b8f95": ("#6B7280", "#9AA4B2"),
+    "#7f858c": ("#6B7280", "#9AA4B2"),
+    "#aaaaaa": ("#6B7280", "#9AA4B2"),
+}
+
+
+class ThemedLabel(ctk.CTkLabel):
+    """يعدّل لون النص القديم حسب ما تحته فعلاً: يُغمَّق على الخلفية الفاتحة
+    ليُقرأ بوضوح، ويبقى ساطعاً كما هو على الأشرطة الداكنة."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._retint(kwargs.get("text_color"))
+
+    def configure(self, require_redraw=False, **kwargs):
+        result = super().configure(require_redraw=require_redraw, **kwargs)
+        if "text_color" in kwargs:
+            self._retint(kwargs["text_color"])
+        return result
+
+    def _is_light(self, color):
+        try:
+            r, g, b = (v / 257 for v in self.winfo_rgb(color))
+            return (0.299 * r + 0.587 * g + 0.114 * b) > 150
+        except Exception:
+            return True
+
+    def _retint(self, color):
+        if not isinstance(color, str):
+            return
+        pair = _LEGACY_TEXT_COLORS.get(color.lower())
+        if not pair:
+            return
+        bg = self._fg_color if self._fg_color != "transparent" else self._bg_color
+        light_bg = bg[0] if isinstance(bg, (list, tuple)) else bg
+        dark_bg = bg[1] if isinstance(bg, (list, tuple)) else bg
+        tint = (pair[0] if self._is_light(light_bg) else color,
+                pair[1] if not self._is_light(dark_bg) else pair[0])
+        super().configure(text_color=tint)
+
+
+ctk.CTkLabel = ThemedLabel
+
+
+def _apply_theme_defaults():
+    """قيم افتراضية أنعم وأوضح للأدوات التي لا تحدّد ألوانها بنفسها."""
+    t = ctk.ThemeManager.theme
+    t["CTk"]["fg_color"] = [UI["canvas"], "#10141A"]
+    t["CTkToplevel"]["fg_color"] = [UI["canvas"], "#10141A"]
+    t["CTkFrame"].update(corner_radius=10, fg_color=[UI["surface"], "#171C23"],
+                         top_fg_color=[UI["surface_alt"], "#1D232B"],
+                         border_color=[UI["line"], "#2A313B"])
+    t["CTkButton"].update(corner_radius=10, fg_color=[UI["primary"], UI["primary"]],
+                          hover_color=[UI["primary_hover"], UI["primary_hover"]],
+                          text_color=["#FFFFFF", "#FFFFFF"])
+    field = dict(corner_radius=8, border_width=1, fg_color=["#FFFFFF", "#1E242C"],
+                 border_color=["#C9D1DC", "#3A434F"], text_color=[UI["ink"], "#E6EDF3"])
+    t["CTkEntry"].update(field, placeholder_text_color=["#9AA3AF", "#7D8793"])
+    t["CTkComboBox"].update(field, button_color=["#DCE2EA", "#3A434F"],
+                            button_hover_color=["#C7D0DC", "#4A5461"])
+    t["CTkOptionMenu"].update(corner_radius=8, fg_color=[UI["primary"], UI["primary"]],
+                              button_color=[UI["primary_hover"], UI["primary_hover"]],
+                              button_hover_color=[UI["navy"], UI["navy"]])
+    t["DropdownMenu"].update(fg_color=["#FFFFFF", "#1E242C"], hover_color=[UI["primary_soft"], "#2A313B"],
+                             text_color=[UI["ink"], "#E6EDF3"])
+    t["CTkLabel"]["text_color"] = [UI["ink"], "#E6EDF3"]
+    t["CTkFont"].update(family="Cairo", size=13)
+
+
+def load_brand_fonts():
+    """يحمّل خط Cairo المرفق مع البرنامج (خاص بهذه العملية، لا يُثبَّت في النظام).
+
+    ويندوز فقط: هو ما يعمل عليه البرنامج، ومحرّك النص فيه يشكّل العربية ويعكس
+    اتجاهها من جداول الخط نفسه. أما لينكس (بيئة التطوير والفحص) فلا يشكّل Tk
+    فيه العربية مع هذا الخط، فيبقى على الخط البديل المقروء.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    loaded = False
+    for name in ("Cairo-Regular.ttf", "Cairo-Bold.ttf"):
+        path = resource_path(os.path.join("fonts", name))
+        if os.path.exists(path):
+            try:
+                loaded = bool(ctk.FontManager.load_font(path)) or loaded
+            except Exception as e:
+                log_cloud_error("تعذّر تحميل خط Cairo المرفق", e)
+    return loaded
+
+
+try:
+    _apply_theme_defaults()
+except Exception as _e:   # السمة تحسين بصري فقط — لا تمنع تشغيل البرنامج أبداً
+    log_cloud_error("تعذّر تطبيق نظام التصميم الموحّد", _e)
+load_brand_fonts()
 
 # ================= شعار النظام (مُضمَّن كـ base64 حتى لا يعتمد على ملف خارجي) =================
 APP_LOGO_B64 = (
@@ -2286,58 +2475,94 @@ APP_LOGO_B64 = (
 class ScreenRouter(ctk.CTkFrame):
     """بديل خفيف عن CTkTabview: نفس واجهة add()/tab() المستخدمة في كل شاشات النظام،
     لكن بدل شريط تبويبات جانبي، يعرض شاشة واحدة فقط في كل مرة مع زر عودة للقائمة الرئيسية،
-    وتبقى بقية الشاشات مغلقة حتى يتم اختيارها من القائمة الرئيسية."""
+    وتبقى بقية الشاشات مغلقة حتى يتم اختيارها من القائمة الرئيسية.
 
-    def __init__(self, master, go_home_callback=None, **kwargs):
+    meta: {اسم الشاشة: (أيقونة، العنوان المعروض، وصف قصير)} — لرأس كل شاشة.
+    """
+
+    def __init__(self, master, go_home_callback=None, meta=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self._contents = {}   # name -> إطار المحتوى (نفس ما كانت ترجعه tabview.tab())
         self._wrappers = {}   # name -> الإطار الكامل (شريط علوي + محتوى)
         self._screen_info_labels = {}   # name -> عناوين الفترة والأرصدة في شريط الشاشة
+        self._title_labels = {}
         self.go_home_callback = go_home_callback
+        self.meta = meta or {}
         self.current_screen = None
 
     def update_screen_info(self, period_text, treasury_text, total_text):
         """يحدّث الفترة والأرصدة في شريط كل شاشة (تُستدعى من recalculate_all)"""
         for labels in self._screen_info_labels.values():
             try:
-                labels["period"].configure(text=period_text)
-                labels["treasury"].configure(text=treasury_text)
-                labels["total"].configure(text=total_text)
+                # مسافة حول النص: الشارة ملوّنة الخلفية فتحتاج هامشاً داخلياً
+                labels["period"].configure(text=f"   {period_text}   ")
+                labels["treasury"].configure(text=f"   {treasury_text}   ")
+                labels["total"].configure(text=f"   {total_text}   ")
+            except Exception:
+                pass
+
+    def set_title(self, name, title):
+        """بعد تغيير اسم الشاشة من الشريط الجانبي يتغيّر عنوانها هنا أيضاً"""
+        lbl = self._title_labels.get(name)
+        if lbl is not None:
+            try:
+                lbl.configure(text=title)
             except Exception:
                 pass
 
     def add(self, name):
+        icon, title, subtitle = self.meta.get(name, ("", name, ""))
         wrapper = ctk.CTkFrame(self, fg_color="transparent")
 
-        top_bar = ctk.CTkFrame(wrapper, fg_color=("gray85", "gray17"), height=52, corner_radius=10)
-        top_bar.pack(fill="x", padx=5, pady=(5, 6))
+        # ═══ رأس الشاشة: بطاقة بيضاء واحدة ═══
+        #   يمين: أيقونة الشاشة في شارة ذهبية + عنوانها + وصف قصير لوظيفتها
+        #   وسط:  الفترة والأرصدة شارات ملوّنة صغيرة (كانت شريطاً كاملاً)
+        #   يسار: العودة للقائمة الرئيسية (أو زر Esc)
+        top_bar = ctk.CTkFrame(wrapper, fg_color=(UI["surface"], "#171C23"), corner_radius=14,
+                               border_width=1, border_color=(UI["line"], "#2A313B"))
+        top_bar.pack(fill="x", padx=5, pady=(5, 8))
 
-        # يسار الشريط: العودة للقائمة الرئيسية
-        btn_back = ctk.CTkButton(top_bar, text="🏠 القائمة الرئيسية", font=("Cairo", 15, "bold"),
-                                  fg_color="#555555", hover_color="#333333", width=170, height=38,
-                                  command=self._go_home)
-        btn_back.pack(side="left", padx=10, pady=7)
+        btn_back = ctk.CTkButton(top_bar, text="🏠  القائمة الرئيسية", font=("Cairo", 14, "bold"),
+                                  fg_color="transparent", border_width=1,
+                                  border_color=(UI["line"], "#3A434F"),
+                                  text_color=(UI["ink"], "#E6EDF3"),
+                                  hover_color=(UI["surface_alt"], "#232A33"),
+                                  width=176, height=40, command=self._go_home)
+        btn_back.pack(side="left", padx=(12, 4), pady=10)
+        ctk.CTkLabel(top_bar, text="Esc", font=("Cairo", 11, "bold"), width=34, height=22,
+                     corner_radius=6, fg_color=(UI["surface_alt"], "#232A33"),
+                     text_color=(UI["muted"], "#9AA4B2")).pack(side="left", padx=(0, 8))
 
-        # يمين الشريط: اسم الشاشة
-        ctk.CTkLabel(top_bar, text=name, font=ctk.CTkFont(family="Cairo", size=17, weight="bold"),
-                     text_color="#d4af37").pack(side="right", padx=15, pady=7)
+        title_box = ctk.CTkFrame(top_bar, fg_color="transparent")
+        title_box.pack(side="right", padx=(8, 12), pady=8)
+        if icon:
+            ctk.CTkLabel(title_box, text=icon, font=("Segoe UI Emoji", 22), width=48, height=48,
+                         corner_radius=12, fg_color=(UI["gold_soft"], "#2E2710")
+                         ).pack(side="right", padx=(10, 0))
+        texts = ctk.CTkFrame(title_box, fg_color="transparent")
+        texts.pack(side="right")
+        lbl_title = ctk.CTkLabel(texts, text=title, anchor="e", height=26,
+                                 font=ctk.CTkFont(family="Cairo", size=19, weight="bold"),
+                                 text_color=(UI["ink"], "#F2F4F7"))
+        lbl_title.pack(anchor="e")
+        self._title_labels[name] = lbl_title
+        if subtitle:
+            ctk.CTkLabel(texts, text=subtitle, anchor="e", height=18, font=("Cairo", 12),
+                         text_color=(UI["muted"], "#9AA4B2")).pack(anchor="e")
 
-        # وسط الشريط: الفترة والأرصدة مصغّرة — كل ما كان يشغل الشريط العام
-        # بارتفاع ٩٥ بكسل صار هنا في سطر واحد، فتُفرَّغ المساحة كلها للجدول
         info_box = ctk.CTkFrame(top_bar, fg_color="transparent")
-        info_box.pack(side="right", padx=8, pady=6)
+        info_box.pack(side="right", padx=10, pady=10)
 
-        lbl_period = ctk.CTkLabel(info_box, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                                   text_color="#1f77b4")
-        lbl_period.pack(side="right", padx=8)
+        def pill(bg, fg):
+            lbl = ctk.CTkLabel(info_box, text="   —   ", height=32, corner_radius=16,
+                               font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                               fg_color=bg, text_color=fg)
+            lbl.pack(side="right", padx=4)
+            return lbl
 
-        lbl_treasury = ctk.CTkLabel(info_box, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                                     text_color="#d4af37")
-        lbl_treasury.pack(side="right", padx=8)
-
-        lbl_total = ctk.CTkLabel(info_box, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                                  text_color="#2ecc71")
-        lbl_total.pack(side="right", padx=8)
+        lbl_period = pill((UI["primary_soft"], "#1B2B45"), (UI["primary"], "#9CC0F5"))
+        lbl_treasury = pill((UI["gold_soft"], "#2E2710"), (UI["gold_dark"], "#F0CF6A"))
+        lbl_total = pill((UI["success_soft"], "#15301F"), (UI["success"], "#7FE0B0"))
 
         self._screen_info_labels[name] = {
             "period": lbl_period, "treasury": lbl_treasury, "total": lbl_total}
@@ -4458,26 +4683,28 @@ class GoldSystemApp(ctk.CTk):
     #  تُقاس من هنا — فتغيير هذه القيم يغيّر مظهر الشاشات الأربع عشرة معاً
     #  بلا لمس أي منطق محاسبي.
     # ══════════════════════════════════════════════════════════════════
+    # ألوان الجداول — من لوحة «منتصف الليل والذهب» نفسها: رأس كحلي هادئ،
+    # صفوف متناوبة خفيفة، والسطر المحدد بلون ذهبي ناعم يُقرأ بوضوح
     DESIGN = {
         "light": {
             "bg":          "#ffffff",
-            "row_alt":     "#f4f7fb",
-            "text":        "#1b2a3a",
-            "head_bg":     "#1f4e79",
+            "row_alt":     "#f5f7fa",
+            "text":        "#1f2937",
+            "head_bg":     "#1e3a5f",
             "head_text":   "#ffffff",
-            "sel_bg":      "#cfe4fb",
-            "sel_text":    "#0d2a45",
-            "grid":        "#d8e0ea",
+            "sel_bg":      "#f8e8b0",
+            "sel_text":    "#2b2106",
+            "grid":        "#e1e6ed",
         },
         "dark": {
-            "bg":          "#1b2027",
-            "row_alt":     "#222933",
-            "text":        "#e8eef5",
-            "head_bg":     "#16344f",
+            "bg":          "#171c23",
+            "row_alt":     "#1d232b",
+            "text":        "#e6edf3",
+            "head_bg":     "#22364f",
             "head_text":   "#ffffff",
-            "sel_bg":      "#2c4a68",
-            "sel_text":    "#ffffff",
-            "grid":        "#2c343f",
+            "sel_bg":      "#4a3d14",
+            "sel_text":    "#ffeab0",
+            "grid":        "#2a313b",
         },
     }
 
@@ -5014,6 +5241,31 @@ class GoldSystemApp(ctk.CTk):
         ("الرصيد الافتتاحي", "🔢", "الرصيد الافتتاحي"),
     ]
 
+    # وصف قصير يظهر تحت عنوان كل شاشة: ماذا تفعل هنا بجملة واحدة
+    SCREEN_SUBTITLES = {
+        "المبيعات": "فواتير المبيعات والصادر: إدخال السطور ثم الترحيل",
+        "مراحل التصنيع": "صرف وقبض الكاستنج والمصنعين والمركبين والتلميع",
+        "صناديق الخياس": "أرصدة العمال والخياس الفعلي لكل قسم وإقفاله",
+        "الوارد": "استلام الذهب والفصوص والألماس من الموردين والمصنع",
+        "شاشة الخسائر": "الخياس الحالي والمُقفل لكل صندوق — وإقفاله لحساب الخسائر",
+        "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج",
+        "ربح/خسارة الطقم": "خياسات كل طقم ومسترجعها وربحه أو خسارته",
+        "كشف حساب": "حركة أي حساب مع رصيد أول المدة المُرحَّل",
+        "التقرير الشهري": "رصيد الخزينة لكل الفترات — كل فترة تبدأ بنهاية سابقتها",
+        "أرشيف الفواتير": "كل الفواتير المرحّلة: معاينة وطباعة وتعديل",
+        "القيود اليومية": "قيود مدين ودائن بين الحسابات",
+        "الحسابات": "شجرة الحسابات: الأقسام والعمال والموردون والصناديق",
+        "الموردين": "أرصدة الموردين والمسترجعات",
+        "الرصيد الافتتاحي": "القيود الافتتاحية لبداية التشغيل",
+    }
+
+    def screen_meta_map(self):
+        """أيقونة وعنوان ووصف كل شاشة — لرأسها الموحّد (ScreenRouter)"""
+        meta = {}
+        for name, icon, label in self.SIDEBAR_PRIMARY + self.SIDEBAR_SECONDARY:
+            meta[name] = (icon, self.get_screen_label(name, label), self.SCREEN_SUBTITLES.get(name, ""))
+        return meta
+
     def sidebar_width(self):
         """عرض الشريط حسب حجم الشاشة: لا يبتلع المساحة على الشاشات الصغيرة"""
         try:
@@ -5067,6 +5319,8 @@ class GoldSystemApp(ctk.CTk):
         except Exception as e:
             log_cloud_error("تعذّر حفظ اسم الشاشة", e)
         self.build_sidebar()
+        if hasattr(self, "tabview"):
+            self.tabview.set_title(name, self.get_screen_label(name, default_label))
 
     def promote_screen_to_main(self, name):
         """ينقل شاشة من (أخرى) إلى القائمة الرئيسية في الشريط"""
@@ -5160,39 +5414,76 @@ class GoldSystemApp(ctk.CTk):
             ctk.CTkLabel(head, text="جاديت", font=("Cairo", 20, "bold"),
                          text_color="#d4af37").pack()
 
-        ttk.Separator(self.sidebar, orient="horizontal").pack(fill="x", padx=12, pady=(4, 8))
+        ttk.Separator(self.sidebar, orient="horizontal").pack(fill="x", padx=12, pady=(4, 6))
+
+        ctk.CTkLabel(self.sidebar, text="الشاشات الرئيسية", anchor="e", height=22,
+                     font=ctk.CTkFont(family="Cairo", size=max(12, int(13 * scale)), weight="bold"),
+                     text_color=UI["muted"]).pack(fill="x", padx=18, pady=(0, 2))
 
         nav = ctk.CTkScrollableFrame(self.sidebar, fg_color=("#ffffff", "#ffffff"))
         nav.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+
+        # حافة زرقاء ناعمة تلمع بالأزرق الكامل عند المرور، وخلفية زرقاء فاتحة
+        edge = "#9DB9E6"
+        edge_more = "#C3CAD4"
+        shortcut_no = [0]
+
+        def fitted_size(text, with_hint):
+            """أكبر خط (حتى font_size) يُظهر اسم الشاشة كاملاً في عرض الشريط الحالي"""
+            # المحجوز: الهوامش وشريط التمرير وحافة البطاقة وحشو الزر، وعمود الاختصار إن وُجد
+            avail = self.sidebar_width() - 64 - (58 if with_hint else 0)
+            try:
+                import tkinter.font as tkfont
+                for size in range(font_size, 12, -1):
+                    if tkfont.Font(family="Cairo", size=-size, weight="bold").measure(text) <= avail:
+                        return size
+                return 13
+            except Exception:
+                return font_size
 
         def make_button(parent, name, icon, label, primary=True, in_main=True):
             label = self.get_screen_label(name, label)
             """بطاقة زجاجية: خلفية بيضاء وحافة زرقاء تلمع عند المرور"""
             card = ctk.CTkFrame(
-                parent, corner_radius=12, border_width=2,
-                border_color="#2e86de" if primary else "#7f8c8d",
+                parent, corner_radius=12, border_width=1,
+                border_color=edge if primary else edge_more,
                 fg_color=("#ffffff", "#ffffff"), height=btn_h)
             card.pack(fill="x", pady=4, padx=2)
             card.pack_propagate(False)
 
+            widgets = [card]
+            # اختصار لوحة المفاتيح لأول ست شاشات في الشريط (Ctrl+1 … Ctrl+6) —
+            # في عمود مستقل يسار البطاقة فلا يغطي اسم الشاشة أبداً
+            if in_main and shortcut_no[0] < 6:
+                shortcut_no[0] += 1
+                hint = ctk.CTkLabel(card, text=f"Ctrl+{shortcut_no[0]}", width=50, height=22,
+                                    corner_radius=6, font=("Cairo", 11, "bold"),
+                                    fg_color=(UI["surface_alt"], UI["surface_alt"]),
+                                    text_color=(UI["muted"], UI["muted"]))
+                hint.pack(side="left", padx=(8, 0))
+                hint.bind("<Button-1>", lambda e, n=name: self.navigate_to_screen(n))
+                widgets.append(hint)
+
             btn = ctk.CTkButton(
                 card, text=f"{icon}  {label}", anchor="e",
-                font=ctk.CTkFont(family="Cairo", size=font_size, weight="bold"),
-                fg_color="transparent", hover_color=("#dceeff", "#dceeff"),
-                text_color=("#1b2a3a", "#1b2a3a"),
+                font=ctk.CTkFont(family="Cairo", size=fitted_size(f"{icon}  {label}", len(widgets) > 1),
+                                 weight="bold"),
+                fg_color="transparent", hover_color=(UI["primary_soft"], UI["primary_soft"]),
+                text_color=(UI["ink"], UI["ink"]),
                 corner_radius=10, height=btn_h - 6,
                 command=lambda n=name: self.navigate_to_screen(n))
-            btn.pack(fill="both", expand=True, padx=3, pady=3)
+            btn.pack(side="right", fill="both", expand=True, padx=3, pady=3)
+            widgets.append(btn)
 
             # لمعان الحافة عند المرور بالفأرة
             def glow(_e=None):
-                card.configure(border_color="#5dade2", fg_color=("#eaf5ff", "#22303f"))
+                card.configure(border_color=UI["primary"], fg_color=(UI["primary_soft"], UI["primary_soft"]))
 
             def unglow(_e=None):
-                card.configure(border_color="#2e86de" if primary else "#7f8c8d",
+                card.configure(border_color=edge if primary else edge_more,
                                fg_color=("#ffffff", "#ffffff"))
 
-            for widget in (card, btn):
+            for widget in widgets:
                 widget.bind("<Enter>", glow, add="+")
                 widget.bind("<Leave>", unglow, add="+")
                 # الزر الأيمن: تعديل الاسم أو نقل الشاشة بين القائمتين
@@ -5234,16 +5525,16 @@ class GoldSystemApp(ctk.CTk):
                 more_holder.pack_forget()
                 btn_more.configure(text="▾  أخرى")
 
-        more_card = ctk.CTkFrame(nav, corner_radius=12, border_width=2,
-                                 border_color="#b8860b",
-                                 fg_color=("#fffaf0", "#fffaf0"), height=btn_h)
+        more_card = ctk.CTkFrame(nav, corner_radius=12, border_width=1,
+                                 border_color=UI["gold_line"],
+                                 fg_color=(UI["gold_soft"], UI["gold_soft"]), height=btn_h)
         more_card.pack(fill="x", pady=(10, 4), padx=2)
         more_card.pack_propagate(False)
         btn_more = ctk.CTkButton(
             more_card, text="▾  أخرى", anchor="e",
             font=ctk.CTkFont(family="Cairo", size=font_size, weight="bold"),
-            fg_color="transparent", hover_color=("#fdf0d5", "#fdf0d5"),
-            text_color=("#6b4e00", "#6b4e00"), corner_radius=10, height=btn_h - 6,
+            fg_color="transparent", hover_color=("#F6E7B8", "#F6E7B8"),
+            text_color=(UI["gold_dark"], UI["gold_dark"]), corner_radius=10, height=btn_h - 6,
             command=toggle_more)
         btn_more.pack(fill="both", expand=True, padx=3, pady=3)
 
@@ -5258,13 +5549,15 @@ class GoldSystemApp(ctk.CTk):
             self.sidebar,
             text="✅ إنهاء الترتيب" if arranging else "↔️ ترتيب الشاشات",
             font=ctk.CTkFont(family="Cairo", size=max(12, int(13 * scale)), weight="bold"),
-            fg_color="#1e8449" if arranging else "#555555",
-            hover_color="#145a32" if arranging else "#333333",
+            fg_color=UI["success"] if arranging else "transparent",
+            hover_color=UI["success_hover"] if arranging else UI["surface_alt"],
+            text_color="#ffffff" if arranging else UI["ink"],
+            border_width=0 if arranging else 1, border_color=UI["line"],
             height=int(38 * scale), corner_radius=10,
             command=self.toggle_sidebar_arrange).pack(fill="x", padx=10, pady=(0, 4))
 
-        ctk.CTkLabel(self.sidebar, text="زر الفأرة الأيمن: تعديل الاسم أو النقل",
-                     font=("Cairo", 10), text_color="#8b8f95").pack(pady=(0, 10))
+        ctk.CTkLabel(self.sidebar, text="زر الفأرة الأيمن: تعديل الاسم أو النقل  ·  Esc: الرئيسية",
+                     font=("Cairo", 10), text_color=UI["muted"]).pack(pady=(0, 10))
 
     def create_layout(self):
         # الشريط الجانبي أولاً وبكامل ارتفاع النافذة (من أعلاها لأسفلها)،
@@ -5278,7 +5571,8 @@ class GoldSystemApp(ctk.CTk):
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.pack(side="right", fill="both", expand=True)
 
-        top_frame = ctk.CTkFrame(self.content_area, height=62, corner_radius=10)
+        top_frame = ctk.CTkFrame(self.content_area, height=62, corner_radius=14, border_width=1,
+                                 fg_color=(UI["surface"], "#171C23"), border_color=(UI["line"], "#2A313B"))
         top_frame.pack(fill="x", padx=10, pady=(8, 6))
         self.top_frame = top_frame
 
@@ -5286,19 +5580,21 @@ class GoldSystemApp(ctk.CTk):
         treasury_display_frame.pack(side="right", padx=14, pady=4)
 
         # ====== شريط رصيد الخزينة ======
-        treasury_bar = ctk.CTkFrame(treasury_display_frame, corner_radius=10,
-                                     fg_color=("#f3e6c0", "#2a2318"), border_width=2, border_color="#d4af37")
+        treasury_bar = ctk.CTkFrame(treasury_display_frame, corner_radius=12,
+                                     fg_color=(UI["gold_soft"], "#2a2318"), border_width=1,
+                                     border_color=(UI["gold_line"], "#6B5A22"))
         treasury_bar.pack(fill="x", pady=(0, 4))
 
-        self.lbl_live_treasury = ctk.CTkLabel(treasury_bar, text="رصيد الخزينة الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color="#d4af37")
+        self.lbl_live_treasury = ctk.CTkLabel(treasury_bar, text="رصيد الخزينة الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=(UI["gold_dark"], "#F0CF6A"))
         self.lbl_live_treasury.pack(padx=14, pady=3)
 
         # ====== شريط الرصيد الحالي (الخزينة + كل صناديق الخياس) ======
-        total_bar = ctk.CTkFrame(treasury_display_frame, corner_radius=10,
-                                  fg_color=("#d9ecd9", "#16261a"), border_width=2, border_color="#2ecc71")
+        total_bar = ctk.CTkFrame(treasury_display_frame, corner_radius=12,
+                                  fg_color=(UI["success_soft"], "#16261a"), border_width=1,
+                                  border_color=("#A7DCC3", "#2E6B4D"))
         total_bar.pack(fill="x", pady=(0, 6))
 
-        self.lbl_total_gold = ctk.CTkLabel(total_bar, text="الرصيد الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color="#2ecc71")
+        self.lbl_total_gold = ctk.CTkLabel(total_bar, text="الرصيد الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=(UI["success"], "#7FE0B0"), cursor="hand2")
         self.lbl_total_gold.pack(padx=14, pady=3)
         self.lbl_total_gold.bind("<Button-1>", lambda e: self.show_gold_balance_breakdown())
 
@@ -5308,7 +5604,7 @@ class GoldSystemApp(ctk.CTk):
         self.lbl_gems_stones_balance = ctk.CTkLabel(treasury_display_frame, text="", font=("Cairo", 11))
         self.lbl_diamond_balance = ctk.CTkLabel(treasury_display_frame, text="", font=("Cairo", 11))
 
-        self.btn_theme = ctk.CTkButton(top_frame, text="🎨 المظهر", width=108, height=34, corner_radius=8, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="#444444", hover_color="#666666", command=self.toggle_theme)
+        self.btn_theme = ctk.CTkButton(top_frame, text="🎨 المظهر", width=108, height=36, corner_radius=10, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
         self.btn_theme.pack(side="right", padx=8, pady=6)
 
         # صف أدوات واحد: كل الأزرار جنباً إلى جنب أفقياً بلا تبعثر رأسي
@@ -5319,7 +5615,7 @@ class GoldSystemApp(ctk.CTk):
         period_frame = ctk.CTkFrame(period_column, fg_color="transparent")
         period_frame.pack(side="right")
         
-        ctk.CTkLabel(period_frame, text="الفترة:", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        ctk.CTkLabel(period_frame, text="الفترة:", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=5)
         self.combo_active_period = ctk.CTkComboBox(period_frame, width=125, font=("Cairo", 16), command=self.on_period_changed)
         self.combo_active_period.pack(side="right", padx=5)
         
@@ -5354,17 +5650,19 @@ class GoldSystemApp(ctk.CTk):
         self.entry_search_op.pack(side="left", padx=5)
 
         # زر التصفير يُنشأ داخل عمود الفترة مباشرة فيظهر فوق شريط الشهر
-        btn_clear_system = ctk.CTkButton(self.period_column, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), width=132, height=32, corner_radius=8, fg_color="#b03a2e", hover_color="#7b241c", command=self.reset_system_data_action)
+        # زر خطير: إطار أحمر فقط (لا زر ممتلئ بارز) حتى لا يُضغط سهواً
+        btn_clear_system = ctk.CTkButton(self.period_column, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), width=132, height=34, corner_radius=10, fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"), command=self.reset_system_data_action)
         btn_clear_system.pack(side="right", padx=(6, 0))
 
         # ====== خانة حالة التعديل والمزامنة: في طرف الشريط العلوي داخل إطار مستقل واضح ======
-        status_box = ctk.CTkFrame(top_frame, corner_radius=10, border_width=1, border_color="#555555")
+        status_box = ctk.CTkFrame(top_frame, corner_radius=12, border_width=1,
+                                  fg_color=(UI["surface_alt"], "#1D232B"), border_color=(UI["line"], "#2A313B"))
         status_box.pack(side="left", padx=12, pady=8)
 
         self.lbl_edit_status = ctk.CTkLabel(status_box, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), text_color="#2ecc71")
         self.lbl_edit_status.pack(padx=10, pady=(7, 0))
 
-        self.lbl_cloud_sync = ctk.CTkLabel(status_box, text="☁️ المزامنة: —", font=ctk.CTkFont(family="Cairo", size=11), text_color="#aaaaaa")
+        self.lbl_cloud_sync = ctk.CTkLabel(status_box, text="☁️ المزامنة: —", font=ctk.CTkFont(family="Cairo", size=11), text_color=UI["muted"])
         self.lbl_cloud_sync.pack(padx=10)
 
         # تنبيه واضح لو كانت الفترة المعروضة ليست الشهر الحالي
@@ -5381,7 +5679,8 @@ class GoldSystemApp(ctk.CTk):
         self.main_shell = ctk.CTkFrame(self.content_area, fg_color="transparent")
         self.main_shell.pack(fill="both", expand=True, padx=10, pady=(0, 6))
 
-        self.tabview = ScreenRouter(self.main_shell, go_home_callback=self.show_home_screen)
+        self.tabview = ScreenRouter(self.main_shell, go_home_callback=self.show_home_screen,
+                                    meta=self.screen_meta_map())
 
         self.tabview.add("الحسابات")
         self.tabview.add("الرصيد الافتتاحي")
@@ -5426,6 +5725,9 @@ class GoldSystemApp(ctk.CTk):
         }
         self._built_screens = set()
 
+        self.bind("<Escape>", self._on_escape_key, add="+")
+        self.bind("<Control-KeyPress>", self._on_ctrl_number_key, add="+")
+
         self.ensure_default_khayas_boxes()
         self.remove_legacy_casting_box()
         self.build_gold_price_bar()
@@ -5437,15 +5739,39 @@ class GoldSystemApp(ctk.CTk):
         self.refresh_live_date_fields()
         self.start_cloud_sync_engine()
 
+    # أرقام الصف العلوي للوحة المفاتيح: الإنجليزية والعربية الهندية معاً (أي تخطيط)
+    _SHORTCUT_DIGITS = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5,
+                        "١": 0, "٢": 1, "٣": 2, "٤": 3, "٥": 4, "٦": 5}
+
+    def _on_escape_key(self, event=None):
+        """Esc داخل أي شاشة يعود للقائمة الرئيسية (لا يمسّ النوافذ المنبثقة)"""
+        tv = getattr(self, "tabview", None)
+        if tv is not None and tv.winfo_ismapped():
+            tv._go_home()
+
+    def _on_ctrl_number_key(self, event):
+        """Ctrl + رقم (١–٦) يفتح شاشة الشريط الرئيسية بنفس ترتيبها"""
+        idx = self._SHORTCUT_DIGITS.get(getattr(event, "char", "") or "")
+        if idx is None:
+            idx = self._SHORTCUT_DIGITS.get(getattr(event, "keysym", ""))
+        if idx is None and sys.platform.startswith("win") and 49 <= getattr(event, "keycode", 0) <= 54:
+            idx = event.keycode - 49      # مفاتيح الأرقام نفسها في أي لغة كتابة
+        if idx is None:
+            return
+        registered = set(getattr(self.tabview, "_contents", {}).keys())
+        order = [n for n in self.sidebar_order() if n in registered]
+        if idx < len(order):
+            self.navigate_to_screen(order[idx])
+            return "break"
+
     def build_gold_price_bar(self):
         """شريط سعر الذهب العالمي أسفل الشاشة — يتحدّث تلقائياً كل ١٠ ثوانٍ"""
         self.gold_watcher = None
 
-        # خلفية رصاصية غامقة موحّدة في الوضعين الفاتح والداكن،
-        # والأرقام سوداء بارزة عليها لأقصى وضوح
+        # شريط كحلي ليلي بأرقام فاتحة: أعلى تباين ممكن، وبلون هوية البرنامج
         self.gold_bar = ctk.CTkFrame(self, height=44, corner_radius=0,
-                                      fg_color=("#9aa0a6", "#8a9096"),
-                                      border_width=2, border_color="#6d7378")
+                                      fg_color=(UI["midnight_2"], UI["midnight_2"]),
+                                      border_width=0)
         # يُرصف قبل الشريط الجانبي ليمتدّ بعرض النافذة كاملاً أسفل الكل،
         # وإلا اقتصر على المنطقة اليسرى فقط
         if hasattr(self, "sidebar"):
@@ -5456,18 +5782,19 @@ class GoldSystemApp(ctk.CTk):
         self.lbl_gold_price = ctk.CTkLabel(
             self.gold_bar, text="🥇 جارٍ جلب سعر الذهب العالمي…",
             font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
-            text_color="#000000")
+            text_color="#F5F1E3")
         self.lbl_gold_price.pack(side="right", padx=16, pady=7)
 
         ctk.CTkButton(self.gold_bar, text="🔄 تحديث", width=80, height=28,
                       font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                      fg_color="#5f6368", hover_color="#42464a", text_color="#ffffff",
+                      fg_color="transparent", border_width=1, border_color="#3A4A66",
+                      hover_color="#22304A", text_color="#E9C75C",
                       command=lambda: self.gold_watcher and self.gold_watcher.refresh_now()
                       ).pack(side="left", padx=10)
 
         if not GOLD_PRICE_AVAILABLE:
             self.lbl_gold_price.configure(text="🥇 سعر الذهب غير متاح (وحدة الأسعار غير موجودة)",
-                                          text_color="#5a2d0c")
+                                          text_color="#F5A35C")
             return
 
         try:
@@ -5484,7 +5811,7 @@ class GoldSystemApp(ctk.CTk):
                 # (كلاهما واضح على الخلفية الرصاصية)
                 self.lbl_gold_price.configure(
                     text=self.gold_watcher.display_text(),
-                    text_color="#000000" if snapshot.get("ounce") else "#5a2d0c")
+                    text_color="#F5F1E3" if snapshot.get("ounce") else "#F5A35C")
             except Exception:
                 pass
         try:
@@ -5629,12 +5956,36 @@ class GoldSystemApp(ctk.CTk):
         header_row.pack(fill="x", padx=30, pady=(10, 6))
 
         self.lbl_home_hint = ctk.CTkLabel(header_row, text="اختر الشاشة التي تريد الدخول إليها",
-                                          font=("Cairo", 15, "bold"), text_color="#aaaaaa")
+                                          font=("Cairo", 15, "bold"), text_color=UI["muted"])
         self.lbl_home_hint.pack(side="right", expand=True)
         try:
-            self.lbl_home_hint.configure(text="اختر الشاشة من الشريط الجانبي على اليمين")
+            self.lbl_home_hint.configure(text=self.home_greeting_text())
         except Exception:
             pass
+
+        # ═══ ملخص الفترة المعروضة: أربع بطاقات هادئة أسفل الشعار ═══
+        stats_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        stats_row.pack(fill="x", padx=24, pady=(4, 14))
+        self.home_stat_labels = {}
+        for key, icon, caption, tint in (
+                ("count", "🧮", "حركات الفترة", (UI["surface_alt"], "#1D232B")),
+                ("khayas", "⚖️", "الخياس", (UI["warning_soft"], "#33261A")),
+                ("inbound", "📥", "الوارد", (UI["success_soft"], "#15301F")),
+                ("sales", "🧾", "المبيعات / الصادر", (UI["gold_soft"], "#2E2710"))):
+            card = ctk.CTkFrame(stats_row, corner_radius=14, border_width=1,
+                                fg_color=(UI["surface"], "#171C23"), border_color=(UI["line"], "#2A313B"))
+            card.pack(side="right", fill="x", expand=True, padx=6)
+            ctk.CTkLabel(card, text=icon, font=("Segoe UI Emoji", 20), width=44, height=44,
+                         corner_radius=12, fg_color=tint).pack(side="right", padx=(10, 12), pady=12)
+            texts = ctk.CTkFrame(card, fg_color="transparent")
+            texts.pack(side="right", pady=8)
+            ctk.CTkLabel(texts, text=caption, font=("Cairo", 12), height=18, anchor="e",
+                         text_color=(UI["muted"], "#9AA4B2")).pack(anchor="e")
+            val = ctk.CTkLabel(texts, text="—", height=30, anchor="e",
+                               font=ctk.CTkFont(family="Cairo", size=20, weight="bold"),
+                               text_color=(UI["ink"], "#F2F4F7"))
+            val.pack(anchor="e")
+            self.home_stat_labels[key] = val
 
         self.home_arrange_mode = False
         self.home_swap_pick = None
@@ -5656,6 +6007,37 @@ class GoldSystemApp(ctk.CTk):
 
         self.home_order = self.load_home_order()
         self.render_home_buttons()
+
+    _AR_DAYS = ("الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد")
+    _AR_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو",
+                  "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
+
+    def home_greeting_text(self, now=None):
+        """تحية حسب الوقت + التاريخ بالعربية + تلميح التنقّل"""
+        now = now or datetime.datetime.now()
+        greet = "صباح الخير" if now.hour < 12 else "مساء الخير"
+        date = f"{self._AR_DAYS[now.weekday()]} {now.day} {self._AR_MONTHS[now.month - 1]} {now.year}"
+        who = f" {self.client_name}" if getattr(self, "client_name", None) else ""
+        return f"{greet}{who} 👋   ·   {date}   ·   اختر الشاشة من الشريط الجانبي أو Ctrl + رقمها"
+
+    def refresh_home_stats(self):
+        """ملخص الفترة المعروضة في الشاشة الرئيسية — من دفتر الخزينة نفسه"""
+        labels = getattr(self, "home_stat_labels", None)
+        if not labels:
+            return
+        try:
+            month = self.current_display_month
+            comp = self.treasury_period_components(month)
+            count = sum(1 for inv in self.invoices.values()
+                        if inv.get("settled_status") in COUNTED_STATUSES and self.inv_in_period(inv, month))
+            labels["sales"].configure(text=f"{en(-comp['sales'])} جم")
+            labels["inbound"].configure(text=f"{en(comp['inbound'])} جم")
+            labels["khayas"].configure(text=f"{en(-(comp['boxes'] + comp['workers'] + comp['closed']))} جم")
+            labels["count"].configure(text=f"{count:,}")
+            if hasattr(self, "lbl_home_hint") and not getattr(self, "home_arrange_mode", False):
+                self.lbl_home_hint.configure(text=self.home_greeting_text())
+        except Exception as e:
+            log_cloud_error("تعذّر تحديث ملخص الشاشة الرئيسية", e)
 
     def render_home_buttons(self):
         """يعيد رسم أزرار الشاشات حسب الترتيب المحفوظ (٣ شاشات في كل عمود، من اليمين لليسار)"""
@@ -5697,7 +6079,7 @@ class GoldSystemApp(ctk.CTk):
             self.lbl_home_hint.configure(text="اضغط على شاشة ثم على شاشة أخرى لتبديل مكانيهما", text_color="#d4af37")
         else:
             self.btn_home_arrange.configure(text="↔️ ترتيب الشاشات", fg_color="#555555", hover_color="#333333")
-            self.lbl_home_hint.configure(text="اختر الشاشة من الشريط الجانبي على اليمين", text_color="#aaaaaa")
+            self.lbl_home_hint.configure(text=self.home_greeting_text(), text_color=UI["muted"])
             self.save_home_order()
         self.render_home_buttons()
 
@@ -5774,6 +6156,7 @@ class GoldSystemApp(ctk.CTk):
             self.top_frame.pack(fill="x", padx=10, pady=(8, 6), before=self.main_shell)
         if hasattr(self, 'home_frame') and self.home_frame:
             self.home_frame.pack(fill="both", expand=True)
+        self.refresh_home_stats()
 
     # خريطة: اسم الشاشة ← الدوال التي تُعيد بناء جداولها
     # الأسماء هنا يجب أن تطابق أسماء الشاشات المسجّلة في tabview.add تماماً،
@@ -5867,6 +6250,13 @@ class GoldSystemApp(ctk.CTk):
 
     def refresh_screen_info_bar(self):
         """يحدّث الفترة والأرصدة المصغّرة في شريط كل شاشة"""
+        home = getattr(self, "home_frame", None)
+        if home is not None:
+            try:
+                if home.winfo_ismapped():
+                    self.refresh_home_stats()
+            except Exception:
+                pass
         if not hasattr(self, 'tabview'):
             return
         try:
@@ -6460,6 +6850,23 @@ class GoldSystemApp(ctk.CTk):
             # الزر الأيمن: تحريك القسم يميناً أو يساراً في الشريط
             b.bind("<Button-3>", lambda e, k=key: self.show_stage_context_menu(e, k), add="+")
             self.stage_buttons[key] = b
+        self.style_segment_buttons(self.stage_buttons, getattr(self, "current_op_stage", None))
+
+    def style_segment_buttons(self, buttons, active_key):
+        """أزرار الأقسام كشريط تبويب: المختار ذهبي بارز، والبقية بيضاء هادئة بحافة رفيعة —
+        فيعرف المستخدم بنظرة أين هو (كانت كلها بلون واحد)."""
+        for key, btn in buttons.items():
+            try:
+                if key == active_key:
+                    btn.configure(fg_color=UI["gold"], hover_color=UI["gold_line"],
+                                  text_color=UI["midnight"], border_width=0)
+                else:
+                    btn.configure(fg_color=(UI["surface"], "#171C23"),
+                                  hover_color=(UI["primary_soft"], "#232A33"),
+                                  text_color=(UI["primary"], "#9CC0F5"),
+                                  border_width=1, border_color=(UI["line"], "#3A434F"))
+            except Exception:
+                pass
 
     def stage_order(self, available):
         """ترتيب أقسام مراحل التصنيع: المحفوظ إن وُجد، مع إصلاحه تلقائياً"""
@@ -6502,8 +6909,7 @@ class GoldSystemApp(ctk.CTk):
     def switch_op_stage(self, stage):
         """التبديل بين مراحل التصنيع وإظهار الشاشة الخاصة بكل مرحلة (تشمل أي قسم أُضيف ديناميكياً)"""
         self.current_op_stage = stage
-        for key, btn in self.stage_buttons.items():
-            btn.configure(fg_color="#144d75" if key == stage else "#1f77b4")
+        self.style_segment_buttons(self.stage_buttons, stage)
 
         self.mfg_inst_container.pack_forget()
         self.casting_container.pack_forget()
@@ -8655,10 +9061,13 @@ class GoldSystemApp(ctk.CTk):
             b = ctk.CTkButton(self.khayas_category_bar, text=label, font=("Cairo", 16, "bold"), width=120, height=45, command=lambda k=key: self.switch_category_view(k))
             b.pack(side="right", padx=5, pady=10)
             self.khayas_category_buttons[key] = b
+        self.style_segment_buttons(self.khayas_category_buttons,
+                                   getattr(self, "current_view_cat", "المصنعين"))
 
     def switch_category_view(self, cat):
         self.current_view_cat = cat
         self.lbl_table_title.configure(text=f"عرض أرصدة: {self.get_display_label(cat)}")
+        self.style_segment_buttons(getattr(self, "khayas_category_buttons", {}), cat)
         self.refresh_inquiry_table()
 
     def check_name_exists(self, name):
@@ -10855,7 +11264,7 @@ class GoldSystemApp(ctk.CTk):
         self.factory_card_widgets = {}
         box_defs = [("ذهب", "🥇"), ("فصوص وأحجار", "🔷"), ("الماس", "💎")]
         for i, (box, icon) in enumerate(box_defs):
-            card = ctk.CTkFrame(self.factory_cards_frame, corner_radius=14, border_width=2, border_color="#d4af37", fg_color=("gray90", "gray15"))
+            card = ctk.CTkFrame(self.factory_cards_frame, corner_radius=14, border_width=1, border_color=UI["gold_line"], fg_color=(UI["surface"], "#171C23"))
             card.grid(row=0, column=i, padx=10, pady=5, sticky="nsew")
             self.factory_cards_frame.grid_columnconfigure(i, weight=1)
 
@@ -10885,25 +11294,34 @@ class GoldSystemApp(ctk.CTk):
 
                 self.factory_card_widgets[box] = {"sales": lbl_sales, "incoming": lbl_incoming}
 
-        prod_bar1 = ctk.CTkFrame(tab, corner_radius=10, fg_color="#1a1a1a")
-        prod_bar1.pack(fill="x", padx=20, pady=(15, 6))
-        self.lbl_prod_gold_stones = ctk.CTkLabel(prod_bar1, text="", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#f1c40f")
-        self.lbl_prod_gold_stones.pack(pady=8)
+        # لوحة الإنتاج: ثلاث بطاقات متجاورة (الإجمالي في المنتصف أبرز) ثم سطر النسب
+        prod_panel = ctk.CTkFrame(tab, corner_radius=14, fg_color=UI["midnight_2"])
+        prod_panel.pack(fill="x", padx=20, pady=(15, 10))
+        ctk.CTkLabel(prod_panel, text="ملخّص الإنتاج للفترة", anchor="e",
+                     font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                     text_color="#AEB9CC").pack(fill="x", padx=18, pady=(10, 2))
+        tiles = ctk.CTkFrame(prod_panel, fg_color="transparent")
+        tiles.pack(fill="x", padx=12, pady=(0, 4))
+        for col in range(3):
+            tiles.grid_columnconfigure(col, weight=1, uniform="prod")
 
-        prod_bar2 = ctk.CTkFrame(tab, corner_radius=10, fg_color="#1a1a1a")
-        prod_bar2.pack(fill="x", padx=20, pady=6)
-        self.lbl_prod_gold_diamond = ctk.CTkLabel(prod_bar2, text="", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#f1c40f")
-        self.lbl_prod_gold_diamond.pack(pady=8)
+        def prod_tile(col, big=False):
+            tile = ctk.CTkFrame(tiles, corner_radius=12, fg_color="#1B2B47",
+                                border_width=1 if big else 0, border_color=UI["gold"])
+            tile.grid(row=0, column=col, sticky="nsew", padx=6, pady=6)
+            lbl = ctk.CTkLabel(tile, text="", text_color="#F5D77A" if big else "#F1E3B0",
+                               font=ctk.CTkFont(family="Cairo", size=17 if big else 15, weight="bold"))
+            lbl.pack(padx=12, pady=12)
+            return lbl
 
-        prod_bar_total = ctk.CTkFrame(tab, corner_radius=10, fg_color="#1a1a1a")
-        prod_bar_total.pack(fill="x", padx=20, pady=6)
-        self.lbl_prod_total = ctk.CTkLabel(prod_bar_total, text="", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color="#d4af37")
-        self.lbl_prod_total.pack(pady=8)
+        # ترتيب من اليمين: ذهب+فصوص، الإجمالي، ذهب+ألماس
+        self.lbl_prod_gold_stones = prod_tile(2)
+        self.lbl_prod_total = prod_tile(1, big=True)
+        self.lbl_prod_gold_diamond = prod_tile(0)
 
-        ratio_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color="#1a1a1a")
-        ratio_bar.pack(fill="x", padx=20, pady=(6, 10))
-        self.lbl_prod_ratios = ctk.CTkLabel(ratio_bar, text="", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#2ecc71")
-        self.lbl_prod_ratios.pack(pady=8)
+        self.lbl_prod_ratios = ctk.CTkLabel(prod_panel, text="", text_color="#7EE2B0",
+                                            font=ctk.CTkFont(family="Cairo", size=14, weight="bold"))
+        self.lbl_prod_ratios.pack(pady=(2, 12))
 
         btn_print = ctk.CTkButton(tab, text="🖨️ طباعة صناديق المصنع", font=("Cairo", 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=42, command=self.print_factory_boxes_screen)
         btn_print.pack(pady=(0, 15))
@@ -12132,23 +12550,23 @@ class GoldSystemApp(ctk.CTk):
         # عناصرها السفلية تُقطع على الشاشات الأصغر بلا وسيلة للوصول إليها.
         # الحاوية بلون النظام لا ttk.Frame الافتراضي (كان يكشف خلفية سوداء
         # في الفراغ أعلى المحتوى أو أسفله أثناء التمرير)
-        sales_scroll_outer = ctk.CTkFrame(outer_raw, fg_color=("#d9d9d9", "#1c1c1c"),
+        sales_scroll_outer = ctk.CTkFrame(outer_raw, fg_color=(UI["canvas"], "#10141A"),
                                            corner_radius=0)
         sales_scroll_outer.pack(fill="both", expand=True)
         try:
-            outer_raw.configure(fg_color=("#d9d9d9", "#1c1c1c"))
+            outer_raw.configure(fg_color=(UI["canvas"], "#10141A"))
         except Exception:
             pass
 
         # لون الخلفية يتبع سمة النظام: رصاصي فاتح في المظهر الفاتح، وداكن في الداكن
-        sales_bg = "#d9d9d9" if ctk.get_appearance_mode() == "Light" else "#1c1c1c"
+        sales_bg = UI["canvas"] if ctk.get_appearance_mode() == "Light" else "#10141A"
         sales_canvas = tk.Canvas(sales_scroll_outer, highlightthickness=0, bd=0, bg=sales_bg)
         sales_vsb = ttk.Scrollbar(sales_scroll_outer, orient="vertical", command=sales_canvas.yview)
         sales_canvas.configure(yscrollcommand=sales_vsb.set)
         sales_vsb.pack(side="right", fill="y")
         sales_canvas.pack(side="left", fill="both", expand=True)
 
-        outer = ctk.CTkFrame(sales_canvas, fg_color=("#d9d9d9", "#1c1c1c"))
+        outer = ctk.CTkFrame(sales_canvas, fg_color=(UI["canvas"], "#10141A"))
         sales_canvas_window = sales_canvas.create_window((0, 0), window=outer, anchor="nw")
 
         def _on_sales_frame_configure(event=None):
@@ -12162,7 +12580,9 @@ class GoldSystemApp(ctk.CTk):
             if content_h < event.height:
                 sales_canvas.itemconfig(sales_canvas_window, height=event.height)
             else:
-                sales_canvas.itemconfig(sales_canvas_window, height="")
+                # صفر = الارتفاع الطبيعي للمحتوى (النص الفارغ يرفضه Tk بخطأ،
+                # فيبقى الارتفاع القديم ويُقصّ أسفل الشاشة بلا تمرير)
+                sales_canvas.itemconfig(sales_canvas_window, height=0)
 
         outer.bind("<Configure>", _on_sales_frame_configure)
         sales_canvas.bind("<Configure>", _on_sales_canvas_configure)
@@ -14231,7 +14651,7 @@ class GoldSystemApp(ctk.CTk):
         n_cols = 3
         for i, (cat, icon) in enumerate(box_defs):
             row, col = divmod(i, n_cols)
-            card = ctk.CTkFrame(self.losses_cards_frame, corner_radius=14, border_width=2, border_color="#8b0000", fg_color=("gray90", "gray15"))
+            card = ctk.CTkFrame(self.losses_cards_frame, corner_radius=14, border_width=1, border_color=("#EBC3C5", "#5A2A2D"), fg_color=(UI["surface"], "#171C23"))
             card.grid(row=row, column=col, padx=10, pady=8, sticky="nsew")
             self.losses_cards_frame.grid_columnconfigure(col, weight=1)
 
@@ -15645,37 +16065,601 @@ class SyncDownWindow(ctk.CTkToplevel):
 
 
 class LoginWindow(ctk.CTk):
-    """شاشة الدخول الأولى: تظهر عند أول تشغيل فقط، أو لو حصل تسجيل خروج يدوي"""
+    """شاشة الدخول: ترحيب متحرك بملء الشاشة، ثم لوحة تسجيل الدخول.
+
+    كل المشهد على لوحة رسم واحدة: خلفية متدرّجة بلون الليل وهالة ذهبية خافتة،
+    أمواج تتحرّك باستمرار يعلوها خطّا ذهب يتموّجان، وذرّات ذهبية تصعد وتتلألأ.
+    يظهر الشعار تدريجياً ثم «مرحباً بك»، وبعد ثلاث ثوانٍ تقريباً (أو بأي ضغطة
+    أو نقرة) يصعد الشعار وتنزلق لوحة الدخول — والأمواج مستمرة خلفها.
+
+    منطق الدخول نفسه (try_login) لم يتغيّر، وأي خلل في الرسوم يُظهر لوحة
+    الدخول مباشرة فلا يمنع الدخول أبداً.
+    """
+
+    _BG = ("#040914", "#0B1830", "#03070F")   # أعلى، وسط، أسفل
+    _CARD = "#0E192C"
+    _CARD_LINE = "#2A3A57"
+    _FIELD = "#0A1322"
+    _GOLD = "#C9A227"
+    _GOLD_LIGHT = "#F2DC9A"
+    _TEXT = "#F2F4F7"
+    _MUTED = "#8C97A8"
+    _SPLASH_S = 3.0          # مدة الترحيب قبل لوحة الدخول (ثوانٍ)
+    _TRANSITION_S = 0.8      # مدة انتقال الشعار وانزلاق اللوحة
+    _FRAME_MS = 33           # ~30 إطاراً في الثانية
+
     def __init__(self):
         super().__init__()
-        self.title("تسجيل الدخول - نظام قسم التصنيع")
+        self.title("جاديت — تسجيل الدخول")
         apply_app_icon(self)
-        self.geometry("440x400")
-        self.resizable(False, False)
-        self.eval('tk::PlaceWindow . center')
+        self.configure(fg_color=self._BG[0])
+        self._alive = True
+        self._anim_job = None
+        self._phase = "splash"
+        self._t0 = time.perf_counter()
+        self._last = self._t0
+        self._trans_t0 = None
 
-        ctk.CTkLabel(self, text="🔒 تسجيل الدخول", font=("Cairo", 24, "bold"), text_color="#d4af37").pack(pady=(35, 5))
-        ctk.CTkLabel(self, text="نظام قسم التصنيع", font=("Cairo", 14)).pack(pady=(0, 20))
+        try:
+            self.attributes("-fullscreen", True)
+        except Exception:
+            pass
+        self.update_idletasks()
+        self.W = max(self.winfo_screenwidth(), 800)
+        self.H = max(self.winfo_screenheight(), 600)
+        try:
+            self.S = float(ctk.ScalingTracker.get_window_scaling(self))
+        except Exception:
+            self.S = 1.0
 
-        self.ent_user = ctk.CTkEntry(self, placeholder_text="اسم المستخدم", font=("Cairo", 15), width=270, height=44, justify="center")
-        self.ent_user.pack(pady=8)
+        self.cv = tk.Canvas(self, width=self.W, height=self.H, highlightthickness=0, bd=0,
+                            bg=self._BG[1], cursor="arrow")
+        self.cv.pack(fill="both", expand=True)
 
-        self.ent_pass = ctk.CTkEntry(self, placeholder_text="كلمة المرور", show="●", font=("Cairo", 15), width=270, height=44, justify="center")
-        self.ent_pass.pack(pady=8)
+        try:
+            self._draw_background()
+            self._init_waves()
+            self._init_particles()
+            self._init_logo()
+            self._init_splash_texts()
+        except Exception as e:
+            log_cloud_error("تعذّر تجهيز رسوم شاشة الترحيب", e)
+        self._build_window_controls()
+        self._build_login_card()
+
+        # أي ضغطة أو نقرة أثناء الترحيب تنتقل للدخول مباشرة
+        self.bind("<Key>", self._skip_splash, add="+")
+        self.cv.bind("<Button-1>", self._skip_splash, add="+")
+        # التوقيت يبدأ بعد تجهيز الرسوم (لا يُقتطع من مدة الترحيب)
+        self._t0 = self._last = time.perf_counter()
+        self._tick()
+
+    # ------------------------------------------------------------------ أدوات
+    @staticmethod
+    def _mix(c1, c2, t):
+        """لون بين لونين (t من ٠ إلى ١) — بديل الشفافية في لوحة الرسم"""
+        t = max(0.0, min(1.0, t))
+        a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+        b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+        return "#%02x%02x%02x" % tuple(round(a[k] + (b[k] - a[k]) * t) for k in range(3))
+
+    @staticmethod
+    def _ease(t):
+        """حركة ناعمة: سريعة في البداية وهادئة عند الوصول"""
+        t = max(0.0, min(1.0, t))
+        return 1 - (1 - t) ** 3
+
+    def _font(self, size, bold=False):
+        return ("Cairo", -int(size * self.S), "bold") if bold else ("Cairo", -int(size * self.S))
+
+    def _round_rect(self, x1, y1, x2, y2, r, **kw):
+        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+               x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+        return self.cv.create_polygon(pts, smooth=True, **kw)
+
+    # ------------------------------------------------------------------ المشهد
+    _GLOW = "#D9AE3A"        # لون الهالة خلف الشعار
+    _GLOW_ALPHA = 82         # أقصى عتامة للهالة في مركزها (من ٢٥٥)
+
+    @staticmethod
+    def _rgb(c):
+        return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+
+    def _draw_background(self):
+        """الخلفية صورة واحدة متدرّجة (بلا حواف ولا خطوط)، والهالة الذهبية صورة
+        شفافة منفصلة خلف الشعار تتحرّك معه — رسمها سريع في كل إطار"""
+        from PIL import ImageTk
+        W, H = int(self.W), int(self.H)
+        top, mid, bot = (self._rgb(c) for c in self._BG)
+        column = []
+        for y in range(H):
+            f = y / max(1, H - 1)
+            a, b, t = (top, mid, f * 2) if f < 0.5 else (mid, bot, (f - 0.5) * 2)
+            column.append(tuple(round(a[k] + (b[k] - a[k]) * t) for k in range(3)))
+        col_img = Image.new("RGB", (1, H))
+        col_img.putdata(column)
+        self._bg_pil = col_img.resize((W, H), Image.NEAREST)
+        self._bg_photo = ImageTk.PhotoImage(self._bg_pil)
+        self.cv.create_image(0, 0, image=self._bg_photo, anchor="nw")
+
+        # الهالة: ذهب تتلاشى عتامته من المركز إلى الحافة
+        self._glow_ry = int(H * 0.40)
+        self._glow_rx = int(self._glow_ry * 1.35)
+        size = (2 * self._glow_rx, 2 * self._glow_ry)
+        # radial_gradient: صفر في المركز و١٨١ عند منتصف الحافة
+        self._glow_alpha = Image.radial_gradient("L").point(
+            lambda v: int(self._GLOW_ALPHA * max(0.0, 1 - v / 181) ** 2.2)).resize(size, Image.BILINEAR)
+        glow = Image.new("RGBA", size, self._GLOW)
+        glow.putalpha(self._glow_alpha)
+        self._glow_photo = ImageTk.PhotoImage(glow)
+        self._glow_cy = self._logo_center_y("splash")
+        self.cv.create_image(W / 2, self._glow_cy, image=self._glow_photo, tags=("glow",))
+
+    def _bg_at(self, x, y, glow_cy=None):
+        """لون الخلفية الفعلي عند نقطة (للظهور والاختفاء التدريجي بلا شفافية)"""
+        try:
+            x = int(max(0, min(self.W - 1, x)))
+            y = int(max(0, min(self.H - 1, y)))
+            base = self._bg_pil.getpixel((x, y))
+            gcy = self._glow_cy if glow_cy is None else glow_cy
+            gx, gy = int(x - (self.W / 2 - self._glow_rx)), int(y - (gcy - self._glow_ry))
+            a = 0.0
+            if 0 <= gx < 2 * self._glow_rx and 0 <= gy < 2 * self._glow_ry:
+                a = self._glow_alpha.getpixel((gx, gy)) / 255.0
+            gold = self._rgb(self._GLOW)
+            return "#%02x%02x%02x" % tuple(round(base[k] + (gold[k] - base[k]) * a) for k in range(3))
+        except Exception:
+            return self._BG[1]
+
+    def _init_waves(self):
+        W, H = self.W, self.H
+        self._wave_step = max(16, int(W / 90))
+        self._wave_xs = list(range(-self._wave_step, int(W) + 2 * self._wave_step, self._wave_step))
+        self._waves = []
+        for base, amp, length, speed, fill in ((0.78, 28, 980, 0.50, "#0B1A31"),
+                                               (0.83, 22, 720, -0.70, "#0F2240"),
+                                               (0.88, 18, 540, 0.90, "#142A4C")):
+            item = self.cv.create_polygon(0, 0, 1, 1, 2, 2, fill=fill, outline="", smooth=True)
+            self._waves.append((item, base * H, amp * self.S, 2 * math.pi / (length * self.S), speed))
+        self._gold_lines = []
+        for base, amp, length, speed, col, width in ((0.825, 16, 660, 0.60, self._GOLD, 2),
+                                                      (0.855, 12, 1000, -0.45, "#6E5A1E", 1)):
+            item = self.cv.create_line(0, 0, 1, 1, fill=col, width=width, smooth=True)
+            self._gold_lines.append((item, base * H, amp * self.S, 2 * math.pi / (length * self.S), speed))
+
+    def _wave_y(self, x, base, amp, k, speed, t):
+        return (base + amp * math.sin(k * x + t * speed * 2.2)
+                + amp * 0.35 * math.sin(k * 2.3 * x - t * speed * 1.4))
+
+    def _update_waves(self, t):
+        xs, H = self._wave_xs, self.H
+        for item, base, amp, k, speed in self._waves:
+            pts = []
+            for x in xs:
+                pts += (x, self._wave_y(x, base, amp, k, speed, t))
+            # نقطة مكرّرة = زاوية حادّة في المضلع الناعم (فلا تتقوّس زوايا الأسفل)
+            pts += (xs[-1], H + 40, xs[-1], H + 40, xs[0], H + 40, xs[0], H + 40)
+            self.cv.coords(item, *pts)
+        for item, base, amp, k, speed in self._gold_lines:
+            pts = []
+            for x in xs:
+                pts += (x, self._wave_y(x, base, amp, k, speed, t))
+            self.cv.coords(item, *pts)
+
+    def _init_particles(self):
+        rnd = random.Random(1405)
+        W, H = self.W, self.H
+        self._rnd = rnd
+        self._parts = []
+        for _ in range(48):
+            x, y = rnd.uniform(0, W), rnd.uniform(0.12 * H, H)
+            r = rnd.choice((1.2, 1.5, 1.9, 2.4)) * self.S
+            item = self.cv.create_oval(x - r, y - r, x + r, y + r, fill=self._GOLD, outline="")
+            self._parts.append([item, x, y, r, rnd.uniform(14, 40) * self.S, rnd.uniform(0, 6.28)])
+
+    def _update_particles(self, t, dt):
+        W, H = self.W, self.H
+        for p in self._parts:
+            item, x, y, r, speed, ph = p
+            y -= speed * dt
+            x += math.sin(t * 0.8 + ph) * 0.25
+            if y < 0.08 * H:
+                y, x = H + r, self._rnd.uniform(0, W)
+            p[1], p[2] = x, y
+            self.cv.coords(item, x - r, y - r, x + r, y + r)
+            glow = 0.5 + 0.5 * math.sin(t * 2.4 + ph)
+            self.cv.itemconfig(item, fill=self._mix("#5A4A18", self._GOLD_LIGHT, glow))
+
+    # ------------------------------------------------------------------ الشعار والترحيب
+    def _logo_center_y(self, phase):
+        return self.H * (0.33 if phase == "splash" else 0.17)
+
+    def _init_logo(self):
+        """إطارات الشعار محسوبة مسبقاً: ظهور تدريجي مع تكبير، ثم تصغير عند الانتقال"""
+        from PIL import ImageTk
+        self._logo_frames, self._logo_small = [], []
+        self._logo_h = int(min(self.H * 0.23, 250 * self.S))
+        path = resource_path("jadeite_logo.png")
+        if not os.path.exists(path):
+            self.logo_item = self.cv.create_text(self.W / 2, self._logo_center_y("splash"),
+                                                 text="💎 جاديت", fill=self._GOLD,
+                                                 font=self._font(54, True))
+            return
+        base = Image.open(path).convert("RGBA")
+        bw = round(base.width * self._logo_h / base.height)
+        base = base.resize((bw, self._logo_h), Image.LANCZOS)
+        alpha = base.getchannel("A")
+        for i in range(18):
+            f = self._ease(i / 17)
+            scale = 0.84 + 0.16 * f
+            im = base.resize((max(1, int(bw * scale)), max(1, int(self._logo_h * scale))), Image.LANCZOS)
+            a = alpha.resize(im.size).point(lambda v, f=f: int(v * f))
+            im.putalpha(a)
+            self._logo_frames.append(ImageTk.PhotoImage(im))
+        for i in range(1, 13):
+            scale = 1 - 0.26 * self._ease(i / 12)
+            self._logo_small.append(ImageTk.PhotoImage(
+                base.resize((max(1, int(bw * scale)), max(1, int(self._logo_h * scale))), Image.LANCZOS)))
+        self.logo_item = self.cv.create_image(self.W / 2, self._logo_center_y("splash"),
+                                              image=self._logo_frames[0])
+
+    def _init_splash_texts(self):
+        cx, S = self.W / 2, self.S
+        y = self._logo_center_y("splash") + self._logo_h / 2 + 58 * S
+        # كل عنصر: (المعرّف، لونه النهائي، لون الخلفية تحته) — يبدأ مخفياً ويظهر تدريجياً
+        specs = {
+            "welcome": (lambda: self.cv.create_text(cx, y, text="مرحباً بك", font=self._font(50, True)),
+                        self._GOLD_LIGHT, (cx, y)),
+            "subtitle": (lambda: self.cv.create_text(cx, y + 52 * S, font=self._font(17),
+                                                     text="نظام جاديت المحاسبي لمصانع الذهب والمجوهرات"),
+                         "#B9C2D0", (cx, y + 52 * S)),
+            "divider": (lambda: self.cv.create_line(cx, y + 84 * S, cx, y + 84 * S, width=2, capstyle="round"),
+                        self._GOLD, (cx, y + 84 * S)),
+            "track": (lambda: self.cv.create_rectangle(cx - 130 * S, y + 112 * S, cx + 130 * S,
+                                                       y + 116 * S, outline=""),
+                      "#1A2944", (cx, y + 114 * S)),
+            "bar": (lambda: self.cv.create_rectangle(cx - 130 * S, y + 112 * S, cx - 130 * S,
+                                                     y + 116 * S, outline=""),
+                    self._GOLD, (cx, y + 114 * S)),
+            "loading": (lambda: self.cv.create_text(cx, y + 138 * S, text="جارٍ تجهيز النظام…",
+                                                    font=self._font(13)),
+                        self._MUTED, (cx, y + 138 * S)),
+        }
+        self._splash_items, self._splash_colors, self._shown = {}, {}, {}
+        for key, (make, final, (px, py)) in specs.items():
+            item = make()
+            self.cv.itemconfig(item, state="hidden")
+            self._splash_items[key] = item
+            self._splash_colors[key] = (final, self._bg_at(px, py))
+        self._splash_y = y
+
+        # تموّج: حلقات ذهبية تتّسع من الشعار وتتلاشى
+        self._ripples = [self.cv.create_oval(0, 0, 0, 0, outline=self._GOLD, width=2, state="hidden")
+                         for _ in range(3)]
+        for r in self._ripples:
+            self.cv.tag_lower(r, self.logo_item)
+        self._logo_k = -1
+
+    def _fade(self, key, f):
+        """يُظهر عنصر الترحيب بنسبة f (٠ مخفي، ١ ظاهر تماماً) بمزج لونه مع الخلفية تحته"""
+        item = self._splash_items[key]
+        self._shown[key] = f
+        if f <= 0.01:
+            self.cv.itemconfig(item, state="hidden")
+            return
+        final, under = self._splash_colors[key]
+        self.cv.itemconfig(item, state="normal", fill=self._mix(under, final, f))
+
+    def _update_ripples(self, t, fade=1.0):
+        cx, cy = self.W / 2, (self.cv.coords(self.logo_item) or [0, self._logo_center_y("splash")])[1]
+        r0, r1 = self._logo_h * 0.42, self._logo_h * 1.55
+        period = 2.4
+        for i, item in enumerate(self._ripples):
+            q = (t - 0.6 - i * period / 3) / period
+            if q < 0 or fade <= 0.01:
+                self.cv.itemconfig(item, state="hidden")
+                continue
+            q -= int(q)
+            e = self._ease(q)
+            r = r0 + (r1 - r0) * e
+            strength = (1 - q) ** 1.6 * 0.55 * fade
+            under = self._bg_at(cx + r * 1.15, cy)
+            self.cv.coords(item, cx - r * 1.15, cy - r, cx + r * 1.15, cy + r)
+            self.cv.itemconfig(item, state="normal", outline=self._mix(under, self._GOLD, strength),
+                               width=max(1, round(2 * self.S * (1 - q) + 0.5)))
+
+    def _update_splash(self, t):
+        items, S, cx, y = self._splash_items, self.S, self.W / 2, self._splash_y
+        # الشعار: ظهور وتكبير خلال أول ٠٫٩ ثانية
+        if self._logo_frames:
+            k = int(min(1.0, t / 0.9) * (len(self._logo_frames) - 1))
+            if k != self._logo_k:
+                self._logo_k = k
+                self.cv.itemconfig(self.logo_item, image=self._logo_frames[k])
+        self._update_ripples(t)
+        # «مرحباً بك»: يظهر صاعداً من ٠٫٥ إلى ١٫٣ ثانية
+        f = self._ease((t - 0.5) / 0.8)
+        self._fade("welcome", f)
+        self.cv.coords(items["welcome"], cx, y + (1 - f) * 22 * S)
+        f2 = self._ease((t - 0.9) / 0.7)
+        self._fade("subtitle", f2)
+        self._fade("divider", f2)
+        half = 150 * S * f2
+        self.cv.coords(items["divider"], cx - half, y + 84 * S, cx + half, y + 84 * S)
+        # شريط التجهيز يمتلئ حتى نهاية الترحيب
+        f_in = self._ease((t - 0.3) / 0.6)
+        f3 = max(0.0, min(1.0, (t - 0.3) / (self._SPLASH_S - 0.4)))
+        f3 = f3 * f3 * (3 - 2 * f3)      # امتلاء متدرّج منتظم
+        for key in ("track", "bar", "loading"):
+            self._fade(key, f_in)
+        self.cv.coords(items["bar"], cx - 130 * S, y + 112 * S, cx - 130 * S + 260 * S * f3, y + 116 * S)
+        self.cv.itemconfig(items["loading"], text="جاهز ✓" if f3 >= 0.999 else "جارٍ تجهيز النظام…")
+
+    def _update_transition(self, p):
+        """الشعار يصعد ويصغر، نصوص الترحيب تختفي، ولوحة الدخول تنزلق للأعلى"""
+        e = self._ease(p)
+        S = self.S
+        # نصوص الترحيب تتلاشى في النصف الأول من الانتقال (من حيث وصلت)
+        out = 1 - self._ease(min(1.0, p / 0.5))
+        for key, shown in self._trans_from.items():
+            self._fade(key, shown * out)
+        self._update_ripples(time.perf_counter() - self._t0, fade=out)
+
+        y0, y1 = self._logo_center_y("splash"), self._logo_center_y("login")
+        new_y = y0 + (y1 - y0) * e
+        cur = self.cv.coords(self.logo_item)
+        if cur:
+            self.cv.coords(self.logo_item, self.W / 2, new_y)
+        if hasattr(self, "_glow_cy"):
+            self.cv.move("glow", 0, new_y - self._glow_cy)
+            self._glow_cy = new_y
+        if self._logo_small and self.cv.type(self.logo_item) == "image":
+            self.cv.itemconfig(self.logo_item,
+                               image=self._logo_small[int(e * (len(self._logo_small) - 1))])
+
+        slide = (1 - e) * 70 * S
+        under = self._card_under
+        self.cv.coords(self._card_poly, *self._card_points(slide))
+        self.cv.itemconfig(self._card_poly, state="normal", fill=self._mix(under, self._CARD, e),
+                           outline=self._mix(under, self._CARD_LINE, e))
+        self.cv.coords(self._card_accent, *self._accent_points(slide))
+        self.cv.itemconfig(self._card_accent, state="normal", fill=self._mix(under, self._GOLD, e))
+
+    # ------------------------------------------------------------------ لوحة الدخول
+    def _build_window_controls(self):
+        bar = ctk.CTkFrame(self.cv, fg_color=self._BG[0], corner_radius=0)
+        for text, cmd in (("✕", self.destroy), ("—", self._minimize)):
+            ctk.CTkButton(bar, text=text, width=42, height=34, corner_radius=8, font=("Cairo", 15, "bold"),
+                          fg_color="transparent", hover_color="#1B2740", text_color=self._MUTED,
+                          command=cmd).pack(side="left", padx=2)
+        self.cv.create_window(14, 12, window=bar, anchor="nw")
+
+    def _minimize(self):
+        """ملء الشاشة لا يُصغَّر مباشرة في ويندوز: نخرج منه ثم نصغّر، ونعود عند الاستعادة"""
+        try:
+            self.attributes("-fullscreen", False)
+            self.iconify()
+            self.bind("<Map>", self._restore_fullscreen, add="+")
+        except Exception:
+            pass
+
+    def _restore_fullscreen(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        try:
+            self.attributes("-fullscreen", True)
+        except Exception:
+            pass
+
+    def _card_points(self, dy=0.0):
+        x1, y1 = self.W / 2 - self._card_w / 2, self._card_top + dy
+        r = 22 * self.S
+        x2, y2 = x1 + self._card_w, y1 + self._card_h
+        return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+                x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+
+    def _accent_points(self, dy=0.0):
+        cx, y = self.W / 2, self._card_top + dy + 1.5
+        return [cx - 34 * self.S, y, cx + 34 * self.S, y]
+
+    def _build_login_card(self):
+        S, card, field = self.S, self._CARD, self._FIELD
+        form = ctk.CTkFrame(self.cv, fg_color=card, corner_radius=0)
+        self._form = form
+        w = 350
+
+        ctk.CTkLabel(form, text="تسجيل الدخول", font=("Cairo", 25, "bold"),
+                     text_color=self._TEXT).pack(pady=(4, 0))
+        ctk.CTkLabel(form, text="أهلاً بعودتك — أدخل بيانات حسابك للمتابعة",
+                     font=("Cairo", 13), text_color=self._MUTED).pack(pady=(0, 18))
+
+        def caption(text):
+            ctk.CTkLabel(form, text=text, font=("Cairo", 13, "bold"), text_color="#AAB4C3",
+                         anchor="e", width=w, height=20).pack(pady=(0, 4))
+
+        entry_style = dict(font=("Cairo", 15), height=48, corner_radius=12, border_width=1,
+                           fg_color=field, border_color=self._CARD_LINE, text_color=self._TEXT,
+                           placeholder_text_color="#5E6B80", justify="center")
+        caption("اسم المستخدم")
+        self.ent_user = ctk.CTkEntry(form, placeholder_text="اسم المستخدم", width=w, **entry_style)
+        self.ent_user.pack(pady=(0, 12))
+
+        caption("كلمة المرور")
+        pass_row = ctk.CTkFrame(form, fg_color=card, corner_radius=0)
+        pass_row.pack(pady=(0, 2))
+        self.ent_pass = ctk.CTkEntry(pass_row, placeholder_text="كلمة المرور", show="●",
+                                     width=w - 56, **entry_style)
+        self.ent_pass.pack(side="right")
+        self._btn_eye = ctk.CTkButton(pass_row, text="👁", width=48, height=48, corner_radius=12,
+                                      font=("Segoe UI Emoji", 16), fg_color=field, border_width=1,
+                                      border_color=self._CARD_LINE, hover_color="#16233A",
+                                      text_color=self._MUTED, command=self._toggle_password)
+        self._btn_eye.pack(side="left", padx=(0, 8))
+
+        self._lbl_caps = ctk.CTkLabel(form, text="", font=("Cairo", 12, "bold"),
+                                      text_color="#F5A35C", height=20)
+        self._lbl_caps.pack()
+
+        self._remember = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(form, text="تذكّر اسم المستخدم على هذا الجهاز", variable=self._remember,
+                        font=("Cairo", 13), text_color=self._MUTED, fg_color=self._GOLD,
+                        hover_color="#B08D1F", border_color="#4A5A77", checkmark_color="#0B1220",
+                        checkbox_width=20, checkbox_height=20, corner_radius=6).pack(pady=(2, 6))
+
+        self.lbl_status = ctk.CTkLabel(form, text="", font=("Cairo", 13, "bold"), text_color="#F08A8F",
+                                       wraplength=w, height=24)
+        self.lbl_status.pack(pady=(2, 4))
+
+        self.btn_login = ctk.CTkButton(form, text="دخول", font=("Cairo", 17, "bold"), width=w, height=52,
+                                       corner_radius=12, fg_color=self._GOLD, hover_color="#E0BE4E",
+                                       text_color="#0B1220", command=self.try_login)
+        self.btn_login.pack(pady=(2, 14))
+
+        ctk.CTkLabel(form, text=f"🔒 اتصال آمن   ·   الإصدار {APP_VERSION}", font=("Cairo", 11),
+                     text_color="#5E6B80").pack()
+        if not SUPABASE_AVAILABLE:
+            ctk.CTkLabel(form, text="⚠️ مكتبة supabase غير مثبّتة — نفّذ: pip install supabase",
+                         font=("Cairo", 11), text_color="#F5A35C").pack(pady=(8, 0))
+
         # Enter في اسم المستخدم ينقل لكلمة المرور، وفيها يسجّل الدخول مباشرة
         self.ent_user.bind("<Return>", lambda e: (self.ent_pass.focus_set(), "break")[1])
         self.ent_pass.bind("<Return>", lambda e: self.try_login())
-        self.ent_user.focus_set()
+        for seq in ("<KeyPress>", "<KeyRelease>"):
+            self.ent_pass.bind(seq, self._check_caps_lock, add="+")
 
-        self.lbl_status = ctk.CTkLabel(self, text="", font=("Cairo", 13), text_color="#e74c3c")
-        self.lbl_status.pack(pady=8)
+        # قياس اللوحة من محتواها الفعلي (يتكيّف مع تكبير ويندوز للشاشة)
+        form.update_idletasks()
+        pad_x, pad_y = 44 * S, 36 * S
+        self._card_w = form.winfo_reqwidth() + 2 * pad_x
+        self._card_h = form.winfo_reqheight() + 2 * pad_y
+        logo_bottom = self._logo_center_y("login") + self._logo_h * 0.74 / 2 if hasattr(self, "_logo_h") \
+            else self.H * 0.25
+        self._card_top = max(logo_bottom + 26 * S, (self.H - self._card_h) / 2 + 40 * S)
+        self._card_top = min(self._card_top, self.H - self._card_h - 16 * S)
 
-        self.btn_login = ctk.CTkButton(self, text="دخول", font=("Cairo", 16, "bold"), width=220, height=46,
-                                        fg_color="#d4af37", hover_color="#b8952e", text_color="black", command=self.try_login)
-        self.btn_login.pack(pady=10)
+        # اللوحة مخفية أثناء الترحيب، وتظهر في الانتقال بمزج لونها مع الخلفية تحتها
+        self._card_under = self._bg_at(self.W / 2, self._card_top + self._card_h / 2,
+                                       glow_cy=self._logo_center_y("login")) \
+            if hasattr(self, "_bg_pil") else self._BG[1]
+        self._card_poly = self.cv.create_polygon(self._card_points(70 * S), smooth=True, state="hidden",
+                                                 fill=self._CARD, outline=self._CARD_LINE, width=1)
+        self._card_accent = self.cv.create_line(self._accent_points(70 * S), fill=self._GOLD,
+                                                width=3, capstyle="round", state="hidden")
+        self._form_item = self.cv.create_window(self.W / 2, self._card_top + pad_y, window=form,
+                                                anchor="n", state="hidden")
 
-        if not SUPABASE_AVAILABLE:
-            ctk.CTkLabel(self, text="⚠️ مكتبة supabase غير مثبّتة — نفّذ: pip install supabase", font=("Cairo", 11), text_color="#e67e22").pack(pady=(15, 0))
+        # اسم المستخدم المحفوظ (إن اختار العميل تذكّره) — كلمة المرور لا تُحفظ أبداً
+        saved = self._load_saved_username()
+        if saved:
+            self.ent_user.insert(0, saved)
+            self._remember.set(True)
+
+    def _show_form(self):
+        self.cv.itemconfig(self._form_item, state="normal")
+        self.cv.itemconfig(self._card_poly, state="normal", fill=self._CARD, outline=self._CARD_LINE)
+        self.cv.coords(self._card_poly, *self._card_points(0))
+        self.cv.itemconfig(self._card_accent, state="normal", fill=self._GOLD)
+        self.cv.coords(self._card_accent, *self._accent_points(0))
+        (self.ent_pass if self.ent_user.get().strip() else self.ent_user).focus_set()
+
+    def _show_login_now(self):
+        """احتياط: أي خلل في الرسوم يُظهر لوحة الدخول فوراً"""
+        self._phase = "login"
+        try:
+            for item in list(getattr(self, "_splash_items", {}).values()) + getattr(self, "_ripples", []):
+                self.cv.itemconfig(item, state="hidden")
+            if hasattr(self, "_glow_cy"):
+                self.cv.move("glow", 0, self._logo_center_y("login") - self._glow_cy)
+                self._glow_cy = self._logo_center_y("login")
+            if hasattr(self, "logo_item"):
+                self.cv.coords(self.logo_item, self.W / 2, self._logo_center_y("login"))
+                if self._logo_small:
+                    self.cv.itemconfig(self.logo_item, image=self._logo_small[-1])
+        except Exception:
+            pass
+        self._show_form()
+
+    def _skip_splash(self, event=None):
+        if self._phase == "splash":
+            self._trans_t0 = time.perf_counter() - self._t0
+            self._trans_from = dict(getattr(self, "_shown", {}))
+            self._phase = "transition"
+
+    def _toggle_password(self):
+        hidden = self.ent_pass.cget("show") == "●"
+        self.ent_pass.configure(show="" if hidden else "●")
+        self._btn_eye.configure(text="🙈" if hidden else "👁")
+        self.ent_pass.focus_set()
+
+    def _check_caps_lock(self, event):
+        on = bool(getattr(event, "state", 0) & 0x2)
+        self._lbl_caps.configure(text="⇪  مفتاح الأحرف الكبيرة (Caps Lock) مفعّل" if on else "")
+
+    _PREFS_FILE = "login_prefs.json"
+
+    def _load_saved_username(self):
+        try:
+            with open(os.path.join(APP_DATA_DIR, self._PREFS_FILE), encoding="utf-8") as f:
+                return (json.load(f).get("username") or "").strip()
+        except Exception:
+            return ""
+
+    def _save_username_pref(self):
+        """يحفظ اسم المستخدم فقط (لا كلمة المرور) إن اختار المستخدم ذلك، ويمحوه إن ألغاه"""
+        path = os.path.join(APP_DATA_DIR, self._PREFS_FILE)
+        try:
+            if self._remember.get() and self.ent_user.get().strip():
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({"username": self.ent_user.get().strip()}, f, ensure_ascii=False)
+            elif os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ الحلقة
+    def _tick(self):
+        if not self._alive:
+            return
+        try:
+            now = time.perf_counter()
+            t, dt = now - self._t0, min(0.1, now - self._last)
+            self._last = now
+            if hasattr(self, "_waves"):
+                self._update_waves(t)
+                self._update_particles(t, dt)
+            if self._phase == "splash":
+                self._update_splash(t)
+                if t >= self._SPLASH_S:
+                    self._skip_splash()
+            if self._phase == "transition":
+                p = (t - self._trans_t0) / self._TRANSITION_S
+                self._update_transition(min(1.0, p))
+                if p >= 1.0:
+                    self._phase = "login"
+                    self._show_form()
+        except tk.TclError:
+            return          # النافذة أُغلقت أثناء الإطار
+        except Exception as e:
+            log_cloud_error("خلل في رسوم شاشة الدخول — تُعرض اللوحة مباشرة", e)
+            self._alive = False
+            self._show_login_now()
+            return
+        # بعد ظهور اللوحة تكفي حركة أهدأ (أخف على المعالج أثناء الكتابة)
+        self._anim_job = self.after(self._FRAME_MS if self._phase != "login" else 50, self._tick)
+
+    def destroy(self):
+        self._alive = False
+        if self._anim_job is not None:
+            try:
+                self.after_cancel(self._anim_job)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, "_remember"):
+                self._save_username_pref()
+        except Exception:
+            pass
+        super().destroy()
 
     def try_login(self):
         username = self.ent_user.get().strip()

@@ -57,6 +57,7 @@ CHECKS = [
     ("إعادة استخدام الجداول", [PY, "test_tree_reuse.py"]),
     ("الأداء والمزامنة",     [PY, "test_perf_and_sync.py"]),
     ("بلا اهتزاز",          [PY, "test_no_flicker.py"]),
+    ("شاشة الترحيب والدخول", [PY, "test_login_screen.py", TARGET]),
 ]
 
 failed = []
