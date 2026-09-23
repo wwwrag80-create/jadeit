@@ -1,0 +1,60 @@
+{
+  "name": "جاديت — نظام إدارة مصانع الذهب",
+  "short_name": "جاديت",
+  "description": "نظام محاسبة وإدارة مصانع الذهب والمجوهرات: مبيعات، وارد، مراحل تصنيع، صناديق خياس، وتقارير.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#13161A",
+  "theme_color": "#13161A",
+  "categories": ["business", "finance", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "icons/Icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/Icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/Icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/Icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "المبيعات/الصادر",
+      "short_name": "المبيعات",
+      "url": "./#/sales",
+      "icons": [{ "src": "icons/Icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "الوارد/قبض",
+      "short_name": "الوارد",
+      "url": "./#/inbound",
+      "icons": [{ "src": "icons/Icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "صناديق الخياس",
+      "short_name": "الصناديق",
+      "url": "./#/boxes",
+      "icons": [{ "src": "icons/Icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

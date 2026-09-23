@@ -1,0 +1,26 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# أسرار البيئة — لا تُرفع إطلاقاً
+.env
+*.env
+migration/.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# قواعد بيانات العملاء القديمة أثناء الترحيل
+*.db
+*.sqlite
+
+# نظام التشغيل والمحرر
+.DS_Store
+.idea/
+.vscode/

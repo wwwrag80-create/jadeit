@@ -1,0 +1,44 @@
+name: jadeite_erp
+description: نظام جاديت لإدارة مصانع الذهب — تطبيق ويب مركزي متعدد المستأجرين
+publish_to: "none"
+version: 2.0.0+1
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # الحالة
+  flutter_riverpod: ^2.6.1
+
+  # السحابة
+  supabase_flutter: ^2.8.0
+
+  # الطباعة وتوليد PDF لحظياً (بدون تخزين على السحابة)
+  pdf: ^3.11.1
+  printing: ^5.13.4
+
+  # أدوات
+  intl: ^0.20.2
+  collection: ^1.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/fonts/
+    - assets/images/
+  fonts:
+    - family: Cairo
+      fonts:
+        - asset: assets/fonts/Cairo-Regular.ttf
+        - asset: assets/fonts/Cairo-Bold.ttf
+          weight: 700

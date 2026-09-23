@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="جاديت — نظام محاسبة وإدارة مصانع الذهب والمجوهرات">
+
+  <!-- تثبيت التطبيق كبرنامج سطح مكتب بدون شريط المتصفح -->
+  <base href="$FLUTTER_BASE_HREF">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#13161A">
+
+  <!-- دعم التثبيت على iOS/iPadOS -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="جاديت">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>جاديت — نظام إدارة مصانع الذهب</title>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background-color: #13161A;
+      overflow: hidden;
+      font-family: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
+    }
+
+    /* شاشة إقلاع بهوية النظام بدل الشاشة البيضاء أثناء تحميل Flutter */
+    #boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      color: #D4AF37;
+      transition: opacity .35s ease;
+      z-index: 9999;
+    }
+    #boot .logo   { font-size: 46px; }
+    #boot .title  { font-size: 21px; font-weight: 700; letter-spacing: .5px; }
+    #boot .hint   { font-size: 13px; color: #8b8f95; }
+    #boot .bar    { width: 210px; height: 3px; background: #23272d; border-radius: 3px; overflow: hidden; }
+    #boot .bar i  { display: block; height: 100%; width: 40%; background: #D4AF37; border-radius: 3px;
+                    animation: slide 1.15s ease-in-out infinite; }
+    @keyframes slide { 0% { margin-inline-start: -40%; } 100% { margin-inline-start: 100%; } }
+    #boot.done { opacity: 0; pointer-events: none; }
+
+    /* زر التثبيت يظهر فقط عندما يسمح المتصفح بذلك */
+    #installBtn {
+      position: fixed;
+      inset-inline-end: 18px;
+      inset-block-end: 18px;
+      display: none;
+      z-index: 10000;
+      padding: 11px 18px;
+      border: none;
+      border-radius: 10px;
+      background: #D4AF37;
+      color: #000;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 6px 18px rgba(0,0,0,.45);
+    }
+  </style>
+</head>
+<body>
+
+<div id="boot">
+  <div class="logo">💎</div>
+  <div class="title">جاديت — نظام إدارة مصانع الذهب</div>
+  <div class="bar"><i></i></div>
+  <div class="hint">جارٍ تحميل النظام…</div>
+</div>
+
+<button id="installBtn">⬇️ تثبيت البرنامج على الجهاز</button>
+
+<script>
+  // ---- التقاط حدث التثبيت وعرض زر واضح للمستخدم ----
+  let deferredPrompt = null;
+  const installBtn = document.getElementById('installBtn');
+
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    deferredPrompt = event;
+    installBtn.style.display = 'block';
+  });
+
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    installBtn.style.display = 'none';
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+  });
+
+  window.addEventListener('appinstalled', () => {
+    installBtn.style.display = 'none';
+    deferredPrompt = null;
+  });
+
+  // ---- إخفاء شاشة الإقلاع بعد أول إطار يرسمه Flutter ----
+  window.addEventListener('flutter-first-frame', () => {
+    const boot = document.getElementById('boot');
+    boot.classList.add('done');
+    setTimeout(() => boot.remove(), 400);
+  });
+</script>
+
+<script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

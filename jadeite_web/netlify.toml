@@ -1,0 +1,28 @@
+# ملف إعداد Netlify — بديل Vercel بنفس النتيجة
+[build]
+  command = "bash build_web.sh"
+  publish = "build/web"
+
+# تطبيق صفحة واحدة: كل المسارات تُخدم من index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# عامل الخدمة يجب ألا يُخزَّن، وإلا بقي العملاء على نسخة قديمة بعد كل تحديث
+[[headers]]
+  for = "/flutter_service_worker.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
