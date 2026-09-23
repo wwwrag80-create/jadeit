@@ -2592,8 +2592,17 @@ class ScreenRouter(ctk.CTkFrame):
 
 
 class GoldSystemApp(ctk.CTk):
-    def __init__(self, client_id=None, client_name=None, supabase_client=None, is_admin_session=False, initial_can_edit=False):
+    def __init__(self, client_id=None, client_name=None, supabase_client=None, is_admin_session=False, initial_can_edit=False, intro=None):
         super().__init__()
+        # intro: قادم من شاشة الدخول — يُبنى النظام مخفياً تماماً خلف آخر إطار منها،
+        # ثم يظهر فوقه بالإطار نفسه وتنحسر الأمواج عن الرئيسية (_intro_show)
+        self._intro = intro
+        self._intro_cv = None
+        if intro:
+            try:
+                self.withdraw()
+            except Exception:
+                pass
 
         self.client_id = client_id
         self.client_name = client_name
@@ -2609,7 +2618,9 @@ class GoldSystemApp(ctk.CTk):
         self.update_idletasks()
         try:
             # يعمل على ويندوز: يكبّر النافذة لتملأ مساحة الشاشة المتاحة فعلياً على أي جهاز
-            self.state('zoomed')
+            # (القادم من شاشة الدخول يبقى مخفياً ويُكبَّر عند ظهوره)
+            if not intro:
+                self.state('zoomed')
         except Exception:
             try:
                 # بديل لأنظمة لينكس
@@ -2702,6 +2713,13 @@ class GoldSystemApp(ctk.CTk):
         # أن يبدأ النظام — والحساب يمسح كل الحركات فيأخذ وقته.
         # تُبنى الواجهة كاملة وهي مخفية، ثم تظهر مرة واحدة جاهزة
         self.update_idletasks()
+        if self._intro:
+            try:
+                self._intro_show()
+            except Exception as e:
+                log_cloud_error("تعذّر انتقال الدخول المتحرك — يظهر النظام مباشرة", e)
+                self._intro_abort()
+            return
         try:
             self.deiconify()
         except Exception:
@@ -2744,6 +2762,12 @@ class GoldSystemApp(ctk.CTk):
             self.update_idletasks()
         except Exception:
             pass
+        # الشاشات الثلاث الأكثر استخداماً تُبنى في الخلفية بعد ظهور النظام،
+        # فتفتح **فوراً** بلا «تكوّن» أمام المستخدم. البناء متدرّج (شاشة كل
+        # ١٢٠ ملّي ثانية) حتى لا تتجمّد الواجهة أثناء التجهيز.
+        def prebuild():
+            self._prebuild_screens(["المبيعات", "مراحل التصنيع", "صناديق الخياس"])
+
         try:
             self.recalculate_all()
         finally:
@@ -2751,12 +2775,246 @@ class GoldSystemApp(ctk.CTk):
                 self.configure(cursor="")
             except Exception:
                 pass
+            if self._intro_cv is not None:
+                # القادم من شاشة الدخول: تنحسر الأمواج أولاً ثم التجهيز (لا يقطع الحركة).
+                # داخل finally: حتى لو فشل الحساب لا يبقى الغطاء فوق النظام
+                self.after(0, lambda: self._intro_reveal(then=prebuild))
+        if self._intro_cv is None:
+            self.after(120, prebuild)
 
-        # الشاشات الثلاث الأكثر استخداماً تُبنى في الخلفية بعد ظهور النظام،
-        # فتفتح **فوراً** بلا «تكوّن» أمام المستخدم. البناء متدرّج (شاشة كل
-        # ١٢٠ ملّي ثانية) حتى لا تتجمّد الواجهة أثناء التجهيز.
-        self.after(120, lambda: self._prebuild_screens(
-            ["المبيعات", "مراحل التصنيع", "صناديق الخياس"]))
+    # ------------------------------------------------------------------ الانتقال من شاشة الدخول
+    _INTRO_FADE_S = 0.22      # ظهور النظام فوق آخر إطار من شاشة الدخول
+    _INTRO_REVEAL_S = 1.05    # انحسار الأمواج عن الرئيسية
+
+    def _intro_show(self):
+        """يُظهر النظام فوق شاشة الدخول بغطاء مطابق لآخر إطار منها، ثم يغلقها.
+
+        الغطاء لوحة رسم بلون الموج نفسه، والشعار والترحيب في مكانهما على الشاشة
+        تماماً (بإحداثيات الشاشة لا النافذة) — فتبدو شاشة الدخول وكأنها صارت
+        نافذة النظام: لا إغلاق ولا فراغ ولا وميض.
+        """
+        spec = self._intro
+        try:
+            self.attributes("-alpha", 0.0)       # ويندوز: يظهر تدريجياً فوق شاشة الدخول
+        except Exception:
+            pass
+        try:
+            self.deiconify()
+        except Exception:
+            pass
+        self.force_maximize()
+        cv = tk.Canvas(self, bg=spec.get("color", "#142A4C"), highlightthickness=0, bd=0)
+        cv.place(x=0, y=0, relwidth=1, relheight=1)
+        tk.Misc.tkraise(cv)                      # فوق كل الواجهة (lift في Canvas تخص عناصرها)
+        self._intro_cv = cv
+        # الشعار والترحيب يُرسمان قبل أول ظهور (فلا إطار واحد بلا محتوى)، ثم يُصحَّح
+        # مكانهما بعد أن تستقر النافذة (شريط العنوان يزيح منطقة الرسم قليلاً)
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        self._intro_draw()
+        try:
+            # يرسم النافذة ويثبّت ظهورها (وإلا تخفيها customtkinter وتعيدها عند mainloop)
+            self.update()
+        except Exception:
+            pass
+        self._intro_realign()
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+        self._intro_fade(time.perf_counter())
+        self.after(20000, self._intro_watchdog)
+        # إعادة التكبير بعد الظهور الفعلي: النداء الأول يُتجاهل أحياناً على ويندوز
+        self.after(220, self.force_maximize)
+        self.after(700, self.force_maximize)
+
+    def _intro_abort(self):
+        """احتياط: أي خلل في الانتقال يُظهر النظام مباشرة ويغلق شاشة الدخول"""
+        cv, self._intro_cv = self._intro_cv, None
+        login = (self._intro or {}).get("handoff")
+        self._intro = None
+        for action in (lambda: cv is not None and cv.destroy(),
+                       lambda: self.attributes("-alpha", 1.0),
+                       self.deiconify, self.force_maximize,
+                       lambda: login is not None and login.destroy()):
+            try:
+                action()
+            except Exception:
+                pass
+        self.after(30, self._startup_first_calc)
+
+    def _intro_watchdog(self):
+        """لا يبقى الغطاء فوق النظام أبداً: إن لم تنحسر الأمواج لأي سبب تُزال"""
+        if self._intro_cv is not None and not getattr(self, "_intro_revealing", False):
+            log_cloud_error("غطاء انتقال الدخول بقي أطول من المتوقع — أُزيل", None)
+            login = (self._intro or {}).get("handoff")
+            if login is not None:
+                try:
+                    login.destroy()
+                except Exception:
+                    pass
+            try:
+                self.attributes("-alpha", 1.0)
+            except Exception:
+                pass
+            self._intro_finish()
+
+    def _intro_draw(self):
+        spec, cv = self._intro, self._intro_cv
+        try:
+            ox, oy = cv.winfo_rootx(), cv.winfo_rooty()
+        except Exception:
+            ox = oy = 0
+        self._intro_off = (ox, oy)
+        self._intro_imgs = []
+        if spec.get("logo") is not None:
+            try:
+                from PIL import ImageTk
+                img = ImageTk.PhotoImage(spec["logo"], master=self)
+                self._intro_imgs.append(img)
+                cv.create_image(spec["logo_x"] - ox, spec["logo_y"] - oy, image=img)
+            except Exception as e:
+                log_cloud_error("تعذّر رسم الشعار في انتقال الدخول", e)
+        for t in spec.get("texts", []):
+            try:
+                cv.create_text(t["x"] - ox, t["y"] - oy, text=t["text"], font=t["font"], fill=t["fill"])
+            except Exception:
+                pass
+
+    def _intro_realign(self):
+        """يطابق مكان الشعار والترحيب على الشاشة تماماً بعد استقرار النافذة"""
+        cv = self._intro_cv
+        try:
+            ox, oy = cv.winfo_rootx(), cv.winfo_rooty()
+            px, py = getattr(self, "_intro_off", (ox, oy))
+            if (ox, oy) != (px, py):
+                cv.move("all", px - ox, py - oy)
+                self._intro_off = (ox, oy)
+        except Exception:
+            pass
+
+    def _intro_fade(self, t0):
+        p = min(1.0, (time.perf_counter() - t0) / self._INTRO_FADE_S)
+        try:
+            self.attributes("-alpha", p)
+        except Exception:
+            p = 1.0
+        if p < 1.0:
+            self.after(15, lambda: self._intro_fade(t0))
+            return
+        # النظام ظاهر الآن فوق شاشة الدخول بالإطار نفسه: تُغلق هي تحته بلا أثر
+        login = self._intro.get("handoff") if self._intro else None
+        if login is not None:
+            self._intro["handoff"] = None
+            try:
+                login.destroy()
+            except Exception:
+                pass
+        self.after(30, self._startup_first_calc)
+
+    @staticmethod
+    def _ease_in_out(t):
+        t = max(0.0, min(1.0, t))
+        return 4 * t ** 3 if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
+
+    def _intro_reveal(self, then=None):
+        """الأمواج تنحسر للأسفل كاشفةً الرئيسية من أعلاها: حافة الماء موجة بخطّين من ذهب"""
+        cv = self._intro_cv
+        if cv is None or getattr(self, "_intro_revealing", False):
+            return
+        self._intro_revealing = True
+        try:
+            w, h = max(1, cv.winfo_width()), max(1, cv.winfo_height())
+            s = float(ctk.ScalingTracker.get_window_scaling(self))
+        except Exception:
+            return self._intro_finish(then)
+        page = UI["canvas"] if ctk.get_appearance_mode() == "Light" else "#10141A"
+        amp = 11 * s
+        # الحقول الأربعة في الرئيسية تبدأ من الصفر وتُعدّ بعد الانكشاف
+        labels = getattr(self, "home_stat_labels", None) or {}
+        for key, lbl in labels.items():
+            try:
+                lbl.configure(text="0" if key == "count" else f"{en(0)} جم")
+            except Exception:
+                pass
+        band = cv.create_polygon(0, 0, 1, 1, 2, 2, fill=page, outline="", smooth=True)
+        crest = cv.create_line(0, 0, 1, 1, fill=UI["gold"], width=max(2, round(2 * s)), smooth=True)
+        crest2 = cv.create_line(0, 0, 1, 1, fill="#6E5A1E", width=1, smooth=True)
+        step = max(16, w // 80)
+        xs = list(range(-step, w + 2 * step, step))
+        t0 = time.perf_counter()
+
+        def frame():
+            now = time.perf_counter() - t0
+            p = now / self._INTRO_REVEAL_S
+            try:
+                ph = now * 5.0
+                pts = []
+                for x in xs:
+                    pts += (x, 2.4 * amp + amp * math.sin(x * 0.011 + ph)
+                            + 0.35 * amp * math.sin(x * 0.027 - ph * 0.7))
+                cv.coords(band, *pts, xs[-1], -4, xs[-1], -4, xs[0], -4, xs[0], -4)
+                cv.coords(crest, *pts)
+                cv.coords(crest2, *[v + 0.9 * amp if i % 2 else v for i, v in enumerate(pts)])
+                cv.place_configure(y=int(self._ease_in_out(p) * (h + 4 * amp)))
+            except Exception:
+                p = 1.0
+            if p < 1.0:
+                self.after(16, frame)
+            else:
+                self._intro_finish(then)
+        frame()
+
+    def _intro_finish(self, then=None):
+        cv, self._intro_cv = self._intro_cv, None
+        if cv is not None:
+            try:
+                cv.destroy()
+            except Exception:
+                pass
+        self._intro_imgs = []
+        self._intro = None
+        self._home_count_up(time.perf_counter())
+        self._sidebar_shimmer()
+        if then is not None:
+            self.after(450, then)
+
+    def _home_count_up(self, t0):
+        """أرقام الرئيسية تُعدّ من الصفر لقيمتها خلال أقل من ثانية"""
+        raw = getattr(self, "_home_stat_raw", None)
+        labels = getattr(self, "home_stat_labels", None)
+        if not raw or not labels:
+            return
+        p = min(1.0, (time.perf_counter() - t0) / 0.9)
+        e = 1 - (1 - p) ** 3
+        try:
+            for key, val in raw.items():
+                if key == "count":
+                    labels[key].configure(text=f"{int(round(val * e)):,}")
+                else:
+                    labels[key].configure(text=f"{en(val * e)} جم")
+        except Exception:
+            return
+        if p < 1.0:
+            self.after(30, lambda: self._home_count_up(t0))
+        else:
+            self.refresh_home_stats()     # القيم الدقيقة من الدفتر نفسه
+
+    def _sidebar_shimmer(self):
+        """حواف أزرار الشريط تلمع بالذهبي واحداً بعد الآخر ثم تعود"""
+        def paint(card, color):
+            try:
+                if card.winfo_exists():
+                    card.configure(border_color=color)
+            except Exception:
+                pass
+
+        for i, (card, normal) in enumerate(getattr(self, "_sidebar_cards", [])):
+            self.after(70 * i, lambda c=card: paint(c, UI["gold"]))
+            self.after(70 * i + 300, lambda c=card, n=normal: paint(c, n))
 
     def _prebuild_screens(self, names):
         """يبني الشاشات المطلوبة تباعاً في الخلفية بلا إظهارها"""
@@ -5427,6 +5685,7 @@ class GoldSystemApp(ctk.CTk):
         edge = "#9DB9E6"
         edge_more = "#C3CAD4"
         shortcut_no = [0]
+        self._sidebar_cards = []          # (البطاقة، لون حافتها) — للمعان عند الدخول
 
         def fitted_size(text, with_hint):
             """أكبر خط (حتى font_size) يُظهر اسم الشاشة كاملاً في عرض الشريط الحالي"""
@@ -5450,6 +5709,7 @@ class GoldSystemApp(ctk.CTk):
                 fg_color=("#ffffff", "#ffffff"), height=btn_h)
             card.pack(fill="x", pady=4, padx=2)
             card.pack_propagate(False)
+            self._sidebar_cards.append((card, edge if primary else edge_more))
 
             widgets = [card]
             # اختصار لوحة المفاتيح لأول ست شاشات في الشريط (Ctrl+1 … Ctrl+6) —
@@ -6030,6 +6290,9 @@ class GoldSystemApp(ctk.CTk):
             comp = self.treasury_period_components(month)
             count = sum(1 for inv in self.invoices.values()
                         if inv.get("settled_status") in COUNTED_STATUSES and self.inv_in_period(inv, month))
+            self._home_stat_raw = {"sales": -comp['sales'], "inbound": comp['inbound'],
+                                   "khayas": -(comp['boxes'] + comp['workers'] + comp['closed']),
+                                   "count": count}
             labels["sales"].configure(text=f"{en(-comp['sales'])} جم")
             labels["inbound"].configure(text=f"{en(comp['inbound'])} جم")
             labels["khayas"].configure(text=f"{en(-(comp['boxes'] + comp['workers'] + comp['closed']))} جم")
@@ -15949,8 +16212,12 @@ class SyncDownWindow(ctk.CTkToplevel):
     فحركاته المتراكمة تُرفع أولاً، وإلا طمستها نسخة السحابة الأقدم.
     """
 
-    def __init__(self, master, db_path, api, tenant_id, business_name, cloud_only=None):
+    def __init__(self, master, db_path, api, tenant_id, business_name, cloud_only=None, on_progress=None):
         super().__init__(master)
+        # on_progress: بلا نافذة — التقدّم يُعرض داخل شاشة الدخول نفسها (لا نوافذ منبثقة)
+        self._on_progress = on_progress
+        if on_progress is not None:
+            self.withdraw()
         # cloud_only: عند True تُمسح النسخة المحلية قبل السحب فتُعرض بيانات
         # السحابة وحدها. الافتراضي يتبع نوع النسخة (مدير = سحابي بحت).
         self.cloud_only = IS_ADMIN_BUILD if cloud_only is None else cloud_only
@@ -15964,8 +16231,9 @@ class SyncDownWindow(ctk.CTkToplevel):
         apply_app_icon(self)
         self.geometry("480x260")
         self.resizable(False, False)
-        self.transient(master)
-        self.grab_set()
+        if on_progress is None:
+            self.transient(master)
+            self.grab_set()
         self.protocol("WM_DELETE_WINDOW", lambda: None)   # لا يُغلق أثناء التجهيز
 
         ctk.CTkLabel(self, text="💎 جاديت", font=("Cairo", 26, "bold"),
@@ -15998,6 +16266,8 @@ class SyncDownWindow(ctk.CTkToplevel):
             self.lbl.configure(text=text)
             if ratio is not None:
                 self.bar.set(max(0.0, min(1.0, ratio)))
+            if self._on_progress is not None:
+                self._on_progress(text, ratio)
         self._ui(apply)
 
     def _work(self):
@@ -16064,16 +16334,40 @@ class SyncDownWindow(ctk.CTkToplevel):
         self._ui(self.destroy)
 
 
+class _LoginClosed(Exception):
+    """أُغلقت شاشة الدخول أثناء انتظار التحقق من الإنترنت"""
+
+
+class _CanvasLabel:
+    """نص مرسوم على لوحة الرسم بواجهة CTkLabel المختصرة (configure/cget) —
+    يكفي لما تستدعيه try_login ونسخة العميل، وبلا مستطيل خلفية حول النص"""
+
+    def __init__(self, canvas, item):
+        self.canvas, self.item = canvas, item
+
+    def configure(self, text=None, text_color=None, **_ignored):
+        if text is not None:
+            self.canvas.itemconfig(self.item, text=text)
+        if text_color is not None:
+            self.canvas.itemconfig(self.item, fill=text_color)
+
+    config = configure
+
+    def cget(self, key):
+        return self.canvas.itemcget(self.item, "fill" if key == "text_color" else key)
+
+
 class LoginWindow(ctk.CTk):
-    """شاشة الدخول: ترحيب متحرك بملء الشاشة، ثم لوحة تسجيل الدخول.
+    """شاشة الدخول: ترحيب متحرك بملء الشاشة، ثم حقول الدخول على المشهد نفسه.
 
     كل المشهد على لوحة رسم واحدة: خلفية متدرّجة بلون الليل وهالة ذهبية خافتة،
     أمواج تتحرّك باستمرار يعلوها خطّا ذهب يتموّجان، وذرّات ذهبية تصعد وتتلألأ.
     يظهر الشعار تدريجياً ثم «مرحباً بك»، وبعد ثلاث ثوانٍ تقريباً (أو بأي ضغطة
-    أو نقرة) يصعد الشعار وتنزلق لوحة الدخول — والأمواج مستمرة خلفها.
+    أو نقرة) يصعد الشعار وتظهر حقول الدخول تحته بالتتابع — بلا لوحة ولا إطار.
 
-    منطق الدخول نفسه (try_login) لم يتغيّر، وأي خلل في الرسوم يُظهر لوحة
-    الدخول مباشرة فلا يمنع الدخول أبداً.
+    بعد نجاح الدخول لا تُغلق الشاشة: ترتفع الأمواج حتى تغمرها، ويُبنى النظام
+    خلف هذا الإطار الأخير ثم يظهر فوقه بالإطار نفسه وتنحسر الأمواج عن الرئيسية.
+    أي خلل في الرسوم يُظهر الحقول مباشرة فلا يمنع الدخول أبداً.
     """
 
     _BG = ("#040914", "#0B1830", "#03070F")   # أعلى، وسط، أسفل
@@ -16093,7 +16387,8 @@ class LoginWindow(ctk.CTk):
         self.title("جاديت — تسجيل الدخول")
         apply_app_icon(self)
         self.configure(fg_color=self._BG[0])
-        self._alive = True
+        self._alive = True           # النافذة قائمة (لم تُغلق)
+        self._animating = True       # الرسوم تعمل (تتوقف وحدها عند أي خلل)
         self._anim_job = None
         self._phase = "splash"
         self._t0 = time.perf_counter()
@@ -16125,7 +16420,7 @@ class LoginWindow(ctk.CTk):
         except Exception as e:
             log_cloud_error("تعذّر تجهيز رسوم شاشة الترحيب", e)
         self._build_window_controls()
-        self._build_login_card()
+        self._build_login_form()
 
         # أي ضغطة أو نقرة أثناء الترحيب تنتقل للدخول مباشرة
         self.bind("<Key>", self._skip_splash, add="+")
@@ -16133,6 +16428,11 @@ class LoginWindow(ctk.CTk):
         # التوقيت يبدأ بعد تجهيز الرسوم (لا يُقتطع من مدة الترحيب)
         self._t0 = self._last = time.perf_counter()
         self._tick()
+        try:
+            # يُثبّت ظهور النافذة الآن: وإلا تخفيها customtkinter وتعيدها عند mainloop (وميض)
+            self.update()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ أدوات
     @staticmethod
@@ -16226,6 +16526,9 @@ class LoginWindow(ctk.CTk):
                                                       (0.855, 12, 1000, -0.45, "#6E5A1E", 1)):
             item = self.cv.create_line(0, 0, 1, 1, fill=col, width=width, smooth=True)
             self._gold_lines.append((item, base * H, amp * self.S, 2 * math.pi / (length * self.S), speed))
+        # مقدار ارتفاع كل موجة فوق مكانها (يزيد بعد نجاح الدخول حتى تغمر الشاشة)
+        self._wave_lift = [0.0] * len(self._waves)
+        self._line_lift = [0.0] * len(self._gold_lines)
 
     def _wave_y(self, x, base, amp, k, speed, t):
         return (base + amp * math.sin(k * x + t * speed * 2.2)
@@ -16233,14 +16536,16 @@ class LoginWindow(ctk.CTk):
 
     def _update_waves(self, t):
         xs, H = self._wave_xs, self.H
-        for item, base, amp, k, speed in self._waves:
+        for i, (item, base, amp, k, speed) in enumerate(self._waves):
+            base -= self._wave_lift[i]
             pts = []
             for x in xs:
                 pts += (x, self._wave_y(x, base, amp, k, speed, t))
             # نقطة مكرّرة = زاوية حادّة في المضلع الناعم (فلا تتقوّس زوايا الأسفل)
             pts += (xs[-1], H + 40, xs[-1], H + 40, xs[0], H + 40, xs[0], H + 40)
             self.cv.coords(item, *pts)
-        for item, base, amp, k, speed in self._gold_lines:
+        for j, (item, base, amp, k, speed) in enumerate(self._gold_lines):
+            base -= self._line_lift[j]
             pts = []
             for x in xs:
                 pts += (x, self._wave_y(x, base, amp, k, speed, t))
@@ -16272,7 +16577,10 @@ class LoginWindow(ctk.CTk):
 
     # ------------------------------------------------------------------ الشعار والترحيب
     def _logo_center_y(self, phase):
-        return self.H * (0.33 if phase == "splash" else 0.17)
+        if phase == "splash":
+            return self.H * 0.33
+        # مكان الشعار فوق حقول الدخول يُحسب مع ترتيبها (_build_login_form)
+        return getattr(self, "_login_logo_y", self.H * 0.17)
 
     def _init_logo(self):
         """إطارات الشعار محسوبة مسبقاً: ظهور تدريجي مع تكبير، ثم تصغير عند الانتقال"""
@@ -16288,6 +16596,7 @@ class LoginWindow(ctk.CTk):
         base = Image.open(path).convert("RGBA")
         bw = round(base.width * self._logo_h / base.height)
         base = base.resize((bw, self._logo_h), Image.LANCZOS)
+        self._logo_pil = base            # بحجمه الكامل — يُسلَّم للنظام ليرسم الإطار نفسه
         alpha = base.getchannel("A")
         for i in range(18):
             f = self._ease(i / 17)
@@ -16396,9 +16705,8 @@ class LoginWindow(ctk.CTk):
         self.cv.itemconfig(items["loading"], text="جاهز ✓" if f3 >= 0.999 else "جارٍ تجهيز النظام…")
 
     def _update_transition(self, p):
-        """الشعار يصعد ويصغر، نصوص الترحيب تختفي، ولوحة الدخول تنزلق للأعلى"""
+        """الشعار يصعد ويصغر ونصوص الترحيب تختفي (حقول الدخول تظهر بعده تباعاً)"""
         e = self._ease(p)
-        S = self.S
         # نصوص الترحيب تتلاشى في النصف الأول من الانتقال (من حيث وصلت)
         out = 1 - self._ease(min(1.0, p / 0.5))
         for key, shown in self._trans_from.items():
@@ -16407,8 +16715,7 @@ class LoginWindow(ctk.CTk):
 
         y0, y1 = self._logo_center_y("splash"), self._logo_center_y("login")
         new_y = y0 + (y1 - y0) * e
-        cur = self.cv.coords(self.logo_item)
-        if cur:
+        if self.cv.coords(self.logo_item):
             self.cv.coords(self.logo_item, self.W / 2, new_y)
         if hasattr(self, "_glow_cy"):
             self.cv.move("glow", 0, new_y - self._glow_cy)
@@ -16417,22 +16724,14 @@ class LoginWindow(ctk.CTk):
             self.cv.itemconfig(self.logo_item,
                                image=self._logo_small[int(e * (len(self._logo_small) - 1))])
 
-        slide = (1 - e) * 70 * S
-        under = self._card_under
-        self.cv.coords(self._card_poly, *self._card_points(slide))
-        self.cv.itemconfig(self._card_poly, state="normal", fill=self._mix(under, self._CARD, e),
-                           outline=self._mix(under, self._CARD_LINE, e))
-        self.cv.coords(self._card_accent, *self._accent_points(slide))
-        self.cv.itemconfig(self._card_accent, state="normal", fill=self._mix(under, self._GOLD, e))
-
-    # ------------------------------------------------------------------ لوحة الدخول
+    # ------------------------------------------------------------------ أزرار النافذة
     def _build_window_controls(self):
         bar = ctk.CTkFrame(self.cv, fg_color=self._BG[0], corner_radius=0)
         for text, cmd in (("✕", self.destroy), ("—", self._minimize)):
             ctk.CTkButton(bar, text=text, width=42, height=34, corner_radius=8, font=("Cairo", 15, "bold"),
                           fg_color="transparent", hover_color="#1B2740", text_color=self._MUTED,
                           command=cmd).pack(side="left", padx=2)
-        self.cv.create_window(14, 12, window=bar, anchor="nw")
+        self._controls_item = self.cv.create_window(14, 12, window=bar, anchor="nw")
 
     def _minimize(self):
         """ملء الشاشة لا يُصغَّر مباشرة في ويندوز: نخرج منه ثم نصغّر، ونعود عند الاستعادة"""
@@ -16451,102 +16750,143 @@ class LoginWindow(ctk.CTk):
         except Exception:
             pass
 
-    def _card_points(self, dy=0.0):
-        x1, y1 = self.W / 2 - self._card_w / 2, self._card_top + dy
-        r = 22 * self.S
-        x2, y2 = x1 + self._card_w, y1 + self._card_h
-        return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
-                x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    # ------------------------------------------------------------------ نموذج الدخول
+    _FIELD_LINE = "#2A3A57"
+    _FORM_W = 380            # عرض الحقول بوحدات الواجهة (يكبر مع تكبير ويندوز للشاشة)
+    _PART_GAP = 0.07         # بين ظهور جزء من النموذج والذي يليه (ثوانٍ)
+    _PART_DUR = 0.45         # مدة ظهور كل جزء
 
-    def _accent_points(self, dy=0.0):
-        cx, y = self.W / 2, self._card_top + dy + 1.5
-        return [cx - 34 * self.S, y, cx + 34 * self.S, y]
+    def _build_login_form(self):
+        """حقول الدخول تطفو مباشرة على المشهد — بلا لوحة ولا إطار.
 
-    def _build_login_card(self):
-        S, card, field = self.S, self._CARD, self._FIELD
-        form = ctk.CTkFrame(self.cv, fg_color=card, corner_radius=0)
-        self._form = form
-        w = 350
-
-        ctk.CTkLabel(form, text="تسجيل الدخول", font=("Cairo", 25, "bold"),
-                     text_color=self._TEXT).pack(pady=(4, 0))
-        ctk.CTkLabel(form, text="أهلاً بعودتك — أدخل بيانات حسابك للمتابعة",
-                     font=("Cairo", 13), text_color=self._MUTED).pack(pady=(0, 18))
-
-        def caption(text):
-            ctk.CTkLabel(form, text=text, font=("Cairo", 13, "bold"), text_color="#AAB4C3",
-                         anchor="e", width=w, height=20).pack(pady=(0, 4))
-
-        entry_style = dict(font=("Cairo", 15), height=48, corner_radius=12, border_width=1,
-                           fg_color=field, border_color=self._CARD_LINE, text_color=self._TEXT,
-                           placeholder_text_color="#5E6B80", justify="center")
-        caption("اسم المستخدم")
-        self.ent_user = ctk.CTkEntry(form, placeholder_text="اسم المستخدم", width=w, **entry_style)
-        self.ent_user.pack(pady=(0, 12))
-
-        caption("كلمة المرور")
-        pass_row = ctk.CTkFrame(form, fg_color=card, corner_radius=0)
-        pass_row.pack(pady=(0, 2))
-        self.ent_pass = ctk.CTkEntry(pass_row, placeholder_text="كلمة المرور", show="●",
-                                     width=w - 56, **entry_style)
-        self.ent_pass.pack(side="right")
-        self._btn_eye = ctk.CTkButton(pass_row, text="👁", width=48, height=48, corner_radius=12,
-                                      font=("Segoe UI Emoji", 16), fg_color=field, border_width=1,
-                                      border_color=self._CARD_LINE, hover_color="#16233A",
-                                      text_color=self._MUTED, command=self._toggle_password)
-        self._btn_eye.pack(side="left", padx=(0, 8))
-
-        self._lbl_caps = ctk.CTkLabel(form, text="", font=("Cairo", 12, "bold"),
-                                      text_color="#F5A35C", height=20)
-        self._lbl_caps.pack()
-
-        self._remember = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(form, text="تذكّر اسم المستخدم على هذا الجهاز", variable=self._remember,
-                        font=("Cairo", 13), text_color=self._MUTED, fg_color=self._GOLD,
-                        hover_color="#B08D1F", border_color="#4A5A77", checkmark_color="#0B1220",
-                        checkbox_width=20, checkbox_height=20, corner_radius=6).pack(pady=(2, 6))
-
-        self.lbl_status = ctk.CTkLabel(form, text="", font=("Cairo", 13, "bold"), text_color="#F08A8F",
-                                       wraplength=w, height=24)
-        self.lbl_status.pack(pady=(2, 4))
-
-        self.btn_login = ctk.CTkButton(form, text="دخول", font=("Cairo", 17, "bold"), width=w, height=52,
-                                       corner_radius=12, fg_color=self._GOLD, hover_color="#E0BE4E",
-                                       text_color="#0B1220", command=self.try_login)
-        self.btn_login.pack(pady=(2, 14))
-
-        ctk.CTkLabel(form, text=f"🔒 اتصال آمن   ·   الإصدار {APP_VERSION}", font=("Cairo", 11),
-                     text_color="#5E6B80").pack()
+        العناوين والتنبيهات نصوص مرسومة على لوحة الرسم نفسها (فلا مستطيلات
+        حولها)، والحقول والأزرار عناصر مستقلة حوافها بلون الخلفية تحتها.
+        الشعار والنموذج كتلة واحدة متوسّطة فوق الأمواج، وكل جزء يظهر صاعداً
+        بالتتابع بعد الترحيب.
+        """
+        S, cx, cv = self.S, self.W / 2, self.cv
+        w = self._FORM_W
+        half = w * S / 2
+        logo_h = getattr(self, "_logo_h", int(self.H * 0.2)) * 0.74
+        rows = [("logo", logo_h / S), ("gap", 14), ("title", 48), ("sub", 26), ("accent", 28),
+                ("cap_user", 26), ("user", 52), ("gap", 12), ("cap_pass", 26), ("pass", 52),
+                ("caps", 26), ("remember", 30), ("status", 44), ("login", 54), ("gap", 12),
+                ("footer", 22)]
         if not SUPABASE_AVAILABLE:
-            ctk.CTkLabel(form, text="⚠️ مكتبة supabase غير مثبّتة — نفّذ: pip install supabase",
-                         font=("Cairo", 11), text_color="#F5A35C").pack(pady=(8, 0))
+            rows.append(("warn", 22))
+        total = sum(h for _, h in rows) * S
+        top, bottom = 0.05 * self.H, 0.80 * self.H
+        y = top + max(0.0, (bottom - top - total) / 2)
+        at = {}
+        for key, h in rows:
+            at[key] = (y, h * S)
+            y += h * S
+        self._login_logo_y = at["logo"][0] + at["logo"][1] / 2
+
+        def mid(key):
+            return at[key][0] + at[key][1] / 2
+
+        glow_y = self._login_logo_y
+
+        def under(x, yy):
+            return self._bg_at(x, yy, glow_cy=glow_y) if hasattr(self, "_bg_pil") else self._BG[1]
+
+        def text(x, yy, s, size, color, bold=False, anchor="center", **kw):
+            return cv.create_text(x, yy, text=s, fill=color, font=self._font(size, bold), anchor=anchor, **kw)
+
+        def embed(widget, x, yy, anchor):
+            return cv.create_window(x, yy, window=widget, anchor=anchor)
+
+        self._form_parts = []
+
+        def part(*specs):
+            """عناصر تظهر معاً: (المعرّف، لونه النهائي أو None للأدوات، خاصية اللون)"""
+            items = []
+            for item, final, opt in specs:
+                base = cv.coords(item)
+                items.append({"id": item, "final": final, "opt": opt, "base": base,
+                              "under": under(base[0], base[1])})
+                cv.itemconfig(item, state="hidden")
+            self._form_parts.append(items)
+
+        # العنوان
+        title = text(cx, mid("title"), "تسجيل الدخول", 28, self._TEXT, bold=True)
+        part((title, self._TEXT, "fill"))
+        sub = text(cx, mid("sub"), "أهلاً بعودتك — أدخل بيانات حسابك للمتابعة", 14, "#9AA6B8")
+        part((sub, "#9AA6B8", "fill"))
+        ay = mid("accent")
+        accent = cv.create_line(cx - 34 * S, ay, cx + 34 * S, ay, fill=self._GOLD,
+                                width=max(2, round(2 * S)), capstyle="round")
+        part((accent, self._GOLD, "fill"))
+
+        # الحقول
+        field = dict(font=("Cairo", 16), height=50, corner_radius=14, border_width=1,
+                     fg_color=self._FIELD, border_color=self._FIELD_LINE, text_color=self._TEXT,
+                     placeholder_text_color="#5E6B80", justify="center")
+        cap_user = text(cx + half - 4 * S, mid("cap_user"), "👤  اسم المستخدم", 13, "#AAB4C3",
+                        bold=True, anchor="e")
+        self.ent_user = ctk.CTkEntry(cv, placeholder_text="اكتب اسم المستخدم", width=w,
+                                     bg_color=under(cx, mid("user")), **field)
+        user_win = embed(self.ent_user, cx, at["user"][0], "n")
+        part((cap_user, "#AAB4C3", "fill"), (user_win, None, None))
+
+        cap_pass = text(cx + half - 4 * S, mid("cap_pass"), "🔒  كلمة المرور", 13, "#AAB4C3",
+                        bold=True, anchor="e")
+        self.ent_pass = ctk.CTkEntry(cv, placeholder_text="اكتب كلمة المرور", show="●", width=w - 60,
+                                     bg_color=under(cx + half / 2, mid("pass")), **field)
+        pass_win = embed(self.ent_pass, cx + half, at["pass"][0], "ne")
+        self._btn_eye = ctk.CTkButton(cv, text="👁", width=50, height=50, corner_radius=14,
+                                      font=("Segoe UI Emoji", 17), fg_color=self._FIELD, border_width=1,
+                                      border_color=self._FIELD_LINE, hover_color="#16233A",
+                                      text_color=self._MUTED, bg_color=under(cx - half, mid("pass")),
+                                      command=self._toggle_password)
+        eye_win = embed(self._btn_eye, cx - half, at["pass"][0], "nw")
+        part((cap_pass, "#AAB4C3", "fill"), (pass_win, None, None), (eye_win, None, None))
+        self._field_windows = [user_win, pass_win, eye_win]
+
+        # تنبيه Caps Lock + تذكّر اسم المستخدم (مربع مرسوم بلا خلفية مستطيلة)
+        caps = text(cx, mid("caps"), "", 12, "#F5A35C", bold=True)
+        self._lbl_caps = _CanvasLabel(cv, caps)
+        self._remember = ctk.BooleanVar(value=False)
+        ry, bs, x2 = mid("remember"), 20 * S, cx + half - 2 * S
+        box = self._round_rect(x2 - bs, ry - bs / 2, x2, ry + bs / 2, 6 * S, fill=self._FIELD,
+                               outline="#4A5A77", width=1, tags=("remember",))
+        tick = text(x2 - bs / 2, ry, "✓", 13, "#0B1220", bold=True, tags=("remember",), state="hidden")
+        label = text(x2 - bs - 10 * S, ry, "تذكّر اسم المستخدم على هذا الجهاز", 13, self._MUTED,
+                     anchor="e", tags=("remember",))
+        self._remember_items = (box, tick)
+        cv.tag_bind("remember", "<Button-1>", self._toggle_remember)
+        cv.tag_bind("remember", "<Enter>", lambda e: cv.configure(cursor="hand2"))
+        cv.tag_bind("remember", "<Leave>", lambda e: cv.configure(cursor="arrow"))
+        part((caps, "#F5A35C", "fill"), (box, self._FIELD, "fill"), (label, self._MUTED, "fill"))
+
+        # رسالة الحالة وزر الدخول
+        status = text(cx, mid("status"), "", 12, "#F08A8F", bold=True, width=w * S, justify="center")
+        self.lbl_status = _CanvasLabel(cv, status)
+        self.btn_login = ctk.CTkButton(cv, text="دخول", font=("Cairo", 18, "bold"), width=w, height=52,
+                                       corner_radius=14, fg_color=self._GOLD, hover_color="#E0BE4E",
+                                       text_color="#0B1220", text_color_disabled="#5A4A12",
+                                       bg_color=under(cx, mid("login")), command=self.try_login)
+        login_win = embed(self.btn_login, cx, at["login"][0], "n")
+        part((status, "#F08A8F", "fill"), (login_win, None, None))
+
+        foot = text(cx, mid("footer"), f"🔒 اتصال آمن   ·   الإصدار {APP_VERSION}", 12, "#5E6B80")
+        extra = [(foot, "#5E6B80", "fill")]
+        if not SUPABASE_AVAILABLE:
+            warn = text(cx, mid("warn"), "⚠️ مكتبة supabase غير مثبّتة — نفّذ: pip install supabase",
+                        12, "#F5A35C")
+            extra.append((warn, "#F5A35C", "fill"))
+        part(*extra)
 
         # Enter في اسم المستخدم ينقل لكلمة المرور، وفيها يسجّل الدخول مباشرة
         self.ent_user.bind("<Return>", lambda e: (self.ent_pass.focus_set(), "break")[1])
         self.ent_pass.bind("<Return>", lambda e: self.try_login())
         for seq in ("<KeyPress>", "<KeyRelease>"):
             self.ent_pass.bind(seq, self._check_caps_lock, add="+")
-
-        # قياس اللوحة من محتواها الفعلي (يتكيّف مع تكبير ويندوز للشاشة)
-        form.update_idletasks()
-        pad_x, pad_y = 44 * S, 36 * S
-        self._card_w = form.winfo_reqwidth() + 2 * pad_x
-        self._card_h = form.winfo_reqheight() + 2 * pad_y
-        logo_bottom = self._logo_center_y("login") + self._logo_h * 0.74 / 2 if hasattr(self, "_logo_h") \
-            else self.H * 0.25
-        self._card_top = max(logo_bottom + 26 * S, (self.H - self._card_h) / 2 + 40 * S)
-        self._card_top = min(self._card_top, self.H - self._card_h - 16 * S)
-
-        # اللوحة مخفية أثناء الترحيب، وتظهر في الانتقال بمزج لونها مع الخلفية تحتها
-        self._card_under = self._bg_at(self.W / 2, self._card_top + self._card_h / 2,
-                                       glow_cy=self._logo_center_y("login")) \
-            if hasattr(self, "_bg_pil") else self._BG[1]
-        self._card_poly = self.cv.create_polygon(self._card_points(70 * S), smooth=True, state="hidden",
-                                                 fill=self._CARD, outline=self._CARD_LINE, width=1)
-        self._card_accent = self.cv.create_line(self._accent_points(70 * S), fill=self._GOLD,
-                                                width=3, capstyle="round", state="hidden")
-        self._form_item = self.cv.create_window(self.W / 2, self._card_top + pad_y, window=form,
-                                                anchor="n", state="hidden")
+        # حافة الحقل النشط ذهبية
+        for ent in (self.ent_user, self.ent_pass):
+            ent.bind("<FocusIn>", lambda e, en=ent: en.configure(border_color=self._GOLD), add="+")
+            ent.bind("<FocusOut>", lambda e, en=ent: en.configure(border_color=self._FIELD_LINE), add="+")
 
         # اسم المستخدم المحفوظ (إن اختار العميل تذكّره) — كلمة المرور لا تُحفظ أبداً
         saved = self._load_saved_username()
@@ -16554,16 +16894,37 @@ class LoginWindow(ctk.CTk):
             self.ent_user.insert(0, saved)
             self._remember.set(True)
 
+    def _apply_part(self, items, f, rise=26):
+        """يُظهر جزءاً من النموذج بنسبة f (٠ مخفي، ١ في مكانه): ينزلق صاعداً ويتدرّج لونه"""
+        cv = self.cv
+        if f <= 0.001:
+            for it in items:
+                cv.itemconfig(it["id"], state="hidden")
+            return
+        dy = (1 - f) * rise * self.S
+        for it in items:
+            cv.coords(it["id"], *[v + dy if i % 2 else v for i, v in enumerate(it["base"])])
+            kw = {"state": "normal"}
+            if it["final"]:
+                kw[it["opt"]] = self._mix(it["under"], it["final"], f)
+            cv.itemconfig(it["id"], **kw)
+
+    def _update_form(self, ft):
+        """أجزاء النموذج تظهر بالتتابع؛ يرجع True عند اكتمال آخرها"""
+        f = 0.0
+        for i, items in enumerate(getattr(self, "_form_parts", [])):
+            f = self._ease((ft - i * self._PART_GAP) / self._PART_DUR)
+            self._apply_part(items, f)
+        return f >= 1.0
+
     def _show_form(self):
-        self.cv.itemconfig(self._form_item, state="normal")
-        self.cv.itemconfig(self._card_poly, state="normal", fill=self._CARD, outline=self._CARD_LINE)
-        self.cv.coords(self._card_poly, *self._card_points(0))
-        self.cv.itemconfig(self._card_accent, state="normal", fill=self._GOLD)
-        self.cv.coords(self._card_accent, *self._accent_points(0))
+        for items in getattr(self, "_form_parts", []):
+            self._apply_part(items, 1.0)
+        self._paint_remember()
         (self.ent_pass if self.ent_user.get().strip() else self.ent_user).focus_set()
 
     def _show_login_now(self):
-        """احتياط: أي خلل في الرسوم يُظهر لوحة الدخول فوراً"""
+        """احتياط: أي خلل في الرسوم يُظهر حقول الدخول فوراً"""
         self._phase = "login"
         try:
             for item in list(getattr(self, "_splash_items", {}).values()) + getattr(self, "_ripples", []):
@@ -16591,9 +16952,45 @@ class LoginWindow(ctk.CTk):
         self._btn_eye.configure(text="🙈" if hidden else "👁")
         self.ent_pass.focus_set()
 
+    def _toggle_remember(self, event=None):
+        self._remember.set(not self._remember.get())
+        self._paint_remember()
+
+    def _paint_remember(self):
+        box, tick = self._remember_items
+        on = bool(self._remember.get())
+        shown = self.cv.itemcget(box, "state") != "hidden"
+        self.cv.itemconfig(box, fill=self._GOLD if on else self._FIELD, outline=self._GOLD if on else "#4A5A77")
+        self.cv.itemconfig(tick, state="normal" if (on and shown) else "hidden")
+
     def _check_caps_lock(self, event):
         on = bool(getattr(event, "state", 0) & 0x2)
         self._lbl_caps.configure(text="⇪  مفتاح الأحرف الكبيرة (Caps Lock) مفعّل" if on else "")
+
+    def _shake(self):
+        """اهتزاز قصير للحقول عند خطأ الدخول — إشارة واضحة بلا نوافذ"""
+        items = list(getattr(self, "_field_windows", []))
+        if not items or getattr(self, "_shaking", False):
+            return
+        self._shaking = True
+        base = {i: self.cv.coords(i) for i in items}
+        t0 = time.perf_counter()
+
+        def step():
+            if not self._alive:
+                return
+            p = (time.perf_counter() - t0) / 0.45
+            dx = 0.0 if p >= 1 else math.sin(p * math.pi * 7) * (1 - p) * 12 * self.S
+            try:
+                for i in items:
+                    self.cv.coords(i, base[i][0] + dx, base[i][1])
+            except tk.TclError:
+                return
+            if p < 1:
+                self.after(16, step)
+            else:
+                self._shaking = False
+        step()
 
     _PREFS_FILE = "login_prefs.json"
 
@@ -16616,9 +17013,148 @@ class LoginWindow(ctk.CTk):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------ بعد نجاح الدخول
+    _COVER = "#142A4C"       # لون الموجة الأمامية = لون الشاشة حين تغمرها الأمواج
+
+    @staticmethod
+    def _ease_io(t):
+        """حركة ناعمة من الطرفين (بطيئة ثم سريعة ثم بطيئة)"""
+        t = max(0.0, min(1.0, t))
+        return 4 * t ** 3 if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
+
+    def _begin_outro(self, name):
+        """نجح الدخول: الحقول تنزل وتختفي، ثم ترتفع الأمواج طبقة بعد طبقة حتى تغمر
+        الشاشة، والشعار ينزل للمنتصف ويظهر فوقه «أهلاً بك» واسم المصنع.
+        آخر إطار هنا هو نفسه أول إطار يرسمه النظام — فلا إغلاق ولا نوافذ."""
+        if self._phase in ("splash", "transition"):
+            self._show_login_now()
+        cv, S, cx = self.cv, self.S, self.W / 2
+        self._phase = "outro"
+        self._outro_t0 = time.perf_counter() - self._t0
+        self._outro_done = False
+        self.focus_set()                       # لا مؤشّر كتابة يومض أثناء الانتقال
+        try:
+            cv.itemconfig(self._controls_item, state="hidden")
+            cv.itemconfig(self._remember_items[1], state="hidden")
+            if hasattr(self, "_waves"):
+                # الذرّات تغوص تحت الماء، والشعار يبقى فوقه
+                for p in self._parts:
+                    cv.tag_lower(p[0], self._waves[0][0])
+            cv.tag_raise(self.logo_item)
+        except Exception:
+            pass
+        self._outro_from_y = (cv.coords(self.logo_item) or [0, self._logo_center_y("login")])[1]
+        self._outro_logo_y = self.H * 0.40
+        ty = self._outro_logo_y + self._logo_h / 2 + 44 * S
+        specs = [("أهلاً بك", self._font(20), "#B9C2D0", ty)]
+        if name:
+            specs.append((name, self._font(40, True), self._GOLD_LIGHT, ty + 50 * S))
+        specs.append(("جارٍ فتح النظام…", self._font(14), self._MUTED, ty + (104 if name else 50) * S))
+        self._outro_items = []
+        for s, font, final, yy in specs:
+            item = cv.create_text(cx, yy, text=s, font=font, fill=self._COVER, state="hidden")
+            self._outro_items.append((item, final, font))
+        self._outro_status = self._outro_items[-1][0]
+
+    def _outro_progress(self, text, ratio=None):
+        """تقدّم رفع البيانات يظهر تحت الترحيب (بدل نافذة منبثقة)"""
+        try:
+            self.cv.itemconfig(self._outro_status, text=text)
+        except Exception:
+            pass
+
+    def _update_outro(self, tt):
+        cv = self.cv
+        # ١) أجزاء النموذج تنزل وتختفي من الأسفل للأعلى
+        n = len(getattr(self, "_form_parts", []))
+        for i, items in enumerate(self._form_parts):
+            self._apply_part(items, 1 - self._ease((tt - (n - 1 - i) * 0.03) / 0.28))
+        # ٢) الأمواج ترتفع طبقة بعد طبقة حتى تغمر الشاشة كلها
+        if hasattr(self, "_waves"):
+            front = 0.0
+            for i, (item, base, amp, k, speed) in enumerate(self._waves):
+                front = self._ease_io((tt - 0.2 - i * 0.12) / 1.0)
+                self._wave_lift[i] = front * (base + amp * 1.5 + 0.04 * self.H)
+            for j, (item, base, amp, k, speed) in enumerate(self._gold_lines):
+                self._line_lift[j] = front * (base + amp * 1.5 + 0.08 * self.H)
+        # ٣) الشعار ينزل لمنتصف الشاشة ويعود لحجمه الكامل
+        e = self._ease_io((tt - 0.1) / 1.1)
+        y = self._outro_from_y + (self._outro_logo_y - self._outro_from_y) * e
+        cv.coords(self.logo_item, self.W / 2, y)
+        if self._logo_small and cv.type(self.logo_item) == "image":
+            cv.itemconfig(self.logo_item, image=self._logo_frames[-1] if e >= 0.999 else
+                          self._logo_small[int((1 - e) * (len(self._logo_small) - 1))])
+        # ٤) الترحيب يظهر فوق الماء بعد أن يغمر المنتصف
+        for j, (item, final, _font) in enumerate(self._outro_items):
+            f = self._ease((tt - 0.95 - j * 0.12) / 0.5)
+            if f > 0:
+                cv.itemconfig(item, state="normal", fill=self._mix(self._COVER, final, f))
+        if tt >= 1.75:
+            self._outro_done = True
+
+    def _wait_outro(self):
+        """ينتظر اكتمال التموّج — والأمواج تتحرّك أثناء الانتظار. يرجع False لو أُغلقت الشاشة"""
+        while self._alive and not self._outro_done:
+            try:
+                self.update()
+            except tk.TclError:
+                return False
+            time.sleep(0.008)
+        return self._alive
+
+    def _handoff_spec(self):
+        """آخر إطار من شاشة الدخول بإحداثيات الشاشة، ليرسمه النظام نفسه مطابقاً تماماً"""
+        cv = self.cv
+        try:
+            ox, oy = cv.winfo_rootx(), cv.winfo_rooty()
+        except Exception:
+            ox = oy = 0
+        texts = []
+        for item, _final, font in getattr(self, "_outro_items", []):
+            if cv.itemcget(item, "state") == "hidden":
+                continue
+            x, y = cv.coords(item)
+            texts.append({"text": cv.itemcget(item, "text"), "x": x + ox, "y": y + oy,
+                          "font": font, "fill": cv.itemcget(item, "fill")})
+        logo, lx, ly = None, self.W / 2 + ox, self._outro_logo_y + oy
+        if hasattr(self, "logo_item") and cv.coords(self.logo_item):
+            lx, ly = cv.coords(self.logo_item)
+            lx, ly = lx + ox, ly + oy
+            if cv.type(self.logo_item) == "image":
+                logo = getattr(self, "_logo_pil", None)
+            else:
+                texts.insert(0, {"text": cv.itemcget(self.logo_item, "text"), "x": lx, "y": ly,
+                                 "font": self._font(54, True), "fill": self._GOLD})
+        return {"color": self._COVER, "logo": logo, "logo_x": lx, "logo_y": ly,
+                "texts": texts, "handoff": self}
+
+    def _run_in_background(self, fn):
+        """يشغّل fn (اتصال بالإنترنت) في خيط خلفي والشاشة حيّة — الأمواج لا تتجمّد"""
+        box = {}
+
+        def work():
+            try:
+                box["value"] = fn()
+            except Exception as e:
+                box["error"] = e
+            box["done"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        while "done" not in box:
+            if not self._alive:
+                raise _LoginClosed()
+            try:
+                self.update()
+            except tk.TclError:
+                raise _LoginClosed()
+            time.sleep(0.01)
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
     # ------------------------------------------------------------------ الحلقة
     def _tick(self):
-        if not self._alive:
+        if not self._alive or not self._animating:
             return
         try:
             now = time.perf_counter()
@@ -16632,20 +17168,26 @@ class LoginWindow(ctk.CTk):
                 if t >= self._SPLASH_S:
                     self._skip_splash()
             if self._phase == "transition":
-                p = (t - self._trans_t0) / self._TRANSITION_S
-                self._update_transition(min(1.0, p))
-                if p >= 1.0:
+                tt = t - self._trans_t0
+                self._update_transition(min(1.0, tt / self._TRANSITION_S))
+                done = self._update_form(tt - self._TRANSITION_S * 0.45)
+                if tt >= self._TRANSITION_S and done:
                     self._phase = "login"
                     self._show_form()
+            elif self._phase == "outro":
+                self._update_outro(t - self._outro_t0)
         except tk.TclError:
             return          # النافذة أُغلقت أثناء الإطار
         except Exception as e:
-            log_cloud_error("خلل في رسوم شاشة الدخول — تُعرض اللوحة مباشرة", e)
-            self._alive = False
-            self._show_login_now()
+            log_cloud_error("خلل في رسوم شاشة الدخول — تُعرض الحقول مباشرة", e)
+            self._animating = False
+            if self._phase == "outro":
+                self._outro_done = True      # لا يتعطّل الدخول بسبب الرسوم
+            else:
+                self._show_login_now()
             return
-        # بعد ظهور اللوحة تكفي حركة أهدأ (أخف على المعالج أثناء الكتابة)
-        self._anim_job = self.after(self._FRAME_MS if self._phase != "login" else 50, self._tick)
+        # أثناء الكتابة تكفي حركة أهدأ (أخف على المعالج)
+        self._anim_job = self.after(50 if self._phase == "login" else self._FRAME_MS, self._tick)
 
     def destroy(self):
         self._alive = False
@@ -16662,10 +17204,13 @@ class LoginWindow(ctk.CTk):
         super().destroy()
 
     def try_login(self):
+        if getattr(self, "_busy", False):
+            return          # تحقّق سابق ما زال جارياً (Enter مرتين)
         username = self.ent_user.get().strip()
         password = self.ent_pass.get().strip()
         if not username or not password:
             self.lbl_status.configure(text="من فضلك أدخل اسم المستخدم وكلمة المرور")
+            self._shake()
             return
 
         self.btn_login.configure(state="disabled", text="جاري التحقق...")
@@ -16677,32 +17222,61 @@ class LoginWindow(ctk.CTk):
             panel.mainloop()
             return
 
-        if cloud_verify_sub_admin_login(username, password):
+        # التحقق عبر الإنترنت في الخلفية: الأمواج تتحرّك ولا تتجمّد الشاشة
+        def verify():
+            if cloud_verify_sub_admin_login(username, password):
+                return "sub_admin", (None, None, False)
+            return "client", cloud_verify_client_login(username, password)
+
+        self._busy = True
+        try:
+            kind, (client_id, business_name, can_edit) = self._run_in_background(verify)
+        except _LoginClosed:
+            return
+        finally:
+            self._busy = False
+
+        if kind == "sub_admin":
             self.destroy()
             panel = AdminPanel(restricted=True)
             panel.mainloop()
             return
 
-        client_id, business_name, can_edit = cloud_verify_client_login(username, password)
         if client_id:
-            # تجهيز بيانات المصنع من السحابة قبل فتح النظام
+            self._busy = True
+            # من هنا لا إغلاق ولا نوافذ: الأمواج تغمر الشاشة، ورفع البيانات يظهر
+            # تحت الترحيب، ثم يُبنى النظام خلف آخر إطار ويظهر فوقه بالإطار نفسه
+            self._begin_outro(business_name)
             if SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:
                 try:
                     db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
                     api = _RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)
-                    win = SyncDownWindow(self, db_path, api, client_id, business_name)
+                    win = SyncDownWindow(self, db_path, api, client_id, business_name,
+                                         on_progress=self._outro_progress)
                     self.wait_window(win)
                     if win.error:
                         messagebox.showwarning("تنبيه المزامنة", sync_error_message(win.error))
                 except Exception as e:
                     log_cloud_error("تعذّر تجهيز البيانات من السحابة", e)
 
-            self.destroy()
-            app = GoldSystemApp(client_id=client_id, client_name=business_name, supabase_client=get_supabase_public_client(), initial_can_edit=can_edit)
+            if not self._wait_outro():
+                return                      # أُغلقت الشاشة أثناء الانتقال
+            self._outro_progress("جارٍ فتح النظام…")
+            self.update_idletasks()
+            spec = self._handoff_spec()
+            # النظام يصبح النافذة الرئيسية وشاشة الدخول ما زالت ظاهرة تحته؛ هو من يغلقها
+            # بعد أن يظهر فوقها — فلا تُرى الشاشة تُغلق ولا فراغ بين النافذتين
+            tk._default_root = None
+            try:
+                app = GoldSystemApp(client_id=client_id, client_name=business_name, supabase_client=get_supabase_public_client(), initial_can_edit=can_edit, intro=spec)
+            except Exception:
+                self.destroy()
+                raise
             app.mainloop()
         else:
             self.btn_login.configure(state="normal", text="دخول")
             self.lbl_status.configure(text="بيانات الدخول غير صحيحة، أو لا يوجد اتصال بالإنترنت")
+            self._shake()
 
 
 class AdminPanel(ctk.CTk):
