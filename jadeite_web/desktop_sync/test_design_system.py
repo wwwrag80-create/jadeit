@@ -73,7 +73,7 @@ for k in ("font", "row_h", "head", "pad_x", "pad_y"):
 print("✔ كل المقاييس موجبة على أصغر شاشة (لا قيم صفرية تُفسد العرض)")
 
 init = seg("__init__")
-assert "self.apply_design_system()" in init and "self.minsize(1100, 620)" in init
-print("✔ يُطبَّق عند التشغيل، وحدّ أدنى للنافذة يمنع تشوّه الجداول")
+assert "self.apply_design_system()" in init and "self.safe_minsize(1100, 620)" in init
+print("✔ يُطبَّق عند التشغيل، وحدّ أدنى للنافذة يمنع تشوّه الجداول (ولا يتجاوز الشاشة)")
 
 print("\n✅ نظام التصميم المركزي يصل كل الشاشات")

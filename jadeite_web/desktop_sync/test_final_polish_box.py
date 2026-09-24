@@ -22,7 +22,7 @@ def seg(n):
                                             and m.name == n))
 
 
-WANT = ["get_sales_ops_khayas_total", "get_box_khayas_cumulative",
+WANT = ["invoices_by_name", "invoices_by_period", "period_invoices", "get_sales_ops_khayas_total", "get_box_khayas_cumulative",
         "get_sale_invoice_groups", "get_stage_config", "get_box_account_name",
         "get_all_stage_categories", "get_display_label"]
 chunks = [textwrap.dedent(seg(n)) for n in WANT]

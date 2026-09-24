@@ -29,7 +29,7 @@ print("✔ رصيد الخزينة البارز = رصيد الفترة المع
 # ═══ ٣) خياس الصندوق مقيّد بالفترة افتراضياً ═══
 cum = seg("get_box_khayas_cumulative")
 assert "if month is None:" in cum and "month = self.current_display_month" in cum
-assert "self.inv_in_period(inv, month)" in cum
+assert "self.period_invoices(month)" in cum     # حركات الفترة من فهرسها
 print("✔ خياس الصندوق يُحسب للفترة المعروضة افتراضياً")
 
 # ═══ ٤) محاكاة عددية ═══

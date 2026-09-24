@@ -5,7 +5,7 @@ import ast, io, textwrap
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
 
-WANT = ["get_stage_config", "get_box_account_name", "get_all_stage_categories",
+WANT = ["invoices_by_name", "invoices_by_period", "period_invoices", "get_stage_config", "get_box_account_name", "get_all_stage_categories",
         "get_display_label", "get_box_khayas_cumulative", "count_box_transactions",
         "get_deletable_khayas_boxes", "get_all_mustarja_names"]
 chunks = []

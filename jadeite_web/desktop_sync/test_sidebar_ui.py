@@ -68,6 +68,7 @@ print("✔ لكل شاشة أيقونة واسم واضح")
 ns = {}
 exec("class S:\n" + textwrap.indent(textwrap.dedent(seg("sidebar_width")), "    ")
      + "\n" + textwrap.indent(textwrap.dedent(seg("ui_scale")), "    ")
+     + "\n" + textwrap.indent(textwrap.dedent(seg("logical_screen_width")), "    ")
      + "\n    def __init__(self, w): self._w = w\n"
      "    def winfo_screenwidth(self): return self._w\n", ns)
 S = ns["S"]

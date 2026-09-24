@@ -38,7 +38,7 @@ def module_src(name):
     return "\n".join(lines[node.lineno - 1:node.end_lineno])
 
 
-REAL = ["inv_period", "inv_in_period", "get_treasury_type_sets", "treasury_bucket",
+REAL = ["inv_period", "inv_in_period", "invoices_by_name", "invoices_by_period", "period_invoices", "get_treasury_type_sets", "treasury_bucket",
         "treasury_effect", "get_workers_khayas", "treasury_period_components",
         "get_treasury_ledger", "get_opening_treasury_balance", "get_monthly_report_rows",
         "calculate_single_ledger", "get_actual_section_khayas", "get_all_stage_categories",

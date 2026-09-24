@@ -301,6 +301,20 @@ def resource_path(filename):
     return os.path.join(base, filename)
 
 
+def screen_work_area(widget):
+    """مساحة العمل الفعلية بالبكسل (الشاشة الرئيسية بلا شريط المهام): (x, y, العرض, الارتفاع)"""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):   # SPI_GETWORKAREA
+                return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+    return 0, 0, widget.winfo_screenwidth(), max(400, widget.winfo_screenheight() - 48)
+
+
 def tint_logo(img, dark, light, opacity=1.0):
     """يعيد تلوين الشعار بتدرّج لونين مع حفظ شفافيته وتفاصيل إضاءته.
 
@@ -406,14 +420,57 @@ def hash_password(raw_password: str) -> str:
     return hashlib.sha256(raw_password.encode("utf-8")).hexdigest()
 
 
+_SB_CLIENTS = {}
+_SB_LOCK = threading.Lock()
+
+
+def _shared_supabase_client(kind, key, timeout):
+    """عميل سحابي واحد لكل نوع، يُعاد استخدامه طوال تشغيل البرنامج.
+
+    كان كل طلب يُنشئ عميلاً جديداً — أي اتصالاً ومصافحة تشفير جديدين (نصف
+    ثانية تقريباً على الإنترنت العادي) — والدخول وحده يرسل عدة طلبات.
+    العميل الواحد يُبقي الاتصال مفتوحاً فتصل الطلبات التالية فوراً، وهو آمن
+    للاستخدام من أكثر من خيط. والمهلة محدّدة: الافتراضي في المكتبة ١٢٠ ثانية،
+    فكان ضعف الإنترنت يُظهر البرنامج معلّقاً دقيقتين.
+    """
+    if not SUPABASE_AVAILABLE or not key:
+        return None
+    with _SB_LOCK:
+        client = _SB_CLIENTS.get(kind)
+        if client is None:
+            try:
+                try:
+                    from supabase import ClientOptions
+                    client = _sb_create_client(SUPABASE_URL, key,
+                                               options=ClientOptions(postgrest_client_timeout=timeout))
+                except (ImportError, TypeError):
+                    client = _sb_create_client(SUPABASE_URL, key)
+                try:
+                    client.postgrest       # يُجهَّز الآن داخل القفل لا عند أول طلبين متزامنين
+                except Exception:
+                    pass
+            except Exception:
+                return None
+            _SB_CLIENTS[kind] = client
+        return client
+
+
 def get_supabase_public_client():
     """عميل سحابي بصلاحيات محدودة — يُستخدم لدخول العملاء ورفع/تنزيل نسخهم فقط (آمن للتوزيع)"""
-    if not SUPABASE_AVAILABLE:
-        return None
-    try:
-        return _sb_create_client(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
-    except Exception:
-        return None
+    return _shared_supabase_client("public", SUPABASE_PUBLISHABLE_KEY, 60)
+
+
+def get_supabase_login_client():
+    """عميل التحقق من الدخول: مهلة قصيرة، فانقطاع الإنترنت تظهر رسالته خلال ثوانٍ"""
+    return _shared_supabase_client("login", SUPABASE_PUBLISHABLE_KEY, 12)
+
+
+def prewarm_supabase_clients():
+    """يُجهّز عميلَي السحابة في الخلفية أثناء شاشة الترحيب، فلا يدفع الدخول ثمن إنشائهما"""
+    def work():
+        get_supabase_login_client()
+        get_supabase_public_client()
+    threading.Thread(target=work, name="JadeitePrewarm", daemon=True).start()
 
 
 def get_supabase_admin_client():
@@ -425,18 +482,18 @@ def get_supabase_admin_client():
                         "ضع المفتاح في متغيّر البيئة JADEITE_SUPABASE_SECRET_KEY "
                         "أو في ملف admin_secret.key بجانب البرنامج")
         return None
-    try:
-        return _sb_create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    except Exception:
-        return None
+    return _shared_supabase_client("admin", SUPABASE_SECRET_KEY, 60)
 
 
 CURRENT_SYNC_TOKEN = None   # رمز مزامنة الجلسة الحالية (ذاكرة فقط)
 
 
-def cloud_verify_client_login(username, password):
-    """يتحقق من بيانات دخول عميل عبر السحابة. يرجع (client_id, business_name, can_edit) أو (None, None, False)"""
-    sb = get_supabase_public_client()
+def cloud_verify_client_login(username, password, touch=True):
+    """يتحقق من بيانات دخول عميل عبر السحابة. يرجع (client_id, business_name, can_edit) أو (None, None, False)
+
+    touch: يسجّل وقت الدخول للمدير — في خيط خلفي، فلا ينتظر الدخول طلباً إضافياً.
+    """
+    sb = get_supabase_login_client()
     if sb is None:
         return None, None, False
     try:
@@ -453,11 +510,9 @@ def cloud_verify_client_login(username, password):
             # رمز المزامنة يبقى في الذاكرة فقط طوال تشغيل البرنامج
             global CURRENT_SYNC_TOKEN
             CURRENT_SYNC_TOKEN = row.get("out_sync_token")
-            # تسجيل وقت الدخول ليظهر للمدير في لوحته
-            try:
-                cloud_touch_client_activity(client_id, is_login=True)
-            except Exception:
-                pass
+            # تسجيل وقت الدخول ليظهر للمدير في لوحته — في الخلفية
+            if touch:
+                touch_client_login_async(client_id)
             return client_id, row.get("out_business_name"), bool(row.get("out_can_edit"))
     except Exception as e:
         log_cloud_error("تعذر التحقق من بيانات الدخول عبر السحابة", e)
@@ -481,7 +536,10 @@ def cloud_touch_client_activity(client_id, is_login=False):
         payload["last_login"] = now_iso
 
     last_err = None
-    for getter in (get_supabase_admin_client, get_supabase_public_client):
+    # عميل المدير فقط حيث يوجد مفتاحه (نسخة العميل بلا مفتاح: كان كل تسجيل
+    # نشاط — كل ١٠ ثوانٍ — يكتب «مفتاح المدير غير مضبوط» في ملف السجل)
+    getters = ((get_supabase_admin_client,) if SUPABASE_SECRET_KEY else ()) + (get_supabase_public_client,)
+    for getter in getters:
         sb = getter()
         if sb is None:
             continue
@@ -494,6 +552,16 @@ def cloud_touch_client_activity(client_id, is_login=False):
     _ACTIVITY_TRACKING_SUPPORTED = False
     log_cloud_error("تعذّر تسجيل نشاط العميل (تأكد من إضافة عمودي last_login و last_seen بجدول clients)", last_err)
     return False
+
+
+def touch_client_login_async(client_id):
+    """تسجيل وقت دخول العميل للمدير في خيط خلفي (لا يؤخّر فتح النظام)"""
+    def work():
+        try:
+            cloud_touch_client_activity(client_id, is_login=True)
+        except Exception:
+            pass
+    threading.Thread(target=work, name="JadeiteLoginTouch", daemon=True).start()
 
 
 def cloud_check_can_edit(client_id):
@@ -603,7 +671,7 @@ def cloud_list_clients():
 
 def cloud_verify_sub_admin_login(username, password):
     """يتحقق هل هذا مستخدم 'مدير مساعد' (صلاحيات محدودة: انتحال شخصية فقط)"""
-    sb = get_supabase_public_client()
+    sb = get_supabase_login_client()
     if sb is None:
         return False
     try:
@@ -2517,6 +2585,8 @@ class ScreenRouter(ctk.CTkFrame):
 
     def update_screen_info(self, period_text, treasury_text, total_text):
         """يحدّث الفترة والأرصدة في شريط كل شاشة (تُستدعى من recalculate_all)"""
+        # تُحفظ لرؤوس الشاشات التي تُبنى لاحقاً عند أول فتح لها
+        self._last_info = (period_text, treasury_text, total_text)
         for labels in self._screen_info_labels.values():
             try:
                 # مسافة حول النص: الشارة ملوّنة الخلفية فتحتاج هامشاً داخلياً
@@ -2534,10 +2604,31 @@ class ScreenRouter(ctk.CTkFrame):
                 lbl.configure(text=title)
             except Exception:
                 pass
+        elif name in self.meta:
+            # الرأس لم يُبنَ بعد: يُبنى لاحقاً بالعنوان الجديد
+            icon, _old, subtitle = self.meta[name]
+            self.meta[name] = (icon, title, subtitle)
 
     def add(self, name):
-        icon, title, subtitle = self.meta.get(name, ("", name, ""))
+        """يسجّل الشاشة بإطارين فارغين فقط — رأسها يُبنى عند أول فتح لها (_ensure_header).
+
+        كان رأس كل شاشة (بطاقة وأيقونة وعنوان وثلاث شارات وزر) يُبنى للشاشات
+        الأربع عشرة كلها عند الدخول، ونصف ثانية تقريباً من فتح النظام تذهب
+        لرؤوس شاشات قد لا تُفتح أصلاً.
+        """
         wrapper = ctk.CTkFrame(self, fg_color="transparent")
+        content = ctk.CTkFrame(wrapper, fg_color="transparent")
+        content.pack(fill="both", expand=True)
+        self._contents[name] = content
+        self._wrappers[name] = wrapper
+        return content
+
+    def _ensure_header(self, name):
+        if name in self._screen_info_labels or name not in self._wrappers:
+            return
+        icon, title, subtitle = self.meta.get(name, ("", name, ""))
+        wrapper = self._wrappers[name]
+        content = self._contents[name]
 
         # ═══ رأس الشاشة: بطاقة بيضاء واحدة ═══
         #   يمين: أيقونة الشاشة في شارة ذهبية + عنوانها + وصف قصير لوظيفتها
@@ -2545,7 +2636,7 @@ class ScreenRouter(ctk.CTkFrame):
         #   يسار: العودة للقائمة الرئيسية (أو زر Esc)
         top_bar = ctk.CTkFrame(wrapper, fg_color=(UI["surface"], "#171C23"), corner_radius=14,
                                border_width=1, border_color=(UI["line"], "#2A313B"))
-        top_bar.pack(fill="x", padx=5, pady=(5, 8))
+        top_bar.pack(fill="x", padx=5, pady=(5, 8), before=content)
 
         btn_back = ctk.CTkButton(top_bar, text="🏠  القائمة الرئيسية", font=("Cairo", 14, "bold"),
                                   fg_color="transparent", border_width=1,
@@ -2591,19 +2682,18 @@ class ScreenRouter(ctk.CTkFrame):
 
         self._screen_info_labels[name] = {
             "period": lbl_period, "treasury": lbl_treasury, "total": lbl_total}
-
-        content = ctk.CTkFrame(wrapper, fg_color="transparent")
-        content.pack(fill="both", expand=True)
-
-        self._contents[name] = content
-        self._wrappers[name] = wrapper
-        return content
+        last = getattr(self, "_last_info", None)
+        if last:
+            lbl_period.configure(text=f"   {last[0]}   ")
+            lbl_treasury.configure(text=f"   {last[1]}   ")
+            lbl_total.configure(text=f"   {last[2]}   ")
 
     def tab(self, name):
         return self._contents[name]
 
     def show(self, name):
         self.current_screen = name
+        self._ensure_header(name)
         self.pack(fill="both", expand=True)
         for w in self._wrappers.values():
             w.pack_forget()
@@ -2656,7 +2746,7 @@ class GoldSystemApp(ctk.CTk):
                 w, h = min(1600, int(sw * 0.94)), min(950, int(sh * 0.88))
                 x, y = (sw - w) // 2, (sh - h) // 2
                 self.geometry(f"{w}x{h}+{x}+{y}")
-        self.minsize(1000, 650)
+        self.safe_minsize(1000, 650)
         self.current_theme = "Light"
 
         # قاعدة البيانات والنسخ الاحتياطية داخل المجلد المنظّم على القرص المحلي
@@ -2723,7 +2813,7 @@ class GoldSystemApp(ctk.CTk):
         self.apply_design_system()
         try:
             # حدّ أدنى يمنع تشوّه الجداول لو صغّر المستخدم النافذة
-            self.minsize(1100, 620)
+            self.safe_minsize(1100, 620)
             # تُخفى النافذة حتى تكتمل الواجهة: بدون ذلك يرى المستخدم الشريط
             # الجانبي والشعار والأزرار تُرسم واحدةً تلو الأخرى عند الدخول
             self.withdraw()
@@ -2756,14 +2846,15 @@ class GoldSystemApp(ctk.CTk):
         # أحياناً على ويندوز فتبقى النافذة بحجمها الصغير
         self.after(220, self.force_maximize)
         self.after(700, self.force_maximize)
+        self.after(1100, self._ensure_fills_screen)
 
     def force_maximize(self):
-        """يكبّر النافذة لملء الشاشة، مع بديل يدوي لو تعذّر التكبير الأصلي"""
-        try:
-            if self.state() == "zoomed":
-                return
-        except Exception:
-            pass
+        """يكبّر النافذة لملء الشاشة المتاحة على أي جهاز وأي دقة وأي تكبير للعرض.
+
+        يُعاد التكبير في كل نداء ولا نكتفي بسؤال النافذة عن حالتها: ويندوز قد
+        يسجّلها «مكبّرة» وهي لم تُكبَّر فعلاً إن طُلب التكبير قبل ظهورها —
+        فكانت تبقى صغيرة على بعض الأجهزة. والتحقق النهائي في _ensure_fills_screen.
+        """
         try:
             self.state("zoomed")
             return
@@ -2774,9 +2865,40 @@ class GoldSystemApp(ctk.CTk):
             return
         except Exception:
             pass
+        self._fill_work_area()
+
+    def _fill_work_area(self):
+        """بديل أخير: حجم النافذة = مساحة العمل (الشاشة بلا شريط المهام) بالبكسل الفعلي.
+
+        wm_geometry مباشرة لا geometry: customtkinter يضرب أبعاد geometry في
+        تكبير العرض، فكان البديل القديم يُخرج النافذة عن الشاشة بتكبير ١٢٥٪.
+        """
         try:
-            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-            self.geometry(f"{sw}x{sh - 48}+0+0")
+            x, y, w, h = screen_work_area(self)
+            tk.Tk.wm_geometry(self, f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def _ensure_fills_screen(self):
+        """بعد ظهور النظام: إن لم تملأ النافذة الشاشة فعلاً (مدير نوافذ تجاهل التكبير)
+        تُضبط على مساحة العمل مباشرة — فيظهر النظام كاملاً على أي جهاز"""
+        try:
+            if self.state() in ("iconic", "withdrawn"):
+                return
+            x, y, w, h = screen_work_area(self)
+            if self.winfo_width() >= w * 0.9 and self.winfo_height() >= h * 0.85:
+                return
+            # ويندوز قد يعدّها «مكبّرة» وهي بحجمها الصغير، فيُتجاهل طلب تكبيرها
+            # من جديد: تُعاد لحالتها العادية أولاً ثم تُكبَّر
+            try:
+                if self.state() == "zoomed":
+                    self.state("normal")
+            except Exception:
+                pass
+            self.force_maximize()
+            self.update_idletasks()
+            if self.winfo_width() < w * 0.9 or self.winfo_height() < h * 0.85:
+                self._fill_work_area()
         except Exception:
             pass
 
@@ -2808,8 +2930,8 @@ class GoldSystemApp(ctk.CTk):
             self.after(120, prebuild)
 
     # ------------------------------------------------------------------ الانتقال من شاشة الدخول
-    _INTRO_FADE_S = 0.22      # ظهور النظام فوق آخر إطار من شاشة الدخول
-    _INTRO_REVEAL_S = 1.05    # انحسار الأمواج عن الرئيسية
+    _INTRO_FADE_S = 0.16      # ظهور النظام فوق آخر إطار من شاشة الدخول
+    _INTRO_REVEAL_S = 0.75    # انحسار الأمواج عن الرئيسية
 
     def _intro_show(self):
         """يُظهر النظام فوق شاشة الدخول بغطاء مطابق لآخر إطار منها، ثم يغلقها.
@@ -2855,6 +2977,7 @@ class GoldSystemApp(ctk.CTk):
         # إعادة التكبير بعد الظهور الفعلي: النداء الأول يُتجاهل أحياناً على ويندوز
         self.after(220, self.force_maximize)
         self.after(700, self.force_maximize)
+        self.after(1100, self._ensure_fills_screen)
 
     def _intro_abort(self):
         """احتياط: أي خلل في الانتقال يُظهر النظام مباشرة ويغلق شاشة الدخول"""
@@ -3013,7 +3136,7 @@ class GoldSystemApp(ctk.CTk):
         labels = getattr(self, "home_stat_labels", None)
         if not raw or not labels:
             return
-        p = min(1.0, (time.perf_counter() - t0) / 0.9)
+        p = min(1.0, (time.perf_counter() - t0) / 0.7)
         e = 1 - (1 - p) ** 3
         try:
             for key, val in raw.items():
@@ -3041,9 +3164,26 @@ class GoldSystemApp(ctk.CTk):
             self.after(70 * i, lambda c=card: paint(c, UI["gold"]))
             self.after(70 * i + 300, lambda c=card, n=normal: paint(c, n))
 
+    def _note_user_input(self, _event=None):
+        self._last_user_input = time.monotonic()
+
     def _prebuild_screens(self, names):
-        """يبني الشاشات المطلوبة تباعاً في الخلفية بلا إظهارها"""
+        """يبني الشاشات المطلوبة تباعاً في الخلفية بلا إظهارها.
+
+        لا يبني شاشة والمستخدم يكتب أو ينقر: ينتظر هدوءاً قصيراً ثم يكمل —
+        فلا يحسّ المستخدم بأي توقّف لحظة بدئه العمل بعد الدخول مباشرة.
+        """
         if not names:
+            return
+        if not getattr(self, "_input_watch", False):
+            self._input_watch = True
+            for seq in ("<KeyPress>", "<ButtonPress>"):
+                try:
+                    self.bind_all(seq, self._note_user_input, add="+")
+                except Exception:
+                    pass
+        if time.monotonic() - getattr(self, "_last_user_input", 0.0) < 1.5:
+            self.after(700, lambda: self._prebuild_screens(names))
             return
         name, rest = names[0], names[1:]
         try:
@@ -3147,6 +3287,44 @@ class GoldSystemApp(ctk.CTk):
     def mark_backup_dirty(self):
         """تُستدعى بعد أي تعديل فعلي ناجح بقاعدة البيانات — تعلّم إن فيه بيانات جديدة محتاجة رفع للسحابة"""
         self._backup_dirty = True
+        # وتُبطل فهرس الحركات بالاسم (invoices_by_name) فيُبنى من جديد عند أول حساب
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
+
+    def invoices_by_period(self):
+        """الحركات مجمّعة بفترتها المحاسبية — بالشروط نفسها التي تُبطل فهرس الأسماء"""
+        sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0))
+        if getattr(self, "_period_idx_sig", None) != sig:
+            idx = {}
+            for inv in self.invoices.values():
+                idx.setdefault(self.inv_period(inv), []).append(inv)
+            self._period_idx, self._period_idx_sig = idx, sig
+        return self._period_idx
+
+    def period_invoices(self, month):
+        """حركات فترة واحدة (أو كل الحركات إن لم تُحدَّد فترة) — بلا مسح لكل الحركات"""
+        if not month:
+            return self.invoices.values()
+        return self.invoices_by_period().get(month, ())
+
+    def invoices_by_name(self):
+        """الحركات مجمّعة بالاسم — تُبنى مرة واحدة وتُعاد ما دامت البيانات لم تتغيّر.
+
+        كان كل حساب لدفتر عامل يمسح **كل** الحركات بحثاً عن حركاته، ويتكرر ذلك
+        لكل عامل في كل حساب شامل: مع ٢٠ ألف حركة كان الحساب الأول بعد الدخول
+        يأخذ ثانيتين تقريباً. الفهرس يُبطَل بأي حفظ أو حذف (mark_backup_dirty)
+        أو إعادة تحميل (قاموس حركات جديد)، والقوائم تحمل كائنات الحركات نفسها
+        فأي تعديل على وزن أو حالة يظهر فوراً. ترتيب الحركات داخل كل اسم هو
+        ترتيبها الأصلي نفسه.
+        """
+        sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0))
+        if getattr(self, "_name_idx_sig", None) != sig:
+            idx = {}
+            for inv in self.invoices.values():
+                idx.setdefault(inv.get("الاسم"), []).append(inv)
+            self._name_idx, self._name_idx_sig = idx, sig
+        return self._name_idx
 
     def schedule_cloud_backup(self):
         self.after(10000, self.auto_cloud_backup_trigger)   # دورة المزامنة كل ١٠ ثواني
@@ -3853,6 +4031,8 @@ class GoldSystemApp(ctk.CTk):
                     "رقم الفاتورة اليدوي": existing_manual,
                     "period": existing_period or str(existing_row[1] or "")[:7]
                 }
+                # كائن حركة جديد مكان القديم: فهارس الأسماء والفترات تُبنى من جديد
+                self._inv_version = getattr(self, "_inv_version", 0) + 1
                 return False
 
             cursor.execute("""
@@ -4225,7 +4405,7 @@ class GoldSystemApp(ctk.CTk):
         """
         type_sets = type_sets or self.get_treasury_type_sets()
         if invoices is None:
-            invoices = [inv for inv in self.invoices.values() if self.inv_in_period(inv, month)]
+            invoices = list(self.period_invoices(month))
         comp = {"opening": 0.0, "inbound": 0.0, "sales": 0.0,
                 "boxes": 0.0, "closed": 0.0, "journal": 0.0}
         for inv in invoices:
@@ -4854,20 +5034,33 @@ class GoldSystemApp(ctk.CTk):
                 children = list(children) + list(all_children[-3:])
             else:
                 children = all_children
+            # قيم الصف تُقرأ مرة واحدة (لا مرة لكل عمود)
+            rows = []
+            for iid in children:
+                try:
+                    rows.append(tree.item(iid, "values") or ())
+                except Exception:
+                    pass
+            # قياس النص بطيء (نصف ملّي ثانية للنص العربي): تُقاس **أطول** نصوص
+            # العمود وحدها، ويُحفظ كل قياس — فالأرقام والأسماء نفسها تتكرّر
+            # في كل تحديث. كان فتح مراحل التصنيع يقضي نصف ثانية في القياس وحده
+            cache = getattr(self, "_measure_cache", None)
+            if cache is None or len(cache) > 20000:
+                cache = self._measure_cache = {}
             widths = []
             for i, col_id in enumerate(cols):
                 label = self.get_column_label(table_key, col_id) if table_key else col_id
                 # العنوان يُقاس كاملاً: هو سطر واحد في رأس العمود
                 header_w = head_font.measure(str(label)) + 10
 
+                texts = {str(v[i]) for v in rows if i < len(v)}
+                texts.discard("")
                 content_w = 0
-                for iid in children:
-                    try:
-                        text = str(tree.item(iid, "values")[i])
-                    except (IndexError, TypeError):
-                        continue
-                    if text:
-                        content_w = max(content_w, body_font.measure(text))
+                for text in sorted(texts, key=len, reverse=True)[:6]:
+                    w = cache.get(text)
+                    if w is None:
+                        w = cache[text] = body_font.measure(text)
+                    content_w = max(content_w, w)
 
                 # العنوان لا يُقصّ أبداً: الحد الأقصى يقيّد المحتوى لا الرأس،
                 # وإلا ظهرت كلمة واحدة من اسم العمود
@@ -5168,10 +5361,9 @@ class GoldSystemApp(ctk.CTk):
         الأشجار يُسجَّل وارداً بهذا الاسم ورقم الصف، فيُلحق بصفه هنا — وهو نفسه ما
         يخصمه صندوق الخياس وتضيفه الخزينة، فتتطابق الأرقام في كل الشاشات.
         """
-        recs = [inv for inv in self.invoices.values()
+        recs = [inv for inv in self.period_invoices(self.current_display_month)
                 if (inv.get("النوع") in (madin_type, qabd_type) or self.is_row_recovery(inv, recover_name))
-                and inv.get("settled_status") == "ACTIVE"
-                and self.inv_in_period(inv, self.current_display_month)]
+                and inv.get("settled_status") == "ACTIVE"]
         recs.sort(key=lambda x: (x.get("التاريخ", ""), x.get("رقم الفاتورة", 0)))
         # حركات الصرف والقبض أولاً ثم المسترجع، ليُلحق المسترجع بصف قائم إن وُجد
         recs.sort(key=lambda x: 1 if self.is_row_recovery(x, recover_name) else 0)
@@ -5612,30 +5804,63 @@ class GoldSystemApp(ctk.CTk):
             meta[name] = (icon, self.get_screen_label(name, label), self.SCREEN_SUBTITLES.get(name, ""))
         return meta
 
-    def sidebar_width(self):
-        """عرض الشريط حسب حجم الشاشة: لا يبتلع المساحة على الشاشات الصغيرة"""
+    def logical_screen_width(self):
+        """عرض الشاشة بوحدات الواجهة: البكسل الفعلي ÷ تكبير ويندوز للعرض.
+
+        شاشة ١٩٢٠ بتكبير ١٢٥٪ تتسع فعلياً لما تتسع له شاشة ١٥٣٦ — والقياس
+        بالبكسل الفعلي كان يعطي الشريط الجانبي عرض الشاشات الكبيرة على حاسوب
+        محمول فيضيق ما تبقى للشاشات.
+        """
         try:
             sw = self.winfo_screenwidth()
         except Exception:
             sw = 1366
+        try:
+            scale = float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
+        except Exception:
+            scale = 1.0
+        return sw / scale
+
+    def sidebar_width(self):
+        """عرض الشريط حسب حجم الشاشة: لا يبتلع المساحة على الشاشات الصغيرة"""
+        sw = self.logical_screen_width()
         # عريض بما يكفي ليظهر اسم كل شاشة كاملاً بخط واضح
         if sw >= 1920:
             return 330
         if sw >= 1440:
             return 300
-        return 268
+        if sw >= 1280:
+            return 268
+        return 232
 
     def ui_scale(self):
         """معامل تكبير موحّد يجعل النظام مريحاً على كل مقاسات الشاشات"""
-        try:
-            sw = self.winfo_screenwidth()
-        except Exception:
-            sw = 1366
+        sw = self.logical_screen_width()
         if sw >= 1920:
             return 1.0
         if sw >= 1440:
             return 0.94
-        return 0.86
+        if sw >= 1280:
+            return 0.86
+        return 0.8
+
+    def safe_minsize(self, width, height):
+        """حدّ أدنى لحجم النافذة لا يتجاوز الشاشة نفسها أبداً.
+
+        customtkinter يضرب الحد الأدنى في تكبير ويندوز للعرض: ١١٠٠×٦٢٠ على
+        شاشة ١٣٦٦×٧٦٨ بتكبير ١٢٥٪ تصير ١٣٧٥×٧٧٥ بكسلاً — أكبر من الشاشة، فكان
+        جزء من النافذة يخرج عنها ولا يظهر النظام كاملاً على هذه الأجهزة.
+        """
+        try:
+            scale = float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
+        except Exception:
+            scale = 1.0
+        try:
+            max_w = self.winfo_screenwidth() / scale * 0.8
+            max_h = self.winfo_screenheight() / scale * 0.7
+        except Exception:
+            max_w, max_h = width, height
+        self.minsize(int(min(width, max_w)), int(min(height, max_h)))
 
     def get_screen_label(self, name, default_label):
         """اسم الشاشة المعروض في الشريط: المعدَّل من المستخدم إن وُجد"""
@@ -6374,8 +6599,8 @@ class GoldSystemApp(ctk.CTk):
         try:
             month = self.current_display_month
             comp = self.treasury_period_components(month)
-            count = sum(1 for inv in self.invoices.values()
-                        if inv.get("settled_status") in COUNTED_STATUSES and self.inv_in_period(inv, month))
+            count = sum(1 for inv in self.period_invoices(month)
+                        if inv.get("settled_status") in COUNTED_STATUSES)
             self._home_stat_raw = {"sales": -comp['sales'], "inbound": comp['inbound'],
                                    "khayas": -(comp['boxes'] + comp['workers'] + comp['closed']),
                                    "count": count}
@@ -6511,9 +6736,7 @@ class GoldSystemApp(ctk.CTk):
     # الأسماء هنا يجب أن تطابق أسماء الشاشات المسجّلة في tabview.add تماماً،
     # وإلا لم تُحدَّث الشاشة عند فتحها. يتحقق من ذلك test_lazy_refresh.py
     SCREEN_REFRESHERS = {
-        "مراحل التصنيع": ("refresh_op_ledger_table", "refresh_casting_table",
-                          "refresh_polish_table", "refresh_polish_buff_table",
-                          "_refresh_dynamic_stages"),
+        "مراحل التصنيع": ("refresh_current_stage",),
         "صناديق الخياس": ("refresh_inquiry_table",),
         "الوارد": ("refresh_inout_tables",),
         "المبيعات": ("refresh_sales_table", "refresh_sales_ops_table"),
@@ -7087,6 +7310,26 @@ class GoldSystemApp(ctk.CTk):
         # ====== حاوية شاشتي المصنعين والمركبين (تستخدم نفس الآلية الموحدة الحالية) ======
         self.mfg_inst_container = ctk.CTkFrame(tab, fg_color="transparent")
 
+        # كل قسم يُبنى عند أول فتح له (build_stage_on_demand): كانت الأقسام الخمسة
+        # تُبنى معاً عند فتح الشاشة، وأربعة منها مخفية — أبطأ جزء في فتحها
+        self.casting_container = ctk.CTkFrame(tab, fg_color="transparent")
+        self.polish_container = ctk.CTkFrame(tab, fg_color="transparent")
+        self.polish_buff_container = ctk.CTkFrame(tab, fg_color="transparent")
+        self._stage_builders = {
+            "المصنعين": (self.mfg_inst_container, self.build_mfg_ui),
+            "المركبين": (self.mfg_inst_container, self.build_mfg_ui),
+            "الكاستنج": (self.casting_container, self.build_casting_ui),
+            "التلميع": (self.polish_container, self.build_polish_ui),
+            "التلميع/البف": (self.polish_buff_container, self.build_polish_buff_ui),
+        }
+        self._built_stage_containers = set()
+
+        # المرحلة الافتراضية عند فتح الشاشة
+        self.switch_op_stage("الكاستنج")
+
+    def build_mfg_ui(self, parent):
+        """واجهة المصنعين والمركبين (مشتركة): بطاقة الإدخال وكشف حركة العامل المختار"""
+
         # بطاقة إدخال واحدة: السطر الأول التاريخ والاسم والبيان وزر الترحيل،
         # والثاني خانات العملية للعامل المختار (تتغيّر حسب القسم)
         mfg_card = ctk.CTkFrame(self.mfg_inst_container, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
@@ -7161,20 +7404,30 @@ class GoldSystemApp(ctk.CTk):
         self.op_ledger_tree = None
         self.op_ledger_group_map = {}
 
-        # ====== حاوية شاشة الكاستنج الجديدة (تاريخ / اسم / صرف / قبض / بيان + جدول حركة) ======
-        self.casting_container = ctk.CTkFrame(tab, fg_color="transparent")
-        self.build_casting_ui(self.casting_container)
+    def build_stage_on_demand(self, stage):
+        """يبني واجهة القسم مرة واحدة عند أول فتح له"""
+        spec = getattr(self, "_stage_builders", {}).get(stage)
+        if not spec:
+            return
+        container, builder = spec
+        if id(container) in self._built_stage_containers:
+            return
+        self._built_stage_containers.add(id(container))
+        builder(container)
 
-        # ====== حاوية شاشة التلميع الجديدة (تاريخ / اسم / صرف / بيان + جدول حركة) ======
-        self.polish_container = ctk.CTkFrame(tab, fg_color="transparent")
-        self.build_polish_ui(self.polish_container)
-
-        # ====== حاوية شاشة التلميع/البف الجديدة (تاريخ / الخياس + جدول مدين-دائن-رصيد) ======
-        self.polish_buff_container = ctk.CTkFrame(tab, fg_color="transparent")
-        self.build_polish_buff_ui(self.polish_buff_container)
-
-        # المرحلة الافتراضية عند فتح الشاشة
-        self.switch_op_stage("الكاستنج")
+    def refresh_current_stage(self):
+        """تحديث القسم الظاهر وحده — كل قسم آخر يُحدَّث عند التبديل إليه (switch_op_stage)"""
+        stage = getattr(self, "current_op_stage", None)
+        if stage in ("المصنعين", "المركبين"):
+            self.refresh_op_ledger_table()
+        elif stage == "الكاستنج":
+            self.refresh_casting_table()
+        elif stage == "التلميع":
+            self.refresh_polish_table()
+        elif stage == "التلميع/البف":
+            self.refresh_polish_buff_table()
+        elif stage in self.categories.get("أقسام_خياس_إضافية", []):
+            self.refresh_generic_stage_table(stage)
 
     def refresh_stage_buttons(self):
         """يعيد بناء أزرار المراحل بأعلى شاشة مراحل التصنيع، متضمّناً أي قسم أُضيف ديناميكياً من شجرة الحسابات"""
@@ -7263,6 +7516,7 @@ class GoldSystemApp(ctk.CTk):
         """التبديل بين مراحل التصنيع وإظهار الشاشة الخاصة بكل مرحلة (تشمل أي قسم أُضيف ديناميكياً)"""
         self.current_op_stage = stage
         self.style_segment_buttons(self.stage_buttons, stage)
+        self.build_stage_on_demand(stage)
 
         self.mfg_inst_container.pack_forget()
         self.casting_container.pack_forget()
@@ -9368,8 +9622,9 @@ class GoldSystemApp(ctk.CTk):
 
         m_check = target_month if target_month else self.current_display_month
 
-        # invoices: حركات الفترة مجمّعة مسبقاً (يمررها دفتر الخزينة لتسريع الحساب)
-        source = invoices if invoices is not None else self.invoices.values()
+        # invoices: حركات الفترة مجمّعة مسبقاً (يمررها دفتر الخزينة لتسريع الحساب)،
+        # وإلا حركات هذا الاسم وحده من الفهرس — لا مسح لكل الحركات
+        source = invoices if invoices is not None else self.invoices_by_name().get(name, ())
         for inv in source:
             if inv.get("التاريخ") and inv["الاسم"] == name and self.inv_in_period(inv, m_check):
                 if not include_settled and inv["settled_status"] != "ACTIVE":
@@ -9478,10 +9733,19 @@ class GoldSystemApp(ctk.CTk):
         # ══════════════════════════════════════════════════════════════
         names_list = self.categories.get(cat_name, [])
         sum_faqid = sum_marja = sum_pos_khayas = sum_mach_khayas = 0.0
-        
+
+        # حركات الفترة الممرَّرة تُجمَّع بالاسم مرة واحدة، بدل مسحها كاملة لكل عامل
+        per_name = None
+        if invoices is not None:
+            wanted, per_name = set(names_list), {}
+            for inv in invoices:
+                if inv.get("الاسم") in wanted:
+                    per_name.setdefault(inv["الاسم"], []).append(inv)
+
         for n in names_list:
             res = self.calculate_single_ledger(n, cat_name, target_month=target_month,
-                                               include_settled=include_settled, invoices=invoices)
+                                               include_settled=include_settled,
+                                               invoices=per_name.get(n, ()) if per_name is not None else None)
             if cat_name == "الآلة/المكائن":
                 sum_mach_khayas += res["الخياس"]
             else:
@@ -9560,12 +9824,9 @@ class GoldSystemApp(ctk.CTk):
         if hasattr(self, 'lbl_diamond_balance'):
             self.lbl_diamond_balance.configure(text=f"رصيد الألماس الحالي: {self.get_material_balance('الماس'):.2f}")
 
-        for cat_name, names_list in self.categories.items():
-            for n in names_list:
-                res = self.calculate_single_ledger(n, cat_name)
-                
-                if cat_name == "المصنعين":
-                    total_mufanish_4 += res.get("المفنش ٤ بالالف", 0.0)
+        # المفنش ٤ للمصنعين وحدهم (كان يُحسب دفتر كل اسم في كل الأقسام بلا استخدام)
+        for n in self.categories.get("المصنعين", []):
+            total_mufanish_4 += self.calculate_single_ledger(n, "المصنعين").get("المفنش ٤ بالالف", 0.0)
 
         # الخياس الحي (غير المُقفل بعد) يبقى معروضاً بلوحة "إجمالي فواقد الورشة" لأنه معلومة لحظية مفيدة، بصرف النظر عن الإقفال
         total_losses = self.get_actual_section_khayas("المصنعين") + self.get_actual_section_khayas("المركبين")
@@ -10012,9 +10273,8 @@ class GoldSystemApp(ctk.CTk):
         box_account_name = self.get_box_account_name(cat)
         in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
         tot_madin = tot_daen = 0.0
-        for inv in self.invoices.values():
+        for inv in self.period_invoices(month):
             if inv.get("settled_status") != "ACTIVE": continue
-            if not self.inv_in_period(inv, month): continue
             t = inv.get("النوع")
             if t == madin_type:
                 tot_madin += inv["الوزن"]
@@ -10063,9 +10323,8 @@ class GoldSystemApp(ctk.CTk):
             _m, _q, mustarja = self.get_stage_config(cat)
             in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
             recovered = closed = 0.0
-            for inv in self.invoices.values():
+            for inv in self.period_invoices(month):
                 if inv.get("settled_status") != "ACTIVE": continue
-                if not self.inv_in_period(inv, month): continue
                 t = inv.get("النوع")
                 if t in in_types and inv.get("الاسم") == mustarja:
                     recovered += inv["الوزن"]
@@ -10080,9 +10339,8 @@ class GoldSystemApp(ctk.CTk):
         box_account_name = self.get_box_account_name(cat)
         in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
         tot_madin = tot_daen = 0.0
-        for inv in self.invoices.values():
+        for inv in self.period_invoices(month):
             if inv.get("settled_status") != "ACTIVE": continue
-            if not self.inv_in_period(inv, month): continue
             t = inv.get("النوع")
             if t == madin_type:
                 tot_madin += inv["الوزن"]
@@ -10317,9 +10575,8 @@ class GoldSystemApp(ctk.CTk):
         """
         box_account_name = self.get_box_account_name(cat)
         daen_total = madin_total = 0.0
-        for inv in self.invoices.values():
+        for inv in self.invoices_by_name().get(box_account_name, ()):
             if inv.get("settled_status") != "ACTIVE": continue
-            if inv.get("الاسم") != box_account_name: continue
             if month and not self.inv_in_period(inv, month): continue
             if inv.get("النوع") == "قيد يومي دائن":
                 daen_total += inv["الوزن"]
@@ -16614,6 +16871,8 @@ class LoginWindow(ctk.CTk):
         self._trans_t0 = None
 
         try:
+            # على الشاشة الرئيسية (التي يُقاس منها المشهد) ثم ملء الشاشة
+            tk.Tk.wm_geometry(self, "+0+0")
             self.attributes("-fullscreen", True)
         except Exception:
             pass
@@ -16639,6 +16898,9 @@ class LoginWindow(ctk.CTk):
             log_cloud_error("تعذّر تجهيز رسوم شاشة الترحيب", e)
         self._build_window_controls()
         self._build_login_form()
+
+        # عميلا السحابة يُجهَّزان أثناء الترحيب، فيبدأ التحقق فور الضغط على «دخول»
+        prewarm_supabase_clients()
 
         # أي ضغطة أو نقرة أثناء الترحيب تنتقل للدخول مباشرة
         self.bind("<Key>", self._skip_splash, add="+")
@@ -17291,12 +17553,12 @@ class LoginWindow(ctk.CTk):
         if hasattr(self, "_waves"):
             front = 0.0
             for i, (item, base, amp, k, speed) in enumerate(self._waves):
-                front = self._ease_io((tt - 0.2 - i * 0.12) / 1.0)
+                front = self._ease_io((tt - 0.1 - i * 0.08) / 0.75)
                 self._wave_lift[i] = front * (base + amp * 1.5 + 0.04 * self.H)
             for j, (item, base, amp, k, speed) in enumerate(self._gold_lines):
                 self._line_lift[j] = front * (base + amp * 1.5 + 0.08 * self.H)
         # ٣) الشعار ينزل لمنتصف الشاشة ويعود لحجمه الكامل
-        e = self._ease_io((tt - 0.1) / 1.1)
+        e = self._ease_io((tt - 0.05) / 0.8)
         y = self._outro_from_y + (self._outro_logo_y - self._outro_from_y) * e
         cv.coords(self.logo_item, self.W / 2, y)
         if self._logo_small and cv.type(self.logo_item) == "image":
@@ -17304,10 +17566,11 @@ class LoginWindow(ctk.CTk):
                           self._logo_small[int((1 - e) * (len(self._logo_small) - 1))])
         # ٤) الترحيب يظهر فوق الماء بعد أن يغمر المنتصف
         for j, (item, final, _font) in enumerate(self._outro_items):
-            f = self._ease((tt - 0.95 - j * 0.12) / 0.5)
+            f = self._ease((tt - 0.55 - j * 0.08) / 0.35)
             if f > 0:
                 cv.itemconfig(item, state="normal", fill=self._mix(self._COVER, final, f))
-        if tt >= 1.75:
+        # إيقاع سريع مريح: التموّج كله ~١٫١ ثانية
+        if tt >= 1.1:
             self._outro_done = True
 
     def _wait_outro(self):
@@ -17440,11 +17703,20 @@ class LoginWindow(ctk.CTk):
             panel.mainloop()
             return
 
-        # التحقق عبر الإنترنت في الخلفية: الأمواج تتحرّك ولا تتجمّد الشاشة
+        # التحقق عبر الإنترنت في الخلفية: الأمواج تتحرّك ولا تتجمّد الشاشة.
+        # فحص المدير المساعد وفحص العميل **معاً** لا بالتتابع (طلب واحد من الوقت
+        # بدل طلبين)، والأولوية كما كانت: المدير المساعد أولاً
         def verify():
-            if cloud_verify_sub_admin_login(username, password):
+            box = {}
+            sub_thread = threading.Thread(
+                target=lambda: box.__setitem__("sub", cloud_verify_sub_admin_login(username, password)),
+                daemon=True)
+            sub_thread.start()
+            client = cloud_verify_client_login(username, password, touch=False)
+            sub_thread.join(timeout=15)
+            if box.get("sub"):
                 return "sub_admin", (None, None, False)
-            return "client", cloud_verify_client_login(username, password)
+            return "client", client
 
         self._busy = True
         try:
@@ -17455,17 +17727,23 @@ class LoginWindow(ctk.CTk):
             self._busy = False
 
         if kind == "sub_admin":
+            global CURRENT_SYNC_TOKEN
+            CURRENT_SYNC_TOKEN = None      # فحص العميل المتزامن لا يترك رمزاً لجلسة المدير المساعد
             self.destroy()
             panel = AdminPanel(restricted=True)
             panel.mainloop()
             return
 
         if client_id:
+            touch_client_login_async(client_id)     # وقت الدخول للمدير — في الخلفية
             self._busy = True
             # من هنا لا إغلاق ولا نوافذ: الأمواج تغمر الشاشة، ورفع البيانات يظهر
             # تحت الترحيب، ثم يُبنى النظام خلف آخر إطار ويظهر فوقه بالإطار نفسه
             self._begin_outro(business_name)
-            if SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:
+            # نسخة العميل لا تنتظر رفع بياناتها هنا: محرك المزامنة يرفعها في الخلفية
+            # فور فتح النظام (أول دورة له فورية). كان الانتظار يؤخّر الدخول ثوانيَ —
+            # ودقائق مع إنترنت ضعيف. نسخة المدير وحدها تنتظر: تعرض ما تسحبه
+            if IS_ADMIN_BUILD and SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:
                 try:
                     db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
                     api = _RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)

@@ -17,6 +17,7 @@ exec("class S:\n"
      '        return p if p else str(inv.get("التاريخ", ""))[:7]\n'
      "    @classmethod\n    def inv_in_period(cls, inv, month):\n"
      "        return True if not month else cls.inv_period(inv) == month\n"
+     + textwrap.indent(textwrap.dedent(seg("invoices_by_name")), "    ") + "\n"
      + textwrap.indent(textwrap.dedent(seg("get_box_closed_total")), "    ") + "\n"
      + textwrap.indent(textwrap.dedent(seg("get_current_unclosed_khayas")), "    ") + "\n"
      + textwrap.indent(textwrap.dedent(seg("get_unclosed_periods")), "    ") + "\n"

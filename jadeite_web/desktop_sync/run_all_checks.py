@@ -59,6 +59,7 @@ CHECKS = [
     ("بلا اهتزاز",          [PY, "test_no_flicker.py"]),
     ("شاشة الترحيب والدخول", [PY, "test_login_screen.py", TARGET]),
     ("الواجهات والمحاسبة ٣",  [PY, "test_screens_v3.py", TARGET]),
+    ("السرعة وملء الشاشة",   [PY, "test_speed_fullscreen.py", TARGET]),
 ]
 
 failed = []

@@ -5,7 +5,7 @@ import ast, io, textwrap
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
 
-WANT = ["calculate_single_ledger", "get_section_excess_loss", "get_gold_at_section",
+WANT = ["invoices_by_name", "invoices_by_period", "period_invoices", "calculate_single_ledger", "get_section_excess_loss", "get_gold_at_section",
         "get_current_unclosed_khayas", "get_actual_section_khayas", "get_section_khayas_split", "get_box_closed_total",
         "get_box_khayas_cumulative", "get_sales_ops_khayas_total", "get_sale_invoice_groups", "get_stage_config", "get_box_account_name",
         "get_all_stage_categories", "get_display_label"]

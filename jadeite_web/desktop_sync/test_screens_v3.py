@@ -78,7 +78,7 @@ assert "_open_selected_supplier_statement" in seg("refresh_suppliers_table")
 print("✔ نقرتان على مورد تفتحان كشف حسابه")
 
 # ═══ ٢) الكاستنج: مسترجع الأشجار ═══
-C = build(["collect_stage_ops_rows", "is_row_recovery", "row_sort_key", "inv_period", "inv_in_period",
+C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect_stage_ops_rows", "is_row_recovery", "row_sort_key", "inv_period", "inv_in_period",
            "get_box_khayas_cumulative", "get_stage_config", "get_box_account_name", "get_display_label"],
           attrs=("INBOUND_TYPES", "BOX_DISPLAY_OVERRIDES"))
 app = C()
