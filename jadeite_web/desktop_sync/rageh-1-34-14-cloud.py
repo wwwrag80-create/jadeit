@@ -34,6 +34,7 @@ except ImportError:
 
 # ================= الربط بالسحابة (Supabase) — اختياري بالكامل، لا يوقف البرنامج إن غاب الإنترنت أو المكتبة =================
 import re
+import difflib
 import hashlib
 import threading
 import json
@@ -314,6 +315,38 @@ def screen_work_area(widget):
             pass
     return 0, 0, widget.winfo_screenwidth(), max(400, widget.winfo_screenheight() - 48)
 
+
+# أصغر مساحة عمل (بوحدات الواجهة) صُمّمت لها الشاشات، وأدنى تصغير مقبول للقراءة
+DESIGN_WORK_AREA = (1280, 680)
+MIN_UI_FIT = 0.7
+
+
+def screen_fit_factor(win):
+    """نسبة تصغير الواجهة لتتسع لها الشاشة كاملة (١٫٠ = بلا تصغير).
+
+    حاسوب محمول ١٣٦٦×٧٦٨ بتكبير عرض ١٥٠٪ لا يتسع فعلياً إلا لـ ٩١٠×٥١٢ من
+    وحدات الواجهة: كان زر «دخول» يقع تحت حافة الشاشة، وجدول المبيعات بلا صف
+    واحد ظاهر. النسبة تُحسب من مساحة العمل (بلا شريط المهام) مقسومة على تكبير
+    العرض، ولا تنزل عن ٠٫٧ — أي ما يقارب حجم الخط على شاشة عادية بلا تكبير.
+    """
+    try:
+        dpi = float(ctk.ScalingTracker.get_window_scaling(win)) or 1.0
+        _x, _y, w, h = screen_work_area(win)
+        fit = min(w / dpi / DESIGN_WORK_AREA[0], h / dpi / DESIGN_WORK_AREA[1])
+    except Exception:
+        return 1.0
+    return max(MIN_UI_FIT, min(1.0, round(fit, 2)))
+
+
+def apply_screen_fit(win):
+    """يطبّق نسبة التصغير على كل عناصر الواجهة قبل بنائها (مرة واحدة لكل قيمة)"""
+    fit = screen_fit_factor(win)
+    try:
+        if abs(float(ctk.ScalingTracker.widget_scaling) - fit) > 0.005:
+            ctk.set_widget_scaling(fit)
+    except Exception:
+        pass
+    return fit
 
 def fill_work_area(win):
     """بديل أخير: حجم النافذة = مساحة العمل (الشاشة بلا شريط المهام) بالبكسل الفعلي.
@@ -2797,6 +2830,7 @@ class ScreenRouter(ctk.CTkFrame):
 class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def __init__(self, client_id=None, client_name=None, supabase_client=None, is_admin_session=False, initial_can_edit=False, intro=None):
         super().__init__()
+        apply_screen_fit(self)      # قبل أي عنصر: الواجهة كلها تتسع للشاشات الصغيرة
         # intro: قادم من شاشة الدخول — يُبنى النظام مخفياً تماماً خلف آخر إطار منها،
         # ثم يظهر فوقه بالإطار نفسه وتنحسر الأمواج عن الرئيسية (_intro_show)
         self._intro = intro
@@ -2820,21 +2854,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.title(f"نظام قسم التصنيع - الإصدار المحاسبي المتكامل{title_suffix}")
         apply_app_icon(self)
         self.update_idletasks()
-        try:
-            # يعمل على ويندوز: يكبّر النافذة لتملأ مساحة الشاشة المتاحة فعلياً على أي جهاز
-            # (القادم من شاشة الدخول يبقى مخفياً ويُكبَّر عند ظهوره)
-            if not intro:
-                self.state('zoomed')
-        except Exception:
-            try:
-                # بديل لأنظمة لينكس
-                self.attributes('-zoomed', True)
-            except Exception:
-                # حل احتياطي: حساب مساحة مناسبة يدوياً حسب أبعاد شاشة الجهاز وتوسيطها
-                sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-                w, h = min(1600, int(sw * 0.94)), min(950, int(sh * 0.88))
-                x, y = (sw - w) // 2, (sh - h) // 2
-                self.geometry(f"{w}x{h}+{x}+{y}")
+        # الحجم «العادي» للنافذة = الشاشة كاملة (بلا شريط المهام) قبل أي ظهور: إن
+        # أعادها ويندوز أو المكتبة من التكبير إلى حجمها العادي تبقى تملأ الشاشة —
+        # لا نصف شاشة كما ظهر على بعض الحواسيب المحمولة الصغيرة
+        fill_work_area(self)
+        if not intro:
+            # القادم من شاشة الدخول يبقى مخفياً ويُكبَّر عند ظهوره
+            self.force_maximize()
         self.safe_minsize(1000, 650)
         self.current_theme = "Light"
 
@@ -2898,6 +2924,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.schedule_permission_refresh()   # تحديث دوري لصلاحية التعديل (كل دقيقة)
         
         self.load_data_from_db()
+        self.sync_working_period()
 
         self.apply_design_system()
         try:
@@ -5439,12 +5466,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # الجمع (وليس الاستبدال) حتى لا تُهمل أي حركة مسجّلة فعلياً بنفس رقم الصف
             if self.is_row_recovery(inv, recover_name):
                 g["مسترجع"] = round(g["مسترجع"] + inv["الوزن"], 2)
-                continue          # بيانه «مسترجع الأشجار» لا يُكرَّر في عمود البيان
-            if inv["النوع"] == madin_type:
-                g["مدين"] = round(g["مدين"] + inv["الوزن"], 2)
+                # «مسترجع الأشجار» وحده لا يُكرَّر في عمود البيان، أما ما كتبه
+                # المستخدم بعده فيظهر («مسترجع الأشجار — بيانه»)
+                note = (inv.get("البيان") or "").strip()
+                note = note.split(" — ", 1)[1].strip() if " — " in note else (
+                    "" if note == "مسترجع الأشجار" else note)
             else:
-                g["دائن"] = round(g["دائن"] + inv["الوزن"], 2)
-            note = (inv.get("البيان") or "").strip()
+                if inv["النوع"] == madin_type:
+                    g["مدين"] = round(g["مدين"] + inv["الوزن"], 2)
+                else:
+                    g["دائن"] = round(g["دائن"] + inv["الوزن"], 2)
+                note = (inv.get("البيان") or "").strip()
             if note and note not in g["البيان"]:
                 g["البيان"] = note if not g["البيان"] else g["البيان"] + " | " + note
             trees = inv.get("trees_count", 0.0) or 0.0
@@ -5874,7 +5906,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             sw = 1366
         try:
-            scale = float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
+            # مقياس العناصر: تكبير العرض × تصغير الشاشات الصغيرة (apply_screen_fit)
+            scale = float(ctk.ScalingTracker.get_widget_scaling(self)) or 1.0
         except Exception:
             scale = 1.0
         return sw / scale
@@ -6949,8 +6982,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.combo_active_period.set(self.current_display_month)
         self.update_period_warning()
 
+    WORKING_PERIOD_KEY = "client_working_period"
+
+    def sync_working_period(self):
+        """الفترة التي يعمل عليها العميل تصل المدير مع الإعدادات، فيفتح برنامج المدير
+        عليها — لا على شهر جهازه (قد يبقى العميل على فترة الشهر الماضي حتى يُقفلها)"""
+        try:
+            if IS_ADMIN_BUILD:
+                saved = (self.get_setting(self.WORKING_PERIOD_KEY, "") or "").strip()
+                if re.fullmatch(r"\d{4}-\d{2}", saved):
+                    self.current_display_month = saved
+            elif self.client_id:
+                self._remember_working_period(self.current_display_month)
+        except Exception:
+            pass
+
+    def _remember_working_period(self, month):
+        """يحفظ فترة عمل العميل (نسخة العميل فقط، وعند تغيّرها فقط)"""
+        if IS_ADMIN_BUILD or not getattr(self, "client_id", None) or not month:
+            return
+        try:
+            if self.get_setting(self.WORKING_PERIOD_KEY, "") != month:
+                self.set_setting(self.WORKING_PERIOD_KEY, month)
+        except Exception:
+            pass
+
     def on_period_changed(self, selected_period):
         self.current_display_month = selected_period
+        self._remember_working_period(selected_period)
         self.recalculate_all()
         self.update_period_warning()
         # تنبيه بعد اكتمال إعادة الحساب: قد تكون هناك فترة منتهية لم يُقفل
@@ -7409,6 +7468,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         sel_label("الاسم:")
         self.combo_op_name = ctk.CTkComboBox(sel_frame, values=["لا يوجد أسماء"], font=("Cairo", 14), width=200, height=36, justify="right", command=self.render_unified_fields)
         self.combo_op_name.pack(side="right", padx=4)
+        # اقتراح أقرب الأسماء أثناء الكتابة، واختيار الاسم يعرض خاناته مباشرة
+        self.bind_name_autocomplete(
+            self.combo_op_name,
+            lambda: [self.rtl(n) for n in self.categories.get(getattr(self, "current_op_cat", "المصنعين"), [])],
+            on_pick=self.render_unified_fields)
 
         btn_submit = ctk.CTkButton(sel_frame, text="ترحيل الحركة 💾", font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
                                    height=36, width=160, fg_color=UI["primary"], hover_color=UI["primary_hover"],
@@ -8716,10 +8780,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for op_type, val in plan:
                 try:
                     self.invoice_counter += 1
-                    if op_type == "قبض ذهب" and qabd_t != 'عام':
-                        current_note = qabd_t
-                    else:
-                        current_note = ""
+                    # البيان المكتوب يُحفظ مع كل خانة مُرحَّلة (كان يُهمل فلا يظهر في
+                    # عمود البيان)؛ ونوع القبض يبقى في أوله ليُصنَّف به القبض
+                    type_label = qabd_t if (op_type == "قبض ذهب" and qabd_t != 'عام') else ""
+                    current_note = " — ".join(x for x in (type_label, note) if x)
 
                     inv_data = {
                         "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time,
@@ -9974,6 +10038,55 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "التلميع/البف": "البوليش",
         }.get(cat)
 
+    RECOVERY_IN_TYPES = ("وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس")
+
+    def get_khayas_box_categories(self):
+        """كل صناديق الخياس بترتيب عرضها: الكاستنج، المصنعون، المركبون، ثم البقية والمضافة"""
+        return (["الكاستنج", "المصنعين", "المركبين", "التلميع", "التلميع/البف", "خياس الطقوم"]
+                + list(self.categories.get("أقسام_خياس_إضافية", [])))
+
+    def get_box_recovery_name(self, cat):
+        """اسم حساب مسترجع الصندوق — لكل الصناديق، بما فيها المصنعون والمركبون.
+
+        وارد ذهب/فصوص/ألماس بهذا الاسم = ذهب عاد من الصندوق: يُخصم من خياسه
+        الحالي ويظهر في «مسترجع» لوحته بشاشة الخسائر.
+        """
+        if cat in ("المصنعين", "المركبين"):
+            return f"مسترجع {self.get_display_label(cat)}"
+        return self.get_stage_config(cat)[2]
+
+    def get_box_recovered_total(self, cat, month=None):
+        """إجمالي ما استُرجع للصندوق (وارد باسم مسترجعه). month=None: كل الفترات"""
+        name = self.get_box_recovery_name(cat)
+        if not name:
+            return 0.0
+        total = 0.0
+        for inv in self.invoices_by_name().get(name, ()):
+            if inv.get("settled_status") != "ACTIVE":
+                continue
+            if inv.get("النوع") not in self.RECOVERY_IN_TYPES:
+                continue
+            if month and not self.inv_in_period(inv, month):
+                continue
+            total += inv.get("الوزن", 0.0) or 0.0
+        return round(total, 2)
+
+    def get_box_loss_summary(self, cat, month=None):
+        """أقسام لوحة الصندوق في شاشة الخسائر:
+
+            الخياس الحالي — غير المُقفل في الفترة المختارة
+            الفاقد        — كل ما خسره الصندوق في كل الفترات: المُقفل لحساب
+                            الخسائر + ما استُرجع منه (المسترجع يُخصم من الخياس
+                            قبل إقفاله، فالمُقفل وحده صافٍ من المسترجع أصلاً)
+            المسترجع      — كل ما عاد من الصندوق في كل الفترات
+            الصافي        — الفاقد − المسترجع = ما وصل حساب الخسائر فعلاً
+        """
+        closed = self.get_box_closed_total(cat)
+        recovered = self.get_box_recovered_total(cat)
+        loss = round(closed + recovered, 2)
+        return {"current": self.get_current_unclosed_khayas(cat, month=month),
+                "loss": loss, "recovered": recovered, "net": round(loss - recovered, 2)}
+
     def ensure_default_khayas_boxes(self):
         """لا صناديق تُنشأ تلقائياً بعد الآن (أُلغي إنشاء قسم الصب).
 
@@ -10320,8 +10433,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_all_mustarja_names(self):
         """كل أسماء المسترجع الحالية (لكل صناديق الخياس، ثابتة وديناميكية) - مصدر واحد موحّد لتفادي أي تعارض مع إعادة التسمية"""
         names = []
-        for cat in self.get_all_stage_categories():
-            _, _, mustarja = self.get_stage_config(cat)
+        for cat in self.get_all_stage_categories() + ["المصنعين", "المركبين"]:
+            mustarja = self.get_box_recovery_name(cat)
             if mustarja and mustarja not in names:
                 names.append(mustarja)
         return names
@@ -10668,8 +10781,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if self.get_current_unclosed_khayas(cat_name) <= 0.005:
             return 0.0
 
-        if closed > 0:
-            return round(max(excess - closed, 0.0), 2)
+        recovered = self.get_box_recovered_total(cat_name, month=self.current_display_month)
+        if closed > 0 or recovered > 0:
+            return round(max(excess - closed - recovered, 0.0), 2)
         return excess
 
     def get_box_breakdown_text(self, cat, month=None):
@@ -10705,7 +10819,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat in ("المصنعين", "المركبين"):
             live_total = self.get_actual_section_khayas(cat, target_month=month)
             closed_total = self.get_box_closed_total(cat, month=month)
-            return round(live_total - closed_total, 2)
+            # الذهب المسترجع من القسم (وارد باسم مسترجعه) لم يعد فاقداً
+            recovered = self.get_box_recovered_total(cat, month=month)
+            return round(live_total - closed_total - recovered, 2)
         return self.get_box_khayas_cumulative(cat, month=month)
 
     def get_sets_net_rows(self, month):
@@ -11352,10 +11468,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for inv in worker_invs:
             if inv["النوع"] == "قبض ذهب":
                 note_str = inv["البيان"] or ""
-                for k_type in type_totals.keys():
-                    if k_type in note_str:
-                        type_totals[k_type] += inv["الوزن"]
-                        break
+                # النوع في أول البيان («زركون — بيان المستخدم»)؛ البحث في النص كله
+                # للحركات القديمة فقط، فلا تُصنِّف كلمةٌ في البيان القبضَ خطأً
+                head = note_str.split(" — ")[0].strip()
+                k_type = head if head in type_totals else next(
+                    (k for k in type_totals if k in note_str), None)
+                if k_type:
+                    type_totals[k_type] += inv["الوزن"]
 
         # تجميع الذاتي للحركات المجمعة بناءً على بصمة التوقيت والبيان
         grouped_data = {}
@@ -12136,6 +12255,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # =========================================================================
     # --- شاشة كشف حساب: استعلام موحّد عن أي حساب (مورد / مادة / مسترجع / خزينة) ---
     # =========================================================================
+    # حساب «رصيد افتتاحي»: طرف ثابت في القيود اليومية لتسجيل الرصيد الافتتاحي لأي
+    # حساب (مورد، صندوق، مادة…) — مثلاً: مدين رصيد افتتاحي / دائن المورد فلان.
+    # حساب قيود فقط: لا يمسّ الخزينة إلا إن كان الطرف الآخر «حساب الخزينة»
+    OPENING_ACCOUNT = "رصيد افتتاحي"
+
     def get_account_statement_options(self):
         hidden_mustarja = set(self.get_all_mustarja_names())
         names = [n for n in self.get_supplier_name_values() if n not in hidden_mustarja]
@@ -12143,7 +12267,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         names += self.get_all_mustarja_names()
         names += ["حساب الخزينة", "المبيعات"]
         names += [self.get_box_account_name(c) for c in self.get_all_stage_categories() + ["المصنعين", "المركبين"]]
-        names += ["حساب الخسائر"]
+        names += ["حساب الخسائر", self.OPENING_ACCOUNT]
         names += [n for n in self.categories.get("حسابات إضافية", []) if n not in names]
         # أي اسم/حساب جديد استُخدم بقيد يومي سابقاً يظهر تلقائياً هنا أيضاً
         extra_names = set()
@@ -12276,6 +12400,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if t not in worker_types_madin and t not in worker_types_daen: continue
                     add(inv, inv["الوزن"] if t in worker_types_madin else 0.0,
                         inv["الوزن"] if t in worker_types_daen else 0.0, t)
+                # الذهب المسترجع من القسم (وارد باسم مسترجعه)
+                for inv in self.invoices_by_name().get(self.get_box_recovery_name(cat), ()):
+                    if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
+                    if inv.get("النوع") in self.RECOVERY_IN_TYPES:
+                        add(inv, 0.0, inv["الوزن"], "وارد مسترجع")
             else:
                 madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
                 in_types_local = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
@@ -12660,25 +12789,228 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         hidden = set(self.get_all_mustarja_names())
         return [n for n in self.get_supplier_name_values() if n not in hidden]
 
-    def bind_name_autocomplete(self, combobox, values_getter):
-        """يجعل خانة الاسم لا تعرض أي قيمة إلا عند اختيار من القائمة أو كتابة نص، وعندها يضيق الخيارات على الأسماء المقاربة لما كُتب"""
+    # حروف تُوحَّد عند المقارنة فقط: همزات الألف، التاء المربوطة، الألف المقصورة
+    _AR_FOLD = str.maketrans("أإآٱةى", "ااااهي")
+
+    @classmethod
+    def normalize_name_for_match(cls, text):
+        """شكل موحّد للاسم عند البحث: بلا تشكيل ولا تطويل، وأشكال الألف واحدة"""
+        t = re.sub("[\u064B-\u0652\u0640\u200e\u200f]", "", text or "")
+        return " ".join(t.translate(cls._AR_FOLD).lower().split())
+
+    def rank_name_matches(self, typed, names, limit=8):
+        """أقرب الأسماء لما كُتب، الأقرب أولاً:
+        مطابق ← يبدأ به ← كلمة فيه تبدأ به ← يحتويه ← قريب الكتابة (خطأ حرف أو حرفين)"""
+        q = self.normalize_name_for_match(self.clean_name(typed))
+        if not q:
+            return list(names)[:limit]
+        scored = []
+        for n in names:
+            c = self.normalize_name_for_match(self.clean_name(n))
+            if not c:
+                continue
+            if c == q:
+                key = (0, 0.0)
+            elif c.startswith(q):
+                key = (1, 0.0)
+            elif any(w.startswith(q) for w in c.split()):
+                key = (2, 0.0)
+            elif q in c:
+                key = (3, 0.0)
+            else:
+                ratio = difflib.SequenceMatcher(None, q, c[:max(len(q) + 2, 1)]).ratio()
+                ratio = max(ratio, difflib.SequenceMatcher(None, q, c).ratio())
+                if ratio < 0.6:
+                    continue
+                key = (4, -ratio)
+            scored.append((key, len(c), n))
+        scored.sort(key=lambda x: (x[0], x[1]))
+        return [n for _k, _l, n in scored[:limit]]
+
+    def _name_popup(self):
+        """قائمة الاقتراحات العائمة (واحدة للنظام كله، تُنقل تحت الخانة النشطة)"""
+        pop = getattr(self, "_ac_popup", None)
+        if pop is not None:
+            try:
+                if pop.winfo_exists():
+                    return pop
+            except Exception:
+                pass
+        pop = tk.Toplevel(self)
+        pop.withdraw()
+        pop.overrideredirect(True)
+        try:
+            pop.attributes("-topmost", True)
+        except Exception:
+            pass
+        lb = tk.Listbox(pop, font=("Cairo", 13), justify="right", activestyle="none",
+                        exportselection=False, relief="flat", bd=0, highlightthickness=1,
+                        highlightbackground=UI["primary"], highlightcolor=UI["primary"],
+                        selectbackground=UI["primary"], selectforeground="#ffffff",
+                        bg="#ffffff", fg=UI["ink"])
+        lb.pack(fill="both", expand=True)
+        pop._lb = lb
+        pop._owner = None
+        self._ac_popup = pop
+        return pop
+
+    def _hide_name_popup(self):
+        pop = getattr(self, "_ac_popup", None)
+        if pop is not None:
+            try:
+                pop.withdraw()
+                pop._owner = None
+            except Exception:
+                pass
+
+    def bind_name_autocomplete(self, combobox, values_getter, on_pick=None):
+        """خانة اسم باقتراحات أثناء الكتابة: تظهر أقرب الأسماء تحت الخانة مباشرة.
+
+        ↓ و↑ للتنقّل بين الاقتراحات، Enter أو النقر للاختيار، Esc للإغلاق.
+        لا يُستبدل ما كتبه المستخدم إلا باختيار صريح — فالاسم الجديد يبقى كما
+        كُتب. وقائمة الخانة المنسدلة نفسها تضيق على الأسماء المقاربة أيضاً.
+        on_pick: يُستدعى بالاسم المختار (مثل تحديث خانات العامل المختار).
+        """
+        def matches():
+            return self.rank_name_matches(combobox.get(), values_getter())
+
+        def apply(value):
+            combobox.set(value)
+            self._hide_name_popup()
+            try:
+                combobox.focus_set()
+            except Exception:
+                pass
+            if on_pick is not None:
+                on_pick(value)
+
+        def show(items):
+            pop = self._name_popup()
+            lb = pop._lb
+            lb.delete(0, "end")
+            for n in items:
+                lb.insert("end", n)
+            pop._owner = combobox
+            pop._apply = apply
+            try:
+                lb.configure(height=len(items))
+                lb.selection_clear(0, "end")
+                pop.update_idletasks()
+                x, y = combobox.winfo_rootx(), combobox.winfo_rooty() + combobox.winfo_height() + 2
+                w = max(combobox.winfo_width(), 180)
+                tk.Toplevel.wm_geometry(pop, f"{w}x{lb.winfo_reqheight()}+{x}+{y}")
+                pop.deiconify()
+                pop.lift()
+            except Exception:
+                pass
+
+        def popup_open():
+            pop = getattr(self, "_ac_popup", None)
+            try:
+                return pop is not None and pop._owner is combobox and pop.winfo_viewable()
+            except Exception:
+                return False
+
         def on_key(event=None):
+            if event is not None and event.keysym in ("Up", "Down", "Return", "KP_Enter", "Escape", "Tab",
+                                                       "Left", "Right", "Shift_L", "Shift_R"):
+                return
             # المقارنة على الاسم بعد تنظيفه من علامة الاتجاه، وإلا لم يطابق
             # النص المكتوب أي اسم معروض فتختفي كل الخيارات
             typed = self.clean_name(combobox.get())
             full_list = values_getter()
-            if typed:
-                filtered = [n for n in full_list if typed in self.clean_name(n)]
-                combobox.configure(values=filtered if filtered else full_list)
-            else:
+            if not typed:
                 combobox.configure(values=full_list)
+                self._hide_name_popup()
+                return
+            found = matches()
+            combobox.configure(values=found if found else full_list)
+            # لا اقتراح إن كان المكتوب هو الاسم الوحيد المطابق حرفياً
+            if found and not (len(found) == 1 and self.clean_name(found[0]) == typed):
+                show(found)
+            else:
+                self._hide_name_popup()
+
+        def move(step):
+            if not popup_open():
+                return None
+            lb = self._ac_popup._lb
+            size = lb.size()
+            if not size:
+                return "break"
+            cur = lb.curselection()
+            idx = (cur[0] + step) if cur else (0 if step > 0 else size - 1)
+            idx = max(0, min(size - 1, idx))
+            lb.selection_clear(0, "end")
+            lb.selection_set(idx)
+            lb.see(idx)
+            return "break"
+
+        def on_return(event=None):
+            # الاختيار الصريح فقط (سهم ثم Enter): المكتوب الجديد لا يُستبدل
+            if popup_open():
+                lb = self._ac_popup._lb
+                cur = lb.curselection()
+                if cur:
+                    apply(lb.get(cur[0]))
+                    return None          # يكمل Enter عمله المعتاد (الانتقال للخانة التالية)
+                self._hide_name_popup()
+            return None
+
+        def on_escape(event=None):
+            if popup_open():
+                self._hide_name_popup()
+                return "break"
+            return None
+
+        def on_focus_out(event=None):
+            # مهلة قصيرة: النقر على اقتراح يسحب التركيز من الخانة قبل تسجيل النقرة
+            def later():
+                if not popup_open():
+                    return
+                try:
+                    focus = self.focus_get()
+                except Exception:
+                    focus = None
+                if focus is None or str(focus).find(str(self._ac_popup)) != 0:
+                    self._hide_name_popup()
+            self.after(180, later)
+
         combobox.bind("<KeyRelease>", on_key)
+        combobox.bind("<Down>", lambda e: move(1))
+        combobox.bind("<Up>", lambda e: move(-1))
+        combobox.bind("<Return>", on_return)
+        combobox.bind("<KP_Enter>", on_return)
+        combobox.bind("<Escape>", on_escape)
+        combobox.bind("<FocusOut>", on_focus_out)
+
+        pop = self._name_popup()
+        if not getattr(pop, "_click_bound", False):
+            def on_click(event=None):
+                lb = pop._lb
+                idx = lb.nearest(event.y) if event is not None else None
+                if idx is not None and 0 <= idx < lb.size() and getattr(pop, "_apply", None):
+                    pop._apply(lb.get(idx))
+            pop._lb.bind("<ButtonRelease-1>", on_click)
+            pop._click_bound = True
+
+    INBOUND_DEFAULT_ACCOUNT = "الخزينة (وارد عادي)"
+
+    def get_inbound_account_options(self):
+        """خيارات «إلى حساب» في الوارد: الخزينة، ثم مسترجع كل صندوق خياس"""
+        names = [self.INBOUND_DEFAULT_ACCOUNT]
+        for cat in self.get_khayas_box_categories():
+            name = self.get_box_recovery_name(cat)
+            if name and name not in names:
+                names.append(name)
+        return names
 
     def toggle_in_carat_field(self, choice):
         """يظهر حقل العيار فقط عند اختيار (ذهب)، لأن باقي الأنواع لا تُحسب بعيار"""
         if choice == "ذهب":
-            self.lbl_in_carat.pack(side="right", padx=3)
-            self.in_carat.pack(side="right", padx=8, pady=8)
+            # مكانه قبل نوع الوارد (لا في آخر الصف بعد «إلى حساب»)
+            self.lbl_in_carat.pack(side="right", padx=3, before=self.lbl_in_type)
+            self.in_carat.pack(side="right", padx=8, pady=8, before=self.lbl_in_type)
         else:
             self.lbl_in_carat.pack_forget()
             self.in_carat.pack_forget()
@@ -12715,19 +13047,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ops_row = ctk.CTkFrame(main_frame, corner_radius=10)
         ops_row.pack(fill="x", padx=15, pady=6)
 
+        # من اليمين: كل عنوان ثم خانته — الوزن، العيار، نوع الوارد، إلى حساب
+        ctk.CTkLabel(ops_row, text="الوزن:", font=("Cairo", 14, "bold")).pack(side="right", padx=3)
         self.in_weight = ctk.CTkEntry(ops_row, placeholder_text="الوزن", font=("Cairo", 14), justify="center", width=100, height=36)
         self.in_weight.pack(side="right", padx=8, pady=8)
-        ctk.CTkLabel(ops_row, text="الوزن:", font=("Cairo", 14, "bold")).pack(side="right", padx=3)
 
         self.lbl_in_carat = ctk.CTkLabel(ops_row, text="العيار:", font=("Cairo", 14, "bold"))
         self.in_carat = ctk.CTkEntry(ops_row, placeholder_text="العيار", font=("Cairo", 14), justify="center", width=90, height=36)
         self.lbl_in_carat.pack(side="right", padx=3)
         self.in_carat.pack(side="right", padx=8, pady=8)
 
+        self.lbl_in_type = ctk.CTkLabel(ops_row, text="نوع الوارد:", font=("Cairo", 14, "bold"), text_color="#1f77b4")
+        self.lbl_in_type.pack(side="right", padx=3)
         self.in_type = ctk.CTkOptionMenu(ops_row, values=["ذهب", "الماس", "فصوص وأحجار"], font=("Cairo", 14, "bold"), width=130, height=36, command=self.toggle_in_carat_field)
         self.in_type.set("ذهب")
         self.in_type.pack(side="right", padx=8, pady=8)
-        ctk.CTkLabel(ops_row, text="نوع الوارد:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
+
+        # إلى حساب: الوارد العادي للخزينة، أو مسترجع صندوق خياس (القبض من المصنع
+        # قد يكون ذهباً عاد من الكاستنج مثلاً) — فيُخصم من خياس الصندوق ويظهر في
+        # «مسترجع» لوحته بشاشة الخسائر، ويبقى مصدره (الاسم) في البيان
+        ctk.CTkLabel(ops_row, text="إلى حساب:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
+        self.in_to_account = ctk.CTkOptionMenu(ops_row, values=self.get_inbound_account_options(),
+                                               font=("Cairo", 14, "bold"), width=210, height=36,
+                                               dynamic_resizing=False)
+        self.in_to_account.set(self.INBOUND_DEFAULT_ACCOUNT)
+        self.in_to_account.pack(side="right", padx=8, pady=8)
 
         self.in_note = ctk.CTkEntry(main_frame, placeholder_text="البيان والشرح...", font=("Cairo", 14), justify="right", height=36)
         self.in_note.pack(fill="x", padx=15, pady=6)
@@ -12805,15 +13149,38 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # البيان يبقى فارغاً تماماً إلا لو سجّل المستخدم بياناً فعلياً
             note = self.in_note.get().strip()
 
-            if not messagebox.askyesno("تأكيد الترحيل", "هل أنت متأكد من ترحيل حركة الوارد؟"):
+            # «إلى حساب» مسترجع صندوق: الحركة تُسجَّل باسم المسترجع (فتُخصم من خياس
+            # الصندوق)، ومصدرها الفعلي (المصنع أو غيره) يُحفظ في البيان
+            to_account = self.in_to_account.get() if hasattr(self, "in_to_account") else ""
+            confirm_msg = "هل أنت متأكد من ترحيل حركة الوارد؟"
+            if to_account and to_account != self.INBOUND_DEFAULT_ACCOUNT:
+                source = supplier
+                supplier = to_account
+                if source and source != to_account:
+                    note = f"{note} — من {source}" if note else f"من {source}"
+                # ما سيحدث للصندوق يُعرض قبل الترحيل: المسترجع يُخصم من خياسه،
+                # والباقي من خياسه الحالي يُقفل لحساب الخسائر
+                box_cat = next((c for c in self.get_khayas_box_categories()
+                                if self.get_box_recovery_name(c) == to_account), None)
+                if box_cat:
+                    pre = self.get_current_unclosed_khayas(box_cat)
+                    rest = round(pre - final_w, 2)
+                    confirm_msg = (
+                        f"سيُسجَّل هذا الوارد ({final_w:.2f} جم) مسترجعاً لصندوق "
+                        f"{self.get_display_label(box_cat)}.\n"
+                        f"الخياس الحالي للصندوق: {pre:.2f} جم"
+                        + (f" — ويُقفل الباقي ({rest:.2f} جم) لحساب الخسائر." if abs(rest) >= 0.005 else ".")
+                        + "\n\nهل تريد المتابعة؟")
+
+            if not messagebox.askyesno("تأكيد الترحيل", confirm_msg):
                 return
 
             # التعرف على أي اسم صندوق خياس (أو اسم مسترجعه) لمعاملته كاسترجاع خياس، وليس كمورد جديد
             mustarja_map = {}  # اسم صندوق الخياس -> اسم المسترجع الخاص به
             box_cat_map = {}   # اسم صندوق الخياس -> مفتاح القسم (cat) لاستخدامه بحساب الخياس الحالي
-            for _stage_cat in self.get_all_stage_categories():
+            for _stage_cat in self.get_all_stage_categories() + ["المصنعين", "المركبين"]:
                 _box_acc = self.get_box_account_name(_stage_cat)
-                _, _, _mustarja_name = self.get_stage_config(_stage_cat)
+                _mustarja_name = self.get_box_recovery_name(_stage_cat)
                 if _box_acc and _mustarja_name:
                     mustarja_map[_box_acc] = _mustarja_name
                     box_cat_map[_box_acc] = _stage_cat
@@ -12889,6 +13256,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.in_invoice_num.insert(0, voucher)
             self.in_supplier.configure(values=self.get_supplier_name_values())
             self.in_supplier.set("المصنع")
+            if hasattr(self, "in_to_account"):
+                # يعود للوارد العادي: لا يُسجَّل الوارد التالي مسترجعاً سهواً
+                self.in_to_account.configure(values=self.get_inbound_account_options())
+                self.in_to_account.set(self.INBOUND_DEFAULT_ACCOUNT)
 
             self.register_operation_period(d_val)
             self.recalculate_all()
@@ -13205,8 +13576,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # تُقصّ الخانات على الشاشات الصغيرة ولا تتكدّس في الكبيرة. الترتيب من اليمين.
         fields_row = ctk.CTkFrame(card, fg_color="transparent")
         fields_row.pack(fill="x", padx=10, pady=(4, 10))
-        labels = ["رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم",
-                  "خياس التلميع النهائي", "خياس البوليش", "خياس المركب", "الماس"]
+        # الماس بعد الأحجار مباشرة
+        labels = ["رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الماس", "الأحجار بعد الخصم",
+                  "خياس التلميع النهائي", "خياس البوليش", "خياس المركب"]
         n_cols = len(labels) + 2          # + نسبة الخصم + زر الإضافة
         for c in range(n_cols):
             fields_row.grid_columnconfigure(c, weight=1, uniform="sale_fields")
@@ -13228,8 +13600,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         _row_holder = ctk.CTkFrame(fields_row, fg_color="transparent")
         self.sale_row_number = ctk.CTkEntry(_row_holder, width=1)
         (self.sale_set_number, self.sale_gold, self.sale_gems, self.sale_stones,
-         self.sale_stones_discount, self.sale_khayas, self.sale_khayas_polish,
-         self.sale_khayas_assembler, self.sale_diamond) = [add_field(i, t) for i, t in enumerate(labels)]
+         self.sale_diamond, self.sale_stones_discount, self.sale_khayas, self.sale_khayas_polish,
+         self.sale_khayas_assembler) = [add_field(i, t) for i, t in enumerate(labels)]
 
         # خياس المركب يُجلب تلقائياً من مراحل التصنيع بمجرد كتابة رقم التشغيل
         self.sale_set_number.bind("<KeyRelease>", self.autofill_assembler_khayas, add="+")
@@ -13252,6 +13624,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                                    command=lambda choice: self.on_discount_pct_change())
         self.sale_discount_pct.set(f"{self.get_last_discount_percentage()}%")
         self.sale_discount_pct.pack(side="right", fill="x", expand=True)
+        # النسبة المكتوبة يدوياً تُحفظ أيضاً (لا المختارة من القائمة فقط)، فتعود
+        # كما هي في الفاتورة التالية وعند فتح البرنامج
+        self.sale_discount_pct.bind("<KeyRelease>", lambda e: self.remember_discount_pct())
+        self.sale_discount_pct.bind("<FocusOut>", lambda e: self.remember_discount_pct())
         btn_add_pct = ctk.CTkButton(pct_row, text="➕", font=("Cairo", 13, "bold"), width=30, height=34,
                                     fg_color="#1e8449", hover_color="#145a32",
                                     command=self.open_add_discount_pct_dialog)
@@ -13306,8 +13682,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # التنقل بزر Enter بين الخانات، وإضافة السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة)
         nav_fields = [self.sale_name, self.sale_set_number, self.sale_gold, self.sale_gems,
-                      self.sale_stones, self.sale_stones_discount, self.sale_khayas, self.sale_khayas_polish,
-                      self.sale_khayas_assembler, self.sale_diamond]
+                      self.sale_stones, self.sale_diamond, self.sale_stones_discount, self.sale_khayas,
+                      self.sale_khayas_polish, self.sale_khayas_assembler]
         for i, f in enumerate(nav_fields[:-1]):
             f.bind("<Return>", lambda e, nxt=nav_fields[i + 1]: nxt.focus_set() or "break")
         nav_fields[-1].bind("<Return>", lambda e: self.stage_sale_row() or "break")
@@ -13943,6 +14319,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_save_inv.pack(pady=10)
         self.apply_edit_lock_to_button(btn_save_inv, win)
 
+    def remember_discount_pct(self):
+        """يحفظ النسبة الظاهرة في خانة نسبة الخصم إن كانت رقماً صحيحاً (مكتوبة أو مختارة)"""
+        if not hasattr(self, "sale_discount_pct"):
+            return
+        text = self.sale_discount_pct.get().strip().replace("%", "").strip()
+        try:
+            value = float(text)
+        except ValueError:
+            return
+        if not (0 <= value <= 100):
+            return
+        text = f"{value:g}"
+        if text != str(self.get_last_discount_percentage()):
+            self.set_last_discount_percentage(text)
+        if hasattr(self, '_auto_compute_stones_discount'):
+            self._auto_compute_stones_discount()
+
     def on_discount_pct_change(self):
         """عند تغيير نسبة الخصم المختارة: يُعاد حساب الأحجار بعد الخصم فوراً، وتُحفظ النسبة كآخر نسبة مستخدمة"""
         pct_text = self.sale_discount_pct.get().strip().replace("%", "")
@@ -14148,6 +14541,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def stage_sale_row(self):
         """إضافة سطر إلى الفاتورة الحالية (تجهيز فقط، بدون ترحيل فعلي بعد)"""
+        self.remember_discount_pct()        # النسبة المستخدمة في السطر هي «آخر نسبة»
         name = self.sale_name.get().strip()
         if not name or name not in self.get_supplier_name_values_no_mustarja():
             messagebox.showwarning("تنبيه", "لا يمكن إضافة سطر إلا بعد اختيار اسم من الموردين المسجلين.")
@@ -14227,8 +14621,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # ثم (بوليش) ثم (مركب) — بدل تكرار كلمة خياس في ثلاثة عناوين.
         # لا عمود «الصافي» هنا: يُحسب عند الترحيل ويظهر في شاشة ربح/خسارة الطقم.
         act = self.SALE_ACTION_COL
-        cols = (act, "رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم",
-                "الماس", "خياس التلميع", "بوليش", "مركب", "الوزن القائم", "الوزن المقيد")
+        cols = (act, "رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الماس",
+                "الأحجار بعد الخصم", "خياس التلميع", "بوليش", "مركب", "الوزن القائم", "الوزن المقيد")
         self.pending_sales_tree, _t, reused = self.reuse_or_create_tree(
             self.pending_sales_table_frame, cols, height=16)
         tree = self.pending_sales_tree
@@ -14268,8 +14662,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.SALE_ACTION_TEXT,
                 row.get("row_number", "") or "-",
                 row.get("set_number", "") or "-",
-                cell(row, "ذهب"), cell(row, "فصوص"), cell(row, "أحجار"), cell(row, "أحجار بعد الخصم"),
-                cell(row, "الماس"), cell(row, "خياس"), cell(row, "خياس البوليش"), cell(row, "خياس المركب"),
+                cell(row, "ذهب"), cell(row, "فصوص"), cell(row, "أحجار"), cell(row, "الماس"),
+                cell(row, "أحجار بعد الخصم"), cell(row, "خياس"), cell(row, "خياس البوليش"), cell(row, "خياس المركب"),
                 f"{standing:.2f}" if standing else "-",
                 f"{bound:.2f}" if bound else "-",
             ))
@@ -14277,7 +14671,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if self.pending_sale_rows:
             tree.insert("", "end", iid="total", values=(
                 "", "إجمالي الفاتورة", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
-                f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['الماس']:.2f}", f"{tot['خياس']:.2f}",
+                f"{tot['الماس']:.2f}", f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['خياس']:.2f}",
                 f"{tot['خياس البوليش']:.2f}", f"{tot['خياس المركب']:.2f}",
                 f"{tot['القائم']:.2f}", f"{tot['المقيد']:.2f}"), tags=("total_tag",))
 
@@ -14371,9 +14765,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # خانات نافذة التعديل بترتيب خانات الإدخال نفسها (من اليمين)
     SALE_EDIT_FIELDS = (("رقم التشغيل", "set_number"), ("الذهب", "ذهب"), ("الفصوص", "فصوص"),
-                        ("الأحجار", "أحجار"), ("الأحجار بعد الخصم", "أحجار بعد الخصم"),
+                        ("الأحجار", "أحجار"), ("الماس", "الماس"), ("الأحجار بعد الخصم", "أحجار بعد الخصم"),
                         ("خياس التلميع النهائي", "خياس"), ("خياس البوليش", "خياس البوليش"),
-                        ("خياس المركب", "خياس المركب"), ("الماس", "الماس"))
+                        ("خياس المركب", "خياس المركب"))
 
     def edit_pending_sale_row(self):
         """تعديل كل خانات سطر من الفاتورة الحالية في نافذة أفقية (مثل صف الإدخال نفسه).
@@ -15410,9 +15804,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             widget.destroy()
         self.losses_card_widgets = {}
 
-        box_defs = [("الكاستنج", "🏗️"), ("المصنعين", "👨‍🏭"), ("المركبين", "🔧"), ("التلميع", "✨"), ("التلميع/البف", "🪄"), ("خياس الطقوم", "💍")]
-        for stage_name in self.categories.get("أقسام_خياس_إضافية", []):
-            box_defs.append((stage_name, "➕"))
+        icons = {"الكاستنج": "🏗️", "المصنعين": "👨‍🏭", "المركبين": "🔧", "التلميع": "✨",
+                 "التلميع/البف": "🪄", "خياس الطقوم": "💍"}
+        box_defs = [(cat, icons.get(cat, "➕")) for cat in self.get_khayas_box_categories()]
 
         n_cols = 3
         for c in range(n_cols):
@@ -15429,22 +15823,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
                          text_color=(UI["gold_dark"], "#F1D27A")).pack(pady=(12, 8))
 
-            # رقمان جنباً إلى جنب: الحالي (أحمر) والمُقفل (أخضر)
+            # أربعة أقسام لكل صندوق: الخياس الحالي، الفاقد (كل الفترات)، المسترجع، الصافي
             stats = ctk.CTkFrame(card, fg_color="transparent")
-            stats.pack(fill="x", padx=14)
+            stats.pack(fill="x", padx=12)
             stats.grid_columnconfigure((0, 1), weight=1, uniform="stat")
 
-            def stat(col, title, fg, soft):
+            def stat(row, col, title, fg, soft):
                 box = ctk.CTkFrame(stats, corner_radius=10, fg_color=soft)
-                box.grid(row=0, column=col, padx=5, sticky="nsew")
-                ctk.CTkLabel(box, text=title, font=("Cairo", 12, "bold"),
-                             text_color=(UI["muted"], "#9AA3AF")).pack(pady=(8, 0))
-                val = ctk.CTkLabel(box, text="0.00", font=("Cairo", 22, "bold"), text_color=fg)
-                val.pack(pady=(0, 8))
+                box.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+                ctk.CTkLabel(box, text=title, font=("Cairo", 12, "bold"), wraplength=170,
+                             text_color=(UI["muted"], "#9AA3AF")).pack(pady=(6, 0), padx=4)
+                val = ctk.CTkLabel(box, text="0.00", font=("Cairo", 19, "bold"), text_color=fg)
+                val.pack(pady=(0, 6))
                 return val
 
-            lbl_current = stat(1, "الخياس الحالي", (UI["danger"], "#F08A8F"), (UI["danger_soft"], "#2A1A1C"))
-            lbl_closed = stat(0, "إجمالي المُقفل", (UI["success"], "#7EE2B0"), (UI["success_soft"], "#15291F"))
+            # من اليمين: العمود ١ ثم العمود ٠
+            lbl_current = stat(0, 1, "الخياس الحالي", (UI["danger"], "#F08A8F"), (UI["danger_soft"], "#2A1A1C"))
+            lbl_loss = stat(0, 0, f"فاقد {display_name}", (UI["gold_dark"], "#F1D27A"), (UI["gold_soft"], "#2E2710"))
+            lbl_recovered = stat(1, 1, f"مسترجع {display_name}", (UI["primary"], "#9CC0F5"), (UI["primary_soft"], "#1B2B45"))
+            lbl_net = stat(1, 0, "الصافي (الفاقد − المسترجع)", (UI["success"], "#7EE2B0"), (UI["success_soft"], "#15291F"))
+            ctk.CTkLabel(card, text="الفاقد والمسترجع والصافي: كل الفترات", font=("Cairo", 11),
+                         text_color=(UI["muted"], "#9AA3AF")).pack(pady=(2, 0))
 
             btns_row = ctk.CTkFrame(card, fg_color="transparent")
             btns_row.pack(pady=(10, 14))
@@ -15454,7 +15853,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ctk.CTkButton(btns_row, text="📋 كشف حساب", font=("Cairo", 13, "bold"), fg_color=UI["primary"],
                           hover_color=UI["primary_hover"], width=120, height=36,
                           command=lambda c=cat: self.open_box_statement(c)).pack(side="right", padx=4)
-            self.losses_card_widgets[cat] = {"current": lbl_current, "closed": lbl_closed}
+            self.losses_card_widgets[cat] = {"current": lbl_current, "loss": lbl_loss,
+                                             "recovered": lbl_recovered, "net": lbl_net}
 
     def get_unclosed_periods(self, cat):
         """الفترات **المنتهية** التي ما زال فيها خياس غير مُقفل لهذا القسم.
@@ -15523,11 +15923,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 pass
 
         for cat, widgets in self.losses_card_widgets.items():
-            current = self.get_current_unclosed_khayas(cat, month=month)
-            closed = self.get_box_closed_total(cat, month=month)
-            # العنوان داخل البطاقة، والرقم وحده هنا (التفصيل في كشف حساب الصندوق)
-            widgets["current"].configure(text=f"{current:.2f}")
-            widgets["closed"].configure(text=f"{closed:.2f}")
+            summary = self.get_box_loss_summary(cat, month=month)
+            # العنوان داخل كل قسم، والرقم وحده هنا (التفصيل في كشف حساب الصندوق)
+            for key in ("current", "loss", "recovered", "net"):
+                widgets[key].configure(text=f"{summary[key]:.2f}")
 
     def _post_closing_entry(self, box_account_name, amount, bayan, full_dt, period=None):
         """يسجّل قيد إقفال مزدوجاً (مدين الخسائر / دائن الصندوق أو العكس).
@@ -15571,7 +15970,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cat, target_month=month)
         net_before_pos = round(faqid_k - marja_k, 2)
         already_closed = self.get_box_closed_total(cat, month=month)
-        remaining = round(total_k - already_closed, 2)
+        recovered = self.get_box_recovered_total(cat, month=month)
+        remaining = round(total_k - already_closed - recovered, 2)
 
         if abs(remaining) < 0.005:
             messagebox.showinfo("لا يوجد خياس",
@@ -15585,7 +15985,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 f"• المرجع ٧٥٠: −{en(marja_k)} جم\n"
                 f"• الخياس الموجب: −{en(pos_k)} جم\n"
                 f"• الإجمالي: {en(total_k)} جم\n"
-                f"• سبق إقفاله: {en(already_closed)} جم\n"
+                + (f"• المسترجع: −{en(recovered)} جم\n" if abs(recovered) >= 0.005 else "")
+                + f"• سبق إقفاله: {en(already_closed)} جم\n"
                 f"• المتبقّي للإقفال الآن: {en(remaining)} جم\n\n"
                 "سيُرحَّل المتبقّي لحساب الخسائر بقيدين منفصلين. هل تريد المتابعة؟"):
             return
@@ -15718,14 +16119,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         txt(c, PW / 2, y, f"تاريخ الطباعة: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", size=10, align="center")
         y -= 8 * mm
 
-        box_defs = [("الكاستنج", "الكاستنج"), ("المصنعين", "المصنعين"), ("المركبين", "المركبين"),
-                    ("التلميع", self.get_display_label("التلميع")), ("التلميع/البف", self.get_display_label("التلميع/البف"))]
-        for stage_name in self.categories.get("أقسام_خياس_إضافية", []):
-            box_defs.append((stage_name, stage_name))
+        box_defs = [(cat, self.get_display_label(cat)) for cat in self.get_khayas_box_categories()]
 
         n_cols = 3
         card_w = (PW - 2 * M - 2 * 6 * mm) / n_cols
-        card_h = 32 * mm
+        card_h = 40 * mm         # العنوان + الأقسام الأربعة
         gap = 6 * mm
 
         for i, (cat, disp) in enumerate(box_defs):
@@ -15735,10 +16133,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             c.setStrokeColor(border_color)
             c.rect(cx0, cy0 - card_h, card_w, card_h, fill=0, stroke=1)
             txt(c, cx0 + card_w / 2, cy0 - 8 * mm, f"صندوق خياس {disp}", size=12, bold=True, align="center", color=border_color)
-            current = self.get_current_unclosed_khayas(cat)
-            closed = self.get_box_closed_total(cat)
-            txt(c, cx0 + card_w / 2, cy0 - 16 * mm, f"الخياس الحالي: {current:.2f}", size=10, bold=True, align="center")
-            txt(c, cx0 + card_w / 2, cy0 - 24 * mm, f"إجمالي المُقفل: {closed:.2f}", size=13, bold=True, align="center")
+            sm = self.get_box_loss_summary(cat)
+            for k, (label, key) in enumerate((("الخياس الحالي", "current"), (f"فاقد {disp}", "loss"),
+                                              (f"مسترجع {disp}", "recovered"), ("الصافي", "net"))):
+                txt(c, cx0 + card_w / 2, cy0 - (15 + 6 * k) * mm, f"{label}: {sm[key]:.2f}",
+                    size=10, bold=(key == "net"), align="center")
 
         c.showPage()
         c.save()
@@ -16023,6 +16422,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         g_losses = add_group("📉 حساب الخسائر")
         add_leaf(g_losses, "حساب الخسائر")
 
+        # رصيد افتتاحي: طرف القيود اليومية لربط أي حساب برصيده الافتتاحي
+        g_opening = add_group("🔢 رصيد افتتاحي")
+        add_leaf(g_opening, self.OPENING_ACCOUNT)
+
         # المبيعات
         g_sales = add_group("🧾 المبيعات")
         add_leaf(g_sales, "المبيعات")
@@ -16049,7 +16452,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for cat in self.get_all_stage_categories() + ["المصنعين", "المركبين"]:
             known_names.add(self.get_box_account_name(cat))
         known_names |= {"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار",
-                         "حساب الخسائر", "المبيعات"} | set(self.get_all_mustarja_names())
+                         "حساب الخسائر", "المبيعات", self.OPENING_ACCOUNT} | set(self.get_all_mustarja_names())
         known_names |= set(self.categories.get("الموردين", []))
         known_names |= set(manual_accounts)
 
@@ -16929,11 +17332,16 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         self._last = self._t0
         self._trans_t0 = None
 
-        self.W = max(self.winfo_screenwidth(), 800)
-        self.H = max(self.winfo_screenheight(), 600)
+        # المشهد بحجم الشاشة الفعلي مهما صغرت (كان حدّه الأدنى ٦٠٠ بكسل ارتفاعاً،
+        # فيقع زر «دخول» تحت حافة الشاشات القصيرة)
+        self.W = max(self.winfo_screenwidth(), 320)
+        self.H = max(self.winfo_screenheight(), 240)
+        apply_screen_fit(self)
         self._go_fullscreen()
         try:
-            self.S = float(ctk.ScalingTracker.get_window_scaling(self))
+            # مقياس عناصر الواجهة نفسه (تكبير العرض × تصغير الشاشات الصغيرة)،
+            # فتتطابق الرسوم مع الحقول والأزرار
+            self.S = float(ctk.ScalingTracker.get_widget_scaling(self))
         except Exception:
             self.S = 1.0
 
@@ -17874,16 +18282,13 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
 
     def __init__(self, restricted=False):
         super().__init__()
+        apply_screen_fit(self)
         self.restricted = restricted
         self.title("لوحة تحكم المدير المساعد - انتحال شخصية العملاء" if restricted else "لوحة تحكم المدير - إدارة حسابات العملاء")
         apply_app_icon(self)
-        # حجم عادي يتسع له أي شاشة (بالبكسل الفعلي، فلا يضربه تكبير العرض)،
-        # ثم تكبير لملء الشاشة — يُعاد بعد الظهور الفعلي (keep_maximized_after_show)
-        try:
-            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-            tk.Tk.wm_geometry(self, f"{min(1300, int(sw * 0.9))}x{min(820, int(sh * 0.85))}")
-        except Exception:
-            pass
+        # الحجم «العادي» = الشاشة كاملة (بالبكسل الفعلي، فلا يضربه تكبير العرض)،
+        # ثم تكبير — يُعاد بعد الظهور الفعلي (keep_maximized_after_show)
+        fill_work_area(self)
         maximize_window(self)
         keep_maximized_after_show(self)
 

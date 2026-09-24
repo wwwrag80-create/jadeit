@@ -5,7 +5,7 @@ import ast, io, textwrap
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
 
-WANT = ["invoices_by_name", "invoices_by_period", "period_invoices", "get_stage_config", "get_box_account_name", "get_all_stage_categories",
+WANT = ["get_box_recovery_name", "get_box_recovered_total", "invoices_by_name", "invoices_by_period", "period_invoices", "get_stage_config", "get_box_account_name", "get_all_stage_categories",
         "get_display_label", "get_box_khayas_cumulative", "count_box_transactions",
         "get_deletable_khayas_boxes", "get_all_mustarja_names"]
 chunks = []
@@ -18,7 +18,7 @@ for m in cls.body:
 assert len(chunks) == len(WANT), len(chunks)
 
 ns = {}
-exec("class S:\n    BOX_DISPLAY_OVERRIDES = {}\n    @staticmethod\n    def inv_period(inv):\n        p = (inv.get(\"period\") or \"\").strip()\n        return p if p else str(inv.get(\"التاريخ\", \"\"))[:7]\n    @classmethod\n    def inv_in_period(cls, inv, month):\n        return True if not month else cls.inv_period(inv) == month\n" + "\n".join(textwrap.indent(c, "    ") for c in chunks), ns)
+exec("class S:\n    BOX_DISPLAY_OVERRIDES = {}\n    RECOVERY_IN_TYPES = (\"وارد ذهب (عيار 18)\", \"وارد فصوص وأحجار\", \"وارد الماس\")\n    @staticmethod\n    def inv_period(inv):\n        p = (inv.get(\"period\") or \"\").strip()\n        return p if p else str(inv.get(\"التاريخ\", \"\"))[:7]\n    @classmethod\n    def inv_in_period(cls, inv, month):\n        return True if not month else cls.inv_period(inv) == month\n" + "\n".join(textwrap.indent(c, "    ") for c in chunks), ns)
 app = ns["S"]()
 app.current_display_month = "2026-08"
 app.categories = {"أقسام_خياس_إضافية": ["الصب", "ورشة الحفر"]}

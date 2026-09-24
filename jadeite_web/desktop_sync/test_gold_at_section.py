@@ -5,7 +5,7 @@ import ast, io, textwrap
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
 
-WANT = ["invoices_by_name", "invoices_by_period", "period_invoices", "calculate_single_ledger", "get_section_excess_loss", "get_gold_at_section",
+WANT = ["get_box_recovery_name", "get_box_recovered_total", "invoices_by_name", "invoices_by_period", "period_invoices", "calculate_single_ledger", "get_section_excess_loss", "get_gold_at_section",
         "get_current_unclosed_khayas", "get_actual_section_khayas", "get_section_khayas_split", "get_box_closed_total",
         "get_box_khayas_cumulative", "get_sales_ops_khayas_total", "get_sale_invoice_groups", "get_stage_config", "get_box_account_name",
         "get_all_stage_categories", "get_display_label"]
@@ -23,7 +23,7 @@ ns = {"ALLOWANCE_8": 0.008, "ALLOWANCE_4": 0.004,
       "KHAYAS_MARK_NET": 9.0, "KHAYAS_MARK_POLISH": 7.0,
       "KHAYAS_MARK_ASSEMBLER": 5.0, "KHAYAS_MARK_FINAL": 0.0,
       "log_cloud_error": lambda *a, **k: None}
-exec("class S:\n    BOX_DISPLAY_OVERRIDES = {}\n    SALE_TYPES = (\"مبيعات ذهب\", \"مبيعات ذهب مع الماس\", \"مبيعات فصوص وأحجار\", \"مبيعات الماس\")\n    @staticmethod\n    def inv_period(inv):\n        p = (inv.get(\"period\") or \"\").strip()\n        return p if p else str(inv.get(\"التاريخ\", \"\"))[:7]\n    @classmethod\n    def inv_in_period(cls, inv, month):\n        return True if not month else cls.inv_period(inv) == month\n" + "\n".join(textwrap.indent(c, "    ") for c in chunks), ns)
+exec("class S:\n    BOX_DISPLAY_OVERRIDES = {}\n    RECOVERY_IN_TYPES = (\"وارد ذهب (عيار 18)\", \"وارد فصوص وأحجار\", \"وارد الماس\")\n    SALE_TYPES = (\"مبيعات ذهب\", \"مبيعات ذهب مع الماس\", \"مبيعات فصوص وأحجار\", \"مبيعات الماس\")\n    @staticmethod\n    def inv_period(inv):\n        p = (inv.get(\"period\") or \"\").strip()\n        return p if p else str(inv.get(\"التاريخ\", \"\"))[:7]\n    @classmethod\n    def inv_in_period(cls, inv, month):\n        return True if not month else cls.inv_period(inv) == month\n" + "\n".join(textwrap.indent(c, "    ") for c in chunks), ns)
 app = ns["S"]()
 app.current_display_month = "2026-08"
 app.categories = {"المصنعين": ["أحمد"], "المركبين": ["سالم"], "أقسام_خياس_إضافية": []}

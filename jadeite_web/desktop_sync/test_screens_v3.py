@@ -175,8 +175,8 @@ r = R(); r.pending_sale_rows = [{}, {}, {}]
 assert r._pending_row_index("row2") == 2 and r._pending_row_index("total") is None and r._pending_row_index("row9") is None
 print("✔ الحذف والتعديل يصيبان السطر الصحيح حتى مع العرض التنازلي، والحذف بتأكيد")
 fields = [k for _l, k in ast.literal_eval(class_attr_src("SALE_EDIT_FIELDS").split("=", 1)[1].strip())]
-assert fields == ["set_number", "ذهب", "فصوص", "أحجار", "أحجار بعد الخصم", "خياس", "خياس البوليش",
-                  "خياس المركب", "الماس"], fields
+assert fields == ["set_number", "ذهب", "فصوص", "أحجار", "الماس", "أحجار بعد الخصم", "خياس",
+                  "خياس البوليش", "خياس المركب"], fields
 assert "new_row = dict(row)" in seg("edit_pending_sale_row")
 print("✔ نافذة التعديل الأفقية تعرض كل خانات الصف وتحفظها كلها (كانت تُسقط البوليش والمركب)")
 

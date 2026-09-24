@@ -112,6 +112,10 @@ class FakeCtk:
         def get_window_scaling(cls, _w):
             return cls.scale
 
+        @classmethod
+        def get_widget_scaling(cls, _w):
+            return cls.scale
+
 
 ns["ctk"] = FakeCtk
 ns["time"] = time

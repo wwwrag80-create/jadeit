@@ -23,6 +23,7 @@ exec("class S:\n"
      + textwrap.indent(textwrap.dedent(seg("get_unclosed_periods")), "    ") + "\n"
      "    def get_box_account_name(self, cat): return f'صندوق خياس {cat}'\n"
      "    def get_box_khayas_cumulative(self, cat, month=None): return 0.0\n"
+     "    def get_box_recovered_total(self, cat, month=None): return 0.0\n"
      "    def get_actual_section_khayas(self, cat, target_month=None, include_settled=False):\n"
      "        return self._live.get((cat, target_month), 0.0)\n"
      "    def get_recorded_periods(self): return ['2026-10', '2026-09', '2026-08']\n", ns)

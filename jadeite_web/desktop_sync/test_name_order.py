@@ -61,7 +61,9 @@ print("✔ الترحيل في تلك الأقسام ينظّف الاسم قب�
 
 # ═══ الإكمال التلقائي ═══
 auto = seg("bind_name_autocomplete")
-assert "self.clean_name(combobox.get())" in auto and "self.clean_name(n)" in auto
+rank = seg("rank_name_matches")
+assert "self.clean_name(combobox.get())" in auto and "self.rank_name_matches(" in auto
+assert "self.clean_name(typed)" in rank and "self.clean_name(n)" in rank
 print("✔ البحث في القائمة يقارن الأسماء بعد تنظيفها (لا تختفي الخيارات)")
 
 # محاكاة فعلية للإكمال التلقائي
