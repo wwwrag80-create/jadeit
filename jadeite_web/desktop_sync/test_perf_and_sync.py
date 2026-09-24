@@ -48,8 +48,8 @@ assert 'Image.open(pure).convert("RGBA")' in hb
 print("✔ الشعار يُقرأ بوضع RGBA — لا خلفية سوداء")
 assert "min(420, int(avail * 0.26))" in hb
 print("✔ وحجمه صغير مريح (٢٤٠–٤٢٠ بكسل)")
-assert "int(v * 0.38)" in hb
-print("✔ ويُعرض خافتاً (٣٨٪ من شدّته) فلا يُجهد العين")
+assert 'tint_logo(base_logo, "#173F7E", "#4F86D6", opacity=0.9)' in hb
+print("✔ ويُعرض بالأزرق على الأبيض (بطلب العميل) متناسقاً مع الشريط الجانبي، بشفافية خفيفة")
 
 from PIL import Image
 im = Image.open("jadeite_logo.png")

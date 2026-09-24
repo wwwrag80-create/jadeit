@@ -58,6 +58,7 @@ CHECKS = [
     ("الأداء والمزامنة",     [PY, "test_perf_and_sync.py"]),
     ("بلا اهتزاز",          [PY, "test_no_flicker.py"]),
     ("شاشة الترحيب والدخول", [PY, "test_login_screen.py", TARGET]),
+    ("الواجهات والمحاسبة ٣",  [PY, "test_screens_v3.py", TARGET]),
 ]
 
 failed = []
