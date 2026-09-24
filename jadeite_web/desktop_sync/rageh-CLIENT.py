@@ -315,6 +315,94 @@ def screen_work_area(widget):
     return 0, 0, widget.winfo_screenwidth(), max(400, widget.winfo_screenheight() - 48)
 
 
+def fill_work_area(win):
+    """بديل أخير: حجم النافذة = مساحة العمل (الشاشة بلا شريط المهام) بالبكسل الفعلي.
+
+    wm_geometry مباشرة لا geometry: customtkinter يضرب أبعاد geometry في
+    تكبير العرض، فكان البديل القديم يُخرج النافذة عن الشاشة بتكبير ١٢٥٪.
+    """
+    try:
+        x, y, w, h = screen_work_area(win)
+        tk.Tk.wm_geometry(win, f"{w}x{h}+{x}+{y}")
+    except Exception:
+        pass
+
+
+def maximize_window(win):
+    """يكبّر النافذة لملء الشاشة المتاحة على أي جهاز وأي دقة وأي تكبير للعرض.
+
+    يُطلب التكبير في كل نداء ولا نكتفي بسؤال النافذة عن حالتها: ويندوز قد
+    يسجّلها «مكبّرة» وهي لم تُكبَّر فعلاً إن طُلب التكبير قبل ظهورها.
+    """
+    try:
+        win.state("zoomed")
+        return
+    except Exception:
+        pass
+    try:
+        win.attributes("-zoomed", True)
+        return
+    except Exception:
+        pass
+    fill_work_area(win)
+
+
+def ensure_fills_screen(win):
+    """بعد الظهور: إن لم تملأ النافذة الشاشة فعلاً تُكبَّر من جديد، وإلا تُضبط
+    على مساحة العمل مباشرة — فتظهر كاملة على أي جهاز"""
+    try:
+        if win.state() in ("iconic", "withdrawn"):
+            return          # مصغّرة في شريط المهام: لا تُكبَّر رغماً عن المستخدم
+        x, y, w, h = screen_work_area(win)
+        if win.winfo_width() >= w * 0.9 and win.winfo_height() >= h * 0.85:
+            return
+        # ويندوز قد يعدّها «مكبّرة» وهي بحجمها الصغير، فيُتجاهل طلب تكبيرها
+        # من جديد: تُعاد لحالتها العادية أولاً ثم تُكبَّر
+        try:
+            if win.state() == "zoomed":
+                win.state("normal")
+        except Exception:
+            pass
+        maximize_window(win)
+        win.update_idletasks()
+        if win.winfo_width() < w * 0.9 or win.winfo_height() < h * 0.85:
+            fill_work_area(win)
+    except Exception:
+        pass
+
+
+def keep_maximized_after_show(win):
+    """يعيد التكبير بعد أن تُظهر customtkinter النافذة فعلاً.
+
+    المكتبة على ويندوز تُخفي النافذة عند إنشائها ثم تُظهرها عند mainloop بأمر
+    «الحجم العادي» — فتفقد النافذة التي كُبّرت أثناء بنائها تكبيرها وتظهر
+    بحجمها الصغير على بعض الأجهزة. التكبير يُعاد بعد الظهور، ثم يُتحقَّق منه.
+    """
+    win._opened_at = time.monotonic()
+    for ms in (60, 350):
+        win.after(ms, lambda: maximize_window(win))
+    win.after(1100, lambda: ensure_fills_screen(win))
+
+
+class StableWindowMixin:
+    """يمنع customtkinter من تصغير النافذة عند اكتشاف تكبير عرض مختلف.
+
+    إن اكتُشف تكبير للشاشة بعد ظهور النافذة (جهاز بشاشتين بتكبيرين مختلفين،
+    أو تغيير التكبير من إعدادات ويندوز) كانت المكتبة تفرض على النافذة حجمها
+    الابتدائي ٦٠٠×٥٠٠ وتثبّته حداً أدنى وأعلى — فتنكمش شاشة الدخول والنظام
+    المكبّر. هنا تُحدَّث مقاييس العناصر كما هي، ويبقى حجم النافذة كما هو،
+    ثم تُصحَّح النافذة بدالة _after_scaling_change الخاصة بها.
+    """
+    def _set_scaling(self, new_widget_scaling, new_window_scaling):
+        super(ctk.CTk, self)._set_scaling(new_widget_scaling, new_window_scaling)
+        hook = getattr(self, "_after_scaling_change", None)
+        if hook is not None:
+            try:
+                self.after(150, hook)
+            except Exception:
+                pass
+
+
 def tint_logo(img, dark, light, opacity=1.0):
     """يعيد تلوين الشعار بتدرّج لونين مع حفظ شفافيته وتفاصيل إضاءته.
 
@@ -2706,13 +2794,14 @@ class ScreenRouter(ctk.CTkFrame):
             self.go_home_callback()
 
 
-class GoldSystemApp(ctk.CTk):
+class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def __init__(self, client_id=None, client_name=None, supabase_client=None, is_admin_session=False, initial_can_edit=False, intro=None):
         super().__init__()
         # intro: قادم من شاشة الدخول — يُبنى النظام مخفياً تماماً خلف آخر إطار منها،
         # ثم يظهر فوقه بالإطار نفسه وتنحسر الأمواج عن الرئيسية (_intro_show)
         self._intro = intro
         self._intro_cv = None
+        self._opened_at = time.monotonic()
         if intro:
             try:
                 self.withdraw()
@@ -2840,7 +2929,12 @@ class GoldSystemApp(ctk.CTk):
         except Exception:
             pass
         self.force_maximize()
-        self.update_idletasks()
+        try:
+            # يثبّت ظهور النافذة الآن: وإلا تخفيها customtkinter عند mainloop ثم
+            # تعيدها بحجمها العادي (وميض، ونافذة غير مكبّرة على بعض الأجهزة)
+            self.update()
+        except Exception:
+            pass
         self.after(30, self._startup_first_calc)
         # إعادة التكبير بعد ظهور النافذة فعلياً: النداء قبل الظهور يُتجاهل
         # أحياناً على ويندوز فتبقى النافذة بحجمها الصغير
@@ -2849,58 +2943,22 @@ class GoldSystemApp(ctk.CTk):
         self.after(1100, self._ensure_fills_screen)
 
     def force_maximize(self):
-        """يكبّر النافذة لملء الشاشة المتاحة على أي جهاز وأي دقة وأي تكبير للعرض.
-
-        يُعاد التكبير في كل نداء ولا نكتفي بسؤال النافذة عن حالتها: ويندوز قد
-        يسجّلها «مكبّرة» وهي لم تُكبَّر فعلاً إن طُلب التكبير قبل ظهورها —
-        فكانت تبقى صغيرة على بعض الأجهزة. والتحقق النهائي في _ensure_fills_screen.
-        """
-        try:
-            self.state("zoomed")
-            return
-        except Exception:
-            pass
-        try:
-            self.attributes("-zoomed", True)
-            return
-        except Exception:
-            pass
-        self._fill_work_area()
-
-    def _fill_work_area(self):
-        """بديل أخير: حجم النافذة = مساحة العمل (الشاشة بلا شريط المهام) بالبكسل الفعلي.
-
-        wm_geometry مباشرة لا geometry: customtkinter يضرب أبعاد geometry في
-        تكبير العرض، فكان البديل القديم يُخرج النافذة عن الشاشة بتكبير ١٢٥٪.
-        """
-        try:
-            x, y, w, h = screen_work_area(self)
-            tk.Tk.wm_geometry(self, f"{w}x{h}+{x}+{y}")
-        except Exception:
-            pass
+        """يكبّر النظام لملء الشاشة (maximize_window) — والتحقق النهائي في _ensure_fills_screen"""
+        maximize_window(self)
 
     def _ensure_fills_screen(self):
-        """بعد ظهور النظام: إن لم تملأ النافذة الشاشة فعلاً (مدير نوافذ تجاهل التكبير)
-        تُضبط على مساحة العمل مباشرة — فيظهر النظام كاملاً على أي جهاز"""
+        """بعد ظهور النظام: إن لم يملأ الشاشة فعلاً يُكبَّر من جديد (ensure_fills_screen)"""
+        ensure_fills_screen(self)
+
+    def _after_scaling_change(self):
+        """اكتُشف تكبير عرض مختلف: الحد الأدنى يُعاد حسابه على المقياس الجديد،
+        وفي الثواني الأولى من الفتح يُتحقَّق أن النظام ما زال يملأ الشاشة"""
         try:
-            if self.state() in ("iconic", "withdrawn"):
-                return
-            x, y, w, h = screen_work_area(self)
-            if self.winfo_width() >= w * 0.9 and self.winfo_height() >= h * 0.85:
-                return
-            # ويندوز قد يعدّها «مكبّرة» وهي بحجمها الصغير، فيُتجاهل طلب تكبيرها
-            # من جديد: تُعاد لحالتها العادية أولاً ثم تُكبَّر
-            try:
-                if self.state() == "zoomed":
-                    self.state("normal")
-            except Exception:
-                pass
-            self.force_maximize()
-            self.update_idletasks()
-            if self.winfo_width() < w * 0.9 or self.winfo_height() < h * 0.85:
-                self._fill_work_area()
+            self.safe_minsize(*getattr(self, "_min_request", (1100, 620)))
         except Exception:
             pass
+        if time.monotonic() - getattr(self, "_opened_at", 0.0) < 15:
+            self._ensure_fills_screen()
 
     def _startup_first_calc(self):
         """أول حساب شامل بعد ظهور النافذة، مع مؤشّر انتظار واضح"""
@@ -5851,6 +5909,7 @@ class GoldSystemApp(ctk.CTk):
         شاشة ١٣٦٦×٧٦٨ بتكبير ١٢٥٪ تصير ١٣٧٥×٧٧٥ بكسلاً — أكبر من الشاشة، فكان
         جزء من النافذة يخرج عنها ولا يظهر النظام كاملاً على هذه الأجهزة.
         """
+        self._min_request = (width, height)     # يُعاد حسابه إن تغيّر تكبير العرض لاحقاً
         try:
             scale = float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
         except Exception:
@@ -16832,7 +16891,7 @@ class _CanvasLabel:
         return self.canvas.itemcget(self.item, "fill" if key == "text_color" else key)
 
 
-class LoginWindow(ctk.CTk):
+class LoginWindow(StableWindowMixin, ctk.CTk):
     """شاشة الدخول: ترحيب متحرك بملء الشاشة، ثم حقول الدخول على المشهد نفسه.
 
     كل المشهد على لوحة رسم واحدة: خلفية متدرّجة بلون الليل وهالة ذهبية خافتة،
@@ -16870,15 +16929,9 @@ class LoginWindow(ctk.CTk):
         self._last = self._t0
         self._trans_t0 = None
 
-        try:
-            # على الشاشة الرئيسية (التي يُقاس منها المشهد) ثم ملء الشاشة
-            tk.Tk.wm_geometry(self, "+0+0")
-            self.attributes("-fullscreen", True)
-        except Exception:
-            pass
-        self.update_idletasks()
         self.W = max(self.winfo_screenwidth(), 800)
         self.H = max(self.winfo_screenheight(), 600)
+        self._go_fullscreen()
         try:
             self.S = float(ctk.ScalingTracker.get_window_scaling(self))
         except Exception:
@@ -16913,6 +16966,43 @@ class LoginWindow(ctk.CTk):
             self.update()
         except Exception:
             pass
+        # بعض الأجهزة تُظهرها أصغر من الشاشة (شاشتان، أو تكبير عرض يُكتشف بعد الظهور):
+        # يُتحقَّق بعد الظهور ويُعاد ملء الشاشة
+        for ms in (120, 600, 1500):
+            self.after(ms, self._ensure_fullscreen)
+
+    def _go_fullscreen(self):
+        """على الشاشة الرئيسية (التي يُقاس منها المشهد) وبحجمها كاملاً، ثم ملء الشاشة.
+
+        الحجم والمكان يُضبطان أولاً بالبكسل الفعلي: فيملأ المشهدُ الشاشة حتى لو
+        تجاهل الجهاز أمر ملء الشاشة، ولا يُفتح على شاشة ثانية بمقاس آخر.
+        """
+        try:
+            tk.Tk.wm_geometry(self, f"{int(self.W)}x{int(self.H)}+0+0")
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            self.attributes("-fullscreen", True)
+        except Exception:
+            pass
+
+    def _ensure_fullscreen(self):
+        """شاشة الدخول ظهرت أصغر من الشاشة أو خارجها؟ تُعاد لملء الشاشة"""
+        if not self._alive:
+            return
+        try:
+            if self.state() in ("iconic", "withdrawn"):
+                return          # صغّرها المستخدم بزر (—)
+            if (self.winfo_width() >= self.W - 2 and self.winfo_height() >= self.H - 2
+                    and abs(self.winfo_rootx()) <= 2 and abs(self.winfo_rooty()) <= 2):
+                return
+            self.attributes("-fullscreen", False)
+        except Exception:
+            return
+        self._go_fullscreen()
+
+    _after_scaling_change = _ensure_fullscreen
 
     # ------------------------------------------------------------------ أدوات
     @staticmethod
@@ -17775,19 +17865,27 @@ class LoginWindow(ctk.CTk):
             self._shake()
 
 
-class AdminPanel(ctk.CTk):
+class AdminPanel(StableWindowMixin, ctk.CTk):
     """لوحة تحكم المدير: فتح حسابات جديدة للعملاء، وإمكانية الدخول لأي حساب عميل (انتحال شخصية).
     في الوضع المحدود (restricted=True، للمدير المساعد): انتحال شخصية العملاء فقط، بدون فتح حسابات جديدة أو التحكم بصلاحية التعديل."""
+    def _after_scaling_change(self):
+        if time.monotonic() - getattr(self, "_opened_at", 0.0) < 15:
+            ensure_fills_screen(self)
+
     def __init__(self, restricted=False):
         super().__init__()
         self.restricted = restricted
         self.title("لوحة تحكم المدير المساعد - انتحال شخصية العملاء" if restricted else "لوحة تحكم المدير - إدارة حسابات العملاء")
         apply_app_icon(self)
-        self.geometry("1000x650")
+        # حجم عادي يتسع له أي شاشة (بالبكسل الفعلي، فلا يضربه تكبير العرض)،
+        # ثم تكبير لملء الشاشة — يُعاد بعد الظهور الفعلي (keep_maximized_after_show)
         try:
-            self.state('zoomed')
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            tk.Tk.wm_geometry(self, f"{min(1300, int(sw * 0.9))}x{min(820, int(sh * 0.85))}")
         except Exception:
             pass
+        maximize_window(self)
+        keep_maximized_after_show(self)
 
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=20, pady=15)
@@ -18081,6 +18179,7 @@ class AdminPanel(ctk.CTk):
 
         CURRENT_SYNC_TOKEN = None
         self.deiconify()
+        maximize_window(self)       # الإظهار يعيدها لحجمها العادي على ويندوز
         self.refresh_clients()
 
 

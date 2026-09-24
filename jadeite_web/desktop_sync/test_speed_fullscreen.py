@@ -34,13 +34,13 @@ def method_src(name, cls=APP):
 
 def module_src(name):
     node = next(n for n in tree.body
-                if (isinstance(n, ast.FunctionDef) and n.name == name)
+                if (isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name == name)
                 or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) == name for t in n.targets)))
     return "\n".join(lines[node.lineno - 1:node.end_lineno])
 
 
-def build(methods, extra="", ns=None):
-    body = "\n".join(textwrap.indent(method_src(m), "    ") for m in methods)
+def build(methods, extra="", ns=None, cls=APP):
+    body = "\n".join(textwrap.indent(method_src(m, cls), "    ") for m in methods)
     ns = {} if ns is None else ns
     exec("class App:\n" + body + "\n" + textwrap.indent(extra, "    "), ns)
     return ns["App"]
@@ -114,9 +114,12 @@ class FakeCtk:
 
 
 ns["ctk"] = FakeCtk
+ns["time"] = time
 ns["tk"] = types.SimpleNamespace(Tk=types.SimpleNamespace(
     wm_geometry=lambda self, g: self.calls.append(("wm_geometry", g))))
-Win = build(["safe_minsize", "force_maximize", "_fill_work_area", "_ensure_fills_screen",
+exec("\n\n".join(module_src(n) for n in ("fill_work_area", "maximize_window", "ensure_fills_screen",
+                                          "keep_maximized_after_show")), ns)
+Win = build(["safe_minsize", "force_maximize", "_ensure_fills_screen", "_after_scaling_change",
              "logical_screen_width", "sidebar_width"], extra=textwrap.dedent("""
     def __init__(self, sw, sh, zoom_ok=True, attr_ok=True, size=(0, 0), st="normal"):
         self.sw, self.sh, self.zoom_ok, self.attr_ok = sw, sh, zoom_ok, attr_ok
@@ -191,8 +194,98 @@ ns2 = {"sys": types.SimpleNamespace(platform="linux")}
 exec(module_src("screen_work_area"), ns2)
 assert ns2["screen_work_area"](Win(1600, 900)) == (0, 0, 1600, 852)
 print("✔ مساحة العمل خارج ويندوز: الشاشة ناقص شريط المهام")
-assert 'wm_geometry(self, "+0+0")' in seg("__init__", get_class("LoginWindow"))
-print("✔ شاشة الدخول تبدأ من زاوية الشاشة الرئيسية ثم تملؤها")
+
+# فتح النظام مباشرة (بلا انتقال الدخول): يُثبَّت ظهوره قبل mainloop
+init = seg("__init__")
+direct = init[init.index("self.deiconify()"):init.index("self._startup_first_calc")]
+assert "self.force_maximize()" in direct and "self.update()" in direct
+print("✔ فتح النظام مباشرة: يُكبَّر ويُثبَّت ظهوره فلا تخفيه المكتبة ثم تعيده بحجم صغير")
+
+# تغيّر تكبير العرض بعد الظهور
+FakeCtk.ScalingTracker.scale = 1.5
+w = Win(1366, 768, size=(900, 500), st="zoomed")
+w._min_request, w._opened_at = (1100, 620), time.monotonic()
+w._after_scaling_change()
+mins = [c for c in w.calls if c[0] == "minsize"]
+assert mins and mins[-1][1] * 1.5 <= 1366 and mins[-1][2] * 1.5 <= 768, mins
+assert ("state", "zoomed") in w.calls
+w = Win(1366, 768, size=(900, 500), st="normal")
+w._min_request, w._opened_at = (1100, 620), time.monotonic() - 60
+w._after_scaling_change()
+assert not any(c[0] == "state" for c in w.calls)
+FakeCtk.ScalingTracker.scale = 1.0
+print("✔ تكبير عرض يُكتشف بعد الفتح: الحد الأدنى يُعاد حسابه، ويُعاد التكبير في الثواني الأولى فقط")
+
+
+class Base:                                   # CTkScalingBaseClass
+    def _set_scaling(self, a, b):
+        self.calls.append(("widgets", a, b))
+
+
+class FakeCTk(Base):                          # ctk.CTk: يفرض ٦٠٠×٥٠٠ حداً أدنى وأعلى
+    def _set_scaling(self, a, b):
+        self.calls.append(("forced 600x500",))
+        super()._set_scaling(a, b)
+
+
+nsm = {"ctk": types.SimpleNamespace(CTk=FakeCTk)}
+exec(module_src("StableWindowMixin"), nsm)
+
+
+class Stable(nsm["StableWindowMixin"], FakeCTk):
+    def __init__(self):
+        self.calls = []
+
+    def after(self, ms, fn):
+        self.calls.append(("after", ms, fn.__name__))
+
+    def _after_scaling_change(self):
+        pass
+
+
+st = Stable()
+st._set_scaling(1.25, 1.25)
+assert st.calls == [("widgets", 1.25, 1.25), ("after", 150, "_after_scaling_change")], st.calls
+print("✔ تغيّر التكبير يُحدّث مقاييس العناصر ولا يفرض على النافذة ٦٠٠×٥٠٠ (سبب انكماشها)")
+for c in ("GoldSystemApp", "LoginWindow", "AdminPanel"):
+    assert [getattr(b, "id", getattr(b, "attr", None)) for b in get_class(c).bases] == ["StableWindowMixin", "CTk"], c
+print("✔ النوافذ الثلاث (الدخول، النظام، لوحة المدير) محمية من ذلك")
+
+# لوحة المدير: تُكبَّر بعد ظهورها الفعلي، وعند العودة من حساب عميل
+admin = get_class("AdminPanel")
+assert "keep_maximized_after_show(self)" in seg("__init__", admin)
+assert 'self.geometry("1000x650")' not in seg("__init__", admin)
+assert "self.deiconify()\n        maximize_window(self)" in "\n".join(lines[admin.lineno - 1:admin.end_lineno])
+after_calls = []
+fake = types.SimpleNamespace(after=lambda ms, fn: after_calls.append(ms))
+ns["keep_maximized_after_show"](fake)
+assert after_calls == [60, 350, 1100] and fake._opened_at > 0
+print("✔ لوحة المدير: تُكبَّر بعد أن تُظهرها المكتبة (لا بحجم ١٠٠٠×٦٥٠)، وبعد العودة من حساب عميل")
+
+# شاشة الدخول
+login = get_class("LoginWindow")
+assert "self._go_fullscreen()" in seg("__init__", login)
+L = build(["_go_fullscreen", "_ensure_fullscreen"], ns={"tk": ns["tk"]}, cls=login, extra=textwrap.dedent("""
+    def __init__(self, size, pos=(0, 0), st="normal"):
+        self.W, self.H, self._alive, self.size, self.pos, self.st, self.calls = 1366, 768, True, size, pos, st, []
+    def state(self): return self.st
+    def winfo_width(self): return self.size[0]
+    def winfo_height(self): return self.size[1]
+    def winfo_rootx(self): return self.pos[0]
+    def winfo_rooty(self): return self.pos[1]
+    def update_idletasks(self): pass
+    def attributes(self, *a): self.calls.append(a)
+"""))
+lw = L((1366, 768))
+lw._ensure_fullscreen()
+assert lw.calls == []
+for bad in (L((1100, 700)), L((1366, 768), pos=(1920, 0))):
+    bad._ensure_fullscreen()
+    assert bad.calls == [("-fullscreen", False), ("wm_geometry", "1366x768+0+0"), ("-fullscreen", True)], bad.calls
+lw = L((300, 200), st="iconic")
+lw._ensure_fullscreen()
+assert lw.calls == []
+print("✔ شاشة الدخول: أصغر من الشاشة أو على شاشة أخرى ← تُعاد لملء الشاشة الرئيسية (والمصغّرة تُترك)")
 
 # ═══ ٣) عميل سحابي مشترك بمهلة محدّدة ═══
 created = []

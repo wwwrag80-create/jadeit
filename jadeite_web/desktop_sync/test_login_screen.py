@@ -36,8 +36,9 @@ else:
 
 # ═══ ٢) ترحيل متحرك بملء الشاشة لا يمنع الدخول أبداً ═══
 init = seg("__init__")
-assert '"-fullscreen", True' in init
-print("✔ تفتح بملء الشاشة")
+assert "self._go_fullscreen()" in init and '"-fullscreen", True' in seg("_go_fullscreen")
+assert "self._ensure_fullscreen" in init
+print("✔ تفتح بملء الشاشة، ويُتحقَّق من ذلك بعد ظهورها")
 for part in ("_draw_background", "_init_waves", "_init_particles", "_init_logo", "_init_splash_texts"):
     assert f"self.{part}()" in init, part
 assert init.index("self._draw_background()") < init.index("log_cloud_error")
