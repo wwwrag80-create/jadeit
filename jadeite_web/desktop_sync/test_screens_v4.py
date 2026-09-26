@@ -342,4 +342,27 @@ assert init.index("fill_work_area(self)") < init.index("self.force_maximize()")
 assert "fill_work_area(self)" in seg("__init__", get_class("AdminPanel"))
 print("✔ الحجم العادي للنافذة = الشاشة كاملة قبل التكبير: لو فقدت تكبيرها تبقى تملأ الشاشة (لا نصفها)")
 
+# ═══ ٩) الكاستنج: عمود الاسم، والكشف كاملاً أو لاسم واحد ═══
+F = build(["get_cast_name_filter"], extra="""
+def clean_name(self, n): return (n or "").replace("\\u200f", "").strip()
+def get_stage_name_values(self, d, c): return ["\\u200fكاستنج", "\\u200fعامل 1", "\\u200fعامل 2"]
+def invoices_by_name(self): return {"اسم قديم": [{"النوع": "صرف كاستنج"}]}
+""")
+f = F()
+for typed, expect in (("", None), ("   ", None), ("\u200fعامل 1", "عامل 1"), ("عامل 2", "عامل 2"),
+                      ("اسم جديد", None), ("اسم قديم", "اسم قديم")):
+    f.cast_name = W(typed)
+    assert f.get_cast_name_filter() == expect, (typed, f.get_cast_name_filter())
+print("✔ خانة الاسم فارغة ← كل الأسماء؛ اسم مختار ← حركته وحدها؛ اسم جديد بلا حركات ← الكشف كاملاً")
+rc = seg("refresh_casting_table")
+assert "show_name=True, name_filter=name_filter" in rc and "self._cast_filter_shown = name_filter" in rc
+assert "كل الأسماء" in rc
+rs = seg("render_stage_ops_table")
+assert "rows = [r for r in rows if r[1] == name_filter]" in rs
+assert "on_name_change=self.on_cast_name_change" in seg("build_casting_ui")
+panel = seg("build_stage_panel")
+assert "command=(lambda _v: on_name_change())" in panel and "on_pick=(lambda _v: on_name_change())" in panel
+assert 'ent.bind("<KeyRelease>", on_typed)' in panel
+print("✔ الكاستنج: عمود الاسم في الجدول، والاختيار أو المسح يحدّث الكشف وإجمالياته فوراً")
+
 print("\n✅ الدفعة الرابعة سليمة")

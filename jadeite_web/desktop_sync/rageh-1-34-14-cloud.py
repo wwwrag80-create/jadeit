@@ -5489,7 +5489,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def render_stage_ops_table(self, table_frame, madin_type, qabd_type, height=11,
                                with_trees=False, on_edit=None, totals_label=None,
                                section=None, show_name=False, on_detail=None, on_refresh=None,
-                               recover_name=None):
+                               recover_name=None, name_filter=None):
         """محرك موحّد لجداول شاشات العمليات:
         (الصف / الاسم / مدين / دائن / الخياس [+ عدد الأشجار + خياس كل شجرة] / البيان)
         مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته."""
@@ -5520,7 +5520,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # بدل الاضطرار للنزول لآخر الصفوف لرؤيته
         rows_map = {}
         tot_madin = tot_daen = tot_trees = tot_rec = 0.0
-        for row_num, name, g in self.collect_stage_ops_rows(madin_type, qabd_type, recover_name):
+        rows = self.collect_stage_ops_rows(madin_type, qabd_type, recover_name)
+        if name_filter:
+            # اسم مختار: حركته وحدها، والإجماليات له وحده
+            rows = [r for r in rows if r[1] == name_filter]
+        for row_num, name, g in rows:
             khayas = round(g["مدين"] - g["دائن"] - g["مسترجع"], 2)
             tot_madin = round(tot_madin + g["مدين"], 2)
             tot_daen = round(tot_daen + g["دائن"], 2)
@@ -7710,7 +7714,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # --- نظام صرف/قبض عام لأي "صندوق خياس" يُضاف ديناميكياً من شجرة الحسابات (مطابق لنمط الكاستنج) ---
     # =========================================================================
     def build_stage_panel(self, parent, *, key, title, name_values=None, fields, submit_text, submit_cmd,
-                          on_edit, on_delete, neg_section, neg_refresh, view):
+                          on_edit, on_delete, neg_section, neg_refresh, view, on_name_change=None):
         """لوحة قسم من مراحل التصنيع بترتيب مضغوط واحد لكل الأقسام:
 
             بطاقة إدخال بصف واحد ← [التاريخ][الاسم][الخانات…][البيان][زر الترحيل]
@@ -7748,9 +7752,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ent.insert(0, self.get_smart_default_date())
             elif k == "name":
                 ent = ctk.CTkComboBox(grid, values=name_values(), font=("Cairo", 14), width=170, height=36,
-                                      justify="right")
+                                      justify="right",
+                                      command=(lambda _v: on_name_change()) if on_name_change else None)
                 ent.set("")
-                self.bind_name_autocomplete(ent, name_values)
+                self.bind_name_autocomplete(ent, name_values,
+                                            on_pick=(lambda _v: on_name_change()) if on_name_change else None)
+                if on_name_change:
+                    # الكتابة/المسح يحدّث الجدول بعد توقّف قصير (لا مع كل حرف)
+                    def on_typed(_e=None, cb=on_name_change):
+                        job = getattr(self, "_stage_name_job", None)
+                        if job:
+                            try:
+                                self.after_cancel(job)
+                            except Exception:
+                                pass
+                        self._stage_name_job = self.after(300, cb)
+                    ent.bind("<KeyRelease>", on_typed)
+                    ent.bind("<FocusOut>", lambda _e, cb=on_name_change: cb())
             elif k == "note":
                 ent = ctk.CTkEntry(grid, placeholder_text="البيان / الملاحظات...", font=("Cairo", 14),
                                    justify="right", width=180, height=36)
@@ -7776,8 +7794,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # شريط أدوات الجدول
         bar = ctk.CTkFrame(parent, fg_color="transparent")
         bar.pack(fill="x", padx=18, pady=(0, 2))
-        ctk.CTkLabel(bar, text=title, font=ctk.CTkFont(family="Cairo", size=15, weight="bold"),
-                     text_color=(UI["gold_dark"], "#F1D27A")).pack(side="right")
+        w["title"] = ctk.CTkLabel(bar, text=title, font=ctk.CTkFont(family="Cairo", size=15, weight="bold"),
+                                  text_color=(UI["gold_dark"], "#F1D27A"))
+        w["title"].pack(side="right")
         ctk.CTkButton(bar, text="🗑️ حذف", font=("Cairo", 13, "bold"), width=90, height=30,
                       fg_color=UI["danger"], hover_color=UI["danger_hover"], command=on_delete).pack(side="left", padx=3)
         self.build_negative_color_button(bar, neg_section, neg_refresh)
@@ -7969,8 +7988,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             submit_text="ترحيل 💾", submit_cmd=self.submit_casting_op,
             on_edit=self.edit_selected_casting_row, on_delete=self.delete_selected_casting_row,
             neg_section="الكاستنج", neg_refresh=self.refresh_casting_table,
-            view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"))
+            view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"),
+            on_name_change=self.on_cast_name_change)
         self.cast_date, self.cast_name, self.cast_note = p["date"], p["name"], p["note"]
+        self.cast_title_lbl = p["title"]
         f = p["fields"]
         self.cast_row_num, self.cast_sarf, self.cast_qabd = f["row_num"], f["sarf"], f["qabd"]
         self.cast_recover, self.cast_trees = f["recover"], f["trees"]
@@ -8107,12 +8128,46 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # يُؤجَّل بعد إعادة رسم الجدول لأن إعادة الرسم تسحب التركيز.
             self.after(60, lambda: self.cast_row_num.focus_set())
 
+    def get_cast_name_filter(self):
+        """الاسم المختار في خانة اسم الكاستنج إن كان اسماً معروفاً، وإلا None = كل الأسماء.
+
+        الخانة فارغة ← الكشف كاملاً بكل الأسماء؛ اسم مختار ← حركته وحدها. اسم جديد
+        لم يُسجَّل له شيء بعد لا يُفرغ الجدول: يبقى الكشف كاملاً ظاهراً.
+        """
+        widget = getattr(self, "cast_name", None)
+        if widget is None:
+            return None
+        typed = self.clean_name(widget.get())
+        if not typed:
+            return None
+        known = {self.clean_name(n) for n in self.get_stage_name_values("كاستنج", "الكاستنج")}
+        if typed in known:
+            return typed
+        for inv in self.invoices_by_name().get(typed, ()):
+            if inv.get("النوع") in ("صرف كاستنج", "قبض كاستنج"):
+                return typed
+        return None
+
+    def on_cast_name_change(self):
+        """اختيار اسم أو مسحه في خانة الكاستنج: يُعاد رسم الجدول إن تغيّر الاسم المعروض"""
+        if getattr(self, "_cast_filter_shown", None) != self.get_cast_name_filter():
+            self.refresh_casting_table()
+
     def refresh_casting_table(self):
         if not hasattr(self, 'cast_table_frame') or not self.cast_table_frame:
             return
+        name_filter = self.get_cast_name_filter()
+        self._cast_filter_shown = name_filter
+        title_lbl = getattr(self, "cast_title_lbl", None)
+        if title_lbl is not None:
+            label = self.get_display_label("الكاستنج")
+            title_lbl.configure(text=f"كشف حركة {label} — {name_filter}" if name_filter
+                                else f"كشف حركة {label} — كل الأسماء")
         self.cast_tree, self.cast_table_rows_map = self.render_stage_ops_table(
             self.cast_table_frame, "صرف كاستنج", "قبض كاستنج", height=11, with_trees=True,
-            section="الكاستنج", show_name=False, on_refresh=self.refresh_casting_table,
+            # عمود الاسم: الكشف يجمع كل الأسماء، أو اسماً واحداً عند اختياره
+            section="الكاستنج", show_name=True, name_filter=name_filter,
+            on_refresh=self.refresh_casting_table,
             recover_name=self.get_stage_config("الكاستنج")[2],
             on_detail=lambda: self.show_selected_stage_details(
                 self.cast_tree, self.cast_table_rows_map, "تفاصيل حركة الكاستنج"),
