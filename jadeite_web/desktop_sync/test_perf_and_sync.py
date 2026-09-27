@@ -48,29 +48,38 @@ assert 'Image.open(pure).convert("RGBA")' in hb
 print("✔ الشعار يُقرأ بوضع RGBA — لا خلفية سوداء")
 assert "min(420, int(avail * 0.26))" in hb
 print("✔ وحجمه صغير مريح (٢٤٠–٤٢٠ بكسل)")
-assert "tint_logo(base_logo, *LOGO_GOLD_LIGHT_MODE, opacity=0.9)" in hb
-import ast as _ast
-_gold = {n.targets[0].id: _ast.literal_eval(n.value) for n in _ast.parse(src).body
-         if isinstance(n, _ast.Assign) and getattr(n.targets[0], "id", "").startswith("LOGO_GOLD_")}
+# الشعار بلون الشريط البارز «رصيد الخزينة الحالي» نفسه (بطلب العميل)
+assert "logo_tint_for(TREASURY_BAR_TEXT[0])" in hb and "logo_tint_for(TREASURY_BAR_TEXT[1]" in hb
+assert "opacity=" not in hb.split("logo_tint_for(TREASURY_BAR_TEXT[0])")[1].split("\n")[0]
+_bar_line = next(l for l in src.splitlines() if "self.lbl_live_treasury = ctk.CTkLabel(" in l)
+assert "text_color=TREASURY_BAR_TEXT)" in _bar_line, _bar_line
+print("✔ الشعار والشريط يأخذان لونهما من ثابت واحد (TREASURY_BAR_TEXT) — لا يفترقان مستقبلاً")
 
-
-def _rgb(h):
-    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
-
-
-def _lum(h):
-    r, g, b = _rgb(h)
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-
-# بعمق الأزرق السابق نفسه (إضاءة الغامق والفاتح) — ذهبي (أحمر > أخضر > أزرق) غير ساطع
-for gold, blue in zip(_gold["LOGO_GOLD_LIGHT_MODE"], ("#173F7E", "#4F86D6")):
-    assert abs(_lum(gold) - _lum(blue)) <= 12, (gold, _lum(gold), _lum(blue))
-    r, g, b = _rgb(gold)
-    assert r > g > b and max(r, g, b) <= 190, gold
-print("✔ ويُعرض بالذهبي الهادئ على الأبيض (بطلب العميل): بعمق الأزرق السابق نفسه، لا ساطعاً")
-
+import re as _re
 from PIL import Image
+_ns = {}
+exec("\n".join(ast.get_source_segment(src, n) for n in ast.parse(src).body
+               if isinstance(n, ast.FunctionDef) and n.name in ("shade_color", "logo_tint_for", "tint_logo")), _ns)
+_ui = dict(_re.findall(r'"(gold_dark|gold_soft)": "(#[0-9A-Fa-f]{6})"', src))
+_bar = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+            and getattr(n.targets[0], "id", "") == "TREASURY_BAR_TEXT")
+_bar = eval(ast.get_source_segment(src, _bar.value), {"UI": _ui})
+assert _bar[0] == _ui["gold_dark"] == "#9C7A12", _bar
+
+
+def _mean(img):
+    from PIL import ImageStat
+    opaque = img.getchannel("A").point(lambda v: 255 if v > 200 else 0)
+    return tuple(round(v) for v in ImageStat.Stat(img.convert("RGB"), mask=opaque).mean)
+
+
+_logo = Image.open("jadeite_logo.png").convert("RGBA")
+for mode, color, args in (("الفاتح", _bar[0], ()), ("الداكن", _bar[1], (0.90, 1.10))):
+    want = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+    got = _mean(_ns["tint_logo"](_logo, *_ns["logo_tint_for"](color, *args)))
+    assert max(abs(a - b) for a, b in zip(got, want)) <= 8, (mode, got, want)
+    print(f"✔ الوضع {mode}: متوسط لون الشعار #{''.join(f'{v:02X}' for v in got)} ≈ لون الشريط {color}")
+
 im = Image.open("jadeite_logo.png")
 assert im.mode == "RGBA", im.mode
 w, h = im.size

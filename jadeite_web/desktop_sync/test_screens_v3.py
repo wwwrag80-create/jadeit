@@ -200,7 +200,7 @@ assert '"detail"' not in loss and "get_box_breakdown_text" not in loss
 print("✔ شاشة الخسائر: بلا نص التفصيل في لوحات الصناديق")
 
 home = seg("build_home_screen")
-assert "tint_logo(" in home
-print("✔ شعار الرئيسية بالذهبي الهادئ على الأبيض")
+assert "tint_logo(" in home and "TREASURY_BAR_TEXT" in home
+print("✔ شعار الرئيسية بلون شريط «رصيد الخزينة الحالي» على الأبيض")
 
 print("\n✅ الواجهات والمحاسبة (الدفعة الثالثة) سليمة")

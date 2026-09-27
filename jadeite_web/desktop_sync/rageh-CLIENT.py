@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.45.0"
+APP_VERSION = "1.45.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -447,10 +447,16 @@ class StableWindowMixin:
                 pass
 
 
-# ألوان شعار الرئيسية (الغامق ← الفاتح): ذهبي عتيق مطفأ بإضاءة الأزرق السابق نفسها
-# (#173F7E ← #4F86D6)، فيبقى هادئاً على الأبيض لا ساطعاً
-LOGO_GOLD_LIGHT_MODE = ("#4E3A0E", "#A57F33")
-LOGO_GOLD_DARK_MODE = ("#8A6A24", "#D2B574")
+def shade_color(hex_color, factor):
+    """يغمّق اللون (factor < 1) أو يفتّحه (factor > 1) بالنسبة نفسها لكل قناة"""
+    rgb = [int(hex_color[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{max(0, min(255, round(v * factor))):02X}" for v in rgb)
+
+
+def logo_tint_for(color, darker=0.80, lighter=1.15):
+    """تدرّج (غامق، فاتح) حول لون واحد، متوسطه على الشعار = اللون نفسه تقريباً:
+    تبقى ظلال الشريط وانحناءاته، ويُرى الشعار كله بذلك اللون"""
+    return shade_color(color, darker), shade_color(color, lighter)
 
 
 def tint_logo(img, dark, light, opacity=1.0):
@@ -1189,6 +1195,9 @@ UI = {
     "violet": "#7A4BB5", "violet_hover": "#613A93",
     "midnight": "#0B1220", "midnight_2": "#13203A",
 }
+
+# لون نص شريط «رصيد الخزينة الحالي» البارز (فاتح، داكن) — وشعار الرئيسية بلونه نفسه
+TREASURY_BAR_TEXT = (UI["gold_dark"], "#F0CF6A")
 
 # لون الزر القديم ← (لونه في اللوحة، لون المرور عليه)
 _LEGACY_BUTTON_COLORS = {
@@ -6732,7 +6741,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                      border_color=(UI["gold_line"], "#6B5A22"))
         treasury_bar.pack(fill="x", pady=(0, 4))
 
-        self.lbl_live_treasury = ctk.CTkLabel(treasury_bar, text="رصيد الخزينة الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=(UI["gold_dark"], "#F0CF6A"))
+        self.lbl_live_treasury = ctk.CTkLabel(treasury_bar, text="رصيد الخزينة الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=TREASURY_BAR_TEXT)
         self.lbl_live_treasury.pack(padx=14, pady=3)
 
         # ====== شريط الرصيد الحالي (الخزينة + كل صناديق الخياس) ======
@@ -7089,11 +7098,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if os.path.exists(pure):
                 # RGBA يحفظ الشفافية؛ بدونه تظهر خلفية سوداء خلف الشعار
                 base_logo = Image.open(pure).convert("RGBA")
-                # الشعار بالذهبي الهادئ على الأبيض: بعمق الأزرق السابق نفسه (نفس درجة
-                # الإضاءة من الغامق للفاتح) بلا لمعان — ذهبي عتيق مطفأ لا أصفر ساطع،
-                # وأفتح قليلاً في المظهر الداكن
-                logo_img = tint_logo(base_logo, *LOGO_GOLD_LIGHT_MODE, opacity=0.9)
-                dark_logo = tint_logo(base_logo, *LOGO_GOLD_DARK_MODE, opacity=0.85)
+                # الشعار بلون الشريط البارز لرصيد الخزينة نفسه (بطلب العميل): متوسط
+                # لونه = لون نص الشريط، وظلاله وانحناءاته باقية. بلا شفافية حتى لا
+                # يفتّحه الأبيض خلفه فيختلف عن الشريط
+                logo_img = tint_logo(base_logo, *logo_tint_for(TREASURY_BAR_TEXT[0]))
+                dark_logo = tint_logo(base_logo, *logo_tint_for(TREASURY_BAR_TEXT[1], 0.90, 1.10))
             else:
                 logo_img = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64)))
             w, h = logo_img.size
