@@ -77,13 +77,11 @@ language sql stable security definer set search_path = public as $$
            and x.period = p_period
     ),
     s as (
+        -- الفاقد الحالي للمرحلة = الصرف − القبض. المسترجع لا يُخصم منه: يذهب لحساب
+        -- «مسترجع المرحلة» ويُطرح من الفاقد المُقفل في الصافي (مطابق لبرنامج سطح المكتب)
         select
             coalesce(sum(case when t.op_type = (select madin_type from cfg) then t.weight else 0 end), 0) as madin,
-            coalesce(sum(case
-                when t.op_type = (select qabd_type from cfg) then t.weight
-                when t.op_type = any(public.inbound_types())
-                     and t.account_name = any(public.box_mustarja_names(p_box)) then t.weight
-                else 0 end), 0) as daen
+            coalesce(sum(case when t.op_type = (select qabd_type from cfg) then t.weight else 0 end), 0) as daen
           from t
     )
     select s.madin, s.daen, s.madin - s.daen from s;

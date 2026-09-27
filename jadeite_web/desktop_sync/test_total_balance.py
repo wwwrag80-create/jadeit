@@ -82,19 +82,19 @@ app.invoices[11] = inv(11, "قبض ورشة الحفر", 37.0)
 assert app.get_total_gold_balance() == round(total + 3.0, 2)
 print("✔ أي صندوق يُضاف مستقبلاً يدخل في الحساب تلقائياً بلا تعديل كود")
 
-# ---------- المسترجع يقلّل رصيد الصندوق ----------
+# ---------- المسترجع لحسابه: لا يمسّ الفاقد الحالي للمرحلة ----------
 app.invoices[12] = inv(12, "وارد ذهب (عيار 18)", 2.0, name="مسترجع كاستنج")
-assert app.get_box_khayas_cumulative("الكاستنج", month="") == 2.0
-print("✔ استرجاع ذهب من صندوق يقلّل رصيده (٤ ← ٢)")
+assert app.get_box_khayas_cumulative("الكاستنج", month="") == 4.0
+print("✔ المسترجع يذهب لحساب مسترجع المرحلة ولا يغيّر فاقدها الحالي (يبقى ٤)")
 
 # ---------- الإقفال يُخرج الخياس من الرصيد (يصبح خسارة فعلية) ----------
 before = app.get_total_gold_balance()
-app.invoices[13] = inv(13, "قيد يومي دائن", 2.0, name="الكاستنج")     # إقفال
-app.invoices[14] = inv(14, "قيد يومي مدين", 2.0, name="حساب الخسائر")
+app.invoices[13] = inv(13, "قيد يومي دائن", 4.0, name="الكاستنج")     # إقفال
+app.invoices[14] = inv(14, "قيد يومي مدين", 4.0, name="فاقد الكاستنج")
 after = app.get_total_gold_balance()
 assert app.get_box_khayas_cumulative("الكاستنج", month="") == 0.0
-assert after == round(before - 2.0, 2), (before, after)
-print("✔ إقفال الصندوق يُخرج خياسه من الرصيد الحالي (أصبح فاقداً فعلياً)")
+assert after == round(before - 4.0, 2), (before, after)
+print("✔ إقفال الصندوق يُخرج فاقده الحالي من الرصيد إلى حساب فاقد المرحلة")
 
 # ---------- الحركات الملغاة لا تُحتسب ----------
 app.invoices[15] = inv(15, "صرف تلميع", 999.0, status="SETTLED")

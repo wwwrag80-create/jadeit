@@ -87,70 +87,7 @@ def new_box_app():
     return app
 
 
-# ═══ ١) شاشة الخسائر: الأقسام الأربعة ═══
-app = new_box_app()
-app.invoices = {
-    1: inv(1, "كاستنج", "صرف كاستنج", 100.0, M8),
-    2: inv(2, "كاستنج", "قبض كاستنج", 90.0, M8),
-    # إقفال خياس فترة ٨ (١٠ جم) لحساب الخسائر
-    3: inv(3, "حساب الخسائر", "قيد يومي مدين", 10.0, M8, "إقفال"),
-    4: inv(4, "الكاستنج", "قيد يومي دائن", 10.0, M8, "إقفال"),
-    # فترة ٩: مسترجع ٣ جم من الكاستنج بعد الإقفال، وقيد التصفير التلقائي المعاكس
-    5: inv(5, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 3.0, M9, "من المصنع"),
-    6: inv(6, "الكاستنج", "قيد يومي مدين", 3.0, M9, "مسترجع"),
-    7: inv(7, "حساب الخسائر", "قيد يومي دائن", 3.0, M9, "مسترجع"),
-}
-sm = app.get_box_loss_summary("الكاستنج", month=M9)
-assert sm == {"current": 0.0, "loss": 10.0, "recovered": 3.0, "net": 7.0}, sm
-print("✔ الكاستنج: أُقفل ١٠ ثم استُرجع ٣ ← الحالي ٠، فاقد الكاستنج ١٠، المسترجع ٣، الصافي ٧")
-
-# المسترجع قبل الإقفال (خصمه من الخياس ثم إقفال الباقي): النتيجة نفسها
-app = new_box_app()
-app.invoices = {
-    1: inv(1, "كاستنج", "صرف كاستنج", 100.0, M9),
-    2: inv(2, "كاستنج", "قبض كاستنج", 90.0, M9),
-    3: inv(3, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 3.0, M9, row="5"),
-}
-assert app.get_box_loss_summary("الكاستنج", month=M9)["current"] == 7.0
-app.invoices[4] = inv(4, "حساب الخسائر", "قيد يومي مدين", 7.0, M9)
-app.invoices[5] = inv(5, "الكاستنج", "قيد يومي دائن", 7.0, M9)
-app.invoice_counter = 5
-sm = app.get_box_loss_summary("الكاستنج", month=M9)
-assert sm == {"current": 0.0, "loss": 10.0, "recovered": 3.0, "net": 7.0}, sm
-print("✔ المسترجع قبل الإقفال (مسترجع الأشجار): النتيجة نفسها — الفاقد ١٠ والصافي ٧")
-assert sm["net"] == round(sm["loss"] - sm["recovered"], 2)
-print("✔ الصافي = الفاقد − المسترجع = ما وصل حساب الخسائر فعلاً (لا يُخصم المسترجع مرتين)")
-
-# كل الصناديق لها مسترجع، والمصنعون والمركبون أيضاً
-cats = app.get_khayas_box_categories()
-assert cats[:3] == ["الكاستنج", "المصنعين", "المركبين"] and "خياس الطقوم" in cats
-names = app.get_all_mustarja_names()
-for n in ("مسترجع كاستنج", "مسترجع المصنعين", "مسترجع المركبين", "مسترجع خياس الطقوم"):
-    assert n in names, n
-print("✔ لكل صندوق حساب مسترجع — بما فيها المصنعون والمركبون")
-
-# مسترجع المصنعين يُخصم من خياسهم الحالي
-app = new_box_app()
-app._live = {("المصنعين", M9): 12.0}
-app.invoices = {1: inv(1, "مسترجع المصنعين", "وارد ذهب (عيار 18)", 2.5, M9)}
-assert app.get_current_unclosed_khayas("المصنعين", month=M9) == 9.5
-sm = app.get_box_loss_summary("المصنعين", month=M9)
-assert sm["recovered"] == 2.5 and sm["current"] == 9.5, sm
-print("✔ مسترجع المصنعين (٢٫٥) يُخصم من خياسهم الحالي (١٢ ← ٩٫٥)")
-close = seg("close_split_khayas_box")
-assert "remaining = round(total_k - already_closed - recovered, 2)" in close
-print("✔ وإقفال خياسهم يُقفل المتبقّي بعد المسترجع فقط")
-
-# البطاقات
-cards = seg("refresh_losses_cards")
-for key in ('"current"', '"loss"', '"recovered"', '"net"'):
-    assert key in cards, key
-assert 'f"فاقد {display_name}"' in cards and 'f"مسترجع {display_name}"' in cards
-assert "self.get_box_loss_summary(cat, month=month)" in seg("refresh_losses_tab")
-assert "get_khayas_box_categories()" in cards
-print("✔ لوحة كل صندوق: الخياس الحالي، فاقد الصندوق، مسترجع الصندوق، الصافي")
-
-# ═══ ٢) الوارد: «إلى حساب» ═══
+# ═══ ٢) أدوات مشتركة للاختبار ═══
 msgs = []
 
 
@@ -190,39 +127,9 @@ class W:
         pass
 
 
-ns_in = {"messagebox": FakeBox, "datetime": __import__("datetime")}
-App = build(BOX_METHODS + ["submit_inbound", "get_inbound_account_options"],
-            attrs=("BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "INBOUND_DEFAULT_ACCOUNT"),
-            extra=BOX_EXTRA + """
-def check_name_exists(self, n): return any(n in v for v in self.categories.values())
-def save_name_to_db(self, *a): pass
-def save_invoice_to_db(self, i, d):
-    self._inv_version = getattr(self, "_inv_version", 0) + 1
-    return True
-def register_operation_period(self, d): pass
-def recalculate_all(self): pass
-def get_supplier_name_values(self): return ["المصنع"]
-""", ns=ns_in)
-a = App()
-a.categories = {"المصنعين": [], "المركبين": [], "الموردين": [], "أقسام_خياس_إضافية": []}
-a.current_display_month, a.invoice_counter, a._live = M9, 0, {}
-a.invoices = {1: inv(1, "كاستنج", "صرف كاستنج", 20.0, M9), 2: inv(2, "كاستنج", "قبض كاستنج", 15.0, M9)}
-a.invoice_counter = 2
-opts = a.get_inbound_account_options()
-assert opts[0] == "الخزينة (وارد عادي)" and "مسترجع كاستنج" in opts and "مسترجع المصنعين" in opts
-a.in_date, a.in_invoice_num, a.in_supplier = W(f"{M9}-12"), W("V-7"), W("المصنع")
-a.in_type, a.in_weight, a.in_carat, a.in_note = W("ذهب"), W("2"), W("18"), W("")
-a.in_to_account = W("مسترجع كاستنج")
-a.submit_inbound()
-rec = [i for i in a.invoices.values() if i["النوع"] == "وارد ذهب (عيار 18)"]
-assert len(rec) == 1 and rec[0]["الاسم"] == "مسترجع كاستنج" and rec[0]["البيان"] == "من المصنع", rec
-assert a.in_to_account.get() == "الخزينة (وارد عادي)"
-print("✔ قبض من المصنع «إلى حساب: مسترجع كاستنج» ← يُسجَّل مسترجعاً للكاستنج، و«من المصنع» في البيان")
-sm = a.get_box_loss_summary("الكاستنج", month=M9)
-assert sm["recovered"] == 2.0 and sm["current"] == 0.0, sm
-print(f"✔ ويظهر في شاشة الخسائر: مسترجع الكاستنج {sm['recovered']}، والباقي (٣) أُقفل للخسائر فالحالي صفر")
 assert "before=self.lbl_in_type" in seg("toggle_in_carat_field")
 print("✔ خانة العيار تعود لمكانها قبل نوع الوارد (لا بعد «إلى حساب»)")
+print("  (منطق الفاقد والمسترجع والوارد والإقفال في test_loss_recovery.py)")
 
 # ═══ ٣) رصيد افتتاحي ═══
 assert attr_src("OPENING_ACCOUNT").endswith('"رصيد افتتاحي"')
@@ -243,7 +150,7 @@ led = seg("open_worker_ledger_window")
 assert 'head = note_str.split(" — ")[0].strip()' in led
 print("✔ ونوع القبض (زركون/أحجار…) يبقى في أول البيان فيُصنَّف به القبض صحيحاً")
 
-S = build(["collect_stage_ops_rows", "is_row_recovery", "period_invoices", "invoices_by_period",
+S = build(["collect_stage_ops_rows", "is_row_recovery", "is_recovery_op", "period_invoices", "invoices_by_period",
            "inv_period", "row_sort_key"], attrs=("INBOUND_TYPES",))
 st = S()
 st.current_display_month, st.invoice_counter = M9, 0
@@ -341,28 +248,5 @@ assert init.index("apply_screen_fit(self)") < init.index("self.create_layout()")
 assert init.index("fill_work_area(self)") < init.index("self.force_maximize()")
 assert "fill_work_area(self)" in seg("__init__", get_class("AdminPanel"))
 print("✔ الحجم العادي للنافذة = الشاشة كاملة قبل التكبير: لو فقدت تكبيرها تبقى تملأ الشاشة (لا نصفها)")
-
-# ═══ ٩) الكاستنج: عمود الاسم، والكشف كاملاً أو لاسم واحد ═══
-F = build(["get_cast_name_filter"], extra="""
-def clean_name(self, n): return (n or "").replace("\\u200f", "").strip()
-def get_stage_name_values(self, d, c): return ["\\u200fكاستنج", "\\u200fعامل 1", "\\u200fعامل 2"]
-def invoices_by_name(self): return {"اسم قديم": [{"النوع": "صرف كاستنج"}]}
-""")
-f = F()
-for typed, expect in (("", None), ("   ", None), ("\u200fعامل 1", "عامل 1"), ("عامل 2", "عامل 2"),
-                      ("اسم جديد", None), ("اسم قديم", "اسم قديم")):
-    f.cast_name = W(typed)
-    assert f.get_cast_name_filter() == expect, (typed, f.get_cast_name_filter())
-print("✔ خانة الاسم فارغة ← كل الأسماء؛ اسم مختار ← حركته وحدها؛ اسم جديد بلا حركات ← الكشف كاملاً")
-rc = seg("refresh_casting_table")
-assert "show_name=True, name_filter=name_filter" in rc and "self._cast_filter_shown = name_filter" in rc
-assert "كل الأسماء" in rc
-rs = seg("render_stage_ops_table")
-assert "rows = [r for r in rows if r[1] == name_filter]" in rs
-assert "on_name_change=self.on_cast_name_change" in seg("build_casting_ui")
-panel = seg("build_stage_panel")
-assert "command=(lambda _v: on_name_change())" in panel and "on_pick=(lambda _v: on_name_change())" in panel
-assert 'ent.bind("<KeyRelease>", on_typed)' in panel
-print("✔ الكاستنج: عمود الاسم في الجدول، والاختيار أو المسح يحدّث الكشف وإجمالياته فوراً")
 
 print("\n✅ الدفعة الرابعة سليمة")

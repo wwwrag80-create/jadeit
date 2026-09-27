@@ -44,9 +44,11 @@ REAL = ["inv_period", "inv_in_period", "invoices_by_name", "invoices_by_period",
         "calculate_single_ledger", "get_actual_section_khayas", "get_all_stage_categories",
         "get_stage_config", "get_display_label", "get_box_account_name", "get_box_closed_total",
         "period_closing_datetime", "get_account_ledger_rows", "_account_ledger_rows_all",
-        "_post_closing_entry", "recalculate_all"]
+        "_post_closing_entry", "recalculate_all", "get_khayas_box_categories", "get_box_loss_account",
+        "get_all_loss_accounts", "journal_partner_index", "journal_partner", "is_debit_nature_account"]
 
-body = "\n".join(class_attr_src(a) for a in ("BOX_DISPLAY_OVERRIDES", "MADIN_DAEN_ACCOUNTS"))
+body = "\n".join(class_attr_src(a) for a in ("BOX_DISPLAY_OVERRIDES", "MADIN_DAEN_ACCOUNTS",
+                                             "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT"))
 body += "\n" + "\n".join(method_src(m) for m in REAL)
 # ما يمسّ الواجهة فقط يُستبدل ببدائل صامتة — الحساب كله حقيقي
 body += textwrap.dedent('''

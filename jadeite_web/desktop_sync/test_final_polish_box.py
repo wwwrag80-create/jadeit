@@ -83,14 +83,14 @@ box = app.get_box_khayas_cumulative("خياس الطقوم", month=MONTH)
 assert box == sales_total, (box, sales_total)
 print(f"✔ عمود الخياس في صندوق خياس التلميع النهائي = {box} — مطابق تماماً")
 
-# ═══ ٣) المسترجع يقلّل الصندوق ═══
+# ═══ ٣) المسترجع لحسابه: لا يمسّ الفاقد الحالي للصندوق ═══
 app.invoices[10] = sale(10, "1003", "مسترجع خياس الطقوم", "وارد ذهب (عيار 18)", 1.5)
 box2 = app.get_box_khayas_cumulative("خياس الطقوم", month=MONTH)
-assert box2 == round(sales_total - 1.5, 2) == 3.5, box2
-print(f"✔ استرجاع ١.٥ من الصندوق → {box2} (المسترجع يُخصم كما يجب)")
+assert box2 == sales_total == 5.0, box2
+print(f"✔ استرجاع ١.٥ → الفاقد الحالي يبقى {box2} (المسترجع في حساب مسترجع المرحلة)")
 
 # ═══ ٤) الإقفال يُفرغ الصندوق ═══
-app.invoices[11] = sale(11, "", "خياس الطقوم", "قيد يومي دائن", 3.5)
+app.invoices[11] = sale(11, "", "خياس الطقوم", "قيد يومي دائن", 5.0)
 box3 = app.get_box_khayas_cumulative("خياس الطقوم", month=MONTH)
 assert box3 == 0.0, box3
 print(f"✔ بعد الإقفال → {box3} (والإجمالي في شاشة المبيعات يبقى {sales_total} كما هو)")

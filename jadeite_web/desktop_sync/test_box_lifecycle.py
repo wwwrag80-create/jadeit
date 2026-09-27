@@ -49,8 +49,8 @@ app.invoices = {
     3: inv(3, "وارد ذهب (عيار 18)", 1.0, "مسترجع الصب"),
     9: inv(9, "صرف كاستنج", 50.0, "الكاستنج"),      # صندوق آخر — يجب ألا يتأثر
 }
-assert app.get_box_khayas_cumulative("الصب", month="") == 3.0
-print(f"✔ خياس الصب يُحسب صحيحاً: {app.get_box_khayas_cumulative('الصب')} (صرف 100 − قبض 96 − مسترجع 1)")
+assert app.get_box_khayas_cumulative("الصب", month="") == 4.0
+print(f"✔ فاقد الصب الحالي يُحسب صحيحاً: {app.get_box_khayas_cumulative('الصب')} (صرف 100 − قبض 96؛ المسترجع 1 في حسابه)")
 
 # ---------- الحذف ----------
 n = app.count_box_transactions("الصب")

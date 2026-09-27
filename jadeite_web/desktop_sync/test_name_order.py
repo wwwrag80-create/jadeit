@@ -54,10 +54,12 @@ gsv = seg("get_stage_name_values")
 assert "self.rtl(v) for v in values" in gsv
 print("✔ أقسام الكاستنج والتلميع والبف تعرض الأسماء باتجاه مثبّت")
 
-for fn in ("submit_casting_op", "submit_polish_op", "submit_polish_buff_op"):
+for fn in ("submit_polish_op", "submit_polish_buff_op"):
     b = seg(fn)
     assert "self.clean_name(" in b, fn
-print("✔ الترحيل في تلك الأقسام ينظّف الاسم قبل الحفظ")
+print("✔ الترحيل في التلميع والبف ينظّف الاسم قبل الحفظ")
+assert "self.get_cast_operation()" in seg("submit_casting_op")
+print("✔ الكاستنج: خانة «العملية» (فاقد/مسترجع) مكان الاسم")
 
 # ═══ الإكمال التلقائي ═══
 auto = seg("bind_name_autocomplete")

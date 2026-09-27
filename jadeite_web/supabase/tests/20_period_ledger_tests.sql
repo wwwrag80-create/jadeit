@@ -85,9 +85,9 @@ begin
     assert public.section_actual_khayas(c, 'المصنعين', '2026-08') = 10, 'خياس المصنعين لفترة ٨';
     assert public.section_actual_khayas(c, 'المركبين', '2026-09') = 5, 'خياس المركبين لفترة ٩';
 
-    -- المسترجع باسم البرنامج يُخصم من خياس الصندوق
+    -- الفاقد الحالي = الصرف − القبض؛ المسترجع لحسابه ولا يُخصم من الصندوق
     select khayas into v from public.box_period_totals(c, 'الكاستنج', '2026-08');
-    assert v = 10, format('خياس الكاستنج = %s (المتوقع 40 − 25 − 5 = 10)', v);
+    assert v = 15, format('فاقد الكاستنج الحالي = %s (المتوقع 40 − 25 = 15، والمسترجع ٥ في حسابه)', v);
 end $$;
 commit;
 
@@ -101,8 +101,9 @@ do $$
 declare
     c uuid := 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 begin
-    -- إقفال صندوق من الويب (قيد بين الصندوق وحساب الخسائر)
-    assert public.close_khayas_box(c, 'الكاستنج', '2026-08') = 10, 'إقفال الكاستنج';
+    -- إقفال صندوق من الويب (قيد بين الصندوق وحساب الخسائر): الفاقد الحالي كاملاً
+    -- (40 − 25 = 15؛ المسترجع في حسابه ولا يُخصم منه)
+    assert public.close_khayas_box(c, 'الكاستنج', '2026-08') = 15, 'إقفال الكاستنج';
     -- وإقفال خياس المصنعين كما يسجّله البرنامج (_post_closing_entry)
     perform public.post_transactions_batch(c, jsonb_build_array(
         jsonb_build_object('account_name', 'حساب الخسائر', 'op_type', 'قيد يومي مدين', 'weight', 10,
@@ -154,8 +155,8 @@ declare
     c uuid := 'cccccccc-cccc-cccc-cccc-cccccccccccc';
     r record;
 begin
-    assert (select khayas from public.box_period_totals(c, 'الكاستنج', '2026-08')) = 8,
-        'اسم المسترجع القديم في الويب لم يُخصم من الصندوق';
+    assert (select khayas from public.box_period_totals(c, 'الكاستنج', '2026-08')) = 15,
+        'المسترجع (بأي اسم) لا يُخصم من فاقد الصندوق الحالي';
     select * into r from public.treasury_period_ledger(c) where period = '2026-08';
     -- الصناديق: −10 + 2 (مسترجع) − 6 + 1 (الصب) = −13 ، والوارد لم يتغيّر
     assert r.boxes = -13 and r.inbound = 200, format('صناديق فترة ٨: %s', row_to_json(r));

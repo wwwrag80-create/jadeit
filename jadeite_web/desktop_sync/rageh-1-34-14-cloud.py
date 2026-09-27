@@ -4084,6 +4084,66 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # خانات التاريخ بأول يوم من الشهر الماضي، فتُسجَّل حركات الشهر الجديد
         # في الشهر الخطأ. الاختيار اليدوي من قائمة الفترات يبقى متاحاً كما هو.
         self.current_display_month = datetime.datetime.now().strftime("%Y-%m")
+        self.neutralize_auto_recovery_closings()
+
+    AUTO_RECOVERY_CLOSE_NOTE = "مسترجع — أُلغي: كان إقفالاً تلقائياً عند الوارد (الإقفال بالزر وحده)"
+
+    def neutralize_auto_recovery_closings(self):
+        """يلغي أثر «الإقفال التلقائي عند وارد المسترجع» في البيانات السابقة.
+
+        كان كل وارد باسم مسترجع صندوق يُتبَع آلياً بقيد بين «حساب الخسائر» والصندوق
+        (بيانه «مسترجع») يُقفل باقي فاقده الحالي. الآن الإقفال بزر الإقفال وحده،
+        والمسترجع يذهب لحساب مسترجع المرحلة فقط — فتلك القيود تُستثنى من كل الأرصدة.
+        لا تُحذف: تبقى محفوظة سطوراً معلوماتية (حالة MEMO، ومعها سبب الإلغاء في
+        بيانها)، فيظهر فاقد تلك الفترات كاملاً ليُقفل بالزر.
+
+        تُعرف بدقة: وارد باسم مسترجع، يليه مباشرةً طرفا قيد برقم «JE-(رقمه+١)»
+        وبتاريخه نفسه، بيانهما «مسترجع»، بين «حساب الخسائر» وحساب صندوق.
+        نسخة العميل تحفظ التعديل في قاعدتها (فيُرفع للسحابة)، ونسخة المدير في الذاكرة.
+        """
+        try:
+            recovery_names = set(self.get_all_mustarja_names())
+            box_names = {self.get_box_account_name(c) for c in self.get_khayas_box_categories()}
+        except Exception:
+            return 0
+        found = []
+        for inv_id, inv in list(self.invoices.items()):
+            if inv.get("النوع") not in self.RECOVERY_IN_TYPES or inv.get("الاسم") not in recovery_names:
+                continue
+            if not isinstance(inv_id, int):
+                continue
+            legs = [self.invoices.get(inv_id + 1), self.invoices.get(inv_id + 2)]
+            if not all(legs):
+                continue
+            ref = f"JE-{inv_id + 1}"
+            if not all(leg.get("settled_status") == "ACTIVE" and leg.get("النوع") in self.JOURNAL_TYPES
+                       and leg.get("set_number") == ref and (leg.get("البيان") or "") == "مسترجع"
+                       and leg.get("التاريخ") == inv.get("التاريخ") for leg in legs):
+                continue
+            if {legs[0].get("النوع"), legs[1].get("النوع")} != set(self.JOURNAL_TYPES):
+                continue
+            names = {legs[0].get("الاسم"), legs[1].get("الاسم")}
+            others = names - {self.LOSS_PARENT_ACCOUNT}
+            if self.LOSS_PARENT_ACCOUNT not in names or len(others) != 1 or not others <= box_names:
+                continue
+            found.extend(legs)
+        if not found:
+            return 0
+        for leg in found:
+            leg["settled_status"] = MEMO_STATUS
+            leg["البيان"] = self.AUTO_RECOVERY_CLOSE_NOTE
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
+        if not IS_ADMIN_BUILD and getattr(self, "db_path", None):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.executemany(
+                        "UPDATE invoices SET settled_status = ?, note = ? WHERE invoice_id = ?",
+                        [(MEMO_STATUS, self.AUTO_RECOVERY_CLOSE_NOTE, leg["رقم الفاتورة"]) for leg in found])
+                    conn.commit()
+                self.mark_backup_dirty()
+            except Exception as e:
+                log_cloud_error("تعذّر حفظ إلغاء الإقفال التلقائي القديم للمسترجع", e)
+        return len(found) // 2
 
     def save_invoice_to_db(self, inv_id, inv_data):
         """يرجع True لو تم الحفظ فعلياً، أو False لو تم المنع (تعديل على فاتورة موجودة ومقفول عليها التعديل)"""
@@ -5438,39 +5498,55 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return bool(recover_name and inv.get("الاسم") == recover_name
                     and inv.get("النوع") in self.INBOUND_TYPES and (inv.get("row_number", "") or ""))
 
-    def collect_stage_ops_rows(self, madin_type, qabd_type, recover_name=None):
-        """يجمع حركات أي شاشة عمليات للشهر المعروض في صفوف (رقم الصف + الاسم)، مرتبة تصاعدياً برقم الصف.
-        الخياس لكل صف = مدين − دائن − المسترجع (الصرف ناقص القبض ناقص مسترجع الأشجار).
+    def is_recovery_op(self, inv, madin_type, recover_name):
+        """عملية «مسترجع» بلا صف في قسم له مسترجع (الكاستنج):
+        صرف مسترجع (نوع صرف القسم باسم حساب المسترجع) أو قبض مسترجع/وارد باسمه بلا رقم صف"""
+        if not recover_name or inv.get("الاسم") != recover_name or (inv.get("row_number", "") or ""):
+            return False
+        return inv.get("النوع") == madin_type or inv.get("النوع") in self.INBOUND_TYPES
 
-        recover_name: اسم مسترجع الصندوق (مثل «مسترجع كاستنج»). الذهب المسترجع من
-        الأشجار يُسجَّل وارداً بهذا الاسم ورقم الصف، فيُلحق بصفه هنا — وهو نفسه ما
-        يخصمه صندوق الخياس وتضيفه الخزينة، فتتطابق الأرقام في كل الشاشات.
+    def collect_stage_ops_rows(self, madin_type, qabd_type, recover_name=None):
+        """يجمع حركات أي شاشة عمليات للشهر المعروض في صفوف مرتبة تصاعدياً برقم الصف.
+
+        لكل صف (g["op"]):
+          • «فاقد»   — صرف وقبض القسم بصفوفها (رقم الصف)، ومعها «مسترجع الأشجار» لصفها.
+          • «مسترجع» — عمليات المسترجع بلا صف، كل عملية صف مستقل بعد صفوف الفاقد:
+                       صرف مسترجع (يزيد الفاقد الحالي كأي صرف) وقبض مسترجع/وارد باسم
+                       حساب المسترجع (يذهب لحساب مسترجع المرحلة).
+        الخياس = الصرف − القبض (الفاقد الحالي)، والمسترجع عمود مستقل: لا يُطرح من الفاقد
+        الحالي بل من الفاقد المُقفل في الصافي (شاشة الخسائر).
         """
         recs = [inv for inv in self.period_invoices(self.current_display_month)
-                if (inv.get("النوع") in (madin_type, qabd_type) or self.is_row_recovery(inv, recover_name))
-                and inv.get("settled_status") == "ACTIVE"]
+                if inv.get("settled_status") == "ACTIVE"
+                and (inv.get("النوع") in (madin_type, qabd_type) or self.is_row_recovery(inv, recover_name)
+                     or self.is_recovery_op(inv, madin_type, recover_name))]
         recs.sort(key=lambda x: (x.get("التاريخ", ""), x.get("رقم الفاتورة", 0)))
-        # حركات الصرف والقبض أولاً ثم المسترجع، ليُلحق المسترجع بصف قائم إن وُجد
+        # حركات الصرف والقبض أولاً ثم المسترجع، ليُلحق مسترجع الأشجار بصف قائم إن وُجد
         recs.sort(key=lambda x: 1 if self.is_row_recovery(x, recover_name) else 0)
 
         grouped = {}
         for inv in recs:
+            rec_op = self.is_recovery_op(inv, madin_type, recover_name)
             key = ((inv.get("row_number", "") or ""), inv["الاسم"])
-            if self.is_row_recovery(inv, recover_name):
-                key = next((k for k in grouped if k[0] == key[0]), key)
+            if rec_op:
+                key = ("", inv["الاسم"], inv["رقم الفاتورة"])      # كل عملية مسترجع صف مستقل
+            elif self.is_row_recovery(inv, recover_name):
+                key = next((k for k in grouped if len(k) == 2 and k[0] == key[0]), key)
             if key not in grouped:
                 grouped[key] = {"ids": [], "مدين": 0.0, "دائن": 0.0, "مسترجع": 0.0,
-                                "dt": inv["التاريخ"], "البيان": "", "أشجار": 0.0}
+                                "dt": inv["التاريخ"], "البيان": "", "أشجار": 0.0,
+                                "op": "مسترجع" if rec_op else "فاقد"}
             g = grouped[key]
             g["ids"].append(inv["رقم الفاتورة"])
             # الجمع (وليس الاستبدال) حتى لا تُهمل أي حركة مسجّلة فعلياً بنفس رقم الصف
-            if self.is_row_recovery(inv, recover_name):
+            if self.is_row_recovery(inv, recover_name) or (rec_op and inv["النوع"] in self.INBOUND_TYPES):
                 g["مسترجع"] = round(g["مسترجع"] + inv["الوزن"], 2)
                 # «مسترجع الأشجار» وحده لا يُكرَّر في عمود البيان، أما ما كتبه
                 # المستخدم بعده فيظهر («مسترجع الأشجار — بيانه»)
                 note = (inv.get("البيان") or "").strip()
-                note = note.split(" — ", 1)[1].strip() if " — " in note else (
-                    "" if note == "مسترجع الأشجار" else note)
+                if not rec_op:
+                    note = note.split(" — ", 1)[1].strip() if " — " in note else (
+                        "" if note == "مسترجع الأشجار" else note)
             else:
                 if inv["النوع"] == madin_type:
                     g["مدين"] = round(g["مدين"] + inv["الوزن"], 2)
@@ -5483,28 +5559,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if trees > g["أشجار"]:
                 g["أشجار"] = trees
 
-        order = sorted(grouped.keys(), key=lambda k: (self.row_sort_key(k[0]), grouped[k]["dt"], k[1]))
+        order = sorted(grouped.keys(), key=lambda k: (grouped[k]["op"] == "مسترجع",
+                                                      self.row_sort_key(k[0]), grouped[k]["dt"], k[1]))
         return [(k[0], k[1], grouped[k]) for k in order]
 
     def render_stage_ops_table(self, table_frame, madin_type, qabd_type, height=11,
                                with_trees=False, on_edit=None, totals_label=None,
                                section=None, show_name=False, on_detail=None, on_refresh=None,
-                               recover_name=None, name_filter=None):
+                               recover_name=None, op_filter=None):
         """محرك موحّد لجداول شاشات العمليات:
-        (الصف / الاسم / مدين / دائن / الخياس [+ عدد الأشجار + خياس كل شجرة] / البيان)
-        مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته."""
+        (الصف / [العملية] / صرف / قبض / [المسترجع] / الخياس / [الصافي] [+ الأشجار] / البيان)
+        مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته.
 
-
-        # عمود الاسم يظهر فقط حيث يكون له معنى (المصنعين/المركبين).
-        # في باقي الأقسام الاسم هو اسم القسم نفسه فلا فائدة من تكراره في كل صف.
-        name_col = ("الاسم",) if show_name else ()
-        # هذه الأقسام عمليات صرف وقبض فعلية، فالتسمية المحاسبية الأوضح للمستخدم
-        # هي (صرف/قبض) لا (مدين/دائن) — والمصنعون والمركبون لهم جدولهم المستقل
-        rec_col = ("مسترجع الأشجار",) if recover_name else ()
+        recover_name (الكاستنج): عمود «العملية» (فاقد/مسترجع) و«المسترجع» و«الصافي».
+        op_filter: «مسترجع» ← عمليات المسترجع وحدها؛ غير ذلك ← كل العمليات.
+        """
+        # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج مكانه «العملية»
+        name_col = ("الاسم",) if (show_name and not recover_name) else ()
+        op_col = ("العملية",) if recover_name else ()
+        rec_col = ("المسترجع",) if recover_name else ()
+        net_col = ("الصافي",) if recover_name else ()
         if with_trees:
-            cols = ("الصف",) + name_col + ("صرف", "قبض") + rec_col + ("الخياس", "عدد الأشجار", "خياس كل شجرة", "البيان")
+            cols = (("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",) + net_col
+                    + ("عدد الأشجار", "خياس كل شجرة", "البيان"))
         else:
-            cols = ("الصف",) + name_col + ("صرف", "قبض") + rec_col + ("الخياس", "البيان")
+            cols = ("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",) + net_col + ("البيان",)
 
         tree, total_tree, _reused = self.reuse_or_create_tree(
             table_frame, cols, height=height, sticky_total=True)
@@ -5521,25 +5600,38 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rows_map = {}
         tot_madin = tot_daen = tot_trees = tot_rec = 0.0
         rows = self.collect_stage_ops_rows(madin_type, qabd_type, recover_name)
-        if name_filter:
-            # اسم مختار: حركته وحدها، والإجماليات له وحده
-            rows = [r for r in rows if r[1] == name_filter]
+        if op_filter == "مسترجع":
+            # عمليات المسترجع وحدها، والإجماليات لها وحدها
+            rows = [r for r in rows if r[2].get("op") == "مسترجع"]
         for row_num, name, g in rows:
-            khayas = round(g["مدين"] - g["دائن"] - g["مسترجع"], 2)
+            # الخياس = الفاقد الحالي للصف (صرف − قبض)، والصافي بعد المسترجع
+            khayas = round(g["مدين"] - g["دائن"], 2)
+            net = round(khayas - g["مسترجع"], 2)
             tot_madin = round(tot_madin + g["مدين"], 2)
             tot_daen = round(tot_daen + g["دائن"], 2)
             tot_rec = round(tot_rec + g["مسترجع"], 2)
             tot_trees += g["أشجار"]
-            row_label = row_num if row_num else "بدون ترقيم"
+            is_rec_row = g.get("op") == "مسترجع"
+            row_label = row_num if row_num else ("-" if is_rec_row else "بدون ترقيم")
             # التلوين حسب إعداد القسم نفسه: الأحمر فقط لو كان الخياس سالباً
             # (أي أن القبض أكبر من الصرف) والزر مفعّل في هذا القسم.
             tags = ("red_tag",) if (color_negative and khayas < 0) else ()
-            vals = [row_label] + ([name] if show_name else []) + [
-                    f"{g['مدين']:.2f}" if g["مدين"] else "-",
-                    f"{g['دائن']:.2f}" if g["دائن"] else "-"]
+            vals = [row_label]
+            if recover_name:
+                op_label = g.get("op", "فاقد")
+                # حركات قديمة سُجّلت بأسماء (قبل خانة العملية) تُذكر أسماؤها
+                if op_label == "فاقد" and name and name not in ("كاستنج", recover_name):
+                    op_label = f"فاقد ({name})"
+                vals.append(op_label)
+            elif show_name:
+                vals.append(name)
+            vals += [f"{g['مدين']:.2f}" if g["مدين"] else "-",
+                     f"{g['دائن']:.2f}" if g["دائن"] else "-"]
             if recover_name:
                 vals.append(f"{g['مسترجع']:.2f}" if g["مسترجع"] else "-")
             vals.append(f"{khayas:.2f}")
+            if recover_name:
+                vals.append(f"{net:.2f}")
             if with_trees:
                 trees = g["أشجار"]
                 vals += [f"{trees:g}" if trees else "-",
@@ -5548,11 +5640,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             item_id = tree.insert("", "end", values=tuple(vals), tags=tags)
             rows_map[item_id] = g["ids"]
 
-        tot_khayas = round(tot_madin - tot_daen - tot_rec, 2)
+        tot_khayas = round(tot_madin - tot_daen, 2)
+        tot_net = round(tot_khayas - tot_rec, 2)
         if rows_map:
-            tvals = ["إجمالي الشهر"] + (["-"] if show_name else []) + [
+            tvals = ["إجمالي الشهر"] + (["-"] if (recover_name or show_name) else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
-                     [f"{tot_rec:.2f}"] if recover_name else []) + [f"{tot_khayas:.2f}"]
+                     [f"{tot_rec:.2f}"] if recover_name else []) + [f"{tot_khayas:.2f}"] + (
+                     [f"{tot_net:.2f}"] if recover_name else [])
             if with_trees:
                 tvals += [f"{tot_trees:g}" if tot_trees else "-",
                           f"{round(tot_khayas / tot_trees, 2):.2f}" if tot_trees > 0 else "-"]
@@ -5566,9 +5660,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if totals_label is not None:
             txt = f"الإجماليات — صرف: {tot_madin:.2f}  |  قبض: {tot_daen:.2f}"
-            if recover_name:
-                txt += f"  |  مسترجع الأشجار: {tot_rec:.2f}"
             txt += f"  |  الخياس: {tot_khayas:.2f} جم"
+            if recover_name:
+                txt += f"  |  المسترجع: {tot_rec:.2f}  |  الصافي: {tot_net:.2f}"
             if with_trees:
                 per_tree = round(tot_khayas / tot_trees, 2) if tot_trees > 0 else 0.0
                 txt += f"  |  عدد الأشجار: {tot_trees:g}  |  خياس كل شجرة: {per_tree:.2f}"
@@ -5804,7 +5898,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 # مسترجع الأشجار: وارد باسم مسترجع الصندوق على الصف نفسه
                 if new_rec > 0:
                     if rec_inv:
-                        rec_inv.update({"الوزن": new_rec, "row_number": new_row_no, "التاريخ": new_dt})
+                        rec_inv.update({"الوزن": new_rec, "قبل": new_rec, "بعد": 18.0,
+                                        "row_number": new_row_no, "التاريخ": new_dt})
                         if not self.save_invoice_to_db(rec_inv["رقم الفاتورة"], rec_inv):
                             any_blocked = True
                     else:
@@ -5812,7 +5907,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt,
                                     "الاسم": recover_name, "النوع": "وارد ذهب (عيار 18)", "الوزن": new_rec,
                                     "البيان": "مسترجع الأشجار", "settled_status": "ACTIVE", "trees_count": 0.0,
-                                    "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no}
+                                    "قبل": new_rec, "بعد": 18.0, "set_number": "", "row_number": new_row_no}
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
                             any_blocked = True
@@ -5879,7 +5974,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "مراحل التصنيع": "صرف وقبض الكاستنج والمصنعين والمركبين والتلميع",
         "صناديق الخياس": "أرصدة العمال والخياس الفعلي لكل قسم وإقفاله",
         "الوارد": "استلام الذهب والفصوص والألماس من الموردين والمصنع",
-        "شاشة الخسائر": "الخياس الحالي والمُقفل لكل صندوق — وإقفاله لحساب الخسائر",
+        "شاشة الخسائر": "لكل مرحلة: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
         "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج",
         "ربح/خسارة الطقم": "خياسات كل طقم ومسترجعها وربحه أو خسارته",
         "كشف حساب": "حركة أي حساب مع رصيد أول المدة المُرحَّل",
@@ -7714,17 +7809,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # --- نظام صرف/قبض عام لأي "صندوق خياس" يُضاف ديناميكياً من شجرة الحسابات (مطابق لنمط الكاستنج) ---
     # =========================================================================
     def build_stage_panel(self, parent, *, key, title, name_values=None, fields, submit_text, submit_cmd,
-                          on_edit, on_delete, neg_section, neg_refresh, view, on_name_change=None):
+                          on_edit, on_delete, neg_section, neg_refresh, view,
+                          operations=None, mode_fields=None, on_operation_change=None):
         """لوحة قسم من مراحل التصنيع بترتيب مضغوط واحد لكل الأقسام:
 
-            بطاقة إدخال بصف واحد ← [التاريخ][الاسم][الخانات…][البيان][زر الترحيل]
+            بطاقة إدخال بصف واحد ← [التاريخ][الاسم أو العملية][الخانات…][البيان][زر الترحيل]
             شريط أدوات الجدول   ← العنوان يميناً، والأزرار يساراً
             الجدول              ← يأخذ كل المساحة المتبقية (التمرير له وحده)
             سطر الإجماليات      ← رفيع أسفله
 
         الصف شبكة أعمدة تتمدّد وتنكمش مع عرض الشاشة (البيان أعرضها)، فلا تُقصّ
         خانة على الشاشات الصغيرة. يرجع قاموس الأدوات بالأسماء التي تستخدمها
-        دوال الترحيل والتحديث: date, name, fields{…}, note, table_frame, totals.
+        دوال الترحيل والتحديث: date, name, op, fields{…}, note, table_frame, totals.
+
+        operations: أزرار «العملية» مكان خانة الاسم (مثل فاقد/مسترجع في الكاستنج)؛
+        mode_fields تحدّد خانات كل عملية فتظهر وحدها، و on_operation_change يُستدعى
+        عند تبديلها (لتصفية الجدول).
         """
         w = {}
         card = ctk.CTkFrame(parent, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
@@ -7733,42 +7833,38 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         grid = ctk.CTkFrame(card, fg_color="transparent")
         grid.pack(fill="x", padx=10, pady=(6, 10))
 
-        # الأعمدة من اليمين: التاريخ، الاسم (إن وُجد)، الخانات، البيان، زر الترحيل
+        # الأعمدة من اليمين: التاريخ، الاسم أو العملية (إن وُجد)، الخانات، البيان، زر الترحيل
         specs = [("date", "التاريخ", 1)]
-        if name_values is not None:
+        if operations:
+            specs.append(("op", "العملية", 2))
+        elif name_values is not None:
             specs.append(("name", "الاسم", 2))
         specs += [(k, label, 1) for k, label in fields]
         specs += [("note", "البيان / الملاحظات", 3), ("submit", "", 0)]
         n = len(specs)
+        col_of = {k: n - 1 - i for i, (k, _l, _w) in enumerate(specs)}
+        labels = {}
         label_font = ("Cairo", 13, "bold")
         for i, (k, label, weight) in enumerate(specs):
             col = n - 1 - i
             grid.grid_columnconfigure(col, weight=weight, uniform=None if weight != 1 else f"stage_{key}")
             if label:
-                ctk.CTkLabel(grid, text=label, font=label_font,
-                             text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=col, padx=4, pady=(0, 3), sticky="s")
+                labels[k] = ctk.CTkLabel(grid, text=label, font=label_font, text_color=(UI["ink"], "#E5E7EB"))
+                labels[k].grid(row=0, column=col, padx=4, pady=(0, 3), sticky="s")
             if k == "date":
                 ent = ctk.CTkEntry(grid, font=("Cairo", 14), justify="center", width=110, height=36)
                 ent.insert(0, self.get_smart_default_date())
+            elif k == "op":
+                ent = ctk.CTkSegmentedButton(grid, values=list(operations), font=("Cairo", 14, "bold"),
+                                             height=36, selected_color=UI["primary"],
+                                             selected_hover_color=UI["primary_hover"],
+                                             command=lambda v: set_mode(v))
+                ent.set(operations[0])
             elif k == "name":
                 ent = ctk.CTkComboBox(grid, values=name_values(), font=("Cairo", 14), width=170, height=36,
-                                      justify="right",
-                                      command=(lambda _v: on_name_change()) if on_name_change else None)
+                                      justify="right")
                 ent.set("")
-                self.bind_name_autocomplete(ent, name_values,
-                                            on_pick=(lambda _v: on_name_change()) if on_name_change else None)
-                if on_name_change:
-                    # الكتابة/المسح يحدّث الجدول بعد توقّف قصير (لا مع كل حرف)
-                    def on_typed(_e=None, cb=on_name_change):
-                        job = getattr(self, "_stage_name_job", None)
-                        if job:
-                            try:
-                                self.after_cancel(job)
-                            except Exception:
-                                pass
-                        self._stage_name_job = self.after(300, cb)
-                    ent.bind("<KeyRelease>", on_typed)
-                    ent.bind("<FocusOut>", lambda _e, cb=on_name_change: cb())
+                self.bind_name_autocomplete(ent, name_values)
             elif k == "note":
                 ent = ctk.CTkEntry(grid, placeholder_text="البيان / الملاحظات...", font=("Cairo", 14),
                                    justify="right", width=180, height=36)
@@ -7779,17 +7875,75 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             else:
                 ent = ctk.CTkEntry(grid, justify="center", font=("Cairo", 15), width=70, height=36)
             ent.grid(row=1, column=col, padx=4, sticky="ew")
-            if k in ("date", "name", "note", "submit"):
+            if k in ("date", "name", "op", "note", "submit"):
                 w[k] = ent
             else:
                 w.setdefault("fields", {})[k] = ent
 
-        # التنقّل: Enter للخانة التالية، وفي آخر خانة (البيان) يرحّل مباشرة
-        nav = ([w["name"]] if "name" in w else []) + list(w["fields"].values()) + [w["note"]]
-        self.bind_arrow_navigation(nav)
-        for i, f in enumerate(nav[:-1]):
-            f.bind("<Return>", lambda e, nxt=nav[i + 1]: nxt.focus_set() or "break")
-        nav[-1].bind("<Return>", lambda e: (submit_cmd(), "break")[1])
+        # التنقّل: Enter و← للخانة التالية و→ للسابقة، بين الخانات الظاهرة فقط،
+        # وEnter في آخر خانة (البيان) يرحّل مباشرة
+        order_keys = (["name"] if "name" in w else []) + [k for k, _l in fields] + ["note"]
+        widget_of = dict(w.get("fields", {}))
+        widget_of["note"] = w["note"]
+        if "name" in w:
+            widget_of["name"] = w["name"]
+
+        def nav_list():
+            visible = w.get("_visible")
+            return [widget_of[k] for k in order_keys
+                    if visible is None or k in ("name", "note") or k in visible]
+
+        def go(widget, step):
+            seq = nav_list()
+            if widget not in seq:
+                return None
+            i = seq.index(widget) + step
+            if 0 <= i < len(seq):
+                seq[i].focus_set()
+                return "break"
+            return None
+
+        def on_return(widget):
+            seq = nav_list()
+            if widget in seq and seq.index(widget) == len(seq) - 1:
+                submit_cmd()
+                return "break"
+            go(widget, 1)
+            return "break"
+
+        for k in order_keys:
+            wd = widget_of[k]
+            wd.bind("<Return>", lambda e, wd=wd: on_return(wd))
+            wd.bind("<Left>", lambda e, wd=wd: go(wd, 1))
+            wd.bind("<Right>", lambda e, wd=wd: go(wd, -1))
+
+        def set_mode(mode, notify=True):
+            """يعرض خانات العملية المختارة وحدها (الأعمدة المخفية لا تأخذ مساحة)"""
+            visible = set((mode_fields or {}).get(mode, [k for k, _l in fields]))
+            w["_visible"] = visible
+            w["mode"] = mode
+            for k, _l in fields:
+                col = col_of[k]
+                if k in visible:
+                    labels[k].grid()
+                    widget_of[k].grid()
+                    grid.grid_columnconfigure(col, weight=1, uniform=f"stage_{key}")
+                else:
+                    labels[k].grid_remove()
+                    widget_of[k].grid_remove()
+                    grid.grid_columnconfigure(col, weight=0, uniform="")
+            if notify and on_operation_change:
+                on_operation_change(mode)
+            seq = nav_list()
+            if notify and seq:
+                try:
+                    seq[0].focus_set()
+                except Exception:
+                    pass
+
+        w["set_mode"] = set_mode
+        if operations:
+            set_mode(operations[0], notify=False)
 
         # شريط أدوات الجدول
         bar = ctk.CTkFrame(parent, fg_color="transparent")
@@ -7977,20 +8131,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.open_stage_op_edit_dialog(ids, madin_type, qabd_type, f"تعديل حركة {stage_name}",
                                        status_text=f"✏️ تم تعديل حركة {stage_name}")
 
+    # عمليتا الكاستنج مكان خانة الاسم، وخانات كل عملية
+    CAST_OPERATIONS = ("فاقد", "مسترجع")
+    CAST_MODE_FIELDS = {"فاقد": ("row_num", "sarf", "qabd", "recover", "trees"),
+                        "مسترجع": ("sarf", "qabd")}
+
     def build_casting_ui(self, parent):
-        names = lambda: self.get_stage_name_values("كاستنج", "الكاستنج")
         label = self.get_display_label("الكاستنج")
         p = self.build_stage_panel(
-            parent, key="cast", title=f"كشف حركة {label}", name_values=names,
+            parent, key="cast", title=f"كشف حركة {label}",
+            # «العملية» مكان الاسم: فاقد (خانات الصف كلها) أو مسترجع (صرف وقبض فقط)
+            operations=self.CAST_OPERATIONS, mode_fields=self.CAST_MODE_FIELDS,
+            on_operation_change=self.on_cast_operation_change,
             # مسترجع الأشجار بعد القبض مباشرة (خانةً وعموداً)
             fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض"),
                     ("recover", "مسترجع الأشجار"), ("trees", "عدد الأشجار")],
             submit_text="ترحيل 💾", submit_cmd=self.submit_casting_op,
             on_edit=self.edit_selected_casting_row, on_delete=self.delete_selected_casting_row,
             neg_section="الكاستنج", neg_refresh=self.refresh_casting_table,
-            view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"),
-            on_name_change=self.on_cast_name_change)
-        self.cast_date, self.cast_name, self.cast_note = p["date"], p["name"], p["note"]
+            view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"))
+        self.cast_date, self.cast_note = p["date"], p["note"]
+        self.cast_op = p["op"]
         self.cast_title_lbl = p["title"]
         f = p["fields"]
         self.cast_row_num, self.cast_sarf, self.cast_qabd = f["row_num"], f["sarf"], f["qabd"]
@@ -8000,11 +8161,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.cast_table_rows_map = {}
         self.cast_totals_lbl = p["totals"]
 
+    def get_cast_operation(self):
+        """العملية المختارة في الكاستنج: «فاقد» (الافتراضي) أو «مسترجع»"""
+        widget = getattr(self, "cast_op", None)
+        try:
+            value = widget.get() if widget is not None else ""
+        except Exception:
+            value = ""
+        return value if value in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
+
+    def on_cast_operation_change(self, _mode=None):
+        """تبديل العملية: الجدول يعرض كل العمليات (فاقد) أو عمليات المسترجع وحدها"""
+        self.refresh_casting_table()
+
+    @staticmethod
+    def _read_weight(entry):
+        text = entry.get().strip() if entry is not None else ""
+        if not text:
+            return 0.0
+        try:
+            return round(float(text), 2)
+        except ValueError:
+            return None
+
     def submit_casting_op(self):
+        if self.get_cast_operation() == "مسترجع":
+            return self.submit_casting_recovery_op()
+        return self.submit_casting_loss_op()
+
+    def submit_casting_loss_op(self):
+        """عملية «فاقد»: صرف وقبض الكاستنج بصفوفها، ومسترجع الأشجار وعدد الأشجار للصف"""
         date_val = self.cast_date.get().strip()
-        name = self.clean_name(self.cast_name.get()) or "كاستنج"
+        name = "كاستنج"
         note = self.cast_note.get().strip()
         row_num = self.cast_row_num.get().strip()
+        month = self.current_display_month
         if not date_val:
             messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
             return
@@ -8012,43 +8203,32 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
             return
 
-        try:
-            sarf_v = round(float(self.cast_sarf.get().strip()), 2) if self.cast_sarf.get().strip() else 0.0
-        except ValueError:
-            sarf_v = 0.0
-        try:
-            qabd_v = round(float(self.cast_qabd.get().strip()), 2) if self.cast_qabd.get().strip() else 0.0
-        except ValueError:
-            qabd_v = 0.0
-        try:
-            trees_v = round(float(self.cast_trees.get().strip()), 2) if self.cast_trees.get().strip() else 0.0
-        except ValueError:
-            trees_v = 0.0
-        try:
-            recover_v = (round(float(self.cast_recover.get().strip()), 2)
-                         if getattr(self, "cast_recover", None) is not None and self.cast_recover.get().strip() else 0.0)
-        except ValueError:
-            recover_v = 0.0
-        if trees_v < 0 or recover_v < 0:
-            messagebox.showwarning("تنبيه", "عدد الأشجار ومسترجع الأشجار لا يكونان بالسالب.")
+        sarf_v = self._read_weight(self.cast_sarf) or 0.0
+        qabd_v = self._read_weight(self.cast_qabd) or 0.0
+        trees_v = self._read_weight(self.cast_trees) or 0.0
+        recover_v = self._read_weight(getattr(self, "cast_recover", None)) or 0.0
+        if trees_v < 0 or recover_v < 0 or sarf_v < 0 or qabd_v < 0:
+            messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.")
             return
-
         if sarf_v <= 0 and qabd_v <= 0 and recover_v <= 0:
             messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أو مسترجع الأشجار أولاً.")
             return
         _m, _q, recover_name = self.get_stage_config("الكاستنج")
 
+        # الخانة الواحدة تُسجَّل مرة واحدة لكل صف في الفترة (أياً كان اسم الحركة القديمة)
+        def row_has(pred):
+            return any(inv.get("settled_status") == "ACTIVE"
+                       and (inv.get("row_number", "") or "") == row_num and pred(inv)
+                       for inv in self.period_invoices(month))
+
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف كاستنج" for inv in self.invoices.values()):
+        if sarf_v > 0 and row_has(lambda i: i.get("النوع") == "صرف كاستنج" and i.get("الاسم") != recover_name):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض كاستنج" for inv in self.invoices.values()):
+        if qabd_v > 0 and row_has(lambda i: i.get("النوع") == "قبض كاستنج"):
             skipped.append("القبض")
             qabd_v = 0.0
-        # مسترجع الأشجار: خانة واحدة لكل صف مثل الصرف والقبض
-        if recover_v > 0 and any(self.is_row_recovery(inv, recover_name) and inv.get("settled_status") == "ACTIVE"
-                                 and self.inv_in_period(inv, self.current_display_month)
-                                 and (inv.get("row_number", "") or "") == row_num for inv in self.invoices.values()):
+        if recover_v > 0 and row_has(lambda i: self.is_row_recovery(i, recover_name)):
             skipped.append("مسترجع الأشجار")
             recover_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -8057,32 +8237,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sarf_v <= 0 and qabd_v <= 0 and recover_v <= 0:
             return
 
-        if not messagebox.askyesno("تأكيد الترحيل", "هل أنت متأكد من ترحيل حركة الكاستنج؟"):
+        if not messagebox.askyesno("تأكيد الترحيل", "هل أنت متأكد من ترحيل حركة الكاستنج (فاقد)؟"):
             return
-
-        if name != "كاستنج" and not self.check_name_exists(name):
-            self.categories["الكاستنج"].append(name)
-            self.save_name_to_db(name, "الكاستنج")
 
         full_date_time = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
         saved_any = False
 
-        if sarf_v > 0:
+        for value, op_type in ((sarf_v, "صرف كاستنج"), (qabd_v, "قبض كاستنج")):
+            if value <= 0:
+                continue
             self.invoice_counter += 1
             inv_data = {
                 "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": name,
-                "النوع": "صرف كاستنج", "الوزن": sarf_v, "البيان": note, "settled_status": "ACTIVE",
-                "trees_count": trees_v, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
-            }
-            self.invoices[self.invoice_counter] = inv_data
-            self.save_invoice_to_db(self.invoice_counter, inv_data)
-            saved_any = True
-
-        if qabd_v > 0:
-            self.invoice_counter += 1
-            inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": name,
-                "النوع": "قبض كاستنج", "الوزن": qabd_v, "البيان": note, "settled_status": "ACTIVE",
+                "النوع": op_type, "الوزن": value, "البيان": note, "settled_status": "ACTIVE",
                 "trees_count": trees_v, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
@@ -8090,15 +8257,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             saved_any = True
 
         if recover_v > 0 and recover_name:
-            # الذهب المسترجع من الأشجار: وارد باسم «مسترجع كاستنج» ورقم الصف —
-            # المسار نفسه الذي يخصمه صندوق خياس الكاستنج وتضيفه الخزينة
-            # وتقرؤه شاشات الويب والتقارير، فلا يحتاج نوع حركة جديداً
+            # مسترجع الأشجار: وارد باسم «مسترجع كاستنج» ورقم الصف — يذهب لحساب مسترجع
+            # المرحلة (لا يُخصم من فاقدها الحالي) ويظهر بجانب صفه في الجدول
             self.invoice_counter += 1
             inv_data = {
                 "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": recover_name,
                 "النوع": "وارد ذهب (عيار 18)", "الوزن": recover_v,
                 "البيان": f"مسترجع الأشجار — {note}" if note else "مسترجع الأشجار",
-                "settled_status": "ACTIVE", "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0,
+                "settled_status": "ACTIVE", "trees_count": 0.0, "قبل": recover_v, "بعد": 18.0,
                 "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
@@ -8108,65 +8274,91 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if saved_any:
             self.register_operation_period(date_val)
             self.recalculate_all()
-
-            self.cast_sarf.delete(0, 'end')
-            self.cast_qabd.delete(0, 'end')
-            if getattr(self, "cast_recover", None) is not None:
-                self.cast_recover.delete(0, 'end')
-            self.cast_trees.delete(0, 'end')
-            self.cast_note.delete(0, 'end')
-            self.cast_row_num.delete(0, 'end')
-            # التركيز يعود لرقم الصف مباشرة ليبدأ تسجيل العملية التالية بلا نقر
-            self.cast_row_num.focus_set()
-            self.cast_name.configure(values=self.get_stage_name_values("كاستنج", "الكاستنج"))
-            self.cast_name.set("")
-
-            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة الكاستنج لـ ({name})")
+            for entry in (self.cast_sarf, self.cast_qabd, getattr(self, "cast_recover", None),
+                          self.cast_trees, self.cast_note, self.cast_row_num):
+                if entry is not None:
+                    entry.delete(0, 'end')
+            self.lbl_op_status.configure(text="✅ تم ترحيل حركة الكاستنج (فاقد)")
             self.after(2500, lambda: self.lbl_op_status.configure(text=""))
             self.refresh_casting_table()
             # التركيز يعود لرقم الصف لتسجيل العملية التالية مباشرة بلا نقر.
             # يُؤجَّل بعد إعادة رسم الجدول لأن إعادة الرسم تسحب التركيز.
             self.after(60, lambda: self.cast_row_num.focus_set())
 
-    def get_cast_name_filter(self):
-        """الاسم المختار في خانة اسم الكاستنج إن كان اسماً معروفاً، وإلا None = كل الأسماء.
-
-        الخانة فارغة ← الكشف كاملاً بكل الأسماء؛ اسم مختار ← حركته وحدها. اسم جديد
-        لم يُسجَّل له شيء بعد لا يُفرغ الجدول: يبقى الكشف كاملاً ظاهراً.
+    def submit_casting_recovery_op(self):
+        """عملية «مسترجع» في الكاستنج (بلا رقم صف):
+          • الصرف ← صرف للكاستنج يزيد فاقده الحالي كأي صرف، ويظهر في «فاقد» تحت الصرف.
+          • القبض ← ذهب مسترجع: وارد باسم «مسترجع كاستنج» — يذهب لحساب مسترجع المرحلة
+            (لا يُقفل ولا يُخصم من الفاقد الحالي) فيظهر في شاشة الخسائر ويُطرح في الصافي.
         """
-        widget = getattr(self, "cast_name", None)
-        if widget is None:
-            return None
-        typed = self.clean_name(widget.get())
-        if not typed:
-            return None
-        known = {self.clean_name(n) for n in self.get_stage_name_values("كاستنج", "الكاستنج")}
-        if typed in known:
-            return typed
-        for inv in self.invoices_by_name().get(typed, ()):
-            if inv.get("النوع") in ("صرف كاستنج", "قبض كاستنج"):
-                return typed
-        return None
+        date_val = self.cast_date.get().strip()
+        note = self.cast_note.get().strip()
+        if not date_val:
+            messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
+            return
+        sarf_v = self._read_weight(self.cast_sarf)
+        qabd_v = self._read_weight(self.cast_qabd)
+        if sarf_v is None or qabd_v is None:
+            messagebox.showwarning("تنبيه", "الرجاء إدخال أوزان صحيحة.")
+            return
+        if sarf_v < 0 or qabd_v < 0:
+            messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.")
+            return
+        if sarf_v <= 0 and qabd_v <= 0:
+            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
+            return
+        _m, _q, recover_name = self.get_stage_config("الكاستنج")
+        lines = []
+        if sarf_v > 0:
+            lines.append(f"• صرف {sarf_v:.2f} جم — يزيد الفاقد الحالي للكاستنج")
+        if qabd_v > 0:
+            lines.append(f"• قبض {qabd_v:.2f} جم — إلى حساب «{recover_name}» (لا يُقفل شيئاً)")
+        if not messagebox.askyesno("تأكيد ترحيل المسترجع", "ترحيل عملية مسترجع للكاستنج:\n\n"
+                                   + "\n".join(lines) + "\n\nهل تريد المتابعة؟"):
+            return
 
-    def on_cast_name_change(self):
-        """اختيار اسم أو مسحه في خانة الكاستنج: يُعاد رسم الجدول إن تغيّر الاسم المعروض"""
-        if getattr(self, "_cast_filter_shown", None) != self.get_cast_name_filter():
-            self.refresh_casting_table()
+        full_date_time = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
+        if sarf_v > 0:
+            self.invoice_counter += 1
+            inv_data = {
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": recover_name,
+                "النوع": "صرف كاستنج", "الوزن": sarf_v, "البيان": note, "settled_status": "ACTIVE",
+                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": ""
+            }
+            self.invoices[self.invoice_counter] = inv_data
+            self.save_invoice_to_db(self.invoice_counter, inv_data)
+        if qabd_v > 0:
+            self.invoice_counter += 1
+            inv_data = {
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": recover_name,
+                "النوع": "وارد ذهب (عيار 18)", "الوزن": qabd_v, "البيان": note, "settled_status": "ACTIVE",
+                "trees_count": 0.0, "قبل": qabd_v, "بعد": 18.0, "set_number": "", "row_number": ""
+            }
+            self.invoices[self.invoice_counter] = inv_data
+            self.save_invoice_to_db(self.invoice_counter, inv_data)
+
+        self.register_operation_period(date_val)
+        self.recalculate_all()
+        for entry in (self.cast_sarf, self.cast_qabd, self.cast_note):
+            entry.delete(0, 'end')
+        self.lbl_op_status.configure(text="✅ تم ترحيل عملية مسترجع الكاستنج")
+        self.after(2500, lambda: self.lbl_op_status.configure(text=""))
+        self.refresh_casting_table()
+        self.after(60, lambda: self.cast_sarf.focus_set())
 
     def refresh_casting_table(self):
         if not hasattr(self, 'cast_table_frame') or not self.cast_table_frame:
             return
-        name_filter = self.get_cast_name_filter()
-        self._cast_filter_shown = name_filter
+        operation = self.get_cast_operation()
         title_lbl = getattr(self, "cast_title_lbl", None)
         if title_lbl is not None:
             label = self.get_display_label("الكاستنج")
-            title_lbl.configure(text=f"كشف حركة {label} — {name_filter}" if name_filter
-                                else f"كشف حركة {label} — كل الأسماء")
+            title_lbl.configure(text=f"كشف حركة {label} — عمليات المسترجع" if operation == "مسترجع"
+                                else f"كشف حركة {label} — كل العمليات")
         self.cast_tree, self.cast_table_rows_map = self.render_stage_ops_table(
             self.cast_table_frame, "صرف كاستنج", "قبض كاستنج", height=11, with_trees=True,
-            # عمود الاسم: الكشف يجمع كل الأسماء، أو اسماً واحداً عند اختياره
-            section="الكاستنج", show_name=True, name_filter=name_filter,
+            # «فاقد»: كل العمليات، «مسترجع»: عمليات المسترجع وحدها
+            section="الكاستنج", op_filter=operation,
             on_refresh=self.refresh_casting_table,
             recover_name=self.get_stage_config("الكاستنج")[2],
             on_detail=lambda: self.show_selected_stage_details(
@@ -8205,9 +8397,87 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ids = self.cast_table_rows_map.get(sel[0])
         if not ids:
             return
+        recover_name = self.get_stage_config("الكاستنج")[2]
+        # عملية مسترجع (بلا صف): نافذة وزنها وتاريخها وبيانها
+        if len(ids) == 1 and ids[0] in self.invoices and self.is_recovery_op(
+                self.invoices[ids[0]], "صرف كاستنج", recover_name):
+            return self.open_recovery_op_edit_dialog(ids[0], "تعديل عملية مسترجع الكاستنج",
+                                                     status_text="✏️ تم تعديل عملية المسترجع")
         self.open_stage_op_edit_dialog(ids, "صرف كاستنج", "قبض كاستنج", "تعديل حركة الكاستنج",
                                        with_trees=True, status_text="✏️ تم تعديل حركة الكاستنج",
-                                       recover_name=self.get_stage_config("الكاستنج")[2])
+                                       recover_name=recover_name)
+
+    def open_recovery_op_edit_dialog(self, inv_id, title, status_text=""):
+        """تعديل عملية «مسترجع» واحدة: الوزن والتاريخ والبيان (والوزن صفر يحذفها)"""
+        if not self.check_edit_permission():
+            return
+        inv = self.invoices.get(inv_id)
+        if not inv:
+            messagebox.showwarning("تنبيه", "الحركة المحددة لم تعد موجودة. حدّث الشاشة وحاول مجدداً.")
+            return
+        is_receipt = inv.get("النوع") in self.INBOUND_TYPES
+        kind = "القبض (إلى حساب المسترجع)" if is_receipt else "الصرف (يزيد الفاقد الحالي)"
+
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        win.geometry("460x360")
+        win.transient(self)
+        win.grab_set()
+        win.focus_force()
+        ctk.CTkLabel(win, text=f"{title} — {kind}", font=("Cairo", 15, "bold"),
+                     text_color="#d4af37", wraplength=420).pack(pady=(14, 8))
+        frm = ctk.CTkFrame(win)
+        frm.pack(fill="x", padx=20, pady=6)
+        ctk.CTkLabel(frm, text="الوزن:", font=("Cairo", 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
+        ent_w = ctk.CTkEntry(frm, justify="center", width=150)
+        ent_w.insert(0, f"{inv.get('الوزن', 0):g}")
+        ent_w.grid(row=0, column=0, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="التاريخ:", font=("Cairo", 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
+        ent_date = ctk.CTkEntry(frm, justify="center", width=150)
+        ent_date.insert(0, str(inv.get("التاريخ", ""))[:10])
+        ent_date.grid(row=1, column=0, padx=10, pady=8)
+        ctk.CTkLabel(win, text="البيان:", font=("Cairo", 15, "bold")).pack(pady=(6, 0))
+        ent_note = ctk.CTkEntry(win, justify="right", width=360)
+        ent_note.insert(0, inv.get("البيان") or "")
+        ent_note.pack(pady=5)
+
+        def save_edit():
+            try:
+                new_w = round(float(ent_w.get().strip() or 0), 2)
+            except ValueError:
+                messagebox.showerror("خطأ", "الرجاء إدخال وزن صحيح.", parent=win)
+                return
+            if new_w < 0:
+                messagebox.showerror("خطأ", "لا يمكن إدخال قيمة بالسالب.", parent=win)
+                return
+            new_date = ent_date.get().strip()
+            if len(new_date) < 10 or new_date[4] != "-":
+                messagebox.showerror("خطأ", "الرجاء إدخال التاريخ بالصيغة YYYY-MM-DD.", parent=win)
+                return
+            if new_w <= 0:
+                if not messagebox.askyesno("تأكيد", "الوزن صفر — ستُحذف هذه العملية.\nهل تريد المتابعة؟", parent=win):
+                    return
+                if not self.delete_invoice_from_db(inv_id):
+                    return
+            else:
+                old_time = str(inv.get("التاريخ", ""))[11:] or datetime.datetime.now().strftime("%H:%M:%S")
+                inv["الوزن"] = new_w
+                if is_receipt:
+                    inv["قبل"], inv["بعد"] = new_w, 18.0
+                inv["التاريخ"] = f"{new_date} {old_time}"
+                inv["البيان"] = ent_note.get().strip()
+                if not self.save_invoice_to_db(inv_id, inv):
+                    return
+            self.recalculate_all()
+            win.destroy()
+            if status_text and hasattr(self, 'lbl_op_status'):
+                self.lbl_op_status.configure(text=status_text)
+                self.after(2500, lambda: self.lbl_op_status.configure(text=""))
+
+        self.bind_vertical_navigation([ent_w, ent_date, ent_note], on_last=lambda: save_edit(), window=win)
+        ent_w.focus_set()
+        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=("Cairo", 16, "bold"), fg_color="#2ecc71",
+                      hover_color="#27ae60", height=42, command=save_edit).pack(pady=12)
 
     # ---------------------------------------------------------------
     # ------------------------- شاشة التلميع -------------------------
@@ -10093,7 +10363,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "التلميع/البف": "البوليش",
         }.get(cat)
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  صناديق الخياس: لكل مرحلة (صندوق) ثلاثة حسابات
+    #
+    #   • حساب المرحلة نفسها (الصندوق)  ← الفاقد الحالي: صرف − قبض في الفترة.
+    #     يبقى عند المرحلة حتى يُقفَل، وكل فترة مستقلة بخياسها.
+    #   • «فاقد المرحلة»               ← يستقبل الفاقد الحالي عند الإقفال فقط
+    #     (زر الإقفال: مدين فاقد المرحلة / دائن المرحلة)، ويتراكم عبر الفترات.
+    #   • «مسترجع المرحلة»             ← يستقبل كل ذهب مسترجع (وارد باسمه، أو قبض
+    #     «مسترجع» من مراحل التصنيع). لا يمسّ الفاقد الحالي ولا يُقفل شيئاً.
+    #
+    #   الصافي = الفاقد − المسترجع. وأي حساب منها يقبل رصيداً افتتاحياً بقيد يومي.
+    # ══════════════════════════════════════════════════════════════════════
     RECOVERY_IN_TYPES = ("وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس")
+    JOURNAL_TYPES = ("قيد يومي مدين", "قيد يومي دائن")
+    LOSS_PARENT_ACCOUNT = "حساب الخسائر"     # إجمالي حسابات فاقد المراحل (والإقفالات القديمة)
 
     def get_khayas_box_categories(self):
         """كل صناديق الخياس بترتيب عرضها: الكاستنج، المصنعون، المركبون، ثم البقية والمضافة"""
@@ -10101,17 +10385,77 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 + list(self.categories.get("أقسام_خياس_إضافية", [])))
 
     def get_box_recovery_name(self, cat):
-        """اسم حساب مسترجع الصندوق — لكل الصناديق، بما فيها المصنعون والمركبون.
-
-        وارد ذهب/فصوص/ألماس بهذا الاسم = ذهب عاد من الصندوق: يُخصم من خياسه
-        الحالي ويظهر في «مسترجع» لوحته بشاشة الخسائر.
-        """
+        """حساب «مسترجع» المرحلة — لكل الصناديق، بما فيها المصنعون والمركبون"""
         if cat in ("المصنعين", "المركبين"):
             return f"مسترجع {self.get_display_label(cat)}"
         return self.get_stage_config(cat)[2]
 
+    def get_box_loss_account(self, cat):
+        """حساب «فاقد» المرحلة: يُرحَّل إليه فاقدها الحالي عند الإقفال (وبزر الإقفال وحده)"""
+        return f"فاقد {self.get_display_label(cat)}"
+
+    def get_all_loss_accounts(self):
+        return [self.get_box_loss_account(c) for c in self.get_khayas_box_categories()]
+
+    def journal_partner_index(self):
+        """أطراف القيود اليومية مجمّعة برقم القيد — تُبنى مرة وتُعاد ما دامت البيانات لم تتغيّر"""
+        sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0))
+        if getattr(self, "_je_idx_sig", None) != sig:
+            idx = {}
+            for inv in self.invoices.values():
+                if inv.get("النوع") in self.JOURNAL_TYPES and inv.get("set_number"):
+                    idx.setdefault(inv["set_number"], []).append(inv)
+            self._je_idx, self._je_idx_sig = idx, sig
+        return self._je_idx
+
+    def journal_partner(self, leg):
+        """الطرف المقابل لطرف قيد يومي (نفس رقم القيد والنوع المعاكس)، أو None"""
+        other = "قيد يومي دائن" if leg.get("النوع") == "قيد يومي مدين" else "قيد يومي مدين"
+        for cand in self.journal_partner_index().get(leg.get("set_number") or "", ()):
+            if cand is not leg and cand.get("النوع") == other:
+                return cand
+        return None
+
+    def get_box_loss_total(self, cat, month=None):
+        """رصيد حساب «فاقد» المرحلة (month=None: كل الفترات).
+
+        = ما أُقفل من فاقدها الحالي — قيد بين الصندوق وحساب فاقده، أو «حساب
+          الخسائر» في الإقفالات السابقة لإنشاء حسابات الفاقد — محسوباً من جهة الصندوق
+        + القيود المباشرة على حساب الفاقد (رصيد افتتاحي، تسوية…).
+        قيد بين الصندوق وحساب آخر (خزينة، رصيد افتتاحي…) تسوية لفاقده الحالي لا إقفال.
+        """
+        box = self.get_box_account_name(cat)
+        loss_acc = self.get_box_loss_account(cat)
+        loss_names = {self.LOSS_PARENT_ACCOUNT, loss_acc}
+        by_name = self.invoices_by_name()
+        total = 0.0
+        for leg in by_name.get(box, ()):
+            if leg.get("settled_status") != "ACTIVE" or leg.get("النوع") not in self.JOURNAL_TYPES:
+                continue
+            if month and not self.inv_in_period(leg, month):
+                continue
+            partner = self.journal_partner(leg)
+            if partner is None or partner.get("الاسم") in loss_names:
+                w = leg.get("الوزن", 0.0) or 0.0
+                total += w if leg["النوع"] == "قيد يومي دائن" else -w
+        for leg in by_name.get(loss_acc, ()):
+            if leg.get("settled_status") != "ACTIVE" or leg.get("النوع") not in self.JOURNAL_TYPES:
+                continue
+            if month and not self.inv_in_period(leg, month):
+                continue
+            partner = self.journal_partner(leg)
+            if partner is not None and partner.get("الاسم") == box:
+                continue          # إقفال: محسوب من جهة الصندوق أعلاه
+            w = leg.get("الوزن", 0.0) or 0.0
+            total += w if leg["النوع"] == "قيد يومي مدين" else -w
+        return round(total, 2)
+
     def get_box_recovered_total(self, cat, month=None):
-        """إجمالي ما استُرجع للصندوق (وارد باسم مسترجعه). month=None: كل الفترات"""
+        """رصيد حساب «مسترجع» المرحلة (month=None: كل الفترات):
+        كل وارد باسمه (من شاشة الوارد، أو قبض «مسترجع» ومسترجع الأشجار في مراحل
+        التصنيع) + القيود اليومية على حسابه (دائن − مدين، ومنها الرصيد الافتتاحي).
+        صرف «مسترجع» ليس منه: هو صرف للمرحلة يزيد فاقدها الحالي كأي صرف."""
         name = self.get_box_recovery_name(cat)
         if not name:
             return 0.0
@@ -10119,28 +10463,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for inv in self.invoices_by_name().get(name, ()):
             if inv.get("settled_status") != "ACTIVE":
                 continue
-            if inv.get("النوع") not in self.RECOVERY_IN_TYPES:
-                continue
             if month and not self.inv_in_period(inv, month):
                 continue
-            total += inv.get("الوزن", 0.0) or 0.0
+            t = inv.get("النوع")
+            w = inv.get("الوزن", 0.0) or 0.0
+            if t in self.RECOVERY_IN_TYPES or t == "قيد يومي دائن":
+                total += w
+            elif t == "قيد يومي مدين":
+                total -= w
         return round(total, 2)
 
     def get_box_loss_summary(self, cat, month=None):
         """أقسام لوحة الصندوق في شاشة الخسائر:
 
-            الخياس الحالي — غير المُقفل في الفترة المختارة
-            الفاقد        — كل ما خسره الصندوق في كل الفترات: المُقفل لحساب
-                            الخسائر + ما استُرجع منه (المسترجع يُخصم من الخياس
-                            قبل إقفاله، فالمُقفل وحده صافٍ من المسترجع أصلاً)
-            المسترجع      — كل ما عاد من الصندوق في كل الفترات
-            الصافي        — الفاقد − المسترجع = ما وصل حساب الخسائر فعلاً
+            الفاقد الحالي — فاقد المرحلة غير المُقفل في الفترة المختارة
+            الفاقد        — رصيد حساب فاقد المرحلة (كل ما أُقفل في كل الفترات + الافتتاحي)
+            المسترجع      — رصيد حساب مسترجع المرحلة (كل الفترات + الافتتاحي)
+            الصافي        — الفاقد − المسترجع
         """
-        closed = self.get_box_closed_total(cat)
+        loss = self.get_box_loss_total(cat)
         recovered = self.get_box_recovered_total(cat)
-        loss = round(closed + recovered, 2)
-        return {"current": self.get_current_unclosed_khayas(cat, month=month),
-                "loss": loss, "recovered": recovered, "net": round(loss - recovered, 2)}
+        # «+ 0.0» يحوّل الصفر السالب (بقايا الكسور بعد الإقفال) إلى صفر، فلا يظهر «-0.00»
+        return {"current": round(self.get_current_unclosed_khayas(cat, month=month), 2) + 0.0,
+                "loss": loss + 0.0, "recovered": recovered + 0.0, "net": round(loss - recovered, 2) + 0.0}
 
     def ensure_default_khayas_boxes(self):
         """لا صناديق تُنشأ تلقائياً بعد الآن (أُلغي إنشاء قسم الصب).
@@ -10495,10 +10840,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return names
 
     def get_stage_totals_for_month(self, cat, month):
-        """مدين = إجمالي حركة الصرف/الخياس لهذا الصندوق خلال الشهر، دائن = القبض المباشر (إن وجد) + المسترجع الوارد من شاشة الوارد + أي قيود يومية"""
-        madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
+        """مدين = إجمالي الصرف لهذا الصندوق خلال الشهر، دائن = القبض + أي قيود يومية على حسابه.
+        المسترجع ليس منها: له حسابه الخاص (مسترجع المرحلة) ولا يمسّ فاقدها الحالي."""
+        madin_type, qabd_type, _mustarja_name = self.get_stage_config(cat)
         box_account_name = self.get_box_account_name(cat)
-        in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
         tot_madin = tot_daen = 0.0
         for inv in self.period_invoices(month):
             if inv.get("settled_status") != "ACTIVE": continue
@@ -10506,8 +10851,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if t == madin_type:
                 tot_madin += inv["الوزن"]
             elif qabd_type and t == qabd_type:
-                tot_daen += inv["الوزن"]
-            elif t in in_types and inv.get("الاسم") == mustarja_name:
                 tot_daen += inv["الوزن"]
             elif t == "قيد يومي مدين" and inv.get("الاسم") == box_account_name:
                 tot_madin += inv["الوزن"]
@@ -10545,26 +10888,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # (خياس) من صف الإجمالي هناك، ثم نخصم ما استُرجع من الصندوق وما أُقفل
         # منه — فيبقى الرقم مطابقاً لشاشة المبيعات ومحاسبياً سليماً معاً.
         if cat == "خياس الطقوم":
+            # المسترجع لا يُخصم هنا: له حسابه الخاص (مسترجع المرحلة)
             sales_total = self.get_sales_ops_khayas_total(month)
             box_account_name = self.get_box_account_name(cat)
-            _m, _q, mustarja = self.get_stage_config(cat)
-            in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
-            recovered = closed = 0.0
+            closed = 0.0
             for inv in self.period_invoices(month):
                 if inv.get("settled_status") != "ACTIVE": continue
                 t = inv.get("النوع")
-                if t in in_types and inv.get("الاسم") == mustarja:
-                    recovered += inv["الوزن"]
-                elif inv.get("الاسم") == box_account_name:
+                if inv.get("الاسم") == box_account_name:
                     if t == "قيد يومي دائن":
                         closed += inv["الوزن"]
                     elif t == "قيد يومي مدين":
                         closed -= inv["الوزن"]
-            return round(sales_total - recovered - closed, 2)
+            return round(sales_total - closed, 2) + 0.0
 
-        madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
+        # الفاقد الحالي = الصرف − القبض ± قيود حساب المرحلة (ومنها الإقفال).
+        # المسترجع لا يدخل هنا: يذهب لحساب مسترجع المرحلة ولا يُقفل شيئاً
+        madin_type, qabd_type, _mustarja_name = self.get_stage_config(cat)
         box_account_name = self.get_box_account_name(cat)
-        in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
         tot_madin = tot_daen = 0.0
         for inv in self.period_invoices(month):
             if inv.get("settled_status") != "ACTIVE": continue
@@ -10573,13 +10914,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 tot_madin += inv["الوزن"]
             elif qabd_type and t == qabd_type:
                 tot_daen += inv["الوزن"]
-            elif t in in_types and inv.get("الاسم") == mustarja_name:
-                tot_daen += inv["الوزن"]
             elif t == "قيد يومي مدين" and inv.get("الاسم") == box_account_name:
                 tot_madin += inv["الوزن"]
             elif t == "قيد يومي دائن" and inv.get("الاسم") == box_account_name:
                 tot_daen += inv["الوزن"]
-        return round(tot_madin - tot_daen, 2)
+        # «+ 0.0»: بعد الإقفال قد يبقى فرق كسري سالب يُقرَّب إلى «-0.00»
+        return round(tot_madin - tot_daen, 2) + 0.0
 
     def show_gold_balance_breakdown(self):
         """يعرض من أين تكوّن الرصيد الحالي، ليطمئن المستخدم أن الرقم مفهوم لا سحري"""
@@ -10662,10 +11002,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_box_closing_entries(self, cat, month=None):
         """قيود إقفال صندوق معيّن (مجمّعة بمرجع القيد)، الأحدث أولاً.
 
-        كل إقفال قيد مزدوج: دائن على حساب الصندوق ومدين على حساب الخسائر،
-        ويجمعهما مرجع واحد في حقل set_number.
+        الإقفال قيد مزدوج بين حساب الصندوق وحساب فاقده («فاقد X»، أو «حساب
+        الخسائر» في الإقفالات السابقة لإنشائه)، ويجمعهما مرجع واحد في set_number.
+        قيد بين الصندوق وحساب آخر (الخزينة، رصيد افتتاحي…) تسوية لا إقفال، فلا يُعرض.
         """
         box_account = self.get_box_account_name(cat)
+        loss_names = {self.LOSS_PARENT_ACCOUNT, self.get_box_loss_account(cat)}
         groups = {}
         for inv in self.invoices.values():
             if inv.get("settled_status") != "ACTIVE":
@@ -10678,7 +11020,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if month and self.inv_period(inv) != month:
                 continue
             g = groups.setdefault(ref, {"ids": [], "amount": 0.0, "date": "",
-                                        "bayan": "", "touches_box": False})
+                                        "bayan": "", "touches_box": False, "others": set()})
             g["ids"].append(inv["رقم الفاتورة"])
             if inv.get("الاسم") == box_account:
                 g["touches_box"] = True
@@ -10686,13 +11028,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     g["amount"] = round(g["amount"] + inv.get("الوزن", 0.0), 2)
                 else:
                     g["amount"] = round(g["amount"] - inv.get("الوزن", 0.0), 2)
+            else:
+                g["others"].add(inv.get("الاسم"))
             if not g["date"]:
                 g["date"] = inv.get("التاريخ", "")
             if not g["bayan"]:
                 g["bayan"] = inv.get("البيان", "")
 
-        # قيود الإقفال فقط: التي تمسّ حساب هذا الصندوق فعلاً
-        out = [{"ref": r, **g} for r, g in groups.items() if g["touches_box"] and g["amount"]]
+        # قيود الإقفال فقط: تمسّ حساب هذا الصندوق، وطرفها الآخر حساب فاقده
+        out = [{"ref": r, **g} for r, g in groups.items()
+               if g["touches_box"] and g["amount"] and g["others"] <= loss_names]
         out.sort(key=lambda x: x["date"], reverse=True)
         return out
 
@@ -10704,6 +11049,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """
         cat = self.current_view_cat
         display = self.get_display_label(cat)
+        loss_account = self.get_box_loss_account(cat)
         entries = self.get_box_closing_entries(cat)
 
         if not entries:
@@ -10722,7 +11068,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(win, text=f"↩️ التراجع عن إقفال ({display})",
                      font=("Cairo", 18, "bold"), text_color="#e67e22").pack(pady=(16, 2))
-        ctk.CTkLabel(win, text="اختر الإقفال المراد التراجع عنه — سيعود الخياس للصندوق ويخرج من الخسائر",
+        ctk.CTkLabel(win, text=f"اختر الإقفال المراد التراجع عنه — يعود الفاقد للصندوق ويخرج من «{loss_account}»",
                      font=("Cairo", 11), text_color="#8b8f95").pack(pady=(0, 10))
 
         # الأزرار تُرصف أولاً من الأسفل: لو رُصف الجدول أولاً بـ expand=True
@@ -10756,7 +11102,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "تأكيد التراجع",
                     f"سيُحذف قيد الإقفال ({ref}) بمبلغ {en(entry['amount'])} جم.\n\n"
                     f"• يعود الخياس إلى صندوق ({display})\n"
-                    f"• ويخرج المبلغ من حساب الخسائر\n\n"
+                    f"• ويخرج المبلغ من «{loss_account}»\n\n"
                     "هل تريد المتابعة؟", parent=win):
                 return
 
@@ -10779,8 +11125,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return
             self.recalculate_all()
             self.refresh_losses_tab()
-            msg = (f"عاد خياس ({display}) بمقدار {en(entry['amount'])} جم إلى الصندوق،\n"
-                   "وخرج من حساب الخسائر.")
+            msg = (f"عاد فاقد ({display}) بمقدار {en(entry['amount'])} جم إلى الصندوق،\n"
+                   f"وخرج من «{loss_account}».")
             if blocked:
                 msg += f"\n\nتنبيه: تعذّر حذف {blocked} قيد من قيود هذا الإقفال."
             messagebox.showinfo("تم التراجع", msg)
@@ -10836,9 +11182,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if self.get_current_unclosed_khayas(cat_name) <= 0.005:
             return 0.0
 
-        recovered = self.get_box_recovered_total(cat_name, month=self.current_display_month)
-        if closed > 0 or recovered > 0:
-            return round(max(excess - closed - recovered, 0.0), 2)
+        if closed > 0:
+            return round(max(excess - closed, 0.0), 2)
         return excess
 
     def get_box_breakdown_text(self, cat, month=None):
@@ -10874,9 +11219,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat in ("المصنعين", "المركبين"):
             live_total = self.get_actual_section_khayas(cat, target_month=month)
             closed_total = self.get_box_closed_total(cat, month=month)
-            # الذهب المسترجع من القسم (وارد باسم مسترجعه) لم يعد فاقداً
-            recovered = self.get_box_recovered_total(cat, month=month)
-            return round(live_total - closed_total - recovered, 2)
+            # المسترجع لا يُخصم: له حسابه (مسترجع المصنعين/المركبين) ويُطرح في الصافي
+            return round(live_total - closed_total, 2) + 0.0
         return self.get_box_khayas_cumulative(cat, month=month)
 
     def get_sets_net_rows(self, month):
@@ -11009,7 +11353,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """جدول عرض أرصدة صناديق الكاستنج/التلميع/التلميع-البف: شهر وسنة + مدين + دائن + رصيد تراكمي"""
         cat = self.current_view_cat
         madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
-        in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
         show_trees = (cat == "الكاستنج")
         show_net = False
 
@@ -11041,7 +11384,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat == "خياس الطقوم":
             # هذا الصندوق يُغذّى من خانة الخياس بشاشة المبيعات، فتوضيح المسميات أدق للمستخدم
             self.tree.heading("مدين", text="الخياس")
-            self.tree.heading("دائن", text="المسترجع/القبض")
+            # المسترجع ليس هنا: له حسابه («مسترجع خياس التلميع النهائي»)
+            self.tree.heading("دائن", text="القبض/الإقفال")
             self.tree.heading("الرصيد", text="الرصيد التراكمي")
 
         self.tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 14, "bold"))
@@ -11056,7 +11400,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if self.inv_period(inv) != self.current_display_month: continue
             t = inv.get("النوع")
             if not inv.get("التاريخ"): continue
-            if t == madin_type or (qabd_type and t == qabd_type) or (t in in_types and inv.get("الاسم") == mustarja_name):
+            if t == madin_type or (qabd_type and t == qabd_type):
                 months.add(self.current_display_month)
 
         self.stage_month_rows_map = {}
@@ -11193,7 +11537,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         cat = self.current_view_cat
         madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
         box_account_name = self.get_box_account_name(cat)
-        in_types = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
 
         # الرصيد التراكمي (دائن - مدين) حتى بداية هذا الشهر، قبل عملياته
         month_start = f"{month}-01"
@@ -11206,8 +11549,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if t == madin_type:
                 running -= inv["الوزن"]
             elif qabd_type and t == qabd_type:
-                running += inv["الوزن"]
-            elif t in in_types and inv.get("الاسم") == mustarja_name:
                 running += inv["الوزن"]
             elif t == "قيد يومي مدين" and inv.get("الاسم") == box_account_name:
                 running -= inv["الوزن"]
@@ -11225,8 +11566,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if t == madin_type:
                 recs.append((dt, inv.get("الاسم", ""), inv["الوزن"], 0.0, inv.get("رقم الفاتورة", 0), set_no))
             elif qabd_type and t == qabd_type:
-                recs.append((dt, inv.get("الاسم", ""), 0.0, inv["الوزن"], inv.get("رقم الفاتورة", 0), set_no))
-            elif t in in_types and inv.get("الاسم") == mustarja_name:
                 recs.append((dt, inv.get("الاسم", ""), 0.0, inv["الوزن"], inv.get("رقم الفاتورة", 0), set_no))
             elif t == "قيد يومي مدين" and inv.get("الاسم") == box_account_name:
                 recs.append((dt, "قيد يومي", inv["الوزن"], 0.0, inv.get("رقم الفاتورة", 0), set_no))
@@ -11250,7 +11589,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree, total_tree = self.create_sticky_total_tree(body, cols, height=13, col_widths=col_widths)
         if cat == "خياس الطقوم":
             tree.heading("مدين", text="الخياس")
-            tree.heading("دائن", text="المسترجع/القبض")
+            tree.heading("دائن", text="القبض/الإقفال")
 
         tot_madin = tot_daen = 0.0
         for dt, name, madin_v, daen_v, _, set_no in recs:
@@ -12322,6 +12661,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         names += self.get_all_mustarja_names()
         names += ["حساب الخزينة", "المبيعات"]
         names += [self.get_box_account_name(c) for c in self.get_all_stage_categories() + ["المصنعين", "المركبين"]]
+        # حساب فاقد لكل مرحلة (يستقبل الإقفال، ويقبل رصيداً افتتاحياً بقيد يومي)
+        names += [n for n in self.get_all_loss_accounts() if n not in names]
         names += ["حساب الخسائر", self.OPENING_ACCOUNT]
         names += [n for n in self.categories.get("حسابات إضافية", []) if n not in names]
         # أي اسم/حساب جديد استُخدم بقيد يومي سابقاً يظهر تلقائياً هنا أيضاً
@@ -12338,6 +12679,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # حسابات رصيدها = مدين − دائن (الخزينة والمواد)، وبقية الحسابات دائن − مدين
     MADIN_DAEN_ACCOUNTS = frozenset({"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار"})
 
+    def is_debit_nature_account(self, account_key):
+        """رصيده مدين − دائن: الخزينة والمواد، وحسابات الفاقد (فاقد كل مرحلة وحساب الخسائر)"""
+        return (account_key in self.MADIN_DAEN_ACCOUNTS or account_key == self.LOSS_PARENT_ACCOUNT
+                or account_key in set(self.get_all_loss_accounts()))
+
     def get_account_ledger_rows(self, account_key, from_m, to_m):
         """صفوف كشف الحساب (رقم فاتورة/تاريخ/اسم/مدين/دائن/بيان/فترة) لأي حساب، ضمن نطاق فترات اختياري.
 
@@ -12350,7 +12696,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rows = [r for r in all_rows
                 if (not from_m or r["period"] >= from_m) and (not to_m or r["period"] <= to_m)]
         if from_m:
-            use_madin_daen = account_key in self.MADIN_DAEN_ACCOUNTS
+            use_madin_daen = self.is_debit_nature_account(account_key)
             opening = round(sum((r["مدين"] - r["دائن"]) if use_madin_daen else (r["دائن"] - r["مدين"])
                                 for r in all_rows if r["period"] < from_m), 2)
             debit_side = (opening > 0) == use_madin_daen
@@ -12416,7 +12762,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 add(inv, amount if amount > 0 else 0.0, -amount if amount < 0 else 0.0, inv.get("البيان", ""))
 
             # الخياس الفعلي للمصنعين والمركبين — سطر لكل فترة بقيمته **كاملة**.
-            # الإقفال قيد بين «حساب الخسائر» والصندوق لا يمسّ الخزينة، فالخياس
+            # الإقفال قيد بين حساب فاقد القسم والصندوق لا يمسّ الخزينة، فالخياس
             # يبقى مخصوماً بعده (كان يُعرض غير المُقفل فقط، فيرتفع رصيد الخزينة
             # بمجرد الإقفال وتبدأ الفترة التالية برصيد مختلف عن نهاية سابقتها).
             for period, invs in sorted(by_period.items()):
@@ -12428,7 +12774,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     bayan = f"خياس فعلي — فترة {period}"
                     closed = self.get_box_closed_total(cat, month=period)
                     if abs(closed) >= 0.005:
-                        bayan += f" (أُقفل منه {closed:.2f} لحساب الخسائر)"
+                        bayan += f" (أُقفل منه {closed:.2f} إلى «{self.get_box_loss_account(cat)}»)"
                     rows.append({
                         "رقم الفاتورة": "-",
                         # يُؤرَّخ في آخر فترته فيقع في نهايتها من الكشف
@@ -12455,23 +12801,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if t not in worker_types_madin and t not in worker_types_daen: continue
                     add(inv, inv["الوزن"] if t in worker_types_madin else 0.0,
                         inv["الوزن"] if t in worker_types_daen else 0.0, t)
-                # الذهب المسترجع من القسم (وارد باسم مسترجعه)
-                for inv in self.invoices_by_name().get(self.get_box_recovery_name(cat), ()):
-                    if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
-                    if inv.get("النوع") in self.RECOVERY_IN_TYPES:
-                        add(inv, 0.0, inv["الوزن"], "وارد مسترجع")
             else:
+                # حركات المرحلة: الصرف والقبض (المسترجع في كشف حساب مسترجع المرحلة)
                 madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
-                in_types_local = ["وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس"]
                 for inv in self.invoices.values():
                     if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
                     t = inv.get("النوع")
                     if t == madin_type:
-                        add(inv, inv["الوزن"], 0.0, inv.get("البيان") or "صرف")
+                        label = "صرف مسترجع" if inv.get("الاسم") == mustarja_name else "صرف"
+                        add(inv, inv["الوزن"], 0.0, inv.get("البيان") or label)
                     elif qabd_type and t == qabd_type:
                         add(inv, 0.0, inv["الوزن"], "قبض")
-                    elif t in in_types_local and inv.get("الاسم") == mustarja_name:
-                        add(inv, 0.0, inv["الوزن"], "وارد مسترجع")
 
         else:  # مورد عادي أو اسم مسترجع
             sale_types_all = ["مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس"]
@@ -12499,6 +12839,36 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if t not in ("قيد يومي مدين", "قيد يومي دائن"): continue
             add(inv, inv["الوزن"] if t == "قيد يومي مدين" else 0.0,
                 inv["الوزن"] if t == "قيد يومي دائن" else 0.0, inv.get("البيان") or "قيد يومي")
+
+        loss_accounts = set(self.get_all_loss_accounts())
+        if account_key in loss_accounts:
+            # حساب فاقد المرحلة: الإقفالات السابقة لإنشائه سُجّلت على «حساب الخسائر» مقابل
+            # الصندوق — تظهر هنا من جهة الصندوق، فيطابق الكشف رصيد الفاقد في شاشة الخسائر
+            cat = next((c for c in self.get_khayas_box_categories()
+                        if self.get_box_loss_account(c) == account_key), None)
+            box = self.get_box_account_name(cat) if cat else None
+            for leg in (self.invoices_by_name().get(box, ()) if box else ()):
+                if leg.get("settled_status") != "ACTIVE" or leg.get("النوع") not in self.JOURNAL_TYPES:
+                    continue
+                partner = self.journal_partner(leg)
+                if partner is not None and partner.get("الاسم") != self.LOSS_PARENT_ACCOUNT:
+                    continue      # إقفال جديد (محسوب أعلاه من جهة الفاقد) أو تسوية للفاقد الحالي
+                w = leg["الوزن"]
+                add(leg, w if leg["النوع"] == "قيد يومي دائن" else 0.0,
+                    w if leg["النوع"] == "قيد يومي مدين" else 0.0,
+                    leg.get("البيان") or "إقفال", name=box)
+        elif account_key == self.LOSS_PARENT_ACCOUNT:
+            # «حساب الخسائر» = إجمالي حسابات فاقد المراحل: قيوده القديمة (أعلاه) + قيود كل حساب فاقد
+            for loss_acc in loss_accounts:
+                for leg in self.invoices_by_name().get(loss_acc, ()):
+                    if leg.get("settled_status") not in COUNTED_STATUSES:
+                        continue
+                    t = leg.get("النوع")
+                    if t not in self.JOURNAL_TYPES:
+                        continue
+                    add(leg, leg["الوزن"] if t == "قيد يومي مدين" else 0.0,
+                        leg["الوزن"] if t == "قيد يومي دائن" else 0.0,
+                        leg.get("البيان") or "قيد يومي", name=loss_acc)
 
         rows.sort(key=lambda r: (r["period"], r.get("_last", False), r["التاريخ"],
                                  r["رقم الفاتورة"] if isinstance(r["رقم الفاتورة"], int) else 0))
@@ -12558,7 +12928,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         to_m = self.kh_to_month.get().strip()
 
         rows = self.get_account_ledger_rows(account_key, from_m, to_m)
-        use_madin_daen = account_key in self.MADIN_DAEN_ACCOUNTS
+        use_madin_daen = self.is_debit_nature_account(account_key)
 
         out_dir = INVOICES_DIR
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in account_key)[:30]
@@ -12745,7 +13115,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rows = self.get_account_ledger_rows(account_key, from_m, to_m)
         # الرصيد = مدين - دائن لحسابات الخزينة والذهب والألماس وفصوص وأحجار تحديداً (حسب الاعتماد الأخير)
         # وبقية الحسابات (الموردين، المسترجعات، المبيعات) تبقى على صيغة دائن - مدين
-        use_madin_daen = account_key in self.MADIN_DAEN_ACCOUNTS
+        use_madin_daen = self.is_debit_nature_account(account_key)
         self.account_statement_tree.tag_configure("opening_tag", foreground="#1f77b4", font=("Cairo", 13, "bold"))
         running = 0.0
         opening = None
@@ -13118,9 +13488,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.in_type.set("ذهب")
         self.in_type.pack(side="right", padx=8, pady=8)
 
-        # إلى حساب: الوارد العادي للخزينة، أو مسترجع صندوق خياس (القبض من المصنع
-        # قد يكون ذهباً عاد من الكاستنج مثلاً) — فيُخصم من خياس الصندوق ويظهر في
-        # «مسترجع» لوحته بشاشة الخسائر، ويبقى مصدره (الاسم) في البيان
+        # إلى حساب: الوارد العادي للخزينة، أو حساب «مسترجع» مرحلة (القبض من المصنع
+        # قد يكون ذهباً عاد من الكاستنج مثلاً) — يظهر في «مسترجع» لوحتها بشاشة
+        # الخسائر ولا يمسّ فاقدها الحالي ولا يُقفل شيئاً، ويبقى مصدره (الاسم) في البيان
         ctk.CTkLabel(ops_row, text="إلى حساب:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
         self.in_to_account = ctk.CTkOptionMenu(ops_row, values=self.get_inbound_account_options(),
                                                font=("Cairo", 14, "bold"), width=210, height=36,
@@ -13204,59 +13574,35 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # البيان يبقى فارغاً تماماً إلا لو سجّل المستخدم بياناً فعلياً
             note = self.in_note.get().strip()
 
-            # «إلى حساب» مسترجع صندوق: الحركة تُسجَّل باسم المسترجع (فتُخصم من خياس
-            # الصندوق)، ومصدرها الفعلي (المصنع أو غيره) يُحفظ في البيان
+            # «إلى حساب» مسترجع مرحلة: الحركة تُسجَّل باسم حساب مسترجع المرحلة، ومصدرها
+            # الفعلي (المصنع أو غيره) يُحفظ في البيان. المسترجع لا يمسّ فاقد المرحلة
+            # الحالي ولا يُقفل شيئاً — الإقفال بزر الإقفال وحده
             to_account = self.in_to_account.get() if hasattr(self, "in_to_account") else ""
-            confirm_msg = "هل أنت متأكد من ترحيل حركة الوارد؟"
             if to_account and to_account != self.INBOUND_DEFAULT_ACCOUNT:
                 source = supplier
                 supplier = to_account
                 if source and source != to_account:
                     note = f"{note} — من {source}" if note else f"من {source}"
-                # ما سيحدث للصندوق يُعرض قبل الترحيل: المسترجع يُخصم من خياسه،
-                # والباقي من خياسه الحالي يُقفل لحساب الخسائر
-                box_cat = next((c for c in self.get_khayas_box_categories()
-                                if self.get_box_recovery_name(c) == to_account), None)
-                if box_cat:
-                    pre = self.get_current_unclosed_khayas(box_cat)
-                    rest = round(pre - final_w, 2)
-                    confirm_msg = (
-                        f"سيُسجَّل هذا الوارد ({final_w:.2f} جم) مسترجعاً لصندوق "
-                        f"{self.get_display_label(box_cat)}.\n"
-                        f"الخياس الحالي للصندوق: {pre:.2f} جم"
-                        + (f" — ويُقفل الباقي ({rest:.2f} جم) لحساب الخسائر." if abs(rest) >= 0.005 else ".")
-                        + "\n\nهل تريد المتابعة؟")
 
-            if not messagebox.askyesno("تأكيد الترحيل", confirm_msg):
-                return
-
-            # التعرف على أي اسم صندوق خياس (أو اسم مسترجعه) لمعاملته كاسترجاع خياس، وليس كمورد جديد
-            mustarja_map = {}  # اسم صندوق الخياس -> اسم المسترجع الخاص به
-            box_cat_map = {}   # اسم صندوق الخياس -> مفتاح القسم (cat) لاستخدامه بحساب الخياس الحالي
+            # اسم صندوق خياس (أو اسم مسترجعه) في خانة الاسم يُعامل مسترجعاً لذلك الصندوق
+            mustarja_map = {}  # اسم حساب الصندوق -> اسم حساب مسترجعه
             for _stage_cat in self.get_all_stage_categories() + ["المصنعين", "المركبين"]:
                 _box_acc = self.get_box_account_name(_stage_cat)
                 _mustarja_name = self.get_box_recovery_name(_stage_cat)
                 if _box_acc and _mustarja_name:
                     mustarja_map[_box_acc] = _mustarja_name
-                    box_cat_map[_box_acc] = _stage_cat
-
-            all_mustarja_names = set(mustarja_map.values())
-
-            recovered_box_account = None
             if supplier in mustarja_map:
-                recovered_box_account = supplier
                 supplier = mustarja_map[supplier]
-            elif supplier in all_mustarja_names:
-                recovered_box_account = next((box for box, must in mustarja_map.items() if must == supplier), None)
-
-            # نلتقط الخياس الحالي (غير المُقفل) للصندوق *قبل* ترحيل عملية الوارد، لأنه هو المبلغ المُعتمد للتصفير/الاسترجاع
-            pre_khayas = 0.0
-            if recovered_box_account:
-                _box_cat = box_cat_map.get(recovered_box_account)
-                if _box_cat:
-                    pre_khayas = self.get_current_unclosed_khayas(_box_cat)
-
             fixed_names = set(mustarja_map.values())
+
+            confirm_msg = "هل أنت متأكد من ترحيل حركة الوارد؟"
+            if supplier in fixed_names:
+                confirm_msg = (f"سيُسجَّل هذا الوارد ({final_w:.2f} جم) في حساب «{supplier}».\n"
+                               "يظهر في مسترجع المرحلة بشاشة الخسائر، ولا يُقفل أي فاقد.\n\n"
+                               "هل تريد المتابعة؟")
+            if not messagebox.askyesno("تأكيد الترحيل", confirm_msg):
+                return
+
             if supplier != "المصنع" and supplier not in fixed_names and not self.check_name_exists(supplier):
                 self.categories["الموردين"].append(supplier)
                 self.save_name_to_db(supplier, "الموردين")
@@ -13274,33 +13620,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             }
             self.invoices[self.invoice_counter] = inv_data
             self.save_invoice_to_db(self.invoice_counter, inv_data)
-
-            # إذا كان استرجاعاً لصندوق خياس: العملية نفسها تُسهم طبيعياً بجزء منها (باسم المسترجع)،
-            # والباقي (آخر خياس قبل هذه العملية ناقص وزن هذه العملية) يُصفِّر الصندوق دائماً عبر قيد يومي،
-            # بصرف النظر عن إشارته (سواء كان الصندوق عليه خياس موجب أو كان دائناً)، ويُسجَّل في صندوق الخسائر ببيان "مسترجع"
-            remainder = round(pre_khayas - final_w, 2) if recovered_box_account else 0.0
-            if recovered_box_account and remainder != 0:
-                entry_ref = f"JE-{self.invoice_counter + 1}"
-                full_dt2 = full_date
-                je_amount = abs(remainder)
-                # remainder > 0: الصندوق ما زال عليه خياس متبقٍّ بعد هذه العملية -> إقفاله بقيد عادي (مدين الخسائر / دائن الصندوق)
-                # remainder < 0: هذه العملية تجاوزت ما كان مطلوباً (تصفير + زيادة) -> قيد معاكس (دائن الخسائر / مدين الصندوق)
-                from_name, from_type = ("حساب الخسائر", "قيد يومي مدين") if remainder > 0 else (recovered_box_account, "قيد يومي مدين")
-                to_name, to_type = (recovered_box_account, "قيد يومي دائن") if remainder > 0 else ("حساب الخسائر", "قيد يومي دائن")
-
-                self.invoice_counter += 1
-                je_from = {"رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt2, "الاسم": from_name,
-                           "النوع": from_type, "الوزن": je_amount, "البيان": "مسترجع", "settled_status": "ACTIVE",
-                           "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": entry_ref}
-                self.invoices[self.invoice_counter] = je_from
-                self.save_invoice_to_db(self.invoice_counter, je_from)
-
-                self.invoice_counter += 1
-                je_to = {"رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt2, "الاسم": to_name,
-                         "النوع": to_type, "الوزن": je_amount, "البيان": "مسترجع", "settled_status": "ACTIVE",
-                         "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": entry_ref}
-                self.invoices[self.invoice_counter] = je_to
-                self.save_invoice_to_db(self.invoice_counter, je_to)
 
             self.in_weight.delete(0, 'end')
             self.in_carat.delete(0, 'end')
@@ -15838,6 +16157,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.losses_from_month.delete(0, 'end')
         self.losses_to_month.delete(0, 'end')
 
+    def open_account_statement(self, account_key):
+        """يفتح شاشة كشف حساب على حساب معيّن (بنطاق الفترات المكتوب في شاشة الخسائر إن وُجد)"""
+        from_m = self.losses_from_month.get().strip() if hasattr(self, 'losses_from_month') else ""
+        to_m = self.losses_to_month.get().strip() if hasattr(self, 'losses_to_month') else ""
+        self.navigate_to_screen("كشف حساب")
+        if hasattr(self, 'kh_account_name'):
+            self.kh_account_name.set(account_key)
+            if hasattr(self, 'kh_from_month'):
+                self.kh_from_month.delete(0, 'end')
+                if from_m: self.kh_from_month.insert(0, from_m)
+            if hasattr(self, 'kh_to_month'):
+                self.kh_to_month.delete(0, 'end')
+                if to_m: self.kh_to_month.insert(0, to_m)
+            self.refresh_account_statement()
+
     def open_box_statement(self, cat):
         box_account = self.get_box_account_name(cat)
         from_m = self.losses_from_month.get().strip() if hasattr(self, 'losses_from_month') else ""
@@ -15883,21 +16217,35 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             stats.pack(fill="x", padx=12)
             stats.grid_columnconfigure((0, 1), weight=1, uniform="stat")
 
-            def stat(row, col, title, fg, soft):
+            def stat(row, col, title, fg, soft, account=None):
                 box = ctk.CTkFrame(stats, corner_radius=10, fg_color=soft)
                 box.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
-                ctk.CTkLabel(box, text=title, font=("Cairo", 12, "bold"), wraplength=170,
-                             text_color=(UI["muted"], "#9AA3AF")).pack(pady=(6, 0), padx=4)
+                title_lbl = ctk.CTkLabel(box, text=title, font=("Cairo", 12, "bold"), wraplength=170,
+                                         text_color=(UI["muted"], "#9AA3AF"))
+                title_lbl.pack(pady=(6, 0), padx=4)
                 val = ctk.CTkLabel(box, text="0.00", font=("Cairo", 19, "bold"), text_color=fg)
                 val.pack(pady=(0, 6))
+                if account:
+                    # النقر على القسم يفتح كشف حسابه (فاقد المرحلة أو مسترجعها أو المرحلة نفسها)
+                    for w_ in (box, title_lbl, val):
+                        w_.bind("<Button-1>", lambda _e, a=account: self.open_account_statement(a))
+                        try:
+                            w_.configure(cursor="hand2")
+                        except Exception:
+                            pass
                 return val
 
-            # من اليمين: العمود ١ ثم العمود ٠
-            lbl_current = stat(0, 1, "الخياس الحالي", (UI["danger"], "#F08A8F"), (UI["danger_soft"], "#2A1A1C"))
-            lbl_loss = stat(0, 0, f"فاقد {display_name}", (UI["gold_dark"], "#F1D27A"), (UI["gold_soft"], "#2E2710"))
-            lbl_recovered = stat(1, 1, f"مسترجع {display_name}", (UI["primary"], "#9CC0F5"), (UI["primary_soft"], "#1B2B45"))
+            # من اليمين: العمود ١ ثم العمود ٠. عنوانا الفاقد والمسترجع اسما حسابيهما
+            # كما في شجرة الحسابات وكشف الحساب (مثلاً «مسترجع كاستنج»)
+            loss_account, recovery_account = self.get_box_loss_account(cat), self.get_box_recovery_name(cat)
+            lbl_current = stat(0, 1, "الفاقد الحالي", (UI["danger"], "#F08A8F"), (UI["danger_soft"], "#2A1A1C"),
+                               account=self.get_box_account_name(cat))
+            lbl_loss = stat(0, 0, loss_account, (UI["gold_dark"], "#F1D27A"), (UI["gold_soft"], "#2E2710"),
+                            account=loss_account)
+            lbl_recovered = stat(1, 1, recovery_account, (UI["primary"], "#9CC0F5"), (UI["primary_soft"], "#1B2B45"),
+                                 account=recovery_account)
             lbl_net = stat(1, 0, "الصافي (الفاقد − المسترجع)", (UI["success"], "#7EE2B0"), (UI["success_soft"], "#15291F"))
-            ctk.CTkLabel(card, text="الفاقد والمسترجع والصافي: كل الفترات", font=("Cairo", 11),
+            ctk.CTkLabel(card, text="الفاقد الحالي للفترة المختارة — والبقية لكل الفترات", font=("Cairo", 11),
                          text_color=(UI["muted"], "#9AA3AF")).pack(pady=(2, 0))
 
             btns_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -15944,7 +16292,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not messagebox.askyesno(
                 "خياس فترات سابقة لم يُقفل",
                 f"هناك خياس فعلي في فترات منتهية لم يُقفل بعد:\n\n{lines}\n\n"
-                "الإقفال يُثبّت خياس كل فترة في حسابها ويُرحّله للخسائر،\n"
+                "الإقفال يُثبّت خياس كل فترة ويُرحّله لحساب فاقد القسم،\n"
                 "وتبدأ الفترة الجديدة بخياس جديد خاص بها.\n\n"
                 "هل تريد إقفالها الآن؟"):
             return
@@ -15983,7 +16331,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for key in ("current", "loss", "recovered", "net"):
                 widgets[key].configure(text=f"{summary[key]:.2f}")
 
-    def _post_closing_entry(self, box_account_name, amount, bayan, full_dt, period=None):
+    def _post_closing_entry(self, box_account_name, amount, bayan, full_dt, period=None, loss_account=None):
         """يسجّل قيد إقفال مزدوجاً (مدين الخسائر / دائن الصندوق أو العكس).
 
         الفصل في قيود منفصلة مقصود: يظهر في كشف حساب الخسائر سبب كل مبلغ
@@ -15997,10 +16345,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if abs(amount) < 0.005:
             return
         entry_ref = f"JE-{self.invoice_counter + 1}"
+        # الإقفال يُرحَّل لحساب فاقد المرحلة نفسها (لا لحساب خسائر عام)
+        loss_account = loss_account or self.LOSS_PARENT_ACCOUNT
         if amount > 0:
-            from_name, to_name = "حساب الخسائر", box_account_name
+            from_name, to_name = loss_account, box_account_name
         else:
-            from_name, to_name = box_account_name, "حساب الخسائر"
+            from_name, to_name = box_account_name, loss_account
         value = abs(amount)
 
         for name, op_type in ((from_name, "قيد يومي مدين"), (to_name, "قيد يومي دائن")):
@@ -16025,8 +16375,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cat, target_month=month)
         net_before_pos = round(faqid_k - marja_k, 2)
         already_closed = self.get_box_closed_total(cat, month=month)
-        recovered = self.get_box_recovered_total(cat, month=month)
-        remaining = round(total_k - already_closed - recovered, 2)
+        remaining = round(total_k - already_closed, 2)
 
         if abs(remaining) < 0.005:
             messagebox.showinfo("لا يوجد خياس",
@@ -16040,10 +16389,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 f"• المرجع ٧٥٠: −{en(marja_k)} جم\n"
                 f"• الخياس الموجب: −{en(pos_k)} جم\n"
                 f"• الإجمالي: {en(total_k)} جم\n"
-                + (f"• المسترجع: −{en(recovered)} جم\n" if abs(recovered) >= 0.005 else "")
-                + f"• سبق إقفاله: {en(already_closed)} جم\n"
+                f"• سبق إقفاله: {en(already_closed)} جم\n"
                 f"• المتبقّي للإقفال الآن: {en(remaining)} جم\n\n"
-                "سيُرحَّل المتبقّي لحساب الخسائر بقيدين منفصلين. هل تريد المتابعة؟"):
+                f"سيُرحَّل المتبقّي إلى حساب «{self.get_box_loss_account(cat)}» بقيدين منفصلين. هل تريد المتابعة؟"):
             return
 
         box_account_name = self.get_box_account_name(cat)
@@ -16060,12 +16408,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         share_pos = round(remaining - share_net, 2)
 
         # قيدان يوضّحان سبب المبلغ في كشف الخسائر، ومجموعهما = الخياس الفعلي
+        loss_account = self.get_box_loss_account(cat)
         self._post_closing_entry(box_account_name, share_net,
                                  f"إقفال خياس (ذهب/باقي − المرجع ٧٥٠) — فترة {month}",
-                                 full_dt, period=month)
+                                 full_dt, period=month, loss_account=loss_account)
         self._post_closing_entry(box_account_name, share_pos,
                                  f"إقفال خصم الخياس الموجب — فترة {month}",
-                                 full_dt, period=month)
+                                 full_dt, period=month, loss_account=loss_account)
 
         self.recalculate_all()
         messagebox.showinfo(
@@ -16083,26 +16432,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         current = self.get_current_unclosed_khayas(cat, month=month)
         display_name = self.get_display_label(cat)
-        if current == 0:
-            messagebox.showinfo("لا يوجد خياس", f"لا يوجد خياس مسجّل حالياً لصندوق ({display_name}) لإقفاله.")
+        if abs(current) < 0.005:
+            messagebox.showinfo("لا يوجد خياس", f"لا يوجد فاقد حالي غير مُقفل لصندوق ({display_name}) في فترة {month}.")
             return
         box_account_name = self.get_box_account_name(cat)
 
-        if not messagebox.askyesno("تأكيد الإقفال", f"هل أنت متأكد من إقفال خياس صندوق ({display_name}) بقيمة {current:.2f}؟\nسيتم تصفير الخياس الحالي عبر قيد يومي."):
+        loss_account = self.get_box_loss_account(cat)
+        if not messagebox.askyesno(
+                "تأكيد الإقفال",
+                f"إقفال الفاقد الحالي لصندوق ({display_name}) — فترة {month}: {current:.2f} جم\n\n"
+                f"يُرحَّل إلى حساب «{loss_account}» بقيد يومي، ويبدأ الصندوق بفاقد جديد.\n"
+                "هل تريد المتابعة؟"):
             return
 
         # القيد يُؤرَّخ في آخر الفترة المُقفَلة ويُختم بها، فيبقى في سجلّها
         full_dt = self.period_closing_datetime(month)
         entry_ref = f"JE-{self.invoice_counter + 1}"
-        bayan = "إقفال"
+        bayan = f"إقفال فاقد فترة {month}"
         amount = abs(current)
 
-        # current موجب (خياس عادي): مدين حساب الخسائر / دائن الصندوق - يزيد المُقفل
-        # current سالب (الصندوق دائن/بالزيادة): دائن حساب الخسائر / مدين الصندوق - عكسي، يُخفّض المُقفل
+        # current موجب (فاقد عادي): مدين فاقد المرحلة / دائن المرحلة
+        # current سالب (زيادة): عكسه — دائن فاقد المرحلة / مدين المرحلة
         if current > 0:
-            from_name, to_name = "حساب الخسائر", box_account_name
+            from_name, to_name = loss_account, box_account_name
         else:
-            from_name, to_name = box_account_name, "حساب الخسائر"
+            from_name, to_name = box_account_name, loss_account
 
         self.invoice_counter += 1
         inv_from = {"رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": from_name,
@@ -16119,7 +16473,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.save_invoice_to_db(self.invoice_counter, inv_to)
 
         self.recalculate_all()
-        messagebox.showinfo("تم الإقفال", f"تم إقفال خياس صندوق ({display_name}) بنجاح.")
+        messagebox.showinfo("تم الإقفال", f"تم إقفال فاقد صندوق ({display_name}) وترحيله إلى «{loss_account}».")
         self.refresh_losses_tab()
 
     def open_losses_statement(self):
@@ -16169,9 +16523,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
         y = min(y - 13, logo_bottom) - 9 * mm
 
-        txt(c, PW / 2, y, "📉 شاشة الخسائر - إقفال صناديق الخياس", size=17, bold=True, align="center", color=border_color)
+        # الفترة نفسها المعروضة في الشاشة (شريط البحث)، وإلا الفترة الحالية
+        month = self.current_display_month
+        try:
+            if hasattr(self, "combo_losses_period"):
+                month = self.combo_losses_period.get().strip() or month
+        except Exception:
+            pass
+
+        txt(c, PW / 2, y, "شاشة الخسائر - إقفال صناديق الخياس", size=17, bold=True, align="center", color=border_color)
         y -= 8 * mm
-        txt(c, PW / 2, y, f"تاريخ الطباعة: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", size=10, align="center")
+        txt(c, PW / 2, y, f"الفاقد الحالي لفترة {month} — والبقية لكل الفترات  |  "
+                          f"تاريخ الطباعة: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", size=10, align="center")
         y -= 8 * mm
 
         box_defs = [(cat, self.get_display_label(cat)) for cat in self.get_khayas_box_categories()]
@@ -16183,14 +16546,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         for i, (cat, disp) in enumerate(box_defs):
             row, col = divmod(i, n_cols)
-            cx0 = M + col * (card_w + gap)
+            # من اليمين لليسار كما في الشاشة: أول صندوق في أقصى اليمين
+            cx0 = M + (n_cols - 1 - col) * (card_w + gap)
             cy0 = y - row * (card_h + gap)
             c.setStrokeColor(border_color)
             c.rect(cx0, cy0 - card_h, card_w, card_h, fill=0, stroke=1)
-            txt(c, cx0 + card_w / 2, cy0 - 8 * mm, f"صندوق خياس {disp}", size=12, bold=True, align="center", color=border_color)
-            sm = self.get_box_loss_summary(cat)
-            for k, (label, key) in enumerate((("الخياس الحالي", "current"), (f"فاقد {disp}", "loss"),
-                                              (f"مسترجع {disp}", "recovered"), ("الصافي", "net"))):
+            title = f"صندوق خياس {disp}"
+            txt(c, cx0 + card_w / 2, cy0 - 8 * mm, title,
+                size=12 if len(title) <= 22 else 10 if len(title) <= 26 else 8.5,
+                bold=True, align="center", color=border_color)
+            sm = self.get_box_loss_summary(cat, month=month)
+            for k, (label, key) in enumerate((("الفاقد الحالي", "current"), (self.get_box_loss_account(cat), "loss"),
+                                              (self.get_box_recovery_name(cat), "recovered"), ("الصافي", "net"))):
                 txt(c, cx0 + card_w / 2, cy0 - (15 + 6 * k) * mm, f"{label}: {sm[key]:.2f}",
                     size=10, bold=(key == "net"), align="center")
 
@@ -16456,8 +16823,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def add_group(label):
             return self.coa_tree.insert("", "end", text=label, open=True, tags=("group",))
 
-        def add_leaf(parent, label):
-            self.coa_tree.insert(parent, "end", text=label, tags=("leaf",))
+        def add_leaf(parent, label, open_=False):
+            return self.coa_tree.insert(parent, "end", text=label, open=open_, tags=("leaf",))
 
         # حساب الخزينة
         g_treasury = add_group("💰 حساب الخزينة")
@@ -16468,13 +16835,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for acc in ["حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار"]:
             add_leaf(g_materials, acc)
 
-        # صناديق الخياس
+        # صناديق الخياس: كل مرحلة حسابها (الفاقد الحالي) ومعه حسابا «فاقد» و«مسترجع» المرحلة
         g_khayas = add_group("🏗️ صناديق الخياس")
-        for cat in self.get_all_stage_categories() + ["المصنعين", "المركبين"]:
-            add_leaf(g_khayas, self.get_box_account_name(cat))
+        for cat in self.get_khayas_box_categories():
+            stage = add_leaf(g_khayas, self.get_box_account_name(cat), open_=True)
+            add_leaf(stage, self.get_box_loss_account(cat))
+            recovery = self.get_box_recovery_name(cat)
+            if recovery:
+                add_leaf(stage, recovery)
 
-        # حساب الخسائر
-        g_losses = add_group("📉 حساب الخسائر")
+        # حساب الخسائر: إجمالي حسابات فاقد المراحل (كشفه يجمعها كلها)
+        g_losses = add_group("📉 حساب الخسائر (إجمالي فاقد المراحل)")
         add_leaf(g_losses, "حساب الخسائر")
 
         # رصيد افتتاحي: طرف القيود اليومية لربط أي حساب برصيده الافتتاحي
@@ -16484,11 +16855,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # المبيعات
         g_sales = add_group("🧾 المبيعات")
         add_leaf(g_sales, "المبيعات")
-
-        # حسابات المسترجع
-        g_mustarja = add_group("↩️ حسابات المسترجع")
-        for acc in self.get_all_mustarja_names():
-            add_leaf(g_mustarja, acc)
 
         # حسابات الموردين
         g_suppliers = add_group("👥 حسابات الموردين")
@@ -16504,10 +16870,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # حسابات أخرى (أي اسم جديد استُخدم بقيد يومي وليس ضمن ما سبق)
         known_names = set()
-        for cat in self.get_all_stage_categories() + ["المصنعين", "المركبين"]:
+        for cat in self.get_khayas_box_categories():
             known_names.add(self.get_box_account_name(cat))
         known_names |= {"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار",
                          "حساب الخسائر", "المبيعات", self.OPENING_ACCOUNT} | set(self.get_all_mustarja_names())
+        known_names |= set(self.get_all_loss_accounts())
         known_names |= set(self.categories.get("الموردين", []))
         known_names |= set(manual_accounts)
 

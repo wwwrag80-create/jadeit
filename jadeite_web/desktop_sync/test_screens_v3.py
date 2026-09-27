@@ -78,7 +78,8 @@ assert "_open_selected_supplier_statement" in seg("refresh_suppliers_table")
 print("✔ نقرتان على مورد تفتحان كشف حسابه")
 
 # ═══ ٢) الكاستنج: مسترجع الأشجار ═══
-C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect_stage_ops_rows", "is_row_recovery", "row_sort_key", "inv_period", "inv_in_period",
+C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect_stage_ops_rows", "is_row_recovery",
+           "is_recovery_op", "row_sort_key", "inv_period", "inv_in_period",
            "get_box_khayas_cumulative", "get_stage_config", "get_box_account_name", "get_display_label"],
           attrs=("INBOUND_TYPES", "BOX_DISPLAY_OVERRIDES"))
 app = C()
@@ -91,29 +92,31 @@ app.invoices = {i["رقم الفاتورة"]: i for i in [
     inv(4, "كاستنج", "صرف كاستنج", 60.0, row="4"),
     inv(5, "كاستنج", "قبض كاستنج", 57.4, row="4"),
     inv(6, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 1.0, row="9"),         # مسترجع لصف بلا صرف/قبض
-    inv(7, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 2.0),                  # مسترجع قديم بلا صف (شاشة الوارد)
+    inv(7, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 2.0),                  # مسترجع بلا صف (شاشة الوارد)
 ]}
 rows = app.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", "مسترجع كاستنج")
-by_row = {r: g for r, _n, g in rows}
+by_row = {r: g for r, _n, g in rows if g["op"] == "فاقد"}
 assert by_row["7"]["مسترجع"] == 6.5 and by_row["7"]["مدين"] == 80.0 and by_row["7"]["دائن"] == 70.0
 assert 3 in by_row["7"]["ids"] and by_row["7"]["البيان"] == ""
 print("✔ مسترجع الأشجار يُلحق بصفه (٧) في الجدول، ويُحذف ويُعدَّل معه")
-khayas_rows = sum(round(g["مدين"] - g["دائن"] - g["مسترجع"], 2) for g in by_row.values())
-assert by_row["9"]["مسترجع"] == 1.0
+rec_rows = [g for _r, _n, g in rows if g["op"] == "مسترجع"]
+assert len(rec_rows) == 1 and rec_rows[0]["مسترجع"] == 2.0 and rec_rows[0]["ids"] == [7]
+print("✔ المسترجع بلا صف (من الوارد) صف «مسترجع» مستقل في جدول الكاستنج")
+khayas_rows = round(sum(round(g["مدين"] - g["دائن"], 2) for _r, _n, g in rows), 2)
 box = app.get_box_khayas_cumulative("الكاستنج")
-assert round(khayas_rows - 2.0, 2) == box, (khayas_rows, box)
-print(f"✔ خياس الصف = الصرف − القبض − المسترجع، ومجموع الصفوف ({khayas_rows:.2f}) − المسترجع العام بلا صف (2.00) = خياس الصندوق ({box:.2f})")
-assert [r for r, _n, _g in rows] == ["4", "7", "9"]
-print("✔ الصفوف مرتبة تصاعدياً برقم الصف")
+assert khayas_rows == box == 12.6, (khayas_rows, box)
+print(f"✔ الفاقد الحالي = الصرف − القبض لكل الصفوف ({khayas_rows:.2f}) = فاقد الصندوق ({box:.2f})؛ المسترجع في حسابه")
+assert [r for r, _n, g in rows if g["op"] == "فاقد"] == ["4", "7", "9"] and rows[-1][2]["op"] == "مسترجع"
+print("✔ صفوف الفاقد مرتبة تصاعدياً برقم الصف، وعمليات المسترجع بعدها")
 
-cast = seg("submit_casting_op")
+cast = seg("submit_casting_loss_op")
 assert '"وارد ذهب (عيار 18)"' in cast and '"الاسم": recover_name' in cast
 assert "skipped.append(\"مسترجع الأشجار\")" in cast
 print("✔ الترحيل: وارد باسم «مسترجع كاستنج» ورقم الصف، وخانة المسترجع مرة واحدة لكل صف")
 rst = seg("render_stage_ops_table")
-assert '("صرف", "قبض") + rec_col + ("الخياس"' in rst
-print("✔ عمود «مسترجع الأشجار» بعد عمود القبض مباشرة")
-assert 'recover_name=self.get_stage_config("الكاستنج")[2]' in seg("edit_selected_casting_row")
+assert '("صرف", "قبض") + rec_col + ("الخياس",) + net_col' in rst
+print("✔ عمود «المسترجع» بعد القبض، ثم الخياس والصافي")
+assert 'recover_name=recover_name' in seg("edit_selected_casting_row")
 assert "ent_rec" in seg("open_stage_op_edit_dialog")
 print("✔ نافذة التعديل تعرض مسترجع الأشجار وتحفظه")
 
