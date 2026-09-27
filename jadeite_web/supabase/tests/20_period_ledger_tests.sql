@@ -63,8 +63,10 @@ begin
     select * into r8 from public.treasury_period_ledger(c) where period = '2026-08';
     select * into r9 from public.treasury_period_ledger(c) where period = '2026-09';
 
-    assert r8.carry = 0 and r8.opening = 1000 and r8.inbound = 200 and r8.sales = -200
-       and r8.boxes = -10 and r8.closed = 0 and r8.journal = 3 and r8.workers = -10,
+    -- الوارد = كل وارد ذهب، ومنه وارد «مسترجع كاستنج» (٥): 200 + 5 = 205
+    -- والصناديق = صرفها وقبضها فقط: −40 + 25 = −15 (الخزينة نفسها لم تتغيّر)
+    assert r8.carry = 0 and r8.opening = 1000 and r8.inbound = 205 and r8.sales = -200
+       and r8.boxes = -15 and r8.closed = 0 and r8.journal = 3 and r8.workers = -10,
         format('بنود فترة ٨ خاطئة: %s', row_to_json(r8));
     assert r8.closing = 983, format('نهاية فترة ٨ = %s (المتوقع 983 كما في البرنامج)', r8.closing);
     assert r9.carry = r8.closing, format('بداية فترة ٩ (%s) ≠ نهاية فترة ٨ (%s)', r9.carry, r8.closing);
@@ -158,8 +160,8 @@ begin
     assert (select khayas from public.box_period_totals(c, 'الكاستنج', '2026-08')) = 15,
         'المسترجع (بأي اسم) لا يُخصم من فاقد الصندوق الحالي';
     select * into r from public.treasury_period_ledger(c) where period = '2026-08';
-    -- الصناديق: −10 + 2 (مسترجع) − 6 + 1 (الصب) = −13 ، والوارد لم يتغيّر
-    assert r.boxes = -13 and r.inbound = 200, format('صناديق فترة ٨: %s', row_to_json(r));
+    -- الصناديق: −15 − 6 + 1 (الصب) = −20 ، والوارد: 205 + 2 (مسترجع بالاسم القديم) = 207
+    assert r.boxes = -20 and r.inbound = 207, format('صناديق فترة ٨: %s', row_to_json(r));
     assert r.closing = 980, format('نهاية فترة ٨ = %s (المتوقع 980)', r.closing);
 end $$;
 rollback;

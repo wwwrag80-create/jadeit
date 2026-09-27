@@ -344,6 +344,8 @@ assert summary(a, CAST, M9) == (2.0, 15.0, 12.0, 3.0), summary(a, CAST, M9)
 confirm = texts[len(msgs) - 1 - msgs[::-1].index("تأكيد الترحيل")]
 assert f"في حساب «{CAST_REC}»" in confirm and "لا يُقفل أي فاقد" in confirm, confirm
 print("✔ الوارد «إلى حساب مسترجع كاستنج»: يذهب لحساب المسترجع (12) — الفاقد الحالي باقٍ 2 بلا إقفال")
+assert a.treasury_bucket(rec, a.get_treasury_type_sets()) == ("inbound", 3.0)
+print("✔ ويُحتسب «وارداً» دخلنا: في لوحة الوارد بالرئيسية والتقرير الشهري (لا يُنقص الخياس)")
 
 # اسم الصندوق في خانة المورد (الطريقة القديمة) يُسجَّل مسترجعاً أيضاً — بلا إقفال
 inbound(a, M9, 1, a.INBOUND_DEFAULT_ACCOUNT, supplier=CAST_BOX, voucher="V2")

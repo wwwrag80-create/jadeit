@@ -48,8 +48,27 @@ assert 'Image.open(pure).convert("RGBA")' in hb
 print("✔ الشعار يُقرأ بوضع RGBA — لا خلفية سوداء")
 assert "min(420, int(avail * 0.26))" in hb
 print("✔ وحجمه صغير مريح (٢٤٠–٤٢٠ بكسل)")
-assert 'tint_logo(base_logo, "#173F7E", "#4F86D6", opacity=0.9)' in hb
-print("✔ ويُعرض بالأزرق على الأبيض (بطلب العميل) متناسقاً مع الشريط الجانبي، بشفافية خفيفة")
+assert "tint_logo(base_logo, *LOGO_GOLD_LIGHT_MODE, opacity=0.9)" in hb
+import ast as _ast
+_gold = {n.targets[0].id: _ast.literal_eval(n.value) for n in _ast.parse(src).body
+         if isinstance(n, _ast.Assign) and getattr(n.targets[0], "id", "").startswith("LOGO_GOLD_")}
+
+
+def _rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def _lum(h):
+    r, g, b = _rgb(h)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+# بعمق الأزرق السابق نفسه (إضاءة الغامق والفاتح) — ذهبي (أحمر > أخضر > أزرق) غير ساطع
+for gold, blue in zip(_gold["LOGO_GOLD_LIGHT_MODE"], ("#173F7E", "#4F86D6")):
+    assert abs(_lum(gold) - _lum(blue)) <= 12, (gold, _lum(gold), _lum(blue))
+    r, g, b = _rgb(gold)
+    assert r > g > b and max(r, g, b) <= 190, gold
+print("✔ ويُعرض بالذهبي الهادئ على الأبيض (بطلب العميل): بعمق الأزرق السابق نفسه، لا ساطعاً")
 
 from PIL import Image
 im = Image.open("jadeite_logo.png")

@@ -62,6 +62,8 @@ CHECKS = [
     ("السرعة وملء الشاشة",   [PY, "test_speed_fullscreen.py", TARGET]),
     ("الدفعة الرابعة",       [PY, "test_screens_v4.py", TARGET]),
     ("الفاقد والمسترجع",     [PY, "test_loss_recovery.py", TARGET]),
+    ("مرآة المدير الحرفية",   [PY, "test_admin_snapshot.py", TARGET]),
+    ("أزرار أقسام الخياس",   [PY, "test_khayas_buttons.py", TARGET]),
 ]
 
 failed = []

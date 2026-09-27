@@ -335,8 +335,10 @@ print("✔ فحص المدير المساعد وفحص العميل يجريان
 assert "touch_client_login_async(client_id)" in login
 assert "threading.Thread" in module_src("touch_client_login_async")
 print("✔ تسجيل وقت الدخول للمدير في الخلفية")
-assert "if IS_ADMIN_BUILD and SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:" in login
+admin_wait = login[login.index("if IS_ADMIN_BUILD:"):login.index("if not self._wait_outro()")]
+assert "SyncDownWindow(" in admin_wait and login.count("SyncDownWindow(") == 1
 print("✔ نسخة العميل لا تنتظر الرفع عند الدخول — محرك المزامنة يرفع في الخلفية فور الفتح")
+print("✔ ونسخة المدير وحدها تنتظر: تنزّل نسخة العميل الكاملة (بلا شرط رمز مزامنة)")
 assert "install_sync_schema(self.db_path)" in io.open("cloud_sync.py", encoding="utf-8").read()
 assert "self.cloud_sync.start()" in seg("start_cloud_sync_engine")
 print("✔ ومحرك المزامنة يُجهّز بنية التتبّع بنفسه قبل أول رفع")

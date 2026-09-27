@@ -3680,7 +3680,6 @@ language plpgsql stable security definer set search_path = public as $$
 declare
     v_sarf text[];
     v_qabd text[];
-    v_must text[];
 begin
     -- لا صلاحية = لا صفوف (لا رسالة خطأ تكشف وجود المصنع)
     if not public.has_tenant_access(p_tenant) then
@@ -3690,19 +3689,17 @@ begin
     select coalesce(array_agg(b.madin_type), '{}'), coalesce(array_agg(b.qabd_type), '{}')
       into v_sarf, v_qabd
       from public.tenant_khayas_boxes(p_tenant) b;
-    select coalesce(array_agg(distinct m.name), '{}')
-      into v_must
-      from public.tenant_khayas_boxes(p_tenant) b
-     cross join lateral unnest(b.mustarja_names) as m(name);
 
     return query
     with c as (
         select t.period as p,
                case
                    when t.op_type = 'رصيد افتتاحي' then 'opening'
+                   -- كل وارد ذهب «وارد» — ومنه ما سُجّل لحساب مسترجع مرحلة: ذهبٌ دخل
+                   -- الخزينة فعلاً، وحساب المسترجع يسجّله للمرحلة ولا يمسّ فاقدها الحالي
+                   -- (مطابق لبرنامج سطح المكتب treasury_bucket)
                    when t.op_type = 'وارد ذهب (عيار 18)' then
                        case when t.trees_count = 1 and t.note = 'قيد افتتاحي' then 'opening'
-                            when t.account_name = any(v_must) then 'boxes'
                             else 'inbound' end
                    when t.op_type in ('مبيعات ذهب', 'مبيعات ذهب مع الماس', 'صادر ذهب') then 'sales'
                    when t.op_type = 'صرف خياس مقفل' then 'closed'

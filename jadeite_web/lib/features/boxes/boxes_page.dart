@@ -100,7 +100,7 @@ class BoxesPage extends ConsumerWidget {
                   runSpacing: 12,
                   children: [
                     _Metric(label: 'مدين (صرف)', value: Fmt.weight(t.madin)),
-                    _Metric(label: 'دائن (قبض/مسترجع)', value: Fmt.weight(t.daen)),
+                    _Metric(label: 'دائن (قبض)', value: Fmt.weight(t.daen)),
                     _Metric(
                       label: 'الذهب عند ${box.name}',
                       value: '${Fmt.weight(t.khayas)} جم',
@@ -148,7 +148,7 @@ class BoxesPage extends ConsumerWidget {
                 title: '${box.icon} تفاصيل ${box.name} — $period',
                 columns: const [
                   'التاريخ', 'رقم التشغيل', 'الصف', 'الاسم', 'الخياس (مدين)',
-                  'المسترجع/القبض', 'البيان',
+                  'القبض', 'البيان',
                 ],
                 rows: rows,
                 totalsRow: rows.isEmpty

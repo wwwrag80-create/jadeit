@@ -157,7 +157,7 @@ class ReportsPage extends ConsumerWidget {
 
               return DataTableCard(
                 title: 'صناديق الخياس خلال $period',
-                columns: const ['الصندوق', 'مدين (صرف)', 'دائن (قبض/مسترجع)', 'الخياس'],
+                columns: const ['الصندوق', 'مدين (صرف)', 'دائن (قبض)', 'الخياس'],
                 rows: rows,
                 totalsRow: [
                   'الإجمالي', Fmt.weight(tM), Fmt.weight(tD), Fmt.weight(tK),

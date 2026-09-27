@@ -46,6 +46,15 @@ SUPABASE_URL = "https://ttpqksvtnhoulghgovob.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ymRG7rKUf-704V3j1bNwgg_b1IvlMlX"
 
 
+def admin_secret_dir():
+    """مجلد بيانات البرنامج لمستخدم الجهاز (نفس APP_DATA_DIR) — يُحسب هنا لأنه يُقرأ قبل تعريفه"""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if not base:
+        home = os.path.expanduser("~")
+        base = home if os.name == "nt" else os.path.join(home, ".local", "share")
+    return os.path.join(base, "JadeiteERP")
+
+
 def _load_admin_secret_key():
     """يقرأ المفتاح السري لنسخة المدير من خارج الكود — لا يُكتب في الملف أبداً.
 
@@ -58,7 +67,9 @@ def _load_admin_secret_key():
     key = os.environ.get("JADEITE_SUPABASE_SECRET_KEY", "").strip()
     if key:
         return key
-    folders = [os.path.dirname(os.path.abspath(sys.argv[0] or "."))]
+    # مجلد بيانات البرنامج لمستخدم الجهاز أولاً: هناك يحفظه المدير من داخل لوحته
+    # مرة واحدة (save_admin_secret_key) — لا يحتاج نسخ ملف بجانب exe بعد كل بناء
+    folders = [admin_secret_dir(), os.path.dirname(os.path.abspath(sys.argv[0] or "."))]
     try:
         folders.append(os.path.dirname(os.path.abspath(__file__)))
     except NameError:
@@ -116,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.43.0"
+APP_VERSION = "1.44.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -436,6 +447,12 @@ class StableWindowMixin:
                 pass
 
 
+# ألوان شعار الرئيسية (الغامق ← الفاتح): ذهبي عتيق مطفأ بإضاءة الأزرق السابق نفسها
+# (#173F7E ← #4F86D6)، فيبقى هادئاً على الأبيض لا ساطعاً
+LOGO_GOLD_LIGHT_MODE = ("#4E3A0E", "#A57F33")
+LOGO_GOLD_DARK_MODE = ("#8A6A24", "#D2B574")
+
+
 def tint_logo(img, dark, light, opacity=1.0):
     """يعيد تلوين الشعار بتدرّج لونين مع حفظ شفافيته وتفاصيل إضاءته.
 
@@ -594,6 +611,36 @@ def prewarm_supabase_clients():
     threading.Thread(target=work, name="JadeitePrewarm", daemon=True).start()
 
 
+def save_admin_secret_key(key):
+    """يحفظ مفتاح المدير على هذا الجهاز (مجلد بيانات البرنامج للمستخدم) ويفعّله فوراً.
+
+    يُحفظ خارج المستودع وخارج exe: لا يُرفع ولا يُوزَّع مع أي نسخة. يرجع (True, None)
+    أو (False, السبب) — ويُختبر قبل الحفظ بطلب قراءة فعلي فلا يُحفظ مفتاح خاطئ.
+    """
+    global SUPABASE_SECRET_KEY
+    key = (key or "").strip()
+    if not key:
+        return False, "الصق المفتاح أولاً."
+    if not SUPABASE_AVAILABLE:
+        return False, "مكتبة الاتصال بالسحابة غير متوفرة في هذه النسخة."
+    try:
+        sb = _sb_create_client(SUPABASE_URL, key)
+        sb.table("clients").select("client_id").limit(1).execute()
+    except Exception as e:
+        return False, f"المفتاح غير صحيح أو لا يوجد اتصال بالإنترنت:\n{e}"
+    try:
+        folder = admin_secret_dir()
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "admin_secret.key"), "w", encoding="utf-8") as f:
+            f.write(key)
+    except OSError as e:
+        return False, f"تعذّر حفظ المفتاح على هذا الجهاز: {e}"
+    SUPABASE_SECRET_KEY = key
+    with _SB_LOCK:
+        _SB_CLIENTS.pop("admin", None)       # عميل جديد بالمفتاح الجديد
+    return True, None
+
+
 def get_supabase_admin_client():
     """عميل سحابي بصلاحيات كاملة (المدير فقط) — يتخطى كل الحمايات"""
     if not SUPABASE_AVAILABLE:
@@ -712,8 +759,57 @@ def cloud_set_client_can_edit(client_id, value):
         return False
 
 
+# ختم اللقطة المرفوعة (يُكتب في النسخة المرفوعة وحدها، لا في قاعدة العميل):
+# وقت أخذها على جهاز العميل، وإصدار برنامجه — ليعرف المدير حداثتها وتطابق الإصدارين
+MIRROR_META_TIME = "_mirror_snapshot_at"
+MIRROR_META_VERSION = "_mirror_app_version"
+
+
+def _remove_db_files(path):
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
+
+
+def snapshot_db_bytes(db_path):
+    """لقطة كاملة ومتّسقة لقاعدة العميل كما هي الآن، في ملف واحد (بايتات).
+
+    قراءة ملف القاعدة مباشرة كانت تُفوّت آخر ما سُجّل: القاعدة تعمل بنظام WAL،
+    فأحدث الحركات تبقى في الملف المجاور ‎-wal‎ حتى تُدمج — فتصل للسحابة نسخة
+    ناقصة ويرى المدير أرقاماً غير أرقام العميل. النسخ عبر sqlite3.backup يجمع كل
+    شيء في ملف واحد متّسق (قراءة واحدة لا تتخلّلها كتابة).
+    """
+    # اسم مؤقت فريد: رفع دوري ورفع عند الإغلاق ورفع يدوي قد تتزامن
+    tmp = f"{db_path}.snapshot-{threading.get_ident()}-{time.time_ns()}"
+    _remove_db_files(tmp)
+    src = sqlite3.connect(db_path, timeout=30)
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+            dst.execute("PRAGMA journal_mode=DELETE")
+            dst.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+            dst.executemany("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [
+                (MIRROR_META_TIME, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")),
+                (MIRROR_META_VERSION, APP_VERSION)])
+            dst.commit()
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    try:
+        with open(tmp, "rb") as f:
+            return f.read()
+    finally:
+        _remove_db_files(tmp)
+
+
 def cloud_upload_backup(client_id, db_path):
-    """يرفع نسخة كاملة من قاعدة البيانات المحلية للسحابة — تعمل في الخلفية ولا تعطّل البرنامج عند فشلها"""
+    """يرفع نسخة كاملة من قاعدة البيانات المحلية للسحابة — تعمل في الخلفية ولا تعطّل البرنامج عند فشلها.
+
+    هذه النسخة هي ما يفتحه المدير بالضبط (مرآة حرفية لجهاز العميل)."""
     # نسخة المدير مرآة للقراءة: قاعدتها مبنية مما رفعه العميل، فرفعها كان يطمس
     # نسخة العميل الاحتياطية على السحابة بنسخة المدير (كل ١٠ دقائق أثناء التصفّح)
     if IS_ADMIN_BUILD:
@@ -722,8 +818,7 @@ def cloud_upload_backup(client_id, db_path):
     if sb is None or not client_id or not os.path.exists(db_path):
         return False
     try:
-        with open(db_path, "rb") as f:
-            raw = f.read()
+        raw = snapshot_db_bytes(db_path)
         encoded = base64.b64encode(raw).decode("ascii")
         sb.rpc("upload_backup", {"p_client_id": client_id, "p_backup_data": encoded}).execute()
         return True
@@ -732,21 +827,92 @@ def cloud_upload_backup(client_id, db_path):
         return False
 
 
+def _backup_readers():
+    """عملاء القراءة لنسخة العميل الكاملة: مفتاح المدير أولاً إن وُجد، ثم العام"""
+    readers = [get_supabase_admin_client()] if SUPABASE_SECRET_KEY else []
+    return [sb for sb in readers + [get_supabase_public_client()] if sb is not None]
+
+
 def cloud_download_backup(client_id, target_db_path):
-    """ينزّل آخر نسخة احتياطية للعميل من السحابة ويكتبها محلياً. يرجع True لو نجح"""
-    sb = get_supabase_public_client()
-    if sb is None or not client_id:
+    """ينزّل آخر نسخة كاملة رفعها العميل ويكتبها محلياً. يرجع True لو نجح"""
+    if not client_id:
         return False
-    try:
-        res = sb.rpc("download_backup", {"p_client_id": client_id}).execute()
+    last_err = None
+    for sb in _backup_readers():
+        try:
+            res = sb.rpc("download_backup", {"p_client_id": client_id}).execute()
+        except Exception as e:
+            last_err = e
+            continue
         if res.data and res.data[0].get("out_backup_data"):
             raw = base64.b64decode(res.data[0]["out_backup_data"])
             with open(target_db_path, "wb") as f:
                 f.write(raw)
             return True
-    except Exception as e:
-        log_cloud_error("تعذر تنزيل النسخة الاحتياطية من السحابة", e)
+        return False            # الطلب نجح ولا نسخة لهذا العميل
+    if last_err is not None:
+        log_cloud_error("تعذر تنزيل النسخة الاحتياطية من السحابة", last_err)
     return False
+
+
+def cloud_backup_stamp(client_id):
+    """وقت آخر نسخة كاملة وصلت من العميل (طلب خفيف لمعرفة هل تغيّرت).
+    يرجع النص، أو "" إن لم تصل نسخة، أو None إن تعذّر معرفته.
+
+    جواب فارغ من المفتاح العام لا يعني «لا نسخة»: قد تحجب الصلاحيات الجدول عنه —
+    فيُعدّ «غير معروف» ويُعتمد التنزيل الدوري (وإلا توقّف التحديث التلقائي)."""
+    admin = get_supabase_admin_client() if SUPABASE_SECRET_KEY else None
+    for sb, authoritative in ((admin, True), (get_supabase_public_client(), False)):
+        if sb is None:
+            continue
+        try:
+            res = sb.table("db_backups").select("updated_at").eq("client_id", client_id).limit(1).execute()
+        except Exception:
+            continue
+        rows = res.data or []
+        if rows:
+            return str(rows[0].get("updated_at") or "") or None
+        return "" if authoritative else None
+    return None
+
+
+ADMIN_LEDGER_FALLBACK_NOTE = (
+    "لم تصل من جهاز العميل نسخة كاملة من بياناته بعد، فعُرضت من سجل الحركات السحابي — "
+    "وقد تختلف عمّا عنده.\n\n"
+    "تصل النسخة الكاملة تلقائياً خلال ثوانٍ من فتح العميل لبرنامجه (بعد تحديثه)، "
+    "وعندها يظهر هنا كل شيء كما عنده بالضبط.")
+
+
+def load_client_mirror(client_id, db_path):
+    """نسخة المدير: تستبدل النسخة المحلية بآخر لقطة كاملة لقاعدة العميل — كما هي على
+    جهازه حرفياً: كل حركة وفترة واسم وترتيب وإعداد. يرجع (True, None) أو (False, السبب)"""
+    tmp = f"{db_path}.mirror_tmp"
+    _remove_db_files(tmp)
+    if not cloud_download_backup(client_id, tmp):
+        _remove_db_files(tmp)
+        return False, "لا توجد نسخة كاملة مرفوعة من جهاز العميل بعد، أو تعذّر الاتصال بالسحابة"
+    if not is_sqlite_db_healthy(tmp):
+        _remove_db_files(tmp)
+        return False, "النسخة المنزّلة من السحابة غير سليمة"
+    mark_mirror_source(tmp)
+    reset_local_cache(db_path)
+    os.replace(tmp, db_path)
+    return True, None
+
+
+MIRROR_META_SOURCE = "_mirror_source"
+
+
+def mark_mirror_source(db_path):
+    """علامة محلية (على جهاز المدير فقط): هذه القاعدة نسخة العميل الكاملة لا إعادة بناء"""
+    try:
+        with contextlib.closing(sqlite3.connect(db_path)) as con:
+            con.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+            con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, 'snapshot')",
+                        (MIRROR_META_SOURCE,))
+            con.commit()
+    except Exception as e:
+        log_cloud_error("تعذّر تعليم نسخة العميل", e)
 
 
 def cloud_create_client_account(business_name, username, password):
@@ -765,9 +931,22 @@ def cloud_create_client_account(business_name, username, password):
 
 def cloud_list_clients():
     """(المدير فقط) يرجع قائمة كل العملاء المسجلين بالسحابة، مع وقت آخر نسخة احتياطية وصلت لكل واحد منهم"""
+    return cloud_list_clients_checked()[0]
+
+
+def cloud_list_clients_checked():
+    """مثل cloud_list_clients ومعه سبب الفشل إن وُجد: (العملاء، None) أو ([]، السبب).
+
+    السبب «no_key» = مفتاح المدير غير مضبوط على هذا الجهاز. كانت القائمة تظهر فارغة
+    بلا تفسير فيبدو أن الحسابات اختفت.
+    """
+    if not SUPABASE_AVAILABLE:
+        return [], "مكتبة الاتصال بالسحابة غير متوفرة في هذه النسخة."
+    if not SUPABASE_SECRET_KEY:
+        return [], "no_key"
     sb = get_supabase_admin_client()
     if sb is None:
-        return []
+        return [], "تعذّر تجهيز الاتصال بالسحابة بمفتاح المدير."
     try:
         # نحاول أولاً جلب أعمدة تتبّع النشاط، وإن لم تكن مضافة في السحابة نرجع للأعمدة الأساسية بدون تعطّل
         base_cols = "client_id, business_name, username, is_active, can_edit, created_at"
@@ -784,10 +963,13 @@ def cloud_list_clients():
             backup_map = {}
         for c in clients:
             c["last_backup"] = backup_map.get(c["client_id"])
-        return clients
+        return clients, None
     except Exception as e:
         log_cloud_error("تعذر جلب قائمة العملاء", e)
-        return []
+        text = str(e)
+        if any(k in text for k in ("401", "403", "Invalid API key", "JWT", "apikey", "permission denied")):
+            return [], f"مفتاح المدير المحفوظ على هذا الجهاز مرفوض من السحابة (ربما تغيّر):\n{text[:200]}"
+        return [], f"تعذّر الاتصال بالسحابة — تحقق من الإنترنت:\n{text[:200]}"
 
 
 def cloud_verify_sub_admin_login(username, password):
@@ -2938,6 +3120,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.create_layout()
         self.update_period_selector()
+        self.start_admin_mirror_watch()
 
         # النافذة تُكبَّر وتُرسم **أولاً** ثم تُحسب الأرقام.
         # كان الحساب الأول يسبق أول رسم، فتظهر نافذة مصغّرة فارغة ثوانٍ قبل
@@ -3330,7 +3513,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """يحدّث مؤشر حالة التعديل أعلى الشاشة ليعرف المستخدم فوراً إن كان التعديل مفتوحاً أو مقفولاً"""
         if not hasattr(self, 'lbl_edit_status'):
             return
-        if not self.client_id or self.is_admin_session:
+        if IS_ADMIN_BUILD and self.client_id:
+            # نسخة المدير: مرآة لجهاز العميل — ما يُعدَّل هنا لا يصله ويُستبدل بنسخته التالية
+            self.lbl_edit_status.configure(text="👁️ مرآة جهاز العميل", text_color=UI["primary"])
+        elif not self.client_id or self.is_admin_session:
             self.lbl_edit_status.configure(text="🔓 التعديل: مفتوح (جلسة مدير)", text_color="#2ecc71")
         elif self.can_edit:
             self.lbl_edit_status.configure(text="🔓 التعديل: مفتوح", text_color="#2ecc71")
@@ -3458,6 +3644,161 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                           text_color="#2ecc71")
         else:
             self.lbl_cloud_sync.configure(text="☁️ تعذّر الرفع — تحقق من الإنترنت", text_color="#e74c3c")
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  نسخة المدير: مرآة حيّة لجهاز العميل
+    #
+    #  ما يُعرض هو قاعدة العميل نفسها كما رفعها جهازه (load_client_mirror)، وكل
+    #  دقيقة فحص خفيف: إن رفع العميل نسخة أحدث تُنزَّل وتُعرض مكانها تلقائياً —
+    #  فأي حركة أو تعديل أو إعداد عند العميل يظهر هنا خلال دقيقة تقريباً.
+    # ══════════════════════════════════════════════════════════════════════
+    ADMIN_MIRROR_POLL_MS = 60_000
+    ADMIN_MIRROR_FULL_EVERY = 3        # إن تعذّرت معرفة وقت النسخة: تنزيل كامل كل ٣ فحوص
+
+    def start_admin_mirror_watch(self):
+        if not (IS_ADMIN_BUILD and self.client_id):
+            return
+        self._mirror_stamp = None
+        self._mirror_ticks = 0
+        self._mirror_busy = False
+        self.show_admin_mirror_status()
+
+        def baseline():
+            stamp = cloud_backup_stamp(self.client_id)
+            self._mirror_stamp = stamp or None
+
+        threading.Thread(target=baseline, daemon=True).start()
+        self.after(self.ADMIN_MIRROR_POLL_MS, self._admin_mirror_tick)
+
+    def admin_mirror_info(self):
+        """(وقت لقطة العميل المعروضة، إصدار برنامجه، هل هي نسخته الكاملة)"""
+        try:
+            return (self.get_setting(MIRROR_META_TIME, "") or "",
+                    self.get_setting(MIRROR_META_VERSION, "") or "",
+                    self.get_setting(MIRROR_META_SOURCE, "") == "snapshot")
+        except Exception:
+            return "", "", False
+
+    def show_admin_mirror_status(self, updated=False):
+        if not hasattr(self, "lbl_cloud_sync"):
+            return
+        at, version, is_snapshot = self.admin_mirror_info()
+        if not is_snapshot:
+            text, color = "⚠️ عرض من سجل الحركات السحابي — قد يختلف عن جهاز العميل", "#e67e22"
+        elif not at:
+            # نسخة كاملة من برنامج عميل أقدم من هذا التحديث (بلا ختم وقت وإصدار)
+            text, color = "📥 نسخة العميل — ⚠️ برنامج العميل أقدم: حدّثه ليصل كل تعديل كاملاً", "#e67e22"
+        else:
+            text = f"{'🔄 وصل تحديث من العميل' if updated else '📥 نسخة العميل'}: {at[:16]}"
+            color = "#2ecc71"
+            if version and version != APP_VERSION:
+                text += f"\n⚠️ برنامج العميل {version} وبرنامجك {APP_VERSION} — حدّث الأقدم ليتطابق الحساب"
+                color = "#e67e22"
+        self.lbl_cloud_sync.configure(text=text, text_color=color)
+
+    def _admin_ui_busy(self):
+        """نافذة فرعية مفتوحة (تعديل، تفاصيل…) — لا تُستبدل البيانات تحتها"""
+        try:
+            return any(isinstance(w, tk.Toplevel) and w.winfo_viewable() for w in self.winfo_children())
+        except Exception:
+            return False
+
+    def _admin_mirror_tick(self):
+        try:
+            self.refresh_admin_mirror(manual=False)
+        finally:
+            try:
+                self.after(self.ADMIN_MIRROR_POLL_MS, self._admin_mirror_tick)
+            except Exception:
+                pass
+
+    def refresh_admin_mirror(self, manual=True):
+        """ينزّل آخر نسخة رفعها العميل ويعرضها مكان الحالية إن كانت أحدث.
+        manual: من زر «تحديث من العميل» — تنزيل فوري دون انتظار الفحص الخفيف"""
+        if not (IS_ADMIN_BUILD and self.client_id) or getattr(self, "_mirror_busy", False):
+            return
+        if not manual and self._admin_ui_busy():
+            return
+        self._mirror_busy = True
+        self._mirror_ticks = getattr(self, "_mirror_ticks", 0) + 1
+        known_stamp = getattr(self, "_mirror_stamp", None)
+        current_at, _version, is_snapshot = self.admin_mirror_info()
+        if not is_snapshot:
+            current_at = None       # المعروض إعادة بناء: أي نسخة كاملة تصل أولى منه
+        full_due = manual or self._mirror_ticks % self.ADMIN_MIRROR_FULL_EVERY == 0
+        if manual and hasattr(self, "lbl_cloud_sync"):
+            self.lbl_cloud_sync.configure(text="⏳ جارٍ تنزيل آخر نسخة من العميل…", text_color="#1f77b4")
+
+        known_hash = getattr(self, "_mirror_hash", None)
+
+        def work():
+            result = ("same", None, None, None)
+            try:
+                stamp = cloud_backup_stamp(self.client_id)
+                if not manual and (stamp == "" or (stamp and stamp == known_stamp)
+                                   or (stamp is None and not full_due)):
+                    result = ("same", None, stamp, None)
+                else:
+                    tmp = f"{self.db_path}.mirror_new"
+                    _remove_db_files(tmp)
+                    if cloud_download_backup(self.client_id, tmp) and is_sqlite_db_healthy(tmp):
+                        with open(tmp, "rb") as f:
+                            new_hash = hashlib.sha256(f.read()).hexdigest()
+                        with contextlib.closing(sqlite3.connect(tmp)) as con:
+                            row = con.execute("SELECT value FROM settings WHERE key = ?",
+                                              (MIRROR_META_TIME,)).fetchone()
+                        new_at = row[0] if row else ""
+                        if (new_at and new_at == current_at) or new_hash == known_hash:
+                            _remove_db_files(tmp)
+                            result = ("same", None, stamp, new_hash)
+                        else:
+                            result = ("new", tmp, stamp, new_hash)
+                    else:
+                        _remove_db_files(tmp)
+                        result = ("failed", None, None, None)
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث نسخة العميل للمدير", e)
+                result = ("failed", None, None, None)
+            self.after(0, lambda: self._apply_admin_mirror(*result, manual=manual))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_admin_mirror(self, status, tmp_path, stamp, content_hash=None, manual=False):
+        self._mirror_busy = False
+        if status != "failed" and content_hash:
+            self._mirror_hash = content_hash
+        if status == "failed":
+            if manual and hasattr(self, "lbl_cloud_sync"):
+                self.lbl_cloud_sync.configure(text="⚠️ تعذّر تنزيل نسخة العميل — تحقق من الإنترنت",
+                                              text_color="#e74c3c")
+            return
+        if status == "same":
+            if stamp:
+                self._mirror_stamp = stamp
+            if manual:
+                self.show_admin_mirror_status()
+            return
+        if not manual and self._admin_ui_busy():
+            _remove_db_files(tmp_path)         # تُعاد في الفحص التالي بعد إغلاق النافذة
+            return
+        try:
+            month = self.current_display_month
+            mark_mirror_source(tmp_path)
+            reset_local_cache(self.db_path)
+            os.replace(tmp_path, self.db_path)
+            self.init_database()
+            self.load_data_from_db()
+            # الفترة التي يتصفّحها المدير تبقى كما هي
+            self.current_display_month = month
+            self.update_period_selector()
+            self.recalculate_all()
+            if stamp:
+                self._mirror_stamp = stamp
+            self.show_admin_mirror_status(updated=True)
+            self.after(8000, self.show_admin_mirror_status)
+        except Exception as e:
+            log_cloud_error("تعذّر عرض النسخة الجديدة من العميل", e)
+            _remove_db_files(tmp_path)
 
     def on_app_closing(self):
         try:
@@ -4485,9 +4826,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         البنود:
           opening  رصيد افتتاحي / قيد افتتاحي من شاشة الرصيد الافتتاحي   (+)
-          inbound  وارد ذهب                                               (+)
+          inbound  وارد ذهب — بما فيه الوارد لحساب مسترجع مرحلة            (+)
           sales    مبيعات ذهب / صادر ذهب                                  (−)
-          boxes    صرف صناديق الخياس (−) وقبضها والذهب المسترجع منها (+)
+          boxes    صرف صناديق الخياس (−) وقبضها (+)
           closed   صرف خياس مقفل (إقفال الأرشفة القديم)                   (−)
           journal  قيد يومي على «حساب الخزينة» (مدين + / دائن −)
 
@@ -4496,7 +4837,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """
         if inv.get("settled_status") not in COUNTED_STATUSES:
             return None, 0.0
-        sarf_types, qabd_types, mustarja_names = type_sets or self.get_treasury_type_sets()
+        sarf_types, qabd_types, _mustarja_names = type_sets or self.get_treasury_type_sets()
         t = inv.get("النوع")
         w = inv.get("الوزن", 0.0) or 0.0
 
@@ -4505,8 +4846,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if t == "وارد ذهب (عيار 18)":
             if inv.get("trees_count") == 1.0 and inv.get("البيان") == "قيد افتتاحي":
                 return "opening", w
-            if inv.get("الاسم") in mustarja_names:
-                return "boxes", w          # ذهب عاد من صندوق خياس: يخفّض خياسه
+            # كل وارد ذهب «وارد» — ومنه ما سُجّل لحساب مسترجع مرحلة (من شاشة الوارد
+            # أو قبض «مسترجع» في الكاستنج): ذهبٌ دخلنا فعلاً، فيظهر في لوحة الوارد
+            # والتقرير الشهري. حساب المسترجع يسجّله للمرحلة ولا يمسّ فاقدها الحالي،
+            # فلا يُحسب «صناديق» (كان يُنقص لوحة الخياس بدل أن يزيد الوارد)
             return "inbound", w
         if t in ("مبيعات ذهب", "مبيعات ذهب مع الماس", "صادر ذهب"):
             return "sales", -w
@@ -6384,7 +6727,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.combo_active_period.pack(side="right", padx=5)
         
         btn_add_period = ctk.CTkButton(period_frame, text="➕ شهر جديد", width=110, height=40, font=ctk.CTkFont(family="Cairo", size=14, weight="bold"), fg_color="#1f77b4", hover_color="#144d75", command=self.add_new_period_ui)
-        btn_add_period.pack(side="right", padx=5)
+        # نسخة المدير تتصفّح فترات العميل كما هي: فترة جديدة عندها لا تصل العميل ولا معنى لها
+        if not IS_ADMIN_BUILD:
+            btn_add_period.pack(side="right", padx=5)
 
         # قسم البحث المزدوج الجديد (بحث فاتورة + بحث رقم التشغيل)
         # أزرار البحث لا تُرصف: الشريط العلوي يعرض الرصيدين والفترة والمظهر
@@ -6416,12 +6761,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # زر التصفير يُنشأ داخل عمود الفترة مباشرة فيظهر فوق شريط الشهر
         # زر خطير: إطار أحمر فقط (لا زر ممتلئ بارز) حتى لا يُضغط سهواً
         btn_clear_system = ctk.CTkButton(self.period_column, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), width=132, height=34, corner_radius=10, fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"), command=self.reset_system_data_action)
-        btn_clear_system.pack(side="right", padx=(6, 0))
+        # نسخة المدير مرآة لجهاز العميل: التصفير لا يمسّ إلا نسختها المؤقتة ويُربك، فلا يُعرض
+        if not IS_ADMIN_BUILD:
+            btn_clear_system.pack(side="right", padx=(6, 0))
 
         # ====== خانة حالة التعديل والمزامنة: في طرف الشريط العلوي داخل إطار مستقل واضح ======
         status_box = ctk.CTkFrame(top_frame, corner_radius=12, border_width=1,
                                   fg_color=(UI["surface_alt"], "#1D232B"), border_color=(UI["line"], "#2A313B"))
-        status_box.pack(side="left", padx=12, pady=8)
+        # في نسخة المدير يأخذ مكانه أولاً: حالة نسخة العميل وزر «تحديث من العميل» يجب
+        # أن يظهرا دائماً (كان يُزاح خارج الشريط على شاشة ١٣٦٦)
+        status_box.pack(side="left", padx=12, pady=8,
+                        **({"before": treasury_display_frame} if IS_ADMIN_BUILD else {}))
 
         self.lbl_edit_status = ctk.CTkLabel(status_box, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), text_color="#2ecc71")
         self.lbl_edit_status.pack(padx=10, pady=(7, 0))
@@ -6435,10 +6785,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         status_btns = ctk.CTkFrame(status_box, fg_color="transparent")
         status_btns.pack(padx=8, pady=(3, 7))
-        ctk.CTkButton(status_btns, text="🔄 تحديث الصلاحية", font=("Cairo", 12, "bold"), width=125, height=28,
-                      fg_color="#1f77b4", hover_color="#144d75", command=self.refresh_edit_permission_now).pack(side="left", padx=3)
-        ctk.CTkButton(status_btns, text="☁️ النسخ الاحتياطي", font=("Cairo", 12, "bold"), width=125, height=28,
-                      fg_color="#555555", hover_color="#333333", command=self.open_backup_manager).pack(side="left", padx=3)
+        if IS_ADMIN_BUILD and self.client_id:
+            # المدير: تنزيل آخر نسخة من جهاز العميل فوراً (والتحديث التلقائي كل دقيقة)
+            ctk.CTkButton(status_btns, text="📥 تحديث من العميل", font=("Cairo", 12, "bold"), width=125, height=28,
+                          fg_color="#1e8449", hover_color="#145a32",
+                          command=lambda: self.refresh_admin_mirror(manual=True)).pack(side="left", padx=3)
+        else:
+            ctk.CTkButton(status_btns, text="🔄 تحديث الصلاحية", font=("Cairo", 12, "bold"), width=125, height=28,
+                          fg_color="#1f77b4", hover_color="#144d75", command=self.refresh_edit_permission_now).pack(side="left", padx=3)
+        if not (IS_ADMIN_BUILD and self.client_id):
+            # المدير يستبدله بـ«تحديث من العميل» (نسخه الاحتياطية نسخ لمرآة مؤقتة لا أكثر)
+            ctk.CTkButton(status_btns, text="☁️ النسخ الاحتياطي", font=("Cairo", 12, "bold"), width=125, height=28,
+                          fg_color="#555555", hover_color="#333333", command=self.open_backup_manager).pack(side="left", padx=3)
 
         self.main_shell = ctk.CTkFrame(self.content_area, fg_color="transparent")
         self.main_shell.pack(fill="both", expand=True, padx=10, pady=(0, 6))
@@ -6691,10 +7049,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if os.path.exists(pure):
                 # RGBA يحفظ الشفافية؛ بدونه تظهر خلفية سوداء خلف الشعار
                 base_logo = Image.open(pure).convert("RGBA")
-                # الشعار بالأزرق على الأبيض ليتناسق مع الشريط الجانبي وألوان النظام:
-                # تدرّج من الكحلي إلى أزرق النظام، وأفتح قليلاً في المظهر الداكن
-                logo_img = tint_logo(base_logo, "#173F7E", "#4F86D6", opacity=0.9)
-                dark_logo = tint_logo(base_logo, "#3D6FC0", "#9CC0F5", opacity=0.85)
+                # الشعار بالذهبي الهادئ على الأبيض: بعمق الأزرق السابق نفسه (نفس درجة
+                # الإضاءة من الغامق للفاتح) بلا لمعان — ذهبي عتيق مطفأ لا أصفر ساطع،
+                # وأفتح قليلاً في المظهر الداكن
+                logo_img = tint_logo(base_logo, *LOGO_GOLD_LIGHT_MODE, opacity=0.9)
+                dark_logo = tint_logo(base_logo, *LOGO_GOLD_DARK_MODE, opacity=0.85)
             else:
                 logo_img = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64)))
             w, h = logo_img.size
@@ -9967,13 +10326,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         top_bar = ctk.CTkFrame(tab, fg_color="transparent")
         top_bar.pack(fill="x", padx=10, pady=5)
 
-        self.lbl_table_title = ctk.CTkLabel(top_bar, text="عرض أرصدة: المصنعين", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"))
-        self.lbl_table_title.pack(side="right", padx=20, pady=10)
+        self.lbl_table_title = ctk.CTkLabel(top_bar, text="عرض أرصدة: المصنعين", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"))
+        self.lbl_table_title.pack(side="right", padx=(12, 16), pady=6, anchor="n")
 
         self.khayas_category_bar = ctk.CTkFrame(top_bar, fg_color="transparent")
         self.khayas_category_bar.pack(side="right", fill="x", expand=True)
         self.khayas_category_buttons = {}
         self.refresh_khayas_category_buttons()
+        # إعادة الرصف عند تغيّر العرض (تكبير النافذة، شاشة أصغر…)
+        self.khayas_category_bar.bind("<Configure>", self.layout_khayas_category_buttons)
 
         self.summary_bar = ctk.CTkFrame(tab, height=70, corner_radius=10, border_width=2, border_color="#d4af37", fg_color="#2c3e50")
         self.summary_bar.pack(side="bottom", fill="x", padx=10, pady=10)
@@ -10035,12 +10396,52 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for stage_name in self.categories.get("أقسام_خياس_إضافية", []):
             cat_defs.append((stage_name, f"➕ {stage_name}"))
 
+        # أزرار مدمجة تلتفّ على أكثر من سطر: أي عدد من الأقسام يظهر كاملاً بلا
+        # تمدّد للواجهة ولا أزرار مختفية خارج الشاشة (كانت كبيرة في سطر واحد)
         for key, label in cat_defs:
-            b = ctk.CTkButton(self.khayas_category_bar, text=label, font=("Cairo", 16, "bold"), width=120, height=45, command=lambda k=key: self.switch_category_view(k))
-            b.pack(side="right", padx=5, pady=10)
+            b = ctk.CTkButton(self.khayas_category_bar, text=label, font=("Cairo", 13, "bold"),
+                              width=92, height=32, corner_radius=8,
+                              command=lambda k=key: self.switch_category_view(k))
             self.khayas_category_buttons[key] = b
+        self._khayas_cat_cols = None
+        self.layout_khayas_category_buttons()
         self.style_segment_buttons(self.khayas_category_buttons,
                                    getattr(self, "current_view_cat", "المصنعين"))
+
+    def khayas_category_columns(self, bar_width, widths, gap=6):
+        """أكبر عدد أزرار في السطر يتّسع له العرض — كل عمود بعرض أطول زر فيه
+        (لا بعرض أطول زر في الشاشة كلها) فيتّسع السطر لأكثر ما يمكن"""
+        n = len(widths)
+        for cols in range(n, 1, -1):
+            if sum(max(widths[i] for i in range(c, n, cols)) + gap for c in range(cols)) <= bar_width:
+                return cols
+        return 1
+
+    def layout_khayas_category_buttons(self, _event=None):
+        """يرصف أزرار الأقسام في شبكة من اليمين لليسار، وتلتفّ لسطر جديد عند امتلاء العرض"""
+        bar = getattr(self, "khayas_category_bar", None)
+        buttons = list(getattr(self, "khayas_category_buttons", {}).values())
+        if bar is None or not buttons:
+            return
+        try:
+            width = bar.winfo_width()
+            if width <= 1:
+                width = max(400, self.winfo_width() - self.sidebar_width() - 320)
+            widths = [b.winfo_reqwidth() for b in buttons]
+        except Exception:
+            return
+        cols = self.khayas_category_columns(width, widths)
+        if cols == getattr(self, "_khayas_cat_cols", None):
+            return
+        old = getattr(self, "_khayas_cat_cols", None) or 0
+        self._khayas_cat_cols = cols
+        for c in range(max(old, cols, len(buttons))):
+            bar.grid_columnconfigure(c, weight=0)
+        for c in range(cols):
+            bar.grid_columnconfigure(c, weight=1)
+        for i, b in enumerate(buttons):
+            row, col = divmod(i, cols)
+            b.grid(row=row, column=cols - 1 - col, padx=3, pady=3, sticky="ew")
 
     def switch_category_view(self, cat):
         self.current_view_cat = cat
@@ -17585,6 +17986,10 @@ class SyncDownWindow(ctk.CTkToplevel):
         self.tenant_id = tenant_id
         self.ok = False
         self.error = None
+        # نسخة المدير: «mirror» = قاعدة العميل كما رفعها جهازه، «ledger» = إعادة بناء
+        # احتياطية من سجل الحركات السحابي (لم تصل نسخة كاملة بعد)
+        self.mode = None
+        self.mirror_error = None
 
         self.title("تجهيز بيانات المصنع")
         apply_app_icon(self)
@@ -17664,7 +18069,29 @@ class SyncDownWindow(ctk.CTkToplevel):
                 self._ui(self.destroy)
                 return
 
-            # نسخة المدير: نبدأ من قاعدة نظيفة دائماً، فما يُعرض هو أحدث نسخة
+            # نسخة المدير: قاعدة العميل نفسها كما رفعها جهازه (مرآة حرفية) —
+            # الحركات والفترات وترتيب الأسماء وكل إعدادات الشاشات، رقماً برقم.
+            # إعادة البناء من سجل الحركات السحابي كانت تختلف عن جهاز العميل (حركات
+            # من الويب لا تصله، وما فقده باسترجاع نسخة قديمة يبقى في السحابة…)،
+            # فتبقى احتياطاً فقط إن لم تصل من العميل نسخة كاملة بعد.
+            self._progress("جارٍ تنزيل بيانات العميل كما هي على جهازه…", 0.05)
+            ok, why = load_client_mirror(self.tenant_id, self.db_path)
+            if ok:
+                self.mode = "mirror"
+                self._progress("تم تنزيل نسخة العميل ✔", 1.0)
+                self.ok = True
+                self._ui(self.destroy)
+                return
+            self.mirror_error = why
+            if not SYNC_AVAILABLE or self.api is None or not (
+                    getattr(self.api, "sync_token", None) or SUPABASE_SECRET_KEY):
+                reset_local_cache(self.db_path)     # لا نعرض بقايا جلسة سابقة كأنها بيانات العميل
+                self.error = why
+                self._ui(self.destroy)
+                return
+            self.mode = "ledger"
+
+            # الاحتياط: نبدأ من قاعدة نظيفة دائماً، فما يُعرض هو أحدث نسخة
             # سحابية للعميل حصراً — لا بقايا من جلسة سابقة على هذا الجهاز
             if self.cloud_only:
                 self._progress("جارٍ تجهيز نسخة سحابية نظيفة…", 0.03)
@@ -18662,16 +19089,21 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
             self._begin_outro(business_name)
             # نسخة العميل لا تنتظر رفع بياناتها هنا: محرك المزامنة يرفعها في الخلفية
             # فور فتح النظام (أول دورة له فورية). كان الانتظار يؤخّر الدخول ثوانيَ —
-            # ودقائق مع إنترنت ضعيف. نسخة المدير وحدها تنتظر: تعرض ما تسحبه
-            if IS_ADMIN_BUILD and SYNC_AVAILABLE and CURRENT_SYNC_TOKEN:
+            # ودقائق مع إنترنت ضعيف. نسخة المدير وحدها تنتظر: تعرض قاعدة العميل
+            # كما رفعها جهازه (ولا تحتاج رمز مزامنة لذلك)
+            if IS_ADMIN_BUILD:
                 try:
                     db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
-                    api = _RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)
+                    api = (_RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)
+                           if CURRENT_SYNC_TOKEN else None)
                     win = SyncDownWindow(self, db_path, api, client_id, business_name,
                                          on_progress=self._outro_progress)
                     self.wait_window(win)
                     if win.error:
-                        messagebox.showwarning("تنبيه المزامنة", sync_error_message(win.error))
+                        messagebox.showwarning("تنبيه المزامنة",
+                                               f"تعذّر تنزيل بيانات العميل من السحابة:\n{win.error}")
+                    elif win.mode == "ledger":
+                        messagebox.showwarning("تنبيه المزامنة", ADMIN_LEDGER_FALLBACK_NOTE)
                 except Exception as e:
                     log_cloud_error("تعذّر تجهيز البيانات من السحابة", e)
 
@@ -18763,9 +19195,15 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
     def refresh_clients(self):
         for w in self.list_frame.winfo_children():
             w.destroy()
-        clients = cloud_list_clients()
+        clients, error = cloud_list_clients_checked()
+        if error:
+            # كانت القائمة تظهر فارغة بلا تفسير: السبب الأشهر مفتاح المدير غير
+            # مضبوط على هذا الجهاز (لا يُكتب داخل البرنامج) — يُضبط هنا مرة واحدة
+            self.show_admin_key_card(error)
+            return
         if not clients:
-            ctk.CTkLabel(self.list_frame, text="لا يوجد عملاء مسجّلين حالياً، أو تعذر الاتصال بالسحابة", font=("Cairo", 14)).pack(pady=30)
+            ctk.CTkLabel(self.list_frame, text="لا يوجد عملاء مسجّلين بعد — افتح أول حساب من زر «فتح حساب عميل جديد»",
+                         font=("Cairo", 14)).pack(pady=30)
             return
         for c in clients:
             row = ctk.CTkFrame(self.list_frame, fg_color="#2c3e50", corner_radius=10)
@@ -18808,6 +19246,59 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 ctk.CTkButton(row, text="🗑️ حذف الحساب نهائياً", font=("Cairo", 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a",
                               command=lambda cid=c["client_id"], name=c["business_name"]: self.delete_client(cid, name)
                               ).pack(side="left", padx=10, pady=8)
+
+    def show_admin_key_card(self, error):
+        """سبب تعذّر عرض الحسابات، ومعه خانة لضبط مفتاح المدير على هذا الجهاز مرة واحدة"""
+        no_key = error == "no_key"
+        card = ctk.CTkFrame(self.list_frame, corner_radius=14, border_width=1,
+                            border_color=UI["gold_line"], fg_color=(UI["surface"], "#171C23"))
+        card.pack(fill="x", padx=40, pady=30)
+        ctk.CTkLabel(card, text="🔑 مفتاح المدير غير مضبوط على هذا الجهاز" if no_key
+                     else "⚠️ تعذّر عرض حسابات العملاء",
+                     font=("Cairo", 19, "bold"), text_color=(UI["gold_dark"], "#F1D27A")).pack(pady=(18, 6))
+        reason = ("لهذا لا تظهر أسماء الحسابات: لوحة المدير تقرأ حسابات العملاء بالمفتاح السري للمشروع،\n"
+                  "والمفتاح لا يُكتب داخل البرنامج أبداً (حتى لا يتسرّب مع أي نسخة)." if no_key else error)
+        ctk.CTkLabel(card, text=reason, font=("Cairo", 13), justify="center", wraplength=760,
+                     text_color=(UI["ink"], "#E5E7EB")).pack(padx=20, pady=(0, 8))
+        ctk.CTkLabel(card, text="الصق المفتاح السري (Supabase ← Project Settings ← API Keys ← Secret key)\n"
+                                "يُحفظ على هذا الجهاز فقط ويُستخدم تلقائياً في كل تشغيل بعد ذلك.",
+                     font=("Cairo", 12), justify="center", text_color=(UI["muted"], "#9AA3AF")).pack(pady=(4, 6))
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(pady=(2, 6))
+        ent = ctk.CTkEntry(row, width=460, height=40, show="•", justify="center",
+                           placeholder_text="sb_secret_…")
+        ent.pack(side="right", padx=6)
+        lbl_msg = ctk.CTkLabel(card, text="", font=("Cairo", 12), text_color="#e74c3c", wraplength=760)
+        lbl_msg.pack(pady=(0, 4))
+
+        def done(ok, why):
+            btn.configure(state="normal", text="حفظ وتفعيل 🔑")
+            if ok:
+                self.refresh_clients()
+            else:
+                lbl_msg.configure(text=why)
+
+        def save():
+            key = ent.get().strip()
+            btn.configure(state="disabled", text="جارٍ التحقق…")
+            lbl_msg.configure(text="")
+
+            def work():
+                result = save_admin_secret_key(key)
+                self.after(0, lambda: done(*result))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        btn = ctk.CTkButton(row, text="حفظ وتفعيل 🔑", font=("Cairo", 14, "bold"), height=40, width=150,
+                            fg_color=UI["primary"], hover_color=UI["primary_hover"], command=save)
+        btn.pack(side="right", padx=6)
+        ent.bind("<Return>", lambda e: save())
+        if not no_key:
+            ctk.CTkButton(card, text="🔄 إعادة المحاولة", font=("Cairo", 13, "bold"), height=36,
+                          fg_color="#555555", hover_color="#333333",
+                          command=self.refresh_clients).pack(pady=(2, 16))
+        else:
+            ctk.CTkLabel(card, text="").pack(pady=4)
 
     def delete_client(self, client_id, business_name):
         if not messagebox.askyesno("⚠️ تأكيد حذف نهائي",
@@ -18976,29 +19467,25 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
 
         self.withdraw()
 
-        # تجهيز بيانات العميل على جهاز المدير قبل فتح النظام.
-        # مفتاح الخدمة يعمل حتى بدون رمز مزامنة صريح، فنحاول السحب دائماً
-        # طالما وحدات المزامنة متاحة — لا نمنعها فقط لغياب الرمز.
-        if SYNC_AVAILABLE:
-            try:
-                db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
-
-                # نسخة المدير سحابية بحتة: نبدأ من قاعدة نظيفة في كل مرة، فما
-                # يُعرض هو أحدث نسخة سحابية للعميل حصراً — لا بقايا من جلسة
-                # سابقة على جهاز المدير قد تُظهر أرقاماً قديمة أو محذوفة عند العميل.
-                api = _RpcBridge(sb_admin, CURRENT_SYNC_TOKEN)
-                prep = ctk.CTkToplevel(self)
-                prep.withdraw()
-                win = SyncDownWindow(prep, db_path, api, client_id, business_name)
-                prep.wait_window(win)
-                prep.destroy()
-                if win.error:
-                    messagebox.showwarning(
-                        "تنبيه",
-                        f"تعذّر سحب بيانات العميل من السحابة:\n{win.error}\n\n"
-                        "سيُفتح النظام بما هو محفوظ على هذا الجهاز.")
-            except Exception as e:
-                log_cloud_error("تعذّر تجهيز بيانات العميل للمدير", e)
+        # تجهيز بيانات العميل على جهاز المدير قبل فتح النظام: قاعدة العميل كما
+        # رفعها جهازه (مرآة حرفية)، والاحتياط سجل الحركات السحابي. مفتاح الخدمة
+        # يعمل حتى بدون رمز مزامنة صريح.
+        try:
+            db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
+            api = _RpcBridge(sb_admin, CURRENT_SYNC_TOKEN) if sb_admin is not None else None
+            prep = ctk.CTkToplevel(self)
+            prep.withdraw()
+            win = SyncDownWindow(prep, db_path, api, client_id, business_name)
+            prep.wait_window(win)
+            prep.destroy()
+            if win.error:
+                messagebox.showwarning(
+                    "تنبيه",
+                    f"تعذّر تنزيل بيانات العميل من السحابة:\n{win.error}")
+            elif win.mode == "ledger":
+                messagebox.showwarning("تنبيه", ADMIN_LEDGER_FALLBACK_NOTE)
+        except Exception as e:
+            log_cloud_error("تعذّر تجهيز بيانات العميل للمدير", e)
 
         app = GoldSystemApp(client_id=client_id, client_name=business_name,
                              supabase_client=sb_admin, is_admin_session=True)
