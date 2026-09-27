@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.44.0"
+APP_VERSION = "1.45.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4426,6 +4426,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # في الشهر الخطأ. الاختيار اليدوي من قائمة الفترات يبقى متاحاً كما هو.
         self.current_display_month = datetime.datetime.now().strftime("%Y-%m")
         self.neutralize_auto_recovery_closings()
+        self.migrate_casting_returns()
 
     AUTO_RECOVERY_CLOSE_NOTE = "مسترجع — أُلغي: كان إقفالاً تلقائياً عند الوارد (الإقفال بالزر وحده)"
 
@@ -4485,6 +4486,51 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             except Exception as e:
                 log_cloud_error("تعذّر حفظ إلغاء الإقفال التلقائي القديم للمسترجع", e)
         return len(found) // 2
+
+    def migrate_casting_returns(self):
+        """يصحّح حركات «المسترجع» التي سجّلتها شاشة الكاستنج باسم حساب «مسترجع كاستنج».
+
+        هي رجوعٌ من الفاقد الحالي نفسه (مسترجع الأشجار، وقبض عملية «مسترجع») لا وارد
+        لحساب المسترجع: تصير قبضاً للكاستنج (يُخصم من فاقده الحالي)، وصرف عملية
+        «مسترجع» باسمها الجديد. تُعرف بدقة: شاشة الوارد تشترط رقم الفاتورة دائماً، وشاشة
+        الكاستنج لا تضعه أبداً — فوارد باسم «مسترجع كاستنج» بلا رقم فاتورة جاء منها.
+        نسخة العميل تحفظ التصحيح في قاعدتها (فيُرفع للسحابة)، ونسخة المدير في الذاكرة.
+        """
+        try:
+            madin_type, qabd_type, rec_name = self.get_stage_config("الكاستنج")
+        except Exception:
+            return 0
+        changed = []
+        for inv in self.invoices.values():
+            if inv.get("الاسم") != rec_name or (inv.get("set_number") or "").strip():
+                continue
+            row = (inv.get("row_number") or "").strip()
+            t = inv.get("النوع")
+            if t == "وارد ذهب (عيار 18)":
+                if inv.get("trees_count") == 1.0 and inv.get("البيان") == "قيد افتتاحي":
+                    continue           # قيد رصيد افتتاحي — ليس من الكاستنج
+                inv["النوع"] = qabd_type
+                inv["الاسم"] = self.TREE_RETURN_NAME if row else self.CAST_RETURN_NAME
+                inv["قبل"] = inv["بعد"] = 0.0
+                changed.append(inv)
+            elif t == madin_type and not row:
+                inv["الاسم"] = self.CAST_RETURN_NAME
+                changed.append(inv)
+        if not changed:
+            return 0
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
+        if not IS_ADMIN_BUILD and getattr(self, "db_path", None):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.executemany(
+                        "UPDATE invoices SET op_type = ?, name = ?, before_w = ?, after_w = ? WHERE invoice_id = ?",
+                        [(inv["النوع"], inv["الاسم"], inv.get("قبل", 0.0), inv.get("بعد", 0.0),
+                          inv["رقم الفاتورة"]) for inv in changed])
+                    conn.commit()
+                self.mark_backup_dirty()
+            except Exception as e:
+                log_cloud_error("تعذّر حفظ تصحيح حركات مسترجع الكاستنج", e)
+        return len(changed)
 
     def save_invoice_to_db(self, inv_id, inv_data):
         """يرجع True لو تم الحفظ فعلياً، أو False لو تم المنع (تعديل على فاتورة موجودة ومقفول عليها التعديل)"""
@@ -4846,10 +4892,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if t == "وارد ذهب (عيار 18)":
             if inv.get("trees_count") == 1.0 and inv.get("البيان") == "قيد افتتاحي":
                 return "opening", w
-            # كل وارد ذهب «وارد» — ومنه ما سُجّل لحساب مسترجع مرحلة (من شاشة الوارد
-            # أو قبض «مسترجع» في الكاستنج): ذهبٌ دخلنا فعلاً، فيظهر في لوحة الوارد
-            # والتقرير الشهري. حساب المسترجع يسجّله للمرحلة ولا يمسّ فاقدها الحالي،
-            # فلا يُحسب «صناديق» (كان يُنقص لوحة الخياس بدل أن يزيد الوارد)
+            # كل وارد ذهب «وارد» — ومنه ما سُجّل من شاشة الوارد لحساب مسترجع مرحلة:
+            # ذهبٌ دخلنا فعلاً، فيظهر في لوحة الوارد والتقرير الشهري. (مسترجع الكاستنج
+            # من شاشته — الأشجار وعملية «مسترجع» — قبضٌ للكاستنج نفسه فيُحسب «صناديق»)
             return "inbound", w
         if t in ("مبيعات ذهب", "مبيعات ذهب مع الماس", "صادر ذهب"):
             return "sales", -w
@@ -5836,17 +5881,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     INBOUND_TYPES = ("وارد ذهب (عيار 18)", "وارد فصوص وأحجار", "وارد الماس")
 
+    # «المسترجع» في شاشة الكاستنج رجوعٌ من الفاقد الحالي نفسه — لا صلة له بحساب
+    # «مسترجع كاستنج» (ذاك لما يُستلم من شاشة الوارد إلى حسابه). تُسجَّل حركاته صرفاً
+    # وقبضاً للكاستنج نفسه بهذين الاسمين، فيزيد صرفها الفاقد الحالي ويُخصم قبضها منه:
+    CAST_RETURN_NAME = "مسترجع الفاقد"      # عملية «مسترجع» (بلا صف): صرفها وقبضها
+    TREE_RETURN_NAME = "مسترجع الأشجار"     # مسترجع أشجار الصف: قبض من فاقد صفه
+
     def is_row_recovery(self, inv, recover_name):
-        """حركة «مسترجع الأشجار» لصف: وارد باسم مسترجع الصندوق ومعه رقم صف"""
-        return bool(recover_name and inv.get("الاسم") == recover_name
-                    and inv.get("النوع") in self.INBOUND_TYPES and (inv.get("row_number", "") or ""))
+        """«مسترجع الأشجار» لصف: قبض من الفاقد الحالي على رقم الصف نفسه.
+        recover_name: غير فارغ في الشاشات التي تعرض المسترجع (الكاستنج)"""
+        return bool(recover_name and inv.get("الاسم") == self.TREE_RETURN_NAME
+                    and (inv.get("row_number", "") or ""))
 
     def is_recovery_op(self, inv, madin_type, recover_name):
-        """عملية «مسترجع» بلا صف في قسم له مسترجع (الكاستنج):
-        صرف مسترجع (نوع صرف القسم باسم حساب المسترجع) أو قبض مسترجع/وارد باسمه بلا رقم صف"""
-        if not recover_name or inv.get("الاسم") != recover_name or (inv.get("row_number", "") or ""):
-            return False
-        return inv.get("النوع") == madin_type or inv.get("النوع") in self.INBOUND_TYPES
+        """عملية «مسترجع» بلا صف (الكاستنج): صرفها يزيد الفاقد الحالي وقبضها يُخصم منه"""
+        return bool(recover_name and inv.get("الاسم") == self.CAST_RETURN_NAME
+                    and not (inv.get("row_number", "") or ""))
 
     def collect_stage_ops_rows(self, madin_type, qabd_type, recover_name=None):
         """يجمع حركات أي شاشة عمليات للشهر المعروض في صفوف مرتبة تصاعدياً برقم الصف.
@@ -5854,15 +5904,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         لكل صف (g["op"]):
           • «فاقد»   — صرف وقبض القسم بصفوفها (رقم الصف)، ومعها «مسترجع الأشجار» لصفها.
           • «مسترجع» — عمليات المسترجع بلا صف، كل عملية صف مستقل بعد صفوف الفاقد:
-                       صرف مسترجع (يزيد الفاقد الحالي كأي صرف) وقبض مسترجع/وارد باسم
-                       حساب المسترجع (يذهب لحساب مسترجع المرحلة).
-        الخياس = الصرف − القبض (الفاقد الحالي)، والمسترجع عمود مستقل: لا يُطرح من الفاقد
-        الحالي بل من الفاقد المُقفل في الصافي (شاشة الخسائر).
+                       صرفها تحت الصرف، وقبضها تحت القبض.
+        الخياس = الصرف − القبض − مسترجع الأشجار: كلها من الفاقد الحالي نفسه، ولا صلة لأيٍّ
+        منها بحساب «مسترجع» المرحلة.
         """
         recs = [inv for inv in self.period_invoices(self.current_display_month)
-                if inv.get("settled_status") == "ACTIVE"
-                and (inv.get("النوع") in (madin_type, qabd_type) or self.is_row_recovery(inv, recover_name)
-                     or self.is_recovery_op(inv, madin_type, recover_name))]
+                if inv.get("settled_status") == "ACTIVE" and inv.get("النوع") in (madin_type, qabd_type)]
         recs.sort(key=lambda x: (x.get("التاريخ", ""), x.get("رقم الفاتورة", 0)))
         # حركات الصرف والقبض أولاً ثم المسترجع، ليُلحق مسترجع الأشجار بصف قائم إن وُجد
         recs.sort(key=lambda x: 1 if self.is_row_recovery(x, recover_name) else 0)
@@ -5870,10 +5917,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         grouped = {}
         for inv in recs:
             rec_op = self.is_recovery_op(inv, madin_type, recover_name)
+            tree = self.is_row_recovery(inv, recover_name)
             key = ((inv.get("row_number", "") or ""), inv["الاسم"])
             if rec_op:
                 key = ("", inv["الاسم"], inv["رقم الفاتورة"])      # كل عملية مسترجع صف مستقل
-            elif self.is_row_recovery(inv, recover_name):
+            elif tree:
                 key = next((k for k in grouped if len(k) == 2 and k[0] == key[0]), key)
             if key not in grouped:
                 grouped[key] = {"ids": [], "مدين": 0.0, "دائن": 0.0, "مسترجع": 0.0,
@@ -5881,21 +5929,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                 "op": "مسترجع" if rec_op else "فاقد"}
             g = grouped[key]
             g["ids"].append(inv["رقم الفاتورة"])
+            note = (inv.get("البيان") or "").strip()
             # الجمع (وليس الاستبدال) حتى لا تُهمل أي حركة مسجّلة فعلياً بنفس رقم الصف
-            if self.is_row_recovery(inv, recover_name) or (rec_op and inv["النوع"] in self.INBOUND_TYPES):
+            if tree:
                 g["مسترجع"] = round(g["مسترجع"] + inv["الوزن"], 2)
                 # «مسترجع الأشجار» وحده لا يُكرَّر في عمود البيان، أما ما كتبه
                 # المستخدم بعده فيظهر («مسترجع الأشجار — بيانه»)
-                note = (inv.get("البيان") or "").strip()
-                if not rec_op:
-                    note = note.split(" — ", 1)[1].strip() if " — " in note else (
-                        "" if note == "مسترجع الأشجار" else note)
+                note = note.split(" — ", 1)[1].strip() if " — " in note else (
+                    "" if note == self.TREE_RETURN_NAME else note)
+            elif inv["النوع"] == madin_type:
+                g["مدين"] = round(g["مدين"] + inv["الوزن"], 2)
             else:
-                if inv["النوع"] == madin_type:
-                    g["مدين"] = round(g["مدين"] + inv["الوزن"], 2)
-                else:
-                    g["دائن"] = round(g["دائن"] + inv["الوزن"], 2)
-                note = (inv.get("البيان") or "").strip()
+                g["دائن"] = round(g["دائن"] + inv["الوزن"], 2)
             if note and note not in g["البيان"]:
                 g["البيان"] = note if not g["البيان"] else g["البيان"] + " | " + note
             trees = inv.get("trees_count", 0.0) or 0.0
@@ -5911,22 +5956,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                section=None, show_name=False, on_detail=None, on_refresh=None,
                                recover_name=None, op_filter=None):
         """محرك موحّد لجداول شاشات العمليات:
-        (الصف / [العملية] / صرف / قبض / [المسترجع] / الخياس / [الصافي] [+ الأشجار] / البيان)
+        (الصف / [العملية] / صرف / قبض / [مسترجع الأشجار] / الخياس [+ الأشجار] / البيان)
         مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته.
 
-        recover_name (الكاستنج): عمود «العملية» (فاقد/مسترجع) و«المسترجع» و«الصافي».
+        recover_name (الكاستنج): عمود «العملية» (فاقد/مسترجع) و«مسترجع الأشجار».
+        الخياس = الصرف − القبض − مسترجع الأشجار (كلها من الفاقد الحالي نفسه).
         op_filter: «مسترجع» ← عمليات المسترجع وحدها؛ غير ذلك ← كل العمليات.
         """
         # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج مكانه «العملية»
         name_col = ("الاسم",) if (show_name and not recover_name) else ()
         op_col = ("العملية",) if recover_name else ()
-        rec_col = ("المسترجع",) if recover_name else ()
-        net_col = ("الصافي",) if recover_name else ()
+        rec_col = ("مسترجع الأشجار",) if recover_name else ()
         if with_trees:
-            cols = (("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",) + net_col
+            cols = (("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",)
                     + ("عدد الأشجار", "خياس كل شجرة", "البيان"))
         else:
-            cols = ("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",) + net_col + ("البيان",)
+            cols = ("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس", "البيان")
 
         tree, total_tree, _reused = self.reuse_or_create_tree(
             table_frame, cols, height=height, sticky_total=True)
@@ -5947,9 +5992,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # عمليات المسترجع وحدها، والإجماليات لها وحدها
             rows = [r for r in rows if r[2].get("op") == "مسترجع"]
         for row_num, name, g in rows:
-            # الخياس = الفاقد الحالي للصف (صرف − قبض)، والصافي بعد المسترجع
-            khayas = round(g["مدين"] - g["دائن"], 2)
-            net = round(khayas - g["مسترجع"], 2)
+            # الخياس = الفاقد الحالي للصف: صرف − قبض − مسترجع الأشجار
+            khayas = round(g["مدين"] - g["دائن"] - g["مسترجع"], 2)
             tot_madin = round(tot_madin + g["مدين"], 2)
             tot_daen = round(tot_daen + g["دائن"], 2)
             tot_rec = round(tot_rec + g["مسترجع"], 2)
@@ -5963,7 +6007,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if recover_name:
                 op_label = g.get("op", "فاقد")
                 # حركات قديمة سُجّلت بأسماء (قبل خانة العملية) تُذكر أسماؤها
-                if op_label == "فاقد" and name and name not in ("كاستنج", recover_name):
+                if op_label == "فاقد" and name and name not in ("كاستنج", recover_name, self.TREE_RETURN_NAME):
                     op_label = f"فاقد ({name})"
                 vals.append(op_label)
             elif show_name:
@@ -5973,8 +6017,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if recover_name:
                 vals.append(f"{g['مسترجع']:.2f}" if g["مسترجع"] else "-")
             vals.append(f"{khayas:.2f}")
-            if recover_name:
-                vals.append(f"{net:.2f}")
             if with_trees:
                 trees = g["أشجار"]
                 vals += [f"{trees:g}" if trees else "-",
@@ -5983,13 +6025,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             item_id = tree.insert("", "end", values=tuple(vals), tags=tags)
             rows_map[item_id] = g["ids"]
 
-        tot_khayas = round(tot_madin - tot_daen, 2)
-        tot_net = round(tot_khayas - tot_rec, 2)
+        tot_khayas = round(tot_madin - tot_daen - tot_rec, 2)
         if rows_map:
             tvals = ["إجمالي الشهر"] + (["-"] if (recover_name or show_name) else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
-                     [f"{tot_rec:.2f}"] if recover_name else []) + [f"{tot_khayas:.2f}"] + (
-                     [f"{tot_net:.2f}"] if recover_name else [])
+                     [f"{tot_rec:.2f}"] if recover_name else []) + [f"{tot_khayas:.2f}"]
             if with_trees:
                 tvals += [f"{tot_trees:g}" if tot_trees else "-",
                           f"{round(tot_khayas / tot_trees, 2):.2f}" if tot_trees > 0 else "-"]
@@ -6003,9 +6043,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if totals_label is not None:
             txt = f"الإجماليات — صرف: {tot_madin:.2f}  |  قبض: {tot_daen:.2f}"
-            txt += f"  |  الخياس: {tot_khayas:.2f} جم"
             if recover_name:
-                txt += f"  |  المسترجع: {tot_rec:.2f}  |  الصافي: {tot_net:.2f}"
+                txt += f"  |  مسترجع الأشجار: {tot_rec:.2f}"
+            txt += f"  |  الخياس: {tot_khayas:.2f} جم"
             if with_trees:
                 per_tree = round(tot_khayas / tot_trees, 2) if tot_trees > 0 else 0.0
                 txt += f"  |  عدد الأشجار: {tot_trees:g}  |  خياس كل شجرة: {per_tree:.2f}"
@@ -6108,13 +6148,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("تنبيه", "الحركة المحددة لم تعد موجودة. حدّث الشاشة وحاول مجدداً.")
             return
         rec_inv = next((i for i in invs if self.is_row_recovery(i, recover_name)), None)
-        # بيانات الصف من حركة الصرف/القبض لا من المسترجع (اسمه اسم حساب المسترجع)
+        # بيانات الصف من حركة الصرف/القبض لا من مسترجع الأشجار (له اسمه الخاص)
         ref = next((i for i in invs if i is not rec_inv), invs[0])
         ref_dt = ref["التاريخ"]
         ref_name = ref["الاسم"]
         ref_row = ref.get("row_number", "") or ""
         sarf_inv = next((i for i in invs if i["النوع"] == madin_type), None)
-        qabd_inv = next((i for i in invs if i["النوع"] == qabd_type), None)
+        # مسترجع الأشجار قبضٌ أيضاً: لا يُخلط بقبض الصف نفسه
+        qabd_inv = next((i for i in invs if i["النوع"] == qabd_type and i is not rec_inv), None)
         base_inv = sarf_inv or qabd_inv
         common_note = (base_inv.get("البيان") or "") if base_inv else ""
         cur_trees = max([(i.get("trees_count", 0.0) or 0.0) for i in invs] or [0.0])
@@ -6238,19 +6279,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             upsert(qabd_inv, new_qabd, qabd_type)
 
             if recover_name:
-                # مسترجع الأشجار: وارد باسم مسترجع الصندوق على الصف نفسه
+                # مسترجع الأشجار: قبض من فاقد الصف نفسه (لا صلة له بحساب المسترجع)
                 if new_rec > 0:
                     if rec_inv:
-                        rec_inv.update({"الوزن": new_rec, "قبل": new_rec, "بعد": 18.0,
-                                        "row_number": new_row_no, "التاريخ": new_dt})
+                        rec_inv.update({"الوزن": new_rec, "row_number": new_row_no, "التاريخ": new_dt})
                         if not self.save_invoice_to_db(rec_inv["رقم الفاتورة"], rec_inv):
                             any_blocked = True
                     else:
                         self.invoice_counter += 1
                         inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt,
-                                    "الاسم": recover_name, "النوع": "وارد ذهب (عيار 18)", "الوزن": new_rec,
-                                    "البيان": "مسترجع الأشجار", "settled_status": "ACTIVE", "trees_count": 0.0,
-                                    "قبل": new_rec, "بعد": 18.0, "set_number": "", "row_number": new_row_no}
+                                    "الاسم": self.TREE_RETURN_NAME, "النوع": qabd_type, "الوزن": new_rec,
+                                    "البيان": self.TREE_RETURN_NAME, "settled_status": "ACTIVE", "trees_count": 0.0,
+                                    "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no}
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
                             any_blocked = True
@@ -8581,10 +8621,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                        for inv in self.period_invoices(month))
 
         skipped = []
-        if sarf_v > 0 and row_has(lambda i: i.get("النوع") == "صرف كاستنج" and i.get("الاسم") != recover_name):
+        if sarf_v > 0 and row_has(lambda i: i.get("النوع") == "صرف كاستنج"
+                                  and not self.is_recovery_op(i, "صرف كاستنج", recover_name)):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and row_has(lambda i: i.get("النوع") == "قبض كاستنج"):
+        if qabd_v > 0 and row_has(lambda i: i.get("النوع") == "قبض كاستنج"
+                                  and not self.is_row_recovery(i, recover_name)):
             skipped.append("القبض")
             qabd_v = 0.0
         if recover_v > 0 and row_has(lambda i: self.is_row_recovery(i, recover_name)):
@@ -8616,14 +8658,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             saved_any = True
 
         if recover_v > 0 and recover_name:
-            # مسترجع الأشجار: وارد باسم «مسترجع كاستنج» ورقم الصف — يذهب لحساب مسترجع
-            # المرحلة (لا يُخصم من فاقدها الحالي) ويظهر بجانب صفه في الجدول
+            # مسترجع الأشجار: قبض من فاقد الصف نفسه — يُخصم من الفاقد الحالي للكاستنج،
+            # ولا صلة له بحساب «مسترجع كاستنج»، ويظهر بجانب صفه في الجدول
             self.invoice_counter += 1
             inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": recover_name,
-                "النوع": "وارد ذهب (عيار 18)", "الوزن": recover_v,
-                "البيان": f"مسترجع الأشجار — {note}" if note else "مسترجع الأشجار",
-                "settled_status": "ACTIVE", "trees_count": 0.0, "قبل": recover_v, "بعد": 18.0,
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": self.TREE_RETURN_NAME,
+                "النوع": "قبض كاستنج", "الوزن": recover_v,
+                "البيان": f"{self.TREE_RETURN_NAME} — {note}" if note else self.TREE_RETURN_NAME,
+                "settled_status": "ACTIVE", "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0,
                 "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
@@ -8645,10 +8687,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after(60, lambda: self.cast_row_num.focus_set())
 
     def submit_casting_recovery_op(self):
-        """عملية «مسترجع» في الكاستنج (بلا رقم صف):
-          • الصرف ← صرف للكاستنج يزيد فاقده الحالي كأي صرف، ويظهر في «فاقد» تحت الصرف.
-          • القبض ← ذهب مسترجع: وارد باسم «مسترجع كاستنج» — يذهب لحساب مسترجع المرحلة
-            (لا يُقفل ولا يُخصم من الفاقد الحالي) فيظهر في شاشة الخسائر ويُطرح في الصافي.
+        """عملية «مسترجع» في الكاستنج (بلا رقم صف): رجوعٌ من الفاقد الحالي نفسه.
+          • الصرف ← صرف للكاستنج يزيد فاقده الحالي كأي صرف، ويظهر تحت الصرف.
+          • القبض ← قبض للكاستنج يُخصم من فاقده الحالي، ويظهر تحت القبض.
+        لا صلة لها بحساب «مسترجع كاستنج» (ذاك لما يُستلم من شاشة الوارد إلى حسابه).
         """
         date_val = self.cast_date.get().strip()
         note = self.cast_note.get().strip()
@@ -8666,12 +8708,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sarf_v <= 0 and qabd_v <= 0:
             messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
             return
-        _m, _q, recover_name = self.get_stage_config("الكاستنج")
         lines = []
         if sarf_v > 0:
             lines.append(f"• صرف {sarf_v:.2f} جم — يزيد الفاقد الحالي للكاستنج")
         if qabd_v > 0:
-            lines.append(f"• قبض {qabd_v:.2f} جم — إلى حساب «{recover_name}» (لا يُقفل شيئاً)")
+            lines.append(f"• قبض {qabd_v:.2f} جم — يُخصم من الفاقد الحالي للكاستنج")
         if not messagebox.askyesno("تأكيد ترحيل المسترجع", "ترحيل عملية مسترجع للكاستنج:\n\n"
                                    + "\n".join(lines) + "\n\nهل تريد المتابعة؟"):
             return
@@ -8680,7 +8721,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sarf_v > 0:
             self.invoice_counter += 1
             inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": recover_name,
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": self.CAST_RETURN_NAME,
                 "النوع": "صرف كاستنج", "الوزن": sarf_v, "البيان": note, "settled_status": "ACTIVE",
                 "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": ""
             }
@@ -8689,9 +8730,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if qabd_v > 0:
             self.invoice_counter += 1
             inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": recover_name,
-                "النوع": "وارد ذهب (عيار 18)", "الوزن": qabd_v, "البيان": note, "settled_status": "ACTIVE",
-                "trees_count": 0.0, "قبل": qabd_v, "بعد": 18.0, "set_number": "", "row_number": ""
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": self.CAST_RETURN_NAME,
+                "النوع": "قبض كاستنج", "الوزن": qabd_v, "البيان": note, "settled_status": "ACTIVE",
+                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": ""
             }
             self.invoices[self.invoice_counter] = inv_data
             self.save_invoice_to_db(self.invoice_counter, inv_data)
@@ -8774,8 +8815,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not inv:
             messagebox.showwarning("تنبيه", "الحركة المحددة لم تعد موجودة. حدّث الشاشة وحاول مجدداً.")
             return
-        is_receipt = inv.get("النوع") in self.INBOUND_TYPES
-        kind = "القبض (إلى حساب المسترجع)" if is_receipt else "الصرف (يزيد الفاقد الحالي)"
+        is_receipt = inv.get("النوع") != "صرف كاستنج"
+        kind = "القبض (يُخصم من الفاقد الحالي)" if is_receipt else "الصرف (يزيد الفاقد الحالي)"
 
         win = ctk.CTkToplevel(self)
         win.title(title)
@@ -8821,8 +8862,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             else:
                 old_time = str(inv.get("التاريخ", ""))[11:] or datetime.datetime.now().strftime("%H:%M:%S")
                 inv["الوزن"] = new_w
-                if is_receipt:
-                    inv["قبل"], inv["بعد"] = new_w, 18.0
                 inv["التاريخ"] = f"{new_date} {old_time}"
                 inv["البيان"] = ent_note.get().strip()
                 if not self.save_invoice_to_db(inv_id, inv):
@@ -10771,8 +10810,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     #     يبقى عند المرحلة حتى يُقفَل، وكل فترة مستقلة بخياسها.
     #   • «فاقد المرحلة»               ← يستقبل الفاقد الحالي عند الإقفال فقط
     #     (زر الإقفال: مدين فاقد المرحلة / دائن المرحلة)، ويتراكم عبر الفترات.
-    #   • «مسترجع المرحلة»             ← يستقبل كل ذهب مسترجع (وارد باسمه، أو قبض
-    #     «مسترجع» من مراحل التصنيع). لا يمسّ الفاقد الحالي ولا يُقفل شيئاً.
+    #   • «مسترجع المرحلة»             ← يستقبل الوارد إليه من شاشة الوارد. لا يمسّ
+    #     الفاقد الحالي ولا يُقفل شيئاً. (أما «المسترجع» في شاشة الكاستنج — الأشجار
+    #     وعملية «مسترجع» — فرجوعٌ من الفاقد الحالي نفسه: صرف وقبض للكاستنج.)
     #
     #   الصافي = الفاقد − المسترجع. وأي حساب منها يقبل رصيداً افتتاحياً بقيد يومي.
     # ══════════════════════════════════════════════════════════════════════
@@ -10854,9 +10894,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def get_box_recovered_total(self, cat, month=None):
         """رصيد حساب «مسترجع» المرحلة (month=None: كل الفترات):
-        كل وارد باسمه (من شاشة الوارد، أو قبض «مسترجع» ومسترجع الأشجار في مراحل
-        التصنيع) + القيود اليومية على حسابه (دائن − مدين، ومنها الرصيد الافتتاحي).
-        صرف «مسترجع» ليس منه: هو صرف للمرحلة يزيد فاقدها الحالي كأي صرف."""
+        كل وارد باسمه من شاشة الوارد («إلى حساب مسترجع …») + القيود اليومية على حسابه
+        (دائن − مدين، ومنها الرصيد الافتتاحي).
+        «المسترجع» في شاشة الكاستنج (الأشجار وعملية «مسترجع») ليس منه: صرفٌ وقبضٌ
+        للكاستنج نفسه من فاقده الحالي."""
         name = self.get_box_recovery_name(cat)
         if not name:
             return 0.0
@@ -11304,7 +11345,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return round(sales_total - closed, 2) + 0.0
 
         # الفاقد الحالي = الصرف − القبض ± قيود حساب المرحلة (ومنها الإقفال).
-        # المسترجع لا يدخل هنا: يذهب لحساب مسترجع المرحلة ولا يُقفل شيئاً
+        # «المسترجع» في شاشة الكاستنج (الأشجار وعملية «مسترجع») صرفٌ وقبضٌ للمرحلة
+        # فيدخل هنا؛ أما الوارد لحساب مسترجع المرحلة فلا يدخل ولا يُقفل شيئاً
         madin_type, qabd_type, _mustarja_name = self.get_stage_config(cat)
         box_account_name = self.get_box_account_name(cat)
         tot_madin = tot_daen = 0.0
@@ -13203,16 +13245,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     add(inv, inv["الوزن"] if t in worker_types_madin else 0.0,
                         inv["الوزن"] if t in worker_types_daen else 0.0, t)
             else:
-                # حركات المرحلة: الصرف والقبض (المسترجع في كشف حساب مسترجع المرحلة)
-                madin_type, qabd_type, mustarja_name = self.get_stage_config(cat)
+                # حركات المرحلة: الصرف والقبض، ومنها مسترجع الكاستنج من فاقده الحالي
+                # (الوارد لحساب مسترجع المرحلة في كشف ذلك الحساب)
+                madin_type, qabd_type, _mustarja_name = self.get_stage_config(cat)
                 for inv in self.invoices.values():
                     if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
                     t = inv.get("النوع")
+                    who = inv.get("الاسم")
                     if t == madin_type:
-                        label = "صرف مسترجع" if inv.get("الاسم") == mustarja_name else "صرف"
+                        label = "صرف مسترجع" if who == self.CAST_RETURN_NAME else "صرف"
                         add(inv, inv["الوزن"], 0.0, inv.get("البيان") or label)
                     elif qabd_type and t == qabd_type:
-                        add(inv, 0.0, inv["الوزن"], "قبض")
+                        label = (self.TREE_RETURN_NAME if who == self.TREE_RETURN_NAME
+                                 else "قبض مسترجع" if who == self.CAST_RETURN_NAME else "قبض")
+                        add(inv, 0.0, inv["الوزن"], label)
 
         else:  # مورد عادي أو اسم مسترجع
             sale_types_all = ["مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس"]

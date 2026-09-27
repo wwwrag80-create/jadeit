@@ -4,11 +4,13 @@
 (ومنها الحفظ الفعلي في قاعدة SQLite مؤقتة):
 
   لكل مرحلة (صندوق خياس) ثلاثة حسابات:
-    • المرحلة نفسها ← فاقدها الحالي = الصرف − القبض، وكل فترة مستقلة بفاقدها
+    • المرحلة نفسها ← فاقدها الحالي = الصرف − القبض، وكل فترة مستقلة بفاقدها.
+                       و«المسترجع» في شاشة الكاستنج (عملية «مسترجع» ومسترجع الأشجار)
+                       رجوعٌ من هذا الفاقد نفسه: صرفه يزيده وقبضه يُخصم منه
     • «فاقد X»      ← يستقبل الفاقد الحالي بزر الإقفال وحده، ويتراكم عبر الفترات،
                        ويقبل رصيداً افتتاحياً بقيد يومي
-    • «مسترجع X»    ← يستقبل كل مسترجع (الوارد، وقبض «مسترجع» في الكاستنج،
-                       ومسترجع الأشجار) — لا يُقفل شيئاً ولا يمسّ الفاقد الحالي
+    • «مسترجع X»    ← يستقبل الوارد إليه من شاشة الوارد — لا يُقفل شيئاً ولا يمسّ
+                       الفاقد الحالي
   شاشة الخسائر لكل صندوق: الفاقد الحالي، فاقد X، مسترجع X، الصافي = الفاقد − المسترجع.
 """
 import ast, calendar, datetime, io, os, shutil, sqlite3, sys, tempfile, textwrap
@@ -58,6 +60,7 @@ METHODS = [
     "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db",
     # الإقفال والبيانات القديمة
     "close_khayas_box", "close_split_khayas_box", "_post_closing_entry", "neutralize_auto_recovery_closings",
+    "migrate_casting_returns",
     # الوارد والقيد اليومي
     "submit_inbound", "submit_journal_entry",
     # الكاستنج
@@ -70,7 +73,7 @@ METHODS = [
 ]
 ATTRS = ["BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
-         "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS"]
+         "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME"]
 
 EXTRA = '''
 def check_edit_permission(self): return True
@@ -276,37 +279,42 @@ a.current_display_month = M9
 m8 = [i for i in a.invoices.values() if i["period"] == M8]
 assert sorted((i["الاسم"], i["النوع"], i["الوزن"], i["row_number"]) for i in m8) == sorted([
     ("كاستنج", "صرف كاستنج", 100.0, "1"), ("كاستنج", "قبض كاستنج", 95.0, "1"),
-    (CAST_REC, "وارد ذهب (عيار 18)", 1.0, "1"),                  # مسترجع الأشجار للصف
-    (CAST_REC, "صرف كاستنج", 10.0, ""), (CAST_REC, "وارد ذهب (عيار 18)", 8.0, "")])
+    ("مسترجع الأشجار", "قبض كاستنج", 1.0, "1"),                   # مسترجع الأشجار: قبض من فاقد الصف
+    ("مسترجع الفاقد", "صرف كاستنج", 10.0, ""), ("مسترجع الفاقد", "قبض كاستنج", 8.0, "")])
 assert not journal_legs(a), "لا قيد إقفال يُنشأ من الترحيل"
-print("✔ «مسترجع»: الصرف صرفٌ للكاستنج، والقبض وارد باسم «مسترجع كاستنج» — بلا رقم صف وبلا أي إقفال")
+assert not any(i["الاسم"] == CAST_REC for i in m8)
+print("✔ «مسترجع» ومسترجع الأشجار: صرفٌ وقبضٌ للكاستنج نفسه — لا شيء لحساب «مسترجع كاستنج» ولا إقفال")
 
-assert summary(a, CAST, M8) == (15.0, 0.0, 9.0, -9.0), summary(a, CAST, M8)
-print("✔ الفاقد الحالي لفترة ٨ = صرف 100 + صرف مسترجع 10 − قبض 95 = 15 (المسترجع 9 لا يُطرح منه)")
+assert summary(a, CAST, M8) == (6.0, 0.0, 0.0, 0.0), summary(a, CAST, M8)
+print("✔ الفاقد الحالي لفترة ٨ = صرف 100 + صرف مسترجع 10 − قبض 95 − مسترجع الأشجار 1 − قبض مسترجع 8 = 6")
 
 sets = a.get_treasury_type_sets()
+assert all(a.treasury_bucket(i, sets)[0] == "boxes" for i in m8)
 treasury = round(sum(a.treasury_bucket(i, sets)[1] for i in m8), 2)
 assert treasury == -6.0, treasury
-print("✔ الخزينة: خرج 110 وعاد 95 + 9 مسترجع = −6 (وهو الصافي بعد الإقفال: 15 − 9)")
+print("✔ الخزينة: خرج 110 وعاد 104 = −6 = الفاقد الحالي (كلها حركات الكاستنج، لا «وارد»)")
 
 # الجدول: «فاقد» يعرض كل العمليات، و«مسترجع» عملياته وحدها
 a.current_display_month = M8
 rows = a.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", CAST_REC)
 assert [g["op"] for _r, _n, g in rows] == ["فاقد", "مسترجع", "مسترجع"]
 assert (rows[0][2]["مدين"], rows[0][2]["دائن"], rows[0][2]["مسترجع"]) == (100.0, 95.0, 1.0)
-assert sorted((g["مدين"], g["مسترجع"]) for _r, _n, g in rows[1:]) == [(0.0, 8.0), (10.0, 0.0)]
+assert sorted((g["مدين"], g["دائن"]) for _r, _n, g in rows[1:]) == [(0.0, 8.0), (10.0, 0.0)]
 tot = W()
 a.render_stage_ops_table(None, "صرف كاستنج", "قبض كاستنج", with_trees=True, recover_name=CAST_REC,
                          op_filter="فاقد", section=CAST, totals_label=tot)
 data = [r for r in a._tree.rows if r["الصف"] != "إجمالي الشهر"]
 assert [r["العملية"] for r in data] == ["فاقد", "مسترجع", "مسترجع"], [r["العملية"] for r in data]
-assert "صرف: 110.00" in tot.v and "قبض: 95.00" in tot.v and "الخياس: 15.00" in tot.v and "المسترجع: 9.00" in tot.v, tot.v
+assert "صرف: 110.00" in tot.v and "قبض: 103.00" in tot.v and "مسترجع الأشجار: 1.00" in tot.v, tot.v
+assert "الخياس: 6.00" in tot.v and "الصافي" not in tot.v, tot.v
+assert [r["الخياس"] for r in data] == ["4.00", "10.00", "-8.00"], [r["الخياس"] for r in data]
 a.render_stage_ops_table(None, "صرف كاستنج", "قبض كاستنج", with_trees=True, recover_name=CAST_REC,
                          op_filter="مسترجع", section=CAST, totals_label=tot)
 data = [r for r in a._tree.rows if r["الصف"] != "إجمالي الشهر"]
 assert [r["العملية"] for r in data] == ["مسترجع", "مسترجع"] and all(r["الصف"] == "-" for r in data)
-assert "صرف: 10.00" in tot.v and "المسترجع: 8.00" in tot.v, tot.v
-print("✔ الجدول: «فاقد» يعرض كل العمليات (الصرف 110 بما فيه صرف المسترجع)، و«مسترجع» عملياته وحدها")
+assert "صرف: 10.00" in tot.v and "قبض: 8.00" in tot.v and "الخياس: 2.00" in tot.v, tot.v
+print("✔ الجدول: «فاقد» يعرض كل العمليات — قبض المسترجع تحت القبض، ومسترجع الأشجار يُخصم من خياس صفه")
+print("✔ و«مسترجع» يعرض عملياته وحدها")
 
 # ═══ ٣) الإقفال بالزر وحده ← حساب «فاقد الكاستنج» ═══
 a.current_display_month = M9
@@ -316,12 +324,12 @@ legs = journal_legs(a)
 assert len(a.invoices) == before + 2 and len(legs) == 2
 dr = next(x for x in legs if x["النوع"] == "قيد يومي مدين")
 cr = next(x for x in legs if x["النوع"] == "قيد يومي دائن")
-assert (dr["الاسم"], cr["الاسم"], dr["الوزن"]) == (CAST_LOSS, CAST_BOX, 15.0)
+assert (dr["الاسم"], cr["الاسم"], dr["الوزن"]) == (CAST_LOSS, CAST_BOX, 6.0)
 assert dr["period"] == cr["period"] == M8 and dr["التاريخ"] == "2026-08-31 23:59:00"
 assert dr["set_number"] == cr["set_number"] and a.journal_partner(dr) is cr
-assert summary(a, CAST, M8) == (0.0, 15.0, 9.0, 6.0), summary(a, CAST, M8)
-print("✔ زر الإقفال: مدين «فاقد الكاستنج» 15 / دائن «الكاستنج» 15، بفترة ٨ وآخر يوم فيها")
-print("✔ بعده: الفاقد الحالي 0 | فاقد الكاستنج 15 | المسترجع 9 | الصافي 6")
+assert summary(a, CAST, M8) == (0.0, 6.0, 0.0, 6.0), summary(a, CAST, M8)
+print("✔ زر الإقفال: مدين «فاقد الكاستنج» 6 / دائن «الكاستنج» 6، بفترة ٨ وآخر يوم فيها")
+print("✔ بعده: الفاقد الحالي 0 | فاقد الكاستنج 6 | المسترجع 0 | الصافي 6")
 
 before = len(a.invoices)
 a.close_khayas_box(CAST, month=M8)
@@ -331,31 +339,31 @@ print("✔ لا إقفال مرتين لفترة واحدة")
 # ═══ ٤) كل فترة مستقلة، والوارد إلى حساب المسترجع لا يُقفل شيئاً ═══
 cast_loss(a, M9, "1", sarf="50", qabd="48")
 a.current_display_month = M9
-assert summary(a, CAST, M9) == (2.0, 15.0, 9.0, 6.0), summary(a, CAST, M9)
+assert summary(a, CAST, M9) == (2.0, 6.0, 0.0, 6.0), summary(a, CAST, M9)
 assert a.get_current_unclosed_khayas(CAST, month=M8) == 0.0
-print("✔ فترة ٩ تبدأ بفاقدها وحدها (2)، وفاقد الكاستنج يبقى 15 من فترة ٨")
+print("✔ فترة ٩ تبدأ بفاقدها وحدها (2)، وفاقد الكاستنج يبقى 6 من فترة ٨")
 
 legs_before = len(journal_legs(a))
 inbound(a, M9, 3, CAST_REC, supplier="المصنع", note="بودرة")
 rec = a.invoices[a.invoice_counter]
 assert (rec["الاسم"], rec["النوع"], rec["الوزن"], rec["البيان"]) == (CAST_REC, "وارد ذهب (عيار 18)", 3.0, "بودرة — من المصنع")
 assert len(journal_legs(a)) == legs_before, "الوارد إلى المسترجع لا يُنشئ قيد إقفال"
-assert summary(a, CAST, M9) == (2.0, 15.0, 12.0, 3.0), summary(a, CAST, M9)
+assert summary(a, CAST, M9) == (2.0, 6.0, 3.0, 3.0), summary(a, CAST, M9)
 confirm = texts[len(msgs) - 1 - msgs[::-1].index("تأكيد الترحيل")]
 assert f"في حساب «{CAST_REC}»" in confirm and "لا يُقفل أي فاقد" in confirm, confirm
-print("✔ الوارد «إلى حساب مسترجع كاستنج»: يذهب لحساب المسترجع (12) — الفاقد الحالي باقٍ 2 بلا إقفال")
+print("✔ الوارد «إلى حساب مسترجع كاستنج» (شاشة الوارد): لحساب المسترجع (3) — الفاقد الحالي باقٍ 2 بلا إقفال")
 assert a.treasury_bucket(rec, a.get_treasury_type_sets()) == ("inbound", 3.0)
 print("✔ ويُحتسب «وارداً» دخلنا: في لوحة الوارد بالرئيسية والتقرير الشهري (لا يُنقص الخياس)")
 
 # اسم الصندوق في خانة المورد (الطريقة القديمة) يُسجَّل مسترجعاً أيضاً — بلا إقفال
 inbound(a, M9, 1, a.INBOUND_DEFAULT_ACCOUNT, supplier=CAST_BOX, voucher="V2")
 assert a.invoices[a.invoice_counter]["الاسم"] == CAST_REC and len(journal_legs(a)) == legs_before
-assert summary(a, CAST, M9) == (2.0, 15.0, 13.0, 2.0), summary(a, CAST, M9)
+assert summary(a, CAST, M9) == (2.0, 6.0, 4.0, 2.0), summary(a, CAST, M9)
 print("✔ كتابة اسم المرحلة في خانة المورد تُسجَّل في مسترجعها — ولا إقفال تلقائي إطلاقاً")
 
 a.close_khayas_box(CAST, month=M9)
-assert summary(a, CAST, M9) == (0.0, 17.0, 13.0, 4.0), summary(a, CAST, M9)
-print("✔ إقفال فترة ٩ بالزر: فاقد الكاستنج يتراكم 15 + 2 = 17، والصافي 17 − 13 = 4")
+assert summary(a, CAST, M9) == (0.0, 8.0, 4.0, 4.0), summary(a, CAST, M9)
+print("✔ إقفال فترة ٩ بالزر: فاقد الكاستنج يتراكم 6 + 2 = 8، والصافي 8 − 4 = 4")
 
 # ترتيب العمليات لا يغيّر النتيجة: المسترجع قبل الإقفال أو بعده
 b = new_app()
@@ -372,8 +380,8 @@ print("✔ المسترجع قبل الإقفال أو بعده: النتيجة 
 # ═══ ٥) رصيد افتتاحي لحساب الفاقد وحساب المسترجع ═══
 journal(a, CAST_LOSS, "رصيد افتتاحي", 20, M9)
 journal(a, "رصيد افتتاحي", CAST_REC, 4, M9)
-assert summary(a, CAST, M9) == (0.0, 37.0, 17.0, 20.0), summary(a, CAST, M9)
-print("✔ رصيد افتتاحي بقيد يومي: مدين «فاقد الكاستنج» 20 ← الفاقد 37، ودائن «مسترجع كاستنج» 4 ← المسترجع 17")
+assert summary(a, CAST, M9) == (0.0, 28.0, 8.0, 20.0), summary(a, CAST, M9)
+print("✔ رصيد افتتاحي بقيد يومي: مدين «فاقد الكاستنج» 20 ← الفاقد 28، ودائن «مسترجع كاستنج» 4 ← المسترجع 8")
 
 journal(a, "فاقد صب داخلي", "رصيد افتتاحي", 30, M9)
 assert summary(a, "صب داخلي", M9) == (0.0, 30.0, 0.0, 30.0)
@@ -381,11 +389,11 @@ print("✔ مرحلة بلا أي حركة: رصيدها الافتتاحي في
 
 # قيد بين المرحلة وحساب آخر (غير الفاقد) تسوية لفاقدها الحالي لا إقفال
 journal(a, "حساب الخزينة", CAST_BOX, 2, M9)
-assert summary(a, CAST, M9) == (-2.0, 37.0, 17.0, 20.0), summary(a, CAST, M9)
+assert summary(a, CAST, M9) == (-2.0, 28.0, 8.0, 20.0), summary(a, CAST, M9)
 print("✔ قيد بين المرحلة والخزينة يسوّي فاقدها الحالي ولا يُحسب إقفالاً في «فاقد الكاستنج»")
 closings = sorted(e["amount"] for e in a.get_box_closing_entries(CAST))
-assert closings == [2.0, 15.0], closings
-print("✔ «تراجع عن الإقفال» يعرض الإقفالين وحدهما (15 و2) — لا قيد الخزينة ولا الرصيد الافتتاحي")
+assert closings == [2.0, 6.0], closings
+print("✔ «تراجع عن الإقفال» يعرض الإقفالين وحدهما (6 و2) — لا قيد الخزينة ولا الرصيد الافتتاحي")
 a.invoices[a.invoice_counter]["settled_status"] = a.invoices[a.invoice_counter - 1]["settled_status"] = "MEMO"
 a._inv_version = getattr(a, "_inv_version", 0) + 1
 
@@ -395,32 +403,34 @@ ref = f"JE-{a.invoice_counter + 1}"
 add(a, LOSSES, "قيد يومي مدين", 5.0, M7, "إقفال خياس", ref=ref)
 add(a, CAST_BOX, "قيد يومي دائن", 5.0, M7, "إقفال خياس", ref=ref)
 assert a.get_current_unclosed_khayas(CAST, month=M7) == 0.0
-assert summary(a, CAST, M9) == (0.0, 42.0, 17.0, 25.0), summary(a, CAST, M9)
-assert sorted(e["amount"] for e in a.get_box_closing_entries(CAST)) == [2.0, 5.0, 15.0]
-print("✔ إقفال سابق لإنشاء حسابات الفاقد (على «حساب الخسائر») يُحسب في «فاقد الكاستنج» (42) ويمكن التراجع عنه")
+assert summary(a, CAST, M9) == (0.0, 33.0, 8.0, 25.0), summary(a, CAST, M9)
+assert sorted(e["amount"] for e in a.get_box_closing_entries(CAST)) == [2.0, 5.0, 6.0]
+print("✔ إقفال سابق لإنشاء حسابات الفاقد (على «حساب الخسائر») يُحسب في «فاقد الكاستنج» (33) ويمكن التراجع عنه")
 
 # ═══ ٧) كشوف الحسابات تطابق شاشة الخسائر ═══
 rows = a.get_account_ledger_rows(CAST_LOSS, "", "")
-assert balance(rows, True) == a.get_box_loss_total(CAST) == 42.0, balance(rows, True)
+assert balance(rows, True) == a.get_box_loss_total(CAST) == 33.0, balance(rows, True)
 assert any(r["الاسم"] == CAST_BOX and r["period"] == M7 for r in rows), "الإقفال القديم يظهر في كشف الفاقد"
 rows9 = a.get_account_ledger_rows(CAST_LOSS, M9, M9)
-assert rows9[0].get("is_opening") and rows9[0]["مدين"] == 20.0, rows9[0]      # 15 (فترة ٨) + 5 (فترة ٧)
-assert balance(rows9, True) == 42.0
-print("✔ كشف «فاقد الكاستنج» = 42 (مع الإقفال القديم)، ورصيد أول مدة فترة ٩ = إقفالات ما قبلها (20)")
+assert rows9[0].get("is_opening") and rows9[0]["مدين"] == 11.0, rows9[0]      # 6 (فترة ٨) + 5 (فترة ٧)
+assert balance(rows9, True) == 33.0
+print("✔ كشف «فاقد الكاستنج» = 33 (مع الإقفال القديم)، ورصيد أول مدة فترة ٩ = إقفالات ما قبلها (11)")
 
 rows = a.get_account_ledger_rows(CAST_REC, "", "")
-assert balance(rows, False) == a.get_box_recovered_total(CAST) == 17.0, balance(rows, False)
-print("✔ كشف «مسترجع كاستنج» = 17 = قسم المسترجع في شاشة الخسائر")
+assert balance(rows, False) == a.get_box_recovered_total(CAST) == 8.0, balance(rows, False)
+print("✔ كشف «مسترجع كاستنج» = 8 (وارد شاشة الوارد والرصيد الافتتاحي فقط) = قسم المسترجع في شاشة الخسائر")
 
 rows = a.get_account_ledger_rows(LOSSES, "", "")
 total_losses = round(sum(a.get_box_loss_total(c) for c in a.get_khayas_box_categories()), 2)
-assert balance(rows, True) == total_losses == 72.0, (balance(rows, True), total_losses)
-print("✔ «حساب الخسائر» = إجمالي فاقد كل المراحل (42 + 30 = 72) في كشفه")
+assert balance(rows, True) == total_losses == 63.0, (balance(rows, True), total_losses)
+print("✔ «حساب الخسائر» = إجمالي فاقد كل المراحل (33 + 30 = 63) في كشفه")
 
 rows = a.get_account_ledger_rows(CAST_BOX, M8, M8)
 assert any(r["البيان"] == "غبار الفرن" and r["مدين"] == 10.0 for r in rows)
+assert any(r["البيان"] == "قبض مسترجع" and r["دائن"] == 8.0 for r in rows)
+assert any(r["البيان"] == "مسترجع الأشجار" and r["دائن"] == 1.0 for r in rows)
 assert balance(rows, False) == 0.0          # فترة ٨ مقفلة بالكامل
-print("✔ كشف «الكاستنج» لفترة ٨ يعرض صرف المسترجع مع صرفه، ورصيده صفر بعد الإقفال")
+print("✔ كشف «الكاستنج» لفترة ٨ يعرض صرف المسترجع وقبضه ومسترجع الأشجار مع حركاته، ورصيده صفر بعد الإقفال")
 
 # ═══ ٨) إلغاء «الإقفال التلقائي عند الوارد» في البيانات السابقة ═══
 def legacy(app, month, sarf, qabd, recovered, remainder):
@@ -428,7 +438,7 @@ def legacy(app, month, sarf, qabd, recovered, remainder):
     add(app, "كاستنج", "صرف كاستنج", sarf, month)
     add(app, "كاستنج", "قبض كاستنج", qabd, month)
     dt = f"{month}-12 09:30:00"
-    inv_id = add(app, CAST_REC, "وارد ذهب (عيار 18)", recovered, month, date=dt)
+    inv_id = add(app, CAST_REC, "وارد ذهب (عيار 18)", recovered, month, date=dt, ref=f"V-{month}")
     ref = f"JE-{inv_id + 1}"
     debit, credit = (LOSSES, CAST_BOX) if remainder > 0 else (CAST_BOX, LOSSES)
     add(app, debit, "قيد يومي مدين", abs(remainder), month, "مسترجع", ref=ref, date=dt)
@@ -446,7 +456,8 @@ for admin in (False, True):
     c.close_khayas_box(CAST, month=M8)
     for supplier, w, note, day in (("المصنع", 1.0, "مسترجع", 12), (CAST_REC, 0.5, "", 13)):
         dt = f"{M8}-{day} 09:30:00"
-        first = add(c, supplier, "وارد ذهب (عيار 18)", 2.0 if supplier == "المصنع" else 1.0, M8, date=dt)
+        first = add(c, supplier, "وارد ذهب (عيار 18)", 2.0 if supplier == "المصنع" else 1.0, M8, date=dt,
+                    ref=f"V-{day}")
         ref = f"JE-{first + 1}"
         add(c, LOSSES, "قيد يومي مدين", w, M8, note, ref=ref, date=dt)
         add(c, CAST_BOX, "قيد يومي دائن", w, M8, note, ref=ref, date=dt)
@@ -469,6 +480,41 @@ for admin in (False, True):
 print("✔ الإقفالات التلقائية القديمة (بالاتجاهين) تُلغى: تبقى محفوظة سطوراً معلوماتية (MEMO) بسببها")
 print("✔ فيعود فاقد تلك الفترات كاملاً ليُقفل بالزر؛ والقيود اليدوية وإقفالات الزر لا تُمسّ")
 print("✔ نسخة العميل تحفظ الإلغاء في قاعدتها (فيُرفع للسحابة)، والمدير في الذاكرة فقط؛ وتكراره لا يغيّر شيئاً")
+
+# ═══ ٨ب) تصحيح «المسترجع» الذي سجّلته شاشة الكاستنج سابقاً باسم حساب المسترجع ═══
+for admin in (False, True):
+    m = new_app(admin=admin)
+    add(m, "كاستنج", "صرف كاستنج", 50.0, M8, row="3")
+    add(m, "كاستنج", "قبض كاستنج", 44.0, M8, row="3")
+    tree_id = add(m, CAST_REC, "وارد ذهب (عيار 18)", 1.5, M8, "مسترجع الأشجار — غبار", row="3")
+    op_rec = add(m, CAST_REC, "وارد ذهب (عيار 18)", 2.0, M8, "من الفرن")                # قبض «مسترجع»
+    op_iss = add(m, CAST_REC, "صرف كاستنج", 0.5, M8)                                     # صرف «مسترجع»
+    screen = add(m, CAST_REC, "وارد ذهب (عيار 18)", 3.0, M8, "من المصنع", ref="V-77")   # شاشة الوارد
+    opening = add(m, CAST_REC, "وارد ذهب (عيار 18)", 4.0, M8, "قيد افتتاحي")
+    m.invoices[opening]["trees_count"] = 1.0
+    before = summary(m, CAST, M8)
+    assert before == (6.5, 0.0, 10.5, -10.5), before          # الإصدار السابق: المسترجع كله للحساب
+    assert m.migrate_casting_returns() == 3
+    t, r, i = m.invoices[tree_id], m.invoices[op_rec], m.invoices[op_iss]
+    assert (t["الاسم"], t["النوع"], t["row_number"]) == ("مسترجع الأشجار", "قبض كاستنج", "3")
+    assert (r["الاسم"], r["النوع"]) == ("مسترجع الفاقد", "قبض كاستنج") and i["الاسم"] == "مسترجع الفاقد"
+    assert m.invoices[screen]["الاسم"] == CAST_REC and m.invoices[screen]["النوع"] == "وارد ذهب (عيار 18)"
+    assert m.invoices[opening]["الاسم"] == CAST_REC
+    after = summary(m, CAST, M8)
+    assert after == (3.0, 0.0, 7.0, -7.0), after              # 50 + 0.5 − 44 − 1.5 − 2 = 3؛ المسترجع 3 + 4
+    m.current_display_month = M8
+    rows = m.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", CAST_REC)
+    fa = next(g for _r, _n, g in rows if g["op"] == "فاقد")
+    assert (fa["مدين"], fa["دائن"], fa["مسترجع"], fa["البيان"]) == (50.0, 44.0, 1.5, "غبار")
+    assert sorted((g["مدين"], g["دائن"]) for _r, _n, g in rows if g["op"] == "مسترجع") == [(0.0, 2.0), (0.5, 0.0)]
+    with sqlite3.connect(m.db_path) as conn:
+        stored = conn.execute("SELECT name, op_type FROM invoices WHERE invoice_id = ?", (tree_id,)).fetchone()
+    assert stored == (("مسترجع الأشجار", "قبض كاستنج") if not admin else (CAST_REC, "وارد ذهب (عيار 18)")), stored
+    assert m.migrate_casting_returns() == 0
+print("✔ ما سجّلته شاشة الكاستنج سابقاً باسم «مسترجع كاستنج» يُصحَّح تلقائياً: مسترجع الأشجار وقبض «مسترجع»")
+print("  قبضٌ من الفاقد الحالي (6.5 ← 3)، وصرف «مسترجع» صرفٌ للكاستنج — يُعرف بغياب رقم الفاتورة")
+print("✔ وما وصل من شاشة الوارد (برقم فاتورة) والقيد الافتتاحي يبقيان في حساب المسترجع كما هما")
+print("✔ نسخة العميل تحفظ التصحيح في قاعدتها، والمدير في الذاكرة؛ وتكراره لا يغيّر شيئاً")
 
 # ═══ ٩) المصنعون والمركبون: المسترجع لا يُخصم من الخياس الحالي ═══
 d = new_app()

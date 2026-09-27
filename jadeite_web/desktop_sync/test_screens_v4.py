@@ -151,11 +151,11 @@ assert 'head = note_str.split(" — ")[0].strip()' in led
 print("✔ ونوع القبض (زركون/أحجار…) يبقى في أول البيان فيُصنَّف به القبض صحيحاً")
 
 S = build(["collect_stage_ops_rows", "is_row_recovery", "is_recovery_op", "period_invoices", "invoices_by_period",
-           "inv_period", "row_sort_key"], attrs=("INBOUND_TYPES",))
+           "inv_period", "row_sort_key"], attrs=("INBOUND_TYPES", "CAST_RETURN_NAME", "TREE_RETURN_NAME"))
 st = S()
 st.current_display_month, st.invoice_counter = M9, 0
 st.invoices = {1: inv(1, "كاستنج", "صرف كاستنج", 10.0, M9, "شجرة ذهب أبيض", "5"),
-               2: inv(2, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 1.0, M9, "مسترجع الأشجار — من الغبار", "5")}
+               2: inv(2, "مسترجع الأشجار", "قبض كاستنج", 1.0, M9, "مسترجع الأشجار — من الغبار", "5")}
 rows = st.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", "مسترجع كاستنج")
 assert rows[0][2]["البيان"] == "شجرة ذهب أبيض | من الغبار", rows[0][2]["البيان"]
 print("✔ الكاستنج: بيان الصرف وبيان مسترجع الأشجار يظهران معاً في عمود البيان")
