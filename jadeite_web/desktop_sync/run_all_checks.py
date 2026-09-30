@@ -64,6 +64,7 @@ CHECKS = [
     ("الفاقد والمسترجع",     [PY, "test_loss_recovery.py", TARGET]),
     ("مرآة المدير الحرفية",   [PY, "test_admin_snapshot.py", TARGET]),
     ("أزرار أقسام الخياس",   [PY, "test_khayas_buttons.py", TARGET]),
+    ("المبيعات: المعلقات والبيان", [PY, "test_sales_suspend.py", TARGET]),
 ]
 
 failed = []

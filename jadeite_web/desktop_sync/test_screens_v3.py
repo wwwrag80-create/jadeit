@@ -78,10 +78,10 @@ assert "_open_selected_supplier_statement" in seg("refresh_suppliers_table")
 print("✔ نقرتان على مورد تفتحان كشف حسابه")
 
 # ═══ ٢) الكاستنج: مسترجع الأشجار وعملية «مسترجع» — من الفاقد الحالي نفسه ═══
-C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect_stage_ops_rows", "is_row_recovery",
+C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect_stage_ops_rows", "is_row_recovery", "stage_row_extra",
            "is_recovery_op", "row_sort_key", "inv_period", "inv_in_period",
            "get_box_khayas_cumulative", "get_stage_config", "get_box_account_name", "get_display_label"],
-          attrs=("INBOUND_TYPES", "BOX_DISPLAY_OVERRIDES", "CAST_RETURN_NAME", "TREE_RETURN_NAME"))
+          attrs=("INBOUND_TYPES", "BOX_DISPLAY_OVERRIDES", "CAST_RETURN_NAME", "TREE_RETURN_NAME", "LASER_NAME"))
 app = C()
 app.categories = {"أقسام_خياس_إضافية": []}
 app.current_display_month = M

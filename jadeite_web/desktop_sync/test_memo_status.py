@@ -41,7 +41,7 @@ for label, mark in [("خياس البوليش", "KHAYAS_MARK_POLISH"),
 idx = post.find("KHAYAS_MARK_FINAL")
 window = post[max(0, idx - 350):idx + 60]
 assert '"settled_status": "ACTIVE"' in window
-assert '"البيان": "خياس التلميع النهائي"' in post
+assert '"البيان": self.sale_bayan("خياس التلميع النهائي", note)' in post
 print("✔ خياس التلميع النهائي → ACTIVE (يخصم من الخزينة، وبيانه مطابق لاسم صندوقه)")
 
 # ---------- ٣) محاكاة رصيد الخزينة ----------

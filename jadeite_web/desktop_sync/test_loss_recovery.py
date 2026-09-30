@@ -66,20 +66,25 @@ METHODS = [
     # الكاستنج
     "get_cast_operation", "_read_weight", "submit_casting_op", "submit_casting_loss_op",
     "submit_casting_recovery_op", "collect_stage_ops_rows", "render_stage_ops_table",
-    "is_row_recovery", "is_recovery_op", "row_sort_key",
+    "is_row_recovery", "is_recovery_op", "row_sort_key", "stage_row_extra",
+    # بوليش ١ (الليزر) والتلميع — بلا خانة اسم، وأسماء الحسابات الثابتة
+    "submit_polish_buff_op", "submit_polish_op", "stage_row_taken", "get_account_label",
     # كشف الحساب والتراجع عن الإقفال
     "is_debit_nature_account", "get_account_ledger_rows", "_account_ledger_rows_all",
     "get_box_closing_entries",
 ]
 ATTRS = ["BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
-         "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME"]
+         "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME",
+         "LASER_NAME", "ACCOUNT_LABELS"]
 
 EXTRA = '''
 def check_edit_permission(self): return True
 def recalculate_all(self): self.recalcs += 1
 def refresh_losses_tab(self): pass
 def refresh_casting_table(self): pass
+def refresh_polish_buff_table(self): pass
+def refresh_polish_table(self): pass
 def register_operation_period(self, d): pass
 def save_name_to_db(self, name, cat): pass
 def print_single_inout_operation(self, i): pass
@@ -574,6 +579,81 @@ assert '"الصافي (الفاقد − المسترجع)"' in cards
 coa = seg("refresh_chart_of_accounts")
 assert "add_leaf(stage, self.get_box_loss_account(cat))" in coa and "add_leaf(stage, recovery)" in coa
 print("✔ شاشة الوارد لا تُنشئ أي قيد؛ ولوحات الخسائر تفتح كشف كل حساب؛ والشجرة: المرحلة ← فاقدها ومسترجعها")
+
+# ═══ ١١) «بوليش 1»: الليزر مثل القبض يُخصم من الصرف، ولا خانة اسم ═══
+P1 = "التلميع/البف"
+
+
+def polish1(app, month, row, sarf="", qabd="", laser="", note=""):
+    app.current_display_month = month
+    app.pbuff_date, app.pbuff_note, app.pbuff_row_num = W(f"{month}-16"), W(note), W(row)
+    app.pbuff_sarf, app.pbuff_qabd, app.pbuff_laser = W(sarf), W(qabd), W(laser)
+    app.submit_polish_buff_op()
+
+
+f = new_app()
+assert f.get_display_label(P1) == "بوليش 1"
+# أسماء الحسابات ثابتة لا تتبع اسم العرض: الحركات القديمة تبقى على حساباتها
+assert (f.get_box_account_name(P1), f.get_box_loss_account(P1), f.get_box_recovery_name(P1)) == \
+       ("البوليش", "فاقد البوليش", "مسترجع البوليش")
+assert f.get_box_loss_account("خياس الطقوم") == "فاقد خياس التلميع النهائي"
+print("✔ القسم يُعرض «بوليش 1»، وحساباته كما هي: «البوليش» و«فاقد البوليش» و«مسترجع البوليش»")
+
+polish1(f, M9, "41", sarf="20", qabd="18", laser="0.5", note="طقم")
+got = sorted((i["الاسم"], i["النوع"], i["الوزن"], i["row_number"], i["البيان"]) for i in f.invoices.values())
+assert got == sorted([(P1, "صرف تلميع بف", 20.0, "41", "طقم"), (P1, "قبض تلميع بف", 18.0, "41", "طقم"),
+                      ("ليزر البوليش", "قبض تلميع بف", 0.5, "41", "ليزر البوليش — طقم")]), got
+with sqlite3.connect(f.db_path) as conn:
+    assert conn.execute("select count(*) from invoices where op_type = 'قبض تلميع بف'").fetchone()[0] == 2
+print("✔ الليزر يُسجَّل قبضاً للقسم («قبض تلميع بف») على رقم الصف نفسه، باسمه ليظهر في عموده")
+
+assert summary(f, P1, M9)[0] == 1.5, summary(f, P1, M9)
+sets = f.get_treasury_type_sets()
+p1 = list(f.invoices.values())
+assert all(f.treasury_bucket(i, sets)[0] == "boxes" for i in p1)
+assert round(sum(f.treasury_bucket(i, sets)[1] for i in p1), 2) == -1.5
+print("✔ الفاقد الحالي = صرف 20 − قبض 18 − ليزر 0.5 = 1.5، والخزينة −1.5 (كالقبض تماماً)")
+
+rows = f.collect_stage_ops_rows("صرف تلميع بف", "قبض تلميع بف")
+assert len(rows) == 1 and rows[0][0] == "41", rows
+g = rows[0][2]
+assert (g["مدين"], g["دائن"], g["مسترجع"], g["البيان"]) == (20.0, 18.0, 0.5, "طقم"), g
+f.render_stage_ops_table(None, "صرف تلميع بف", "قبض تلميع بف", section=P1, totals_label=W())
+assert f._tree.cols == ("الصف", "صرف", "قبض", "الليزر", "الخياس", "البيان"), f._tree.cols
+assert f._tree.rows[0] == {"الصف": "41", "صرف": "20.00", "قبض": "18.00", "الليزر": "0.50",
+                           "الخياس": "1.50", "البيان": "طقم"}, f._tree.rows[0]
+assert f._tree.rows[-1]["الليزر"] == "0.50" and f._tree.rows[-1]["الخياس"] == "1.50"
+print("✔ الجدول: الصف | صرف | قبض | الليزر | الخياس | البيان — الليزر في صفه، والخياس بعد خصمه")
+
+# الليزر وحده لصف قائم، وتكرار الخانة للصف نفسه يُتجاهل
+polish1(f, M9, "42", laser="0.3")
+before = len(f.invoices)
+polish1(f, M9, "41", laser="0.2")
+assert len(f.invoices) == before and msgs[-1] == "عملية مكررة", msgs[-1]
+polish1(f, M9, "41", qabd="1")                  # قبض ثانٍ للصف: مكرر أيضاً (الليزر لا يُحسب قبضاً للصف)
+assert len(f.invoices) == before
+polish1(f, M9, "43", sarf="5", laser="-1")
+assert len(f.invoices) == before and msgs[-1] == "تنبيه"
+print("✔ الليزر وحده مقبول؛ والخانة المسجّلة لصفها لا تتكرر؛ والسالب مرفوض")
+
+# الكاستنج لم يتأثر: مسترجع الأشجار في عموده كما كان
+assert f.stage_row_extra("قبض كاستنج", CAST_REC) == ("مسترجع الأشجار", "مسترجع الأشجار")
+assert f.stage_row_extra("قبض كاستنج") is None and f.stage_row_extra("قبض تلميع") is None
+print("✔ الكاستنج كما هو (مسترجع الأشجار)، والتلميع بلا قبض ثانٍ")
+
+# التلميع: بلا خانة اسم — الحركات باسم القسم
+t = new_app()
+t.current_display_month = M9
+t.polish_date, t.polish_note, t.polish_row_num = W(f"{M9}-03"), W(""), W("7")
+t.polish_sarf, t.polish_qabd = W("9"), W("8.5")
+t.submit_polish_op()
+assert {i["الاسم"] for i in t.invoices.values()} == {"التلميع"} and len(t.invoices) == 2
+for ui in ("build_polish_ui", "build_polish_buff_ui"):
+    assert "name_values" not in seg(ui), ui
+assert '("laser", "الليزر")' in seg("build_polish_buff_ui")
+for fn in ("submit_polish_op", "submit_polish_buff_op"):
+    assert "_name.get()" not in seg(fn), fn
+print("✔ التلميع وبوليش 1 بلا خانة اسم: الحركات باسم القسم نفسه")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n✅ نموذج الفاقد والمسترجع سليم")

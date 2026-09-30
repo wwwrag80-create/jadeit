@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.45.1"
+APP_VERSION = "1.46.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -3801,6 +3801,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.current_display_month = month
             self.update_period_selector()
             self.recalculate_all()
+            # معلقات المبيعات من نسخة العميل نفسها (ليست حركات فلا يحدّثها recalculate_all)
+            if hasattr(self, "sales_subtab_buttons"):
+                self.update_suspended_count()
+                if getattr(self, "current_sales_subtab", "") == "المعلقات":
+                    self.refresh_suspended_sales_table()
             if stamp:
                 self._mirror_stamp = stamp
             self.show_admin_mirror_status(updated=True)
@@ -4320,6 +4325,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 )
             """)
             
+            # الفواتير المعلّقة في شاشة المبيعات (لا حركات محاسبية — مسودّات تُستكمل لاحقاً)
+            cursor.execute(self.SUSPENDED_TABLE_SQL)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inv_date ON invoices(date_time)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inv_name ON invoices(name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inv_status ON invoices(settled_status)")
@@ -5545,13 +5552,77 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             w -= 300
         return max(600, w - 60)
 
-    def fit_columns_to_content(self, tree, table_key=None, min_width=46, max_width=200, padding=16):
-        """يضبط عرض كل عمود على أعرض محتوى فيه فعلياً — لا عرض ثابت ولا تمدّد.
+    def fit_dialog_to_screen(self, win, width, height):
+        """نافذة حوار بحجمها المطلوب ما دام يسع الشاشة، وإلا بحجم الشاشة ناقص هامش،
+        في منتصفها. width/height بوحدات الواجهة (قبل تكبير ويندوز)، والشاشة بالبكسل."""
+        try:
+            s = float(ctk.ScalingTracker.get_window_scaling(win))
+        except Exception:
+            s = 1.0
+        try:
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        except Exception:
+            sw, sh = 1366, 768
+        w = min(int(width * s), sw - 40)
+        h = min(int(height * s), sh - 90)
+        x, y = max(0, (sw - w) // 2), max(0, (sh - h) // 3)
+        try:
+            win.geometry(f"{max(300, int(w / s))}x{max(240, int(h / s))}+{x}+{y}")
+        except Exception:
+            pass
 
-        المشكلة التي يحلّها: التوزيع بالنِسَب كان يمنح كل عمود حصة متساوية
-        تقريباً، فتتمدّد أعمدة الأرقام القصيرة (كرقم الصف) وتُزاح بقية الأعمدة
-        خارج الشاشة فتحتاج سحباً أفقياً. القياس الفعلي للنص يجعل كل عمود
-        بعرض محتواه بالضبط، فتظهر كل الأعمدة معاً.
+    # عناوين مختصرة تُستعمل تلقائياً حين يضيق الجدول عن العناوين الكاملة (شاشات
+    # اللابتوب الصغيرة)، وتعود الكاملة متى اتسعت الشاشة. الاسم الذي عدّله المستخدم
+    # بنفسه لا يُختصر.
+    COMPACT_HEADERS = {
+        "رقم الفاتورة": "الفاتورة", "رقم التشغيل": "التشغيل", "رقم الصف": "الصف",
+        "الأحجار بعد الخصم": "بعد الخصم", "خياس التلميع النهائي": "التلميع",
+        "خياس التلميع": "التلميع", "خياس البوليش": "البوليش", "خياس المركب": "المركب",
+        "الوزن القائم": "القائم", "الوزن المقيد": "المقيد", "عدد الأسطر": "الأسطر",
+        "مسترجع الأشجار": "مسترجع", "عدد الأشجار": "الأشجار", "خياس كل شجرة": "لكل شجرة",
+        "آخر تعديل": "التعديل",
+    }
+    # أعمدة نصية يجوز أن يُقصّ طرف محتواها حين تضيق الشاشة جداً — الأرقام لا تُقصّ
+    SHRINKABLE_COLUMNS = ("البيان", "الاسم", "العملية", "النوع", "ملاحظات")
+
+    @staticmethod
+    def plan_column_widths(desired, floors, avail):
+        """يوزّع عرض الجدول على أعمدته فيملؤه **تماماً** — لا فراغ على جانب ولا تجاوز:
+          • المتاح أوسع من المطلوب ← الفائض يُوزَّع بنسبة عرض كل عمود.
+          • أضيق ← ينكمش كل عمود من عرضه المطلوب نحو حدّه الأدنى بنسبة فائضه.
+          • أضيق من الحدود الدنيا نفسها (شاشة ضيقة جداً) ← تُصغَّر كلها بنسبة واحدة.
+        """
+        desired = [max(1, int(d)) for d in desired]
+        floors = [max(1, min(int(f), d)) for f, d in zip(floors, desired)]
+        total = sum(desired)
+        if avail <= 0 or total <= 0:
+            return desired
+        if total <= avail:
+            widths = [d + int((avail - total) * d / total) for d in desired]
+        else:
+            floor_total = sum(floors)
+            if floor_total <= avail:
+                keep = (avail - floor_total) / float(total - floor_total or 1)
+                widths = [f + int((d - f) * keep) for d, f in zip(desired, floors)]
+            else:
+                widths = [max(20, int(f * avail / floor_total)) for f in floors]
+        # بقايا القسمة الصحيحة تُضاف لأعرض عمود فيساوي المجموع المتاح بالضبط
+        diff = avail - sum(widths)
+        if widths and diff:
+            i = widths.index(max(widths))
+            widths[i] = max(20, widths[i] + diff)
+        return widths
+
+    def fit_columns_to_content(self, tree, table_key=None, min_width=46, max_width=200, padding=16):
+        """يضبط أعمدة الجدول على محتواها ثم يوزّع عرضه عليها فيملؤه تماماً.
+
+        كل عمود يُقاس بعرض محتواه وعنوانه الفعليين (بخط الجدول الحقيقي على هذه
+        الشاشة)، ثم plan_column_widths:
+          • شاشة واسعة ← الفائض يُوزَّع بالتناسب، فلا فراغ على اليسار.
+          • شاشة ضيقة (لابتوب) ← عناوين مختصرة أولاً، ثم تنكمش الأعمدة نحو
+            حدّها الأدنى (نصوص البيان والاسم قبل الأرقام) — فلا يخرج عمود عن الجدول.
+        الأعمدة قابلة للتمدّد (stretch): أي تغيّر صغير في الحجم يوزّعه الجدول نفسه
+        فوراً، والتغيّر الكبير يُعاد له القياس بعد استقرار النافذة.
         """
         if tree is None:
             return
@@ -5561,8 +5632,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if not cols:
                 return
 
-            body_font = tkfont.Font(family="Cairo", size=11)
-            head_font = tkfont.Font(family="Cairo", size=11, weight="bold")
+            # خط الجدول الحقيقي (يكبر ويصغر مع الشاشة — design_metrics)، لا حجم ثابت:
+            # القياس بخط أصغر من المعروض كان يقصّ الأرقام على الشاشات الكبيرة
+            design = getattr(self, "_design", None) or {}
+            body_size = int(design.get("font", 11) or 11)
+            head_size = int(design.get("head", body_size) or body_size)
+            body_font = tkfont.Font(family="Cairo", size=body_size)
+            head_font = tkfont.Font(family="Cairo", size=head_size, weight="bold")
 
             # قياس **عيّنة** من الصفوف لا كلها:
             # القياس السابق كان يستدعي measure() لكل خلية — مع ٥٠٠ صف و١٦
@@ -5576,43 +5652,65 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 children = list(children) + list(all_children[-3:])
             else:
                 children = all_children
-            # قيم الصف تُقرأ مرة واحدة (لا مرة لكل عمود)
-            rows = []
+            # قيم الصف تُقرأ مرة واحدة (لا مرة لكل عمود)، وصف الإجمالي بخطه
+            # الأعرض (الوسم total_tag) يُقاس به هو
+            rows, total_rows = [], []
             for iid in children:
                 try:
-                    rows.append(tree.item(iid, "values") or ())
+                    vals = tree.item(iid, "values") or ()
+                    (total_rows if "total_tag" in (tree.item(iid, "tags") or ()) else rows).append(vals)
                 except Exception:
                     pass
+            total_font = None
+            if total_rows:
+                try:
+                    spec = tree.tag_configure("total_tag", "font")
+                    total_font = tkfont.Font(font=spec) if spec else None
+                except Exception:
+                    total_font = None
             # قياس النص بطيء (نصف ملّي ثانية للنص العربي): تُقاس **أطول** نصوص
             # العمود وحدها، ويُحفظ كل قياس — فالأرقام والأسماء نفسها تتكرّر
             # في كل تحديث. كان فتح مراحل التصنيع يقضي نصف ثانية في القياس وحده
             cache = getattr(self, "_measure_cache", None)
             if cache is None or len(cache) > 20000:
                 cache = self._measure_cache = {}
-            widths = []
+
+            def measure(font, text):
+                key = (str(font), text)
+                w = cache.get(key)
+                if w is None:
+                    w = cache[key] = font.measure(text)
+                return w
+
+            def widest(values, font):
+                texts = {str(v) for v in values}
+                texts.discard("")
+                return max([measure(font, t) for t in sorted(texts, key=len, reverse=True)[:6]] or [0])
+
+            specs = []
             for i, col_id in enumerate(cols):
                 label = self.get_column_label(table_key, col_id) if table_key else col_id
                 # العنوان يُقاس كاملاً: هو سطر واحد في رأس العمود
                 header_w = head_font.measure(str(label)) + 10
-
-                texts = {str(v[i]) for v in rows if i < len(v)}
-                texts.discard("")
-                content_w = 0
-                for text in sorted(texts, key=len, reverse=True)[:6]:
-                    w = cache.get(text)
-                    if w is None:
-                        w = cache[text] = body_font.measure(text)
-                    content_w = max(content_w, w)
-
+                short = self.COMPACT_HEADERS.get(col_id) if str(label) == str(col_id) else None
+                short_w = (head_font.measure(short) + 10) if short else header_w
+                content_w = widest([v[i] for v in rows if i < len(v)], body_font)
+                if total_font is not None:
+                    content_w = max(content_w, widest([v[i] for v in total_rows if i < len(v)], total_font))
                 # العنوان لا يُقصّ أبداً: الحد الأقصى يقيّد المحتوى لا الرأس،
                 # وإلا ظهرت كلمة واحدة من اسم العمود
                 width = max(min_width, header_w, min(max_width, content_w + padding))
-                widths.append(width)
+                specs.append({"id": col_id, "label": label, "short": short, "header_w": header_w,
+                              "short_w": short_w, "content_w": content_w, "width": width,
+                              # أعمدة داخلية (عمود أزرار التعديل والحذف) بعرضها المضبوط سلفاً
+                              "fixed": str(col_id).startswith("_")})
+            for s in specs:
+                if s["fixed"]:
+                    try:
+                        s["width"] = int(tree.column(s["id"], "width")) or s["width"]
+                    except Exception:
+                        pass
 
-            # توزيع المساحة الفائضة على الأعمدة بالتناسب مع عرضها المطلوب،
-            # فيمتلئ الجدول كاملاً بلا فراغ على اليسار وبلا انكماش الأعمدة.
-            # لو ضاق الجدول عن المجموع، نُبقي العرض المحسوب ويظهر شريط أفقي
-            # بدل قصّ الأعمدة — فلا يختفي عمود أبداً.
             # العرض المتاح: من الجدول إن كان ظاهراً، وإلا **يُقدَّر** من عرض
             # النافذة. هذا هو جوهر إصلاح «اهتزاز» الشاشة عند الفتح:
             # كان الجدول يُبنى وهو مخفي (عرضه ١)، فيُؤجَّل الضبط إلى ما بعد
@@ -5621,15 +5719,50 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             avail = tree.winfo_width()
             if avail <= 1:
                 avail = self.expected_table_width()
+            avail -= 4                         # هامش يمنع شريطاً أفقياً زائداً
 
-            total = sum(widths)
-            extra = avail - total - 4          # هامش يمنع شريطاً أفقياً زائداً
-            if extra > 0 and total > 0:
-                for i in range(len(widths)):
-                    widths[i] += int(extra * (widths[i] / total))
+            # ضاق الجدول عن العناوين الكاملة ← يُختصر من العناوين **ما يلزم فقط**، الأكثر
+            # توفيراً أولاً، حتى يتسع الجدول (والبقية تبقى كاملة)
+            def want_of(s, short):
+                head_w = s["short_w"] if short else s["header_w"]
+                return max(min_width, head_w, min(max_width, s["content_w"] + padding))
+            total_w = sum(s["width"] for s in specs)
+            for s in sorted((s for s in specs if s["short"] and not s["fixed"]),
+                            key=lambda s: want_of(s, False) - want_of(s, True), reverse=True):
+                if total_w <= avail:
+                    break
+                s["use_short"] = True
+                total_w -= want_of(s, False) - want_of(s, True)
+            desired, floors = [], []
+            for s in specs:
+                head_w = s["short_w"] if s.get("use_short") else s["header_w"]
+                if s["fixed"]:
+                    want = floor = s["width"]
+                else:
+                    want = max(min_width, head_w, min(max_width, s["content_w"] + padding))
+                    # الحد الأدنى: العنوان والرقم كاملين؛ ونصوص البيان/الاسم تنكمش أكثر
+                    if s["id"] in self.SHRINKABLE_COLUMNS or s["label"] in self.SHRINKABLE_COLUMNS:
+                        floor = max(head_w, min(s["content_w"] + 8, 90))
+                    else:
+                        floor = max(head_w, s["content_w"] + 8, 30)
+                desired.append(want)
+                floors.append(floor)
+            widths = self.plan_column_widths(desired, floors, avail)
 
-            for col_id, width in zip(cols, widths):
-                tree.column(col_id, width=width, minwidth=min_width, stretch=False)
+            for s, width in zip(specs, widths):
+                tree.column(s["id"], width=width, minwidth=width if s["fixed"] else 20,
+                            stretch=not s["fixed"])
+                if s["fixed"] or not s["short"]:
+                    continue
+                # العنوان المختصر/الكامل حسب المساحة — ولا نمسّ عنواناً وضعه غيرنا
+                full_txt, short_txt = self.wrap_header(s["label"]), self.wrap_header(s["short"])
+                want_txt = short_txt if s.get("use_short") else full_txt
+                try:
+                    cur = str(tree.heading(s["id"], "text"))
+                    if cur in (full_txt, short_txt) and cur != want_txt:
+                        tree.heading(s["id"], text=want_txt)
+                except Exception:
+                    pass
 
             # صف الإجمالي الثابت (إن وُجد) يتبع نفس الأعرض فتصطف الأرقام معه
             self.sync_total_tree_columns(tree, getattr(tree, "_total_tree", None))
@@ -5661,6 +5794,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
                 tree.bind("<Configure>", on_resize, add="+")
                 tree._fit_bound = True
+            # العرض الذي قيس عليه: فرقٌ صغير عنه عند الظهور يوزّعه التمدّد بلا إعادة قياس
+            tree._last_fit_w = avail + 4
         except Exception:
             pass   # التنسيق تحسين بصري: فشله يجب ألا يمنع عرض الجدول
 
@@ -5895,6 +6030,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # وقبضاً للكاستنج نفسه بهذين الاسمين، فيزيد صرفها الفاقد الحالي ويُخصم قبضها منه:
     CAST_RETURN_NAME = "مسترجع الفاقد"      # عملية «مسترجع» (بلا صف): صرفها وقبضها
     TREE_RETURN_NAME = "مسترجع الأشجار"     # مسترجع أشجار الصف: قبض من فاقد صفه
+    # الليزر في «بوليش 1»: مثل القبض تماماً (قبض تلميع بف) يُخصم من صرف صفه، ويُسجَّل
+    # بهذا الاسم ليظهر في عموده الخاص
+    LASER_NAME = "ليزر البوليش"
+
+    def stage_row_extra(self, qabd_type, recover_name=None):
+        """القبض الثاني المرتبط بصفوف قسم: (اسم حركته، عنوان خانته وعموده) أو None.
+          • الكاستنج ← «مسترجع الأشجار» (في الشاشة التي تعرض المسترجع)
+          • بوليش 1  ← «الليزر»
+        كلاهما قبضٌ للقسم على رقم الصف نفسه: يُخصم من فاقده الحالي كأي قبض."""
+        if qabd_type == "قبض كاستنج":
+            return (self.TREE_RETURN_NAME, "مسترجع الأشجار") if recover_name else None
+        if qabd_type == "قبض تلميع بف":
+            return (self.LASER_NAME, "الليزر")
+        return None
 
     def is_row_recovery(self, inv, recover_name):
         """«مسترجع الأشجار» لصف: قبض من الفاقد الحالي على رقم الصف نفسه.
@@ -5915,18 +6064,26 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
           • «مسترجع» — عمليات المسترجع بلا صف، كل عملية صف مستقل بعد صفوف الفاقد:
                        صرفها تحت الصرف، وقبضها تحت القبض.
         الخياس = الصرف − القبض − مسترجع الأشجار: كلها من الفاقد الحالي نفسه، ولا صلة لأيٍّ
-        منها بحساب «مسترجع» المرحلة.
+        منها بحساب «مسترجع» المرحلة. والليزر في «بوليش 1» مثل مسترجع الأشجار تماماً
+        (القبض الثاني للصف — stage_row_extra) ويُجمع في الخانة نفسها g["مسترجع"].
         """
         recs = [inv for inv in self.period_invoices(self.current_display_month)
                 if inv.get("settled_status") == "ACTIVE" and inv.get("النوع") in (madin_type, qabd_type)]
         recs.sort(key=lambda x: (x.get("التاريخ", ""), x.get("رقم الفاتورة", 0)))
-        # حركات الصرف والقبض أولاً ثم المسترجع، ليُلحق مسترجع الأشجار بصف قائم إن وُجد
-        recs.sort(key=lambda x: 1 if self.is_row_recovery(x, recover_name) else 0)
+        extra = self.stage_row_extra(qabd_type, recover_name)
+        extra_name = extra[0] if extra else None
+
+        def is_extra(inv):
+            return bool(extra_name and inv.get("الاسم") == extra_name
+                        and (inv.get("row_number", "") or ""))
+
+        # حركات الصرف والقبض أولاً ثم القبض الثاني، ليُلحق بصف قائم إن وُجد
+        recs.sort(key=lambda x: 1 if is_extra(x) else 0)
 
         grouped = {}
         for inv in recs:
             rec_op = self.is_recovery_op(inv, madin_type, recover_name)
-            tree = self.is_row_recovery(inv, recover_name)
+            tree = is_extra(inv)
             key = ((inv.get("row_number", "") or ""), inv["الاسم"])
             if rec_op:
                 key = ("", inv["الاسم"], inv["رقم الفاتورة"])      # كل عملية مسترجع صف مستقل
@@ -5942,10 +6099,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # الجمع (وليس الاستبدال) حتى لا تُهمل أي حركة مسجّلة فعلياً بنفس رقم الصف
             if tree:
                 g["مسترجع"] = round(g["مسترجع"] + inv["الوزن"], 2)
-                # «مسترجع الأشجار» وحده لا يُكرَّر في عمود البيان، أما ما كتبه
-                # المستخدم بعده فيظهر («مسترجع الأشجار — بيانه»)
+                # اسم الحركة («مسترجع الأشجار»/«ليزر البوليش») وحده لا يُكرَّر في عمود
+                # البيان، أما ما كتبه المستخدم بعده فيظهر («مسترجع الأشجار — بيانه»)
                 note = note.split(" — ", 1)[1].strip() if " — " in note else (
-                    "" if note == self.TREE_RETURN_NAME else note)
+                    "" if note == extra_name else note)
             elif inv["النوع"] == madin_type:
                 g["مدين"] = round(g["مدين"] + inv["الوزن"], 2)
             else:
@@ -5970,12 +6127,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         recover_name (الكاستنج): عمود «العملية» (فاقد/مسترجع) و«مسترجع الأشجار».
         الخياس = الصرف − القبض − مسترجع الأشجار (كلها من الفاقد الحالي نفسه).
+        وفي «بوليش 1» عمود «الليزر» مكانه: الخياس = الصرف − القبض − الليزر.
         op_filter: «مسترجع» ← عمليات المسترجع وحدها؛ غير ذلك ← كل العمليات.
         """
         # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج مكانه «العملية»
         name_col = ("الاسم",) if (show_name and not recover_name) else ()
         op_col = ("العملية",) if recover_name else ()
-        rec_col = ("مسترجع الأشجار",) if recover_name else ()
+        extra = self.stage_row_extra(qabd_type, recover_name)
+        rec_col = (extra[1],) if extra else ()
         if with_trees:
             cols = (("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",)
                     + ("عدد الأشجار", "خياس كل شجرة", "البيان"))
@@ -6023,7 +6182,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 vals.append(name)
             vals += [f"{g['مدين']:.2f}" if g["مدين"] else "-",
                      f"{g['دائن']:.2f}" if g["دائن"] else "-"]
-            if recover_name:
+            if extra:
                 vals.append(f"{g['مسترجع']:.2f}" if g["مسترجع"] else "-")
             vals.append(f"{khayas:.2f}")
             if with_trees:
@@ -6038,7 +6197,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if rows_map:
             tvals = ["إجمالي الشهر"] + (["-"] if (recover_name or show_name) else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
-                     [f"{tot_rec:.2f}"] if recover_name else []) + [f"{tot_khayas:.2f}"]
+                     [f"{tot_rec:.2f}"] if extra else []) + [f"{tot_khayas:.2f}"]
             if with_trees:
                 tvals += [f"{tot_trees:g}" if tot_trees else "-",
                           f"{round(tot_khayas / tot_trees, 2):.2f}" if tot_trees > 0 else "-"]
@@ -6052,8 +6211,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if totals_label is not None:
             txt = f"الإجماليات — صرف: {tot_madin:.2f}  |  قبض: {tot_daen:.2f}"
-            if recover_name:
-                txt += f"  |  مسترجع الأشجار: {tot_rec:.2f}"
+            if extra:
+                txt += f"  |  {extra[1]}: {tot_rec:.2f}"
             txt += f"  |  الخياس: {tot_khayas:.2f} جم"
             if with_trees:
                 per_tree = round(tot_khayas / tot_trees, 2) if tot_trees > 0 else 0.0
@@ -6156,8 +6315,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not invs:
             messagebox.showwarning("تنبيه", "الحركة المحددة لم تعد موجودة. حدّث الشاشة وحاول مجدداً.")
             return
-        rec_inv = next((i for i in invs if self.is_row_recovery(i, recover_name)), None)
-        # بيانات الصف من حركة الصرف/القبض لا من مسترجع الأشجار (له اسمه الخاص)
+        # القبض الثاني للصف: مسترجع الأشجار (الكاستنج) أو الليزر (بوليش 1)
+        row_extra = self.stage_row_extra(qabd_type, recover_name)
+        rec_inv = next((i for i in invs if row_extra and i.get("الاسم") == row_extra[0]
+                        and (i.get("row_number", "") or "")), None)
+        # بيانات الصف من حركة الصرف/القبض لا من القبض الثاني (له اسمه الخاص)
         ref = next((i for i in invs if i is not rec_inv), invs[0])
         ref_dt = ref["التاريخ"]
         ref_name = ref["الاسم"]
@@ -6171,7 +6333,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         win = ctk.CTkToplevel(self)
         win.title(title)
-        win.geometry("540x660" if (with_trees and recover_name) else "540x610" if with_trees else "540x545")
+        win.geometry("540x660" if (with_trees and row_extra) else "540x610" if (with_trees or row_extra) else "540x545")
         win.transient(self)
         win.grab_set()
         win.focus_force()
@@ -6200,8 +6362,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ent_trees.grid(row=3, column=0, padx=10, pady=8)
 
         ent_rec = None
-        if recover_name:
-            ctk.CTkLabel(frm, text="مسترجع الأشجار:", font=("Cairo", 15, "bold")).grid(row=2, column=1, padx=10, pady=8)
+        if row_extra:
+            ctk.CTkLabel(frm, text=f"{row_extra[1]}:", font=("Cairo", 15, "bold")).grid(row=2, column=1, padx=10, pady=8)
             ent_rec = ctk.CTkEntry(frm, justify="center", width=130)
             ent_rec.insert(0, f"{rec_inv['الوزن']:g}" if rec_inv else "0")
             ent_rec.grid(row=2, column=0, padx=10, pady=8)
@@ -6287,8 +6449,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             upsert(sarf_inv, new_sarf, madin_type)
             upsert(qabd_inv, new_qabd, qabd_type)
 
-            if recover_name:
-                # مسترجع الأشجار: قبض من فاقد الصف نفسه (لا صلة له بحساب المسترجع)
+            if row_extra:
+                # مسترجع الأشجار/الليزر: قبض من فاقد الصف نفسه (لا صلة له بحساب المسترجع)
                 if new_rec > 0:
                     if rec_inv:
                         rec_inv.update({"الوزن": new_rec, "row_number": new_row_no, "التاريخ": new_dt})
@@ -6297,8 +6459,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     else:
                         self.invoice_counter += 1
                         inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt,
-                                    "الاسم": self.TREE_RETURN_NAME, "النوع": qabd_type, "الوزن": new_rec,
-                                    "البيان": self.TREE_RETURN_NAME, "settled_status": "ACTIVE", "trees_count": 0.0,
+                                    "الاسم": row_extra[0], "النوع": qabd_type, "الوزن": new_rec,
+                                    "البيان": row_extra[0], "settled_status": "ACTIVE", "trees_count": 0.0,
                                     "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no}
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
@@ -7453,8 +7615,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 cursor.execute("DELETE FROM invoices")
                 cursor.execute("DELETE FROM names")
                 cursor.execute("DELETE FROM monthly_archive")
+                # الفواتير المعلّقة من البيانات أيضاً
+                cursor.execute(self.SUSPENDED_TABLE_SQL)
+                cursor.execute("DELETE FROM suspended_sales")
                 conn.commit()
-            
+            if hasattr(self, "sales_subtab_buttons"):
+                self.set_current_suspended(None)
+                self.update_suspended_count()
+
             self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
             self.invoices = {}
             self.opening_balance = 0.0
@@ -8890,16 +9058,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ------------------------- شاشة التلميع -------------------------
     # ---------------------------------------------------------------
     def build_polish_ui(self, parent):
-        names = lambda: self.get_stage_name_values("التلميع/البف", "التلميع")
+        # بلا خانة اسم (بطلب العميل): حركات القسم كلها باسم القسم نفسه
         label = self.get_display_label("التلميع")
         p = self.build_stage_panel(
-            parent, key="polish", title=f"كشف حركة {label}", name_values=names,
+            parent, key="polish", title=f"كشف حركة {label}",
             fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض")],
             submit_text="ترحيل 💾", submit_cmd=self.submit_polish_op,
             on_edit=self.edit_selected_polish_row, on_delete=self.delete_selected_polish_row,
             neg_section="التلميع", neg_refresh=self.refresh_polish_table,
             view=lambda: self.view_treeview_fullscreen(self.polish_tree, f"عرض كامل — {label}"))
-        self.polish_date, self.polish_name, self.polish_note = p["date"], p["name"], p["note"]
+        self.polish_date, self.polish_note = p["date"], p["note"]
         f = p["fields"]
         self.polish_row_num, self.polish_sarf, self.polish_qabd = f["row_num"], f["sarf"], f["qabd"]
         self.polish_table_frame = p["table_frame"]
@@ -8907,9 +9075,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.polish_table_rows_map = {}
         self.polish_totals_lbl = p["totals"]
 
+    def stage_row_taken(self, row_num, pred, month=None):
+        """هل للصف في الفترة حركة فعّالة تطابق الشرط؟ (أياً كان اسمها — الخانة تُسجَّل مرة لكل صف)"""
+        return any(inv.get("settled_status") == "ACTIVE"
+                   and (inv.get("row_number", "") or "") == row_num and pred(inv)
+                   for inv in self.period_invoices(month or self.current_display_month))
+
     def submit_polish_op(self):
         date_val = self.polish_date.get().strip()
-        name = self.clean_name(self.polish_name.get()) or "التلميع"
+        name = "التلميع"
         note = self.polish_note.get().strip()
         row_num = self.polish_row_num.get().strip()
         if not date_val:
@@ -8933,10 +9107,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
 
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف تلميع" for inv in self.invoices.values()):
+        if sarf_v > 0 and self.stage_row_taken(row_num, lambda i: i.get("النوع") == "صرف تلميع"):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض تلميع" for inv in self.invoices.values()):
+        if qabd_v > 0 and self.stage_row_taken(row_num, lambda i: i.get("النوع") == "قبض تلميع"):
             skipped.append("القبض")
             qabd_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -8946,10 +9120,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل حركة {self.get_display_label('التلميع')}؟"):
             return
-
-        if name != "التلميع" and not self.check_name_exists(name):
-            self.categories["التلميع"].append(name)
-            self.save_name_to_db(name, "التلميع")
 
         full_date_time = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
         saved_any = False
@@ -8984,10 +9154,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.polish_qabd.delete(0, 'end')
             self.polish_note.delete(0, 'end')
             self.polish_row_num.delete(0, 'end')
-            self.polish_name.configure(values=self.get_stage_name_values("التلميع/البف", "التلميع"))
-            self.polish_name.set("")
 
-            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {self.get_display_label('التلميع')} لـ ({name})")
+            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {self.get_display_label('التلميع')} — الصف ({row_num})")
             self.after(2500, lambda: self.lbl_op_status.configure(text=""))
             self.after(60, lambda: self.polish_row_num.focus_set())
             self.refresh_polish_table()
@@ -8999,7 +9167,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.polish_table_frame, "صرف تلميع", "قبض تلميع", height=11, section="التلميع",
             show_name=False, on_refresh=self.refresh_polish_table,
             on_detail=lambda: self.show_selected_stage_details(
-                self.polish_tree, self.polish_table_rows_map, "تفاصيل حركة التلميع"),
+                self.polish_tree, self.polish_table_rows_map,
+                f"تفاصيل حركة {self.get_display_label('التلميع')}"),
             on_edit=self.edit_selected_polish_row,
             totals_label=getattr(self, 'polish_totals_lbl', None))
 
@@ -9039,29 +9208,35 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                        status_text=f"✏️ تم تعديل حركة {self.get_display_label('التلميع')}")
 
     # ---------------------------------------------------------------
-    # ---------------------- شاشة التلميع/البف ----------------------
+    # ------------------ شاشة «بوليش 1» (التلميع/البف) ------------------
     # ---------------------------------------------------------------
     def build_polish_buff_ui(self, parent):
-        names = lambda: self.get_stage_name_values("البوليش", "التلميع/البف")
+        # بلا خانة اسم (بطلب العميل)، و«الليزر» بعد القبض: مثل القبض يُخصم من الصرف
         label = self.get_display_label("التلميع/البف")
         p = self.build_stage_panel(
-            parent, key="pbuff", title=f"كشف حركة {label}", name_values=names,
-            fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض")],
+            parent, key="pbuff", title=f"كشف حركة {label}",
+            fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض"), ("laser", "الليزر")],
             submit_text="ترحيل 💾", submit_cmd=self.submit_polish_buff_op,
             on_edit=self.edit_selected_polish_buff_row, on_delete=self.delete_selected_polish_buff_row,
             neg_section="التلميع/البف", neg_refresh=self.refresh_polish_buff_table,
             view=lambda: self.view_treeview_fullscreen(self.pbuff_tree, f"عرض كامل — {label}"))
-        self.pbuff_date, self.pbuff_name, self.pbuff_note = p["date"], p["name"], p["note"]
+        self.pbuff_date, self.pbuff_note = p["date"], p["note"]
         f = p["fields"]
         self.pbuff_row_num, self.pbuff_sarf, self.pbuff_qabd = f["row_num"], f["sarf"], f["qabd"]
+        self.pbuff_laser = f["laser"]
         self.pbuff_table_frame = p["table_frame"]
         self.pbuff_tree = None
         self.pbuff_table_rows_map = {}
         self.pbuff_totals_lbl = p["totals"]
 
     def submit_polish_buff_op(self):
+        """ترحيل حركة «بوليش 1»: الصرف، والقبض، والليزر لصف واحد.
+
+        الليزر قبضٌ للقسم («قبض تلميع بف») باسم «ليزر البوليش» على رقم الصف نفسه:
+        يُخصم من الصرف في الخياس والفاقد الحالي والخزينة كأي قبض، ويظهر في عموده.
+        """
         date_val = self.pbuff_date.get().strip()
-        name = self.clean_name(self.pbuff_name.get()) or "التلميع/البف"
+        name = "التلميع/البف"
         note = self.pbuff_note.get().strip()
         row_num = self.pbuff_row_num.get().strip()
         if not date_val:
@@ -9071,57 +9246,55 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
             return
 
-        try:
-            sarf_v = round(float(self.pbuff_sarf.get().strip()), 2) if self.pbuff_sarf.get().strip() else 0.0
-        except ValueError:
-            sarf_v = 0.0
-        try:
-            qabd_v = round(float(self.pbuff_qabd.get().strip()), 2) if self.pbuff_qabd.get().strip() else 0.0
-        except ValueError:
-            qabd_v = 0.0
-
-        if sarf_v <= 0 and qabd_v <= 0:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
+        sarf_v = self._read_weight(self.pbuff_sarf)
+        qabd_v = self._read_weight(self.pbuff_qabd)
+        laser_v = self._read_weight(getattr(self, "pbuff_laser", None))
+        if sarf_v is None or qabd_v is None or laser_v is None:
+            messagebox.showwarning("تنبيه", "الرجاء إدخال أوزان صحيحة.")
             return
+        if sarf_v < 0 or qabd_v < 0 or laser_v < 0:
+            messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.")
+            return
+        if sarf_v <= 0 and qabd_v <= 0 and laser_v <= 0:
+            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أو الليزر أولاً.")
+            return
+
+        def is_laser(inv):
+            return inv.get("الاسم") == self.LASER_NAME
 
         skipped = []
-        if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "صرف تلميع بف" for inv in self.invoices.values()):
+        if sarf_v > 0 and self.stage_row_taken(row_num, lambda i: i.get("النوع") == "صرف تلميع بف"):
             skipped.append("الصرف")
             sarf_v = 0.0
-        if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == "قبض تلميع بف" for inv in self.invoices.values()):
+        if qabd_v > 0 and self.stage_row_taken(
+                row_num, lambda i: i.get("النوع") == "قبض تلميع بف" and not is_laser(i)):
             skipped.append("القبض")
             qabd_v = 0.0
+        if laser_v > 0 and self.stage_row_taken(
+                row_num, lambda i: i.get("النوع") == "قبض تلميع بف" and is_laser(i)):
+            skipped.append("الليزر")
+            laser_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
             return
-        if sarf_v <= 0 and qabd_v <= 0:
+        if sarf_v <= 0 and qabd_v <= 0 and laser_v <= 0:
             return
 
         if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل حركة {self.get_display_label('التلميع/البف')}؟"):
             return
 
-        if name != "التلميع/البف" and not self.check_name_exists(name):
-            self.categories["التلميع/البف"].append(name)
-            self.save_name_to_db(name, "التلميع/البف")
-
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
+        lines = [(sarf_v, "صرف تلميع بف", name, note),
+                 (qabd_v, "قبض تلميع بف", name, note),
+                 (laser_v, "قبض تلميع بف", self.LASER_NAME,
+                  f"{self.LASER_NAME} — {note}" if note else self.LASER_NAME)]
         saved_any = False
-
-        if sarf_v > 0:
+        for value, op_type, who, bayan in lines:
+            if value <= 0:
+                continue
             self.invoice_counter += 1
             inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                "النوع": "صرف تلميع بف", "الوزن": sarf_v, "البيان": note, "settled_status": "ACTIVE",
-                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
-            }
-            self.invoices[self.invoice_counter] = inv_data
-            self.save_invoice_to_db(self.invoice_counter, inv_data)
-            saved_any = True
-
-        if qabd_v > 0:
-            self.invoice_counter += 1
-            inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                "النوع": "قبض تلميع بف", "الوزن": qabd_v, "البيان": note, "settled_status": "ACTIVE",
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": who,
+                "النوع": op_type, "الوزن": value, "البيان": bayan, "settled_status": "ACTIVE",
                 "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
@@ -9132,14 +9305,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.register_operation_period(date_val)
             self.recalculate_all()
 
-            self.pbuff_sarf.delete(0, 'end')
-            self.pbuff_qabd.delete(0, 'end')
-            self.pbuff_note.delete(0, 'end')
-            self.pbuff_row_num.delete(0, 'end')
-            self.pbuff_name.configure(values=self.get_stage_name_values("البوليش", "التلميع/البف"))
-            self.pbuff_name.set("")
+            for entry in (self.pbuff_sarf, self.pbuff_qabd, getattr(self, "pbuff_laser", None),
+                          self.pbuff_note, self.pbuff_row_num):
+                if entry is not None:
+                    entry.delete(0, 'end')
 
-            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {self.get_display_label('التلميع/البف')} لـ ({name})")
+            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {self.get_display_label('التلميع/البف')} — الصف ({row_num})")
             self.after(2500, lambda: self.lbl_op_status.configure(text=""))
             self.after(60, lambda: self.pbuff_row_num.focus_set())
             self.refresh_polish_buff_table()
@@ -9151,7 +9322,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.pbuff_table_frame, "صرف تلميع بف", "قبض تلميع بف", height=11, section="التلميع/البف",
             show_name=False, on_refresh=self.refresh_polish_buff_table,
             on_detail=lambda: self.show_selected_stage_details(
-                self.pbuff_tree, self.pbuff_table_rows_map, "تفاصيل حركة التلميع/البف"),
+                self.pbuff_tree, self.pbuff_table_rows_map,
+                f"تفاصيل حركة {self.get_display_label('التلميع/البف')}"),
             on_edit=self.edit_selected_polish_buff_row,
             totals_label=getattr(self, 'pbuff_totals_lbl', None))
 
@@ -10784,20 +10956,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat == "الكاستنج":
             return "صرف كاستنج", "قبض كاستنج", "مسترجع كاستنج"
         elif cat == "التلميع":
-            return "صرف تلميع", "قبض تلميع", f"مسترجع {self.get_display_label('التلميع')}"
+            return "صرف تلميع", "قبض تلميع", f"مسترجع {self.get_account_label('التلميع')}"
         elif cat == "التلميع/البف":
-            return "صرف تلميع بف", "قبض تلميع بف", f"مسترجع {self.get_display_label('التلميع/البف')}"
+            return "صرف تلميع بف", "قبض تلميع بف", f"مسترجع {self.get_account_label('التلميع/البف')}"
         elif cat in self.categories.get("أقسام_خياس_إضافية", []):
             return f"صرف {cat}", f"قبض {cat}", f"مسترجع {cat}"
         return None, None, None
 
     BOX_DISPLAY_OVERRIDES = {"خياس الطقوم": "خياس التلميع النهائي"}
 
+    # أسماء الحسابات ثابتة لا تتبع إعادة تسمية القسم: حركات «مسترجع البوليش» و«فاقد البوليش»
+    # مسجّلة بها في الجهاز والسحابة، وتغييرها يفصل الحركات عن حساباتها
+    ACCOUNT_LABELS = {"التلميع": "التلميع/البف", "التلميع/البف": "البوليش"}
+
     def get_display_label(self, cat):
         """الاسم المعروض للمستخدم لأي قسم (بعض الأقسام أعيدت تسميتها لاحقاً، وهذا يوحّد ظهورها بكل الشاشات)"""
-        labels = {"التلميع": "التلميع/البف", "التلميع/البف": "البوليش"}
+        labels = {"التلميع": "التلميع/البف", "التلميع/البف": "بوليش 1"}
         labels.update(self.BOX_DISPLAY_OVERRIDES)
         return labels.get(cat, cat)
+
+    def get_account_label(self, cat):
+        """الاسم الذي تُبنى منه حسابات القسم («فاقد X» و«مسترجع X») — ثابت مهما تغيّر اسم عرضه"""
+        return self.ACCOUNT_LABELS.get(cat, self.BOX_DISPLAY_OVERRIDES.get(cat, cat))
 
     def get_box_account_name(self, cat):
         """اسم الحساب الخاص بصندوق الخياس (لاستخدامه في القيود اليومية وإقفاله من شاشة الخسائر) - يغطي الأقسام الثابتة والديناميكية"""
@@ -10837,12 +11017,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_box_recovery_name(self, cat):
         """حساب «مسترجع» المرحلة — لكل الصناديق، بما فيها المصنعون والمركبون"""
         if cat in ("المصنعين", "المركبين"):
-            return f"مسترجع {self.get_display_label(cat)}"
+            return f"مسترجع {self.get_account_label(cat)}"
         return self.get_stage_config(cat)[2]
 
     def get_box_loss_account(self, cat):
         """حساب «فاقد» المرحلة: يُرحَّل إليه فاقدها الحالي عند الإقفال (وبزر الإقفال وحده)"""
-        return f"فاقد {self.get_display_label(cat)}"
+        return f"فاقد {self.get_account_label(cat)}"
 
     def get_all_loss_accounts(self):
         return [self.get_box_loss_account(c) for c in self.get_khayas_box_categories()]
@@ -13266,7 +13446,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         add(inv, inv["الوزن"], 0.0, inv.get("البيان") or label)
                     elif qabd_type and t == qabd_type:
                         label = (self.TREE_RETURN_NAME if who == self.TREE_RETURN_NAME
-                                 else "قبض مسترجع" if who == self.CAST_RETURN_NAME else "قبض")
+                                 else "قبض مسترجع" if who == self.CAST_RETURN_NAME
+                                 else "الليزر" if who == self.LASER_NAME else "قبض")
                         add(inv, 0.0, inv["الوزن"], label)
 
         else:  # مورد عادي أو اسم مسترجع
@@ -14353,7 +14534,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         sub_bar.pack(fill="x", padx=16, pady=(8, 0))
 
         self.sales_subtab_buttons = {}
-        for key, label in [("المبيعات", "🧾 المبيعات"), ("العمليات", "📚 العمليات")]:
+        # «المعلقات» بعد العمليات: فواتير عُلّقت قبل ترحيلها، تُفتح لاستكمالها
+        for key, label in [("المبيعات", "🧾 المبيعات"), ("العمليات", "📚 العمليات"),
+                           ("المعلقات", "⏸️ المعلقات")]:
             b = ctk.CTkButton(sub_bar, text=label, font=("Cairo", 15, "bold"), width=140, height=38,
                               command=lambda k=key: self.switch_sales_subtab(k))
             b.pack(side="right", padx=4)
@@ -14368,6 +14551,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.sales_entry_frame = ctk.CTkFrame(outer, fg_color="transparent")
         self.sales_ops_frame = ctk.CTkFrame(outer, fg_color="transparent")
+        self.sales_suspended_frame = ctk.CTkFrame(outer, fg_color="transparent")
+        self.current_suspended_id = None       # الفاتورة المعلّقة المفتوحة الآن (إن وُجدت)
         tab = self.sales_entry_frame
 
         # ====== بطاقة الفاتورة: بياناتها + خانات السطر ======
@@ -14387,20 +14572,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_date.insert(0, self.get_smart_default_date())
         self.sale_date.pack(side="right", padx=4)
 
-        head_label("رقم الفاتورة (يدوي):")
+        head_label("رقم الفاتورة:")
         self.sale_invoice_num = ctk.CTkEntry(head, font=("Cairo", 14, "bold"), justify="center", width=110,
                                              height=34, placeholder_text="رقم الفاتورة")
         self.sale_invoice_num.pack(side="right", padx=4)
 
-        head_label("الاسم (من الموردين):")
+        head_label("الاسم:")
         self.sale_name = ctk.CTkComboBox(head, values=self.get_supplier_name_values_no_mustarja(),
                                          font=("Cairo", 14), justify="right", width=210, height=34)
         self.sale_name.set("المصنع")
         self.sale_name.pack(side="right", padx=4)
         self.bind_name_autocomplete(self.sale_name, self.get_supplier_name_values_no_mustarja)
 
-        self.lbl_sales_status = ctk.CTkLabel(head, text="", font=("Cairo", 14, "bold"), text_color="#2ecc71")
-        self.lbl_sales_status.pack(side="left", padx=6)
+        # البيان بعد الاسم: يُحفظ مع الفاتورة ويظهر في «العمليات» و«المعلقات»
+        head_label("البيان:")
+        self.sale_note = ctk.CTkEntry(head, font=("Cairo", 14), justify="right", height=34,
+                                      placeholder_text="بيان الفاتورة...")
+        self.sale_note.pack(side="right", padx=4, fill="x", expand=True)
 
         # خانات السطر: شبكة أعمدة متساوية تتمدّد وتنكمش مع عرض الشاشة، فلا
         # تُقصّ الخانات على الشاشات الصغيرة ولا تتكدّس في الكبيرة. الترتيب من اليمين.
@@ -14418,7 +14606,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return n_cols - 1 - i
 
         def add_field(i, label_text):
-            ctk.CTkLabel(fields_row, text=label_text, font=("Cairo", 13, "bold"), wraplength=120,
+            # يلتفّ العنوان الطويل على سطرين قبل أن يتجاوز عموده (اللابتوب الصغير)
+            ctk.CTkLabel(fields_row, text=label_text, font=("Cairo", 13, "bold"), wraplength=95,
                          text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=grid_col(i), padx=4,
                                                                   pady=(0, 3), sticky="s")
             ent = ctk.CTkEntry(fields_row, justify="center", font=("Cairo", 14), width=60, height=34)
@@ -14464,7 +14653,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_add_pct.pack(side="right", padx=(0, 3))
 
         # زر إضافة السطر في نهاية صف الخانات نفسه (أعلى الشاشة، قريب من اليد)
-        btn_add_row = ctk.CTkButton(fields_row, text="➕ إضافة سطر",
+        btn_add_row = ctk.CTkButton(fields_row, text="➕ إضافة",
                                     font=ctk.CTkFont(family="Cairo", size=14, weight="bold"), height=34,
                                     fg_color=UI["success"], hover_color=UI["success_hover"],
                                     command=self.stage_sale_row)
@@ -14510,13 +14699,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_gems.bind("<KeyRelease>", recompute_sale_totals)
         self.sale_diamond.bind("<KeyRelease>", recompute_sale_totals)
 
-        # التنقل بزر Enter بين الخانات، وإضافة السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة)
-        nav_fields = [self.sale_name, self.sale_set_number, self.sale_gold, self.sale_gems,
+        # التنقل بزر Enter بين **كل** الخانات (من التاريخ حتى آخر خانة)، وإضافة
+        # السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة). الفاتورة المعلّقة
+        # تُفتح في هذه الخانات نفسها، فالتنقل فيها هو هذا نفسه
+        nav_fields = [self.sale_date, self.sale_invoice_num, self.sale_name, self.sale_note,
+                      self.sale_set_number, self.sale_gold, self.sale_gems,
                       self.sale_stones, self.sale_diamond, self.sale_stones_discount, self.sale_khayas,
                       self.sale_khayas_polish, self.sale_khayas_assembler]
-        for i, f in enumerate(nav_fields[:-1]):
-            f.bind("<Return>", lambda e, nxt=nav_fields[i + 1]: nxt.focus_set() or "break")
-        nav_fields[-1].bind("<Return>", lambda e: self.stage_sale_row() or "break")
+        self.sale_nav_fields = nav_fields
+        self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row)
 
         # التنقل بالأسهم يمين/يسار بين الخانات.
         # الترتيب معكوس عمداً: الخانات مرصوفة من اليمين لليسار،
@@ -14541,11 +14732,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         commit_bar = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                                   border_width=1, border_color=(UI["line"], "#2A313B"))
         commit_bar.pack(side="bottom", fill="x", padx=16, pady=(4, 10))
-        btn_commit = ctk.CTkButton(commit_bar, text="✅ ترحيل واعتماد الفاتورة",
-                                   font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), height=44, width=320,
+        # ثلاثة أعمدة لا تتداخل على أي عرض: تذكير الفاتورة المعلّقة المفتوحة (يسار)،
+        # والزرّان متجاوران في الوسط (الترحيل وبجانبه تعليق الفاتورة)، ورسالة الحالة (يمين)
+        commit_bar.grid_columnconfigure((0, 2), weight=1, uniform="commit_side")
+        commit_bar.grid_columnconfigure(1, weight=0)
+        commit_btns = ctk.CTkFrame(commit_bar, fg_color="transparent")
+        commit_btns.grid(row=0, column=1, pady=8)
+        btn_commit = ctk.CTkButton(commit_btns, text="✅ ترحيل واعتماد الفاتورة",
+                                   font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), height=44, width=300,
                                    fg_color=UI["success"], hover_color=UI["success_hover"],
                                    command=self.commit_sale_invoice)
-        btn_commit.pack(pady=8)
+        btn_commit.pack(side="right", padx=6)
+        self.btn_suspend_sale = ctk.CTkButton(
+            commit_btns, text="⏸️ تعليق الفاتورة", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
+            height=44, width=220, fg_color=UI["edit"], hover_color=UI["edit_hover"],
+            command=self.suspend_sale_invoice)
+        self.btn_suspend_sale.pack(side="right", padx=6)
+        # الفاتورة المعلّقة المفتوحة الآن: تذكير ثابت بجانب الزرّين حتى تُرحَّل أو تُعلَّق
+        self.lbl_suspended_open = ctk.CTkLabel(
+            commit_bar, text="", font=("Cairo", 13, "bold"), text_color=(UI["gold_dark"], "#F1D27A"),
+            wraplength=260, justify="left")
+        self.lbl_suspended_open.grid(row=0, column=0, padx=12, sticky="w")
+        self.lbl_sales_status = ctk.CTkLabel(commit_bar, text="", font=("Cairo", 14, "bold"),
+                                             text_color="#2ecc71", wraplength=260, justify="right")
+        self.lbl_sales_status.grid(row=0, column=2, padx=12, sticky="e")
 
         # ====== جدول السطور المعلّقة: يأخذ كل المساحة المتبقية، والتمرير له وحده ======
         self.pending_sales_table_frame = ttk.Frame(tab)
@@ -14554,20 +14764,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.pending_sale_rows = []
 
         self.build_sales_ops_ui(self.sales_ops_frame)
+        self.build_sales_suspended_ui(self.sales_suspended_frame)
         self.switch_sales_subtab("المبيعات")
 
         self.refresh_pending_sales_table()
         self.refresh_sales_table()
+        self.update_suspended_count()
 
     def switch_sales_subtab(self, key):
-        """التنقل بين تبويب إدخال المبيعات وتبويب الفواتير المرحّلة"""
+        """التنقل بين إدخال المبيعات، والفواتير المرحّلة (العمليات)، والمعلّقة (المعلقات)"""
         self.current_sales_subtab = key
         self.style_segment_buttons(self.sales_subtab_buttons, key)
         self.sales_entry_frame.pack_forget()
         self.sales_ops_frame.pack_forget()
+        suspended_frame = getattr(self, "sales_suspended_frame", None)
+        if suspended_frame is not None:
+            suspended_frame.pack_forget()
         if key == "العمليات":
             self.sales_ops_frame.pack(fill="both", expand=True)
             self.refresh_sales_ops_table()
+        elif key == "المعلقات" and suspended_frame is not None:
+            suspended_frame.pack(fill="both", expand=True)
+            self.refresh_suspended_sales_table()
         else:
             self.sales_entry_frame.pack(fill="both", expand=True)
 
@@ -14575,6 +14793,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ---------- تبويب (العمليات): كل فاتورة مبيعات مرحّلة في صف واحد ----------
     # =====================================================================
     SALE_TYPES = ("مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس")
+    # بيان الفاتورة يُلحق ببيان كل حركة من حركاتها بعد دورها («مبيعات — بيانها»،
+    # «خياس التلميع النهائي — بيانها»): يظهر في كشوف الحساب، ويُقرأ منه عند التعديل
+    SALE_NOTE_SEP = " — "
+
+    def sale_bayan(self, base, note):
+        """بيان حركة من فاتورة مبيعات: دورها ثم بيان الفاتورة إن وُجد"""
+        note = (note or "").strip()
+        return f"{base}{self.SALE_NOTE_SEP}{note}" if note else base
+
+    def sale_note_of(self, bayan):
+        """بيان الفاتورة من بيان إحدى حركاتها («مبيعات — بيانها» ← بيانها)"""
+        bayan = str(bayan or "")
+        return bayan.split(self.SALE_NOTE_SEP, 1)[1].strip() if self.SALE_NOTE_SEP in bayan else ""
 
     def get_sale_invoice_groups(self, month=None):
         """يجمع حركات المبيعات في فواتير: مفتاح كل فاتورة (رقم الفاتورة اليدوي + التاريخ + الاسم).
@@ -14598,8 +14829,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             g = groups.setdefault(key, {
                 "manual_no": key[0], "date": dt, "name": key[2], "ids": [], "sets": set(),
                 "ذهب": 0.0, "فصوص": 0.0, "أحجار": 0.0, "أحجار بعد الخصم": 0.0, "الماس": 0.0, "خياس": 0.0,
-                "first_id": inv.get("رقم الفاتورة", 0)})
+                "البيان": "", "first_id": inv.get("رقم الفاتورة", 0)})
             g["ids"].append(inv.get("رقم الفاتورة", 0))
+            if not g["البيان"]:
+                g["البيان"] = self.sale_note_of(inv.get("البيان"))
             if inv.get("set_number"):
                 g["sets"].add(inv.get("set_number"))
             g["first_id"] = min(g["first_id"], inv.get("رقم الفاتورة", 0))
@@ -14650,16 +14883,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def refresh_sales_ops_table(self):
         if not hasattr(self, 'sales_ops_table_frame') or not self.sales_ops_table_frame:
             return
-        for widget in self.sales_ops_table_frame.winfo_children():
-            widget.destroy()
 
-        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "الذهب", "الفصوص", "الأحجار بعد الخصم", "الماس", "خياس", "عدد الأسطر")
-        self.sales_ops_tree = self.create_standard_treeview(self.sales_ops_table_frame, cols, height=13)
-        self.sales_ops_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
-        for c in cols:
-            w = 175 if c == "التاريخ" else 165 if c == "الاسم" else 120
-            self.sales_ops_tree.column(c, width=w, anchor="center")
-        self.sales_ops_tree.bind("<Double-1>", lambda e: self.edit_selected_sale_invoice())
+        # البيان بعد الاسم (بيان الفاتورة كما سُجّل في شاشة المبيعات)
+        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", "الأحجار بعد الخصم",
+                "الماس", "خياس", "عدد الأسطر")
+        self.sales_ops_tree, _t, reused = self.reuse_or_create_tree(self.sales_ops_table_frame, cols, height=13)
+        tree = self.sales_ops_tree
+        tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        if not reused:
+            tree.bind("<Double-1>", lambda e: self.edit_selected_sale_invoice())
 
         self.sales_ops_map = {}
         tot = {k: 0.0 for k in ("ذهب", "فصوص", "أحجار بعد الخصم", "الماس", "خياس")}
@@ -14668,8 +14900,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for g in groups:
             for k in tot:
                 tot[k] = round(tot[k] + g[k], 2)
-            item = self.sales_ops_tree.insert("", "end", values=(
-                g["manual_no"] or g["first_id"], g["date"], g["name"],
+            item = tree.insert("", "end", values=(
+                g["manual_no"] or g["first_id"], g["date"], g["name"], g.get("البيان", "") or "-",
                 f"{g['ذهب']:.2f}" if g["ذهب"] else "-",
                 f"{g['فصوص']:.2f}" if g["فصوص"] else "-",
                 f"{g['أحجار بعد الخصم']:.2f}" if g["أحجار بعد الخصم"] else "-",
@@ -14680,10 +14912,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.sales_ops_map[item] = (g["manual_no"], g["date"], g["name"])
 
         if groups:
-            self.sales_ops_tree.insert("", "end", values=(
-                "إجمالي الشهر", "-", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}",
+            tree.insert("", "end", values=(
+                "إجمالي الشهر", "-", "-", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}",
                 f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['الماس']:.2f}", f"{tot['خياس']:.2f}", len(groups)
             ), tags=("total_tag",))
+
+        # الأعمدة بعرض الجدول تماماً على أي شاشة (لا تجاوز ولا فراغ)
+        self.apply_column_labels(tree, "sales_ops")
+        self.fit_columns_to_content(tree, "sales_ops", min_width=50, max_width=220)
+        self.enable_column_rename(tree, "sales_ops", on_renamed=self.refresh_sales_ops_table)
 
         if hasattr(self, 'lbl_sales_ops_totals'):
             self.lbl_sales_ops_totals.configure(
@@ -14763,9 +15000,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     r["خياس"] = round(r["خياس"] + w, 2)
         return [rows[s] for s in order]
 
-    def post_sale_rows(self, rows, name, full_dt, manual_no):
+    def post_sale_rows(self, rows, name, full_dt, manual_no, note=""):
         """يسجّل سطور فاتورة مبيعات كحركات محاسبية (نفس منطق الترحيل الأصلي، مصدر واحد موحّد
-        يستخدمه الترحيل الجديد وتعديل الفاتورة المرحّلة معاً). يرجع قائمة (رقم التشغيل، التاريخ، الاسم)."""
+        يستخدمه الترحيل الجديد وتعديل الفاتورة المرحّلة معاً). يرجع قائمة (رقم التشغيل، التاريخ، الاسم).
+
+        note: بيان الفاتورة — يُلحق ببيان كل حركة بعد دورها (sale_bayan)."""
         committed_groups = []
         for row in rows:
             gold_v = row.get("ذهب", 0.0)
@@ -14795,7 +15034,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.invoice_counter += 1
                     inv_data = {
                         "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name, "النوع": op_type,
-                        "الوزن": val, "البيان": bayan, "settled_status": "ACTIVE", "trees_count": marker,
+                        "الوزن": val, "البيان": self.sale_bayan(bayan, note), "settled_status": "ACTIVE", "trees_count": marker,
                         "قبل": raw_ref, "بعد": 0.0, "set_number": set_num, "row_number": row_num,
                         "رقم الفاتورة اليدوي": manual_no
                     }
@@ -14808,7 +15047,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoice_counter += 1
                 polish_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                    "النوع": "خياس طقوم", "الوزن": khayas_polish_v, "البيان": "خياس بوليش",
+                    "النوع": "خياس طقوم", "الوزن": khayas_polish_v, "البيان": self.sale_bayan("خياس بوليش", note),
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_POLISH, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -14822,7 +15061,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoice_counter += 1
                 asm_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                    "النوع": "خياس طقوم", "الوزن": khayas_assembler_v, "البيان": "خياس المركب",
+                    "النوع": "خياس طقوم", "الوزن": khayas_assembler_v, "البيان": self.sale_bayan("خياس المركب", note),
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_ASSEMBLER,
                     "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
@@ -14836,7 +15075,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoice_counter += 1
                 net_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                    "النوع": "خياس طقوم", "الوزن": net_v, "البيان": "صافي الطقم",
+                    "النوع": "خياس طقوم", "الوزن": net_v, "البيان": self.sale_bayan("صافي الطقم", note),
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_NET, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -14849,7 +15088,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 khayas_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
                     # البيان يطابق اسم الصندوق ليظهر واضحاً في كشف حساب الخزينة
-                    "النوع": "خياس طقوم", "الوزن": khayas_v, "البيان": "خياس التلميع النهائي",
+                    "النوع": "خياس طقوم", "الوزن": khayas_v,
+                    "البيان": self.sale_bayan("خياس التلميع النهائي", note),
                     "settled_status": "ACTIVE", "trees_count": KHAYAS_MARK_FINAL, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -14918,10 +15158,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         old_manual_no, old_date, old_name = key
         edit_rows = self.sale_records_to_rows(recs)
+        old_note = next((n for n in (self.sale_note_of(r.get("البيان")) for r in
+                                     sorted(recs, key=lambda x: x.get("رقم الفاتورة", 0))) if n), "")
 
         win = ctk.CTkToplevel(self)
         win.title("تعديل فاتورة مبيعات مرحّلة")
-        win.geometry("1180x720")
+        # بحجمها المريح ما دام يسع الشاشة، وإلا بحجم الشاشة (اللابتوب الصغير)
+        self.fit_dialog_to_screen(win, 1180, 720)
         win.transient(self)
         win.grab_set()
         win.focus_force()
@@ -14946,30 +15189,33 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         cmb_name.set(old_name)
         cmb_name.pack(side="right", padx=4, pady=10)
 
+        # البيان بعد الاسم — كما في شاشة المبيعات
+        ctk.CTkLabel(head, text="البيان:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
+        ent_note = ctk.CTkEntry(head, justify="right", height=34, placeholder_text="بيان الفاتورة...")
+        if old_note:
+            ent_note.insert(0, old_note)
+        ent_note.pack(side="right", padx=(4, 10), pady=10, fill="x", expand=True)
+
+        # خانات السطر بترتيب خانات شاشة المبيعات نفسه (الماس بعد الأحجار)، في شبكة
+        # أعمدة متساوية تتمدّد وتنكمش مع عرض النافذة فلا تُقصّ على الشاشة الصغيرة
         fields_row = ctk.CTkFrame(win, corner_radius=10)
         fields_row.pack(fill="x", padx=18, pady=6)
 
         entries = {}
-
-        def add_field(label_text, key_name):
-            col = ctk.CTkFrame(fields_row, fg_color="transparent")
-            col.pack(side="right", padx=10, pady=10)
-            ctk.CTkLabel(col, text=label_text, font=("Cairo", 13, "bold")).pack(pady=(2, 3))
-            ent = ctk.CTkEntry(col, justify="center", font=("Cairo", 14), width=95, height=32)
-            ent.pack()
+        field_defs = [("رقم الصف", "row_number"), ("رقم التشغيل", "set_number"), ("الذهب", "ذهب"),
+                      ("الفصوص", "فصوص"), ("الأحجار", "أحجار"), ("الماس", "الماس"),
+                      ("الأحجار بعد الخصم", "أحجار بعد الخصم"), ("خياس التلميع النهائي", "خياس"),
+                      ("خياس البوليش", "خياس البوليش"), ("خياس المركب", "خياس المركب")]
+        n_fields = len(field_defs)
+        for c in range(n_fields):
+            fields_row.grid_columnconfigure(c, weight=1, uniform="inv_edit_fields")
+        for i, (label_text, key_name) in enumerate(field_defs):
+            col = n_fields - 1 - i                  # من اليمين لليسار
+            ctk.CTkLabel(fields_row, text=label_text, font=("Cairo", 13, "bold"), wraplength=110).grid(
+                row=0, column=col, padx=4, pady=(8, 3), sticky="s")
+            ent = ctk.CTkEntry(fields_row, justify="center", font=("Cairo", 14), width=60, height=32)
+            ent.grid(row=1, column=col, padx=4, pady=(0, 10), sticky="ew")
             entries[key_name] = ent
-            return ent
-
-        add_field("رقم الصف", "row_number")
-        add_field("رقم التشغيل", "set_number")
-        add_field("الذهب", "ذهب")
-        add_field("الفصوص", "فصوص")
-        add_field("الأحجار", "أحجار")
-        add_field("الأحجار بعد الخصم", "أحجار بعد الخصم")
-        add_field("خياس التلميع النهائي", "خياس")
-        add_field("خياس البوليش", "خياس البوليش")
-        add_field("خياس المركب", "خياس المركب")
-        add_field("الماس", "الماس")
 
         lbl_state = ctk.CTkLabel(win, text="", font=("Cairo", 13, "bold"), text_color="#f1c40f")
         lbl_state.pack(pady=(0, 2))
@@ -14984,8 +15230,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "الماس", "خياس التلميع النهائي", "خياس البوليش", "الصافي")
         rows_tree = self.create_standard_treeview(table_frame, cols, height=9)
         rows_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
-        for c in cols:
-            rows_tree.column(c, width=130, anchor="center")
 
         selected_idx = {"i": None}
 
@@ -15043,6 +15287,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "الإجمالي", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
                     f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['الماس']:.2f}", f"{tot['خياس']:.2f}",
                     f"{tot['خياس البوليش']:.2f}", f"{tot_net:.2f}"), tags=("total_tag",))
+            # أعمدة الجدول بعرض النافذة تماماً (لا تجاوز ولا فراغ)
+            self.fit_columns_to_content(rows_tree, "sale_invoice_editor", min_width=50, max_width=170)
 
         def get_sel_index():
             sel = rows_tree.selection()
@@ -15080,6 +15326,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 edit_rows[selected_idx["i"]] = vals
             clear_fields()
             refresh_rows_tree()
+            return True
 
         def delete_row():
             idx = get_sel_index()
@@ -15102,6 +15349,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         rows_tree.bind("<Double-1>", lambda e: load_row_to_fields())
         refresh_rows_tree()
+
+        # التنقل: Enter للخانة التالية (وفي آخر خانة يُحفظ السطر ويعود التركيز لأول
+        # خانة لسطر جديد)، والأسهم يمين/يسار بين الخانات — من رقم الفاتورة حتى آخر خانة
+        def save_row_and_continue():
+            if save_row():
+                try:
+                    entries["row_number"].focus_set()
+                except Exception:
+                    pass
+
+        nav = [ent_manual, ent_date, cmb_name, ent_note] + [entries[k] for _l, k in field_defs]
+        self.bind_enter_navigation(nav, on_last=save_row_and_continue)
+        self.bind_arrow_navigation(nav)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.after(120, lambda: entries["row_number"].focus_set())
 
         def save_invoice_changes():
             new_manual = ent_manual.get().strip()
@@ -15136,7 +15398,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.recalculate_all()
                     return
 
-            self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual)
+            self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip())
 
             self.register_operation_period(new_date)
             self.recalculate_all()
@@ -15146,7 +15408,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_save_inv = ctk.CTkButton(win, text="✅ حفظ تعديلات الفاتورة", font=("Cairo", 16, "bold"), height=44,
                                      width=280, fg_color="#144d75", hover_color="#0d3350", command=save_invoice_changes)
-        btn_save_inv.pack(pady=10)
+        # يُحجز مكانه أسفل النافذة قبل الجدول، فلا يدفعه الجدول خارجها على الشاشة القصيرة
+        btn_save_inv.pack(side="bottom", pady=10, before=table_frame)
         self.apply_edit_lock_to_button(btn_save_inv, win)
 
     def remember_discount_pct(self):
@@ -15337,6 +15600,33 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.bind("<KP_Enter>", lambda e: go(1, wrap_to_save=True), add="+")
 
 
+    def bind_enter_navigation(self, fields, on_last=None):
+        """Enter (ومفتاح Enter في لوحة الأرقام) ينقل للخانة التالية ويحدّد نصها فيُكتب
+        فوقه مباشرة، وعند آخر خانة يستدعي on_last (إضافة السطر أو حفظه).
+
+        الربط على كل خانة: CTkEntry وCTkComboBox يمرّران الربط لخانتهما الداخلية.
+        """
+        widgets = [f for f in fields if f is not None]
+
+        def go(i):
+            if i + 1 < len(widgets):
+                target = widgets[i + 1]
+                try:
+                    target.focus_set()
+                    getattr(target, "_entry", target).select_range(0, "end")
+                except Exception:
+                    pass
+            elif on_last is not None:
+                on_last()
+            return "break"
+
+        for i, field in enumerate(widgets):
+            for seq in ("<Return>", "<KP_Enter>"):
+                try:
+                    field.bind(seq, lambda e, i=i: go(i))
+                except Exception:
+                    pass
+
     def bind_arrow_navigation(self, fields):
         """تنقّل بالأسهم يمين/يسار بين خانات الإدخال المرصوفة من اليمين لليسار.
 
@@ -15500,17 +15790,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if self.pending_sale_rows:
             tree.insert("", "end", iid="total", values=(
-                "", "إجمالي الفاتورة", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
+                "", "الإجمالي", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
                 f"{tot['الماس']:.2f}", f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['خياس']:.2f}",
                 f"{tot['خياس البوليش']:.2f}", f"{tot['خياس المركب']:.2f}",
                 f"{tot['القائم']:.2f}", f"{tot['المقيد']:.2f}"), tags=("total_tag",))
 
         self.apply_column_labels(tree, "pending_sales")
-        self.fit_columns_to_content(tree, "pending_sales", min_width=44, max_width=150)
-        self.enable_column_rename(tree, "pending_sales", on_renamed=self.refresh_pending_sales_table)
-        # عمود الإجراءات بلا عنوان وبعرض ثابت يكفي الزرّين
+        # عمود الإجراءات بلا عنوان وبعرض ثابت يكفي الزرّين — يُضبط **قبل** توزيع
+        # العرض، فتتقاسم بقية الأعمدة ما يتبقّى ويمتلئ الجدول بلا تجاوز
         tree.heading(act, text="")
         tree.column(act, width=96, minwidth=96, stretch=False, anchor="center")
+        self.fit_columns_to_content(tree, "pending_sales", min_width=44, max_width=150)
+        self.enable_column_rename(tree, "pending_sales", on_renamed=self.refresh_pending_sales_table)
 
         if not getattr(tree, "_sale_actions_bound", False):
             tree.bind("<ButtonRelease-1>", self._on_pending_sales_click, add="+")
@@ -15792,13 +16083,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         date_val = self.sale_date.get().strip() or self.get_smart_default_date()
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
+        note_widget = getattr(self, "sale_note", None)
+        note = note_widget.get().strip() if note_widget is not None else ""
 
         # الترحيل يمر عبر الدالة الموحّدة نفسها المستخدمة في تعديل الفاتورة، لضمان تطابق المعالجة المحاسبية
-        committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no)
+        committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note)
+
+        # فاتورة كانت معلّقة ثم رُحّلت: أُثبتت في «العمليات» فتختفي من «المعلقات»
+        suspended_id = getattr(self, "current_suspended_id", None)
+        if suspended_id:
+            self.delete_suspended_sale(suspended_id)
+        self.set_current_suspended(None)
 
         self.pending_sale_rows = []
         self.sale_name.set("المصنع")
         self.sale_invoice_num.delete(0, 'end')
+        if note_widget is not None:
+            note_widget.delete(0, 'end')
 
         self.register_operation_period(date_val)
         self.recalculate_all()
@@ -15808,10 +16109,343 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_pending_sales_table()
         self.refresh_sales_table()
         self.refresh_sales_ops_table()
+        self.update_suspended_count()
 
         # نسأل المستخدم قبل فتح معاينة الطباعة (بدل فتحها تلقائياً بدون تأكيد)
         if messagebox.askyesno("معاينة الطباعة", "تم ترحيل الفاتورة بنجاح.\nهل تريد معاينة الطباعة؟"):
             self.preview_invoice_groups(committed_groups)
+
+    # =====================================================================
+    # ------- «المعلقات»: فواتير مبيعات عُلّقت قبل ترحيلها لاستكمالها لاحقاً -------
+    #
+    #  التعليق لا يُنشئ أي حركة محاسبية: تُحفظ الفاتورة كما هي في الشاشة (رأسها،
+    #  سطورها، وما كُتب في خانات السطر ولم يُضف) في جدول مستقل. «فتح» يعيدها إلى
+    #  قسم المبيعات كما كانت تماماً، وترحيلها يُثبتها في «العمليات» ويحذفها من هنا.
+    # =====================================================================
+    SUSPENDED_TABLE_SQL = """CREATE TABLE IF NOT EXISTS suspended_sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_date TEXT DEFAULT '', manual_no TEXT DEFAULT '', name TEXT DEFAULT '',
+                    note TEXT DEFAULT '', discount_pct TEXT DEFAULT '',
+                    rows_json TEXT DEFAULT '[]', draft_json TEXT DEFAULT '{}',
+                    created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '')"""
+
+    # خانات السطر التي تُحفظ مع التعليق إن كُتب فيها ولم يُضف السطر بعد
+    SALE_DRAFT_FIELDS = (("set_number", "sale_set_number"), ("ذهب", "sale_gold"), ("فصوص", "sale_gems"),
+                         ("أحجار", "sale_stones"), ("الماس", "sale_diamond"),
+                         ("أحجار بعد الخصم", "sale_stones_discount"), ("خياس", "sale_khayas"),
+                         ("خياس البوليش", "sale_khayas_polish"), ("خياس المركب", "sale_khayas_assembler"))
+
+    def list_suspended_sales(self):
+        """الفواتير المعلّقة، الأحدث تعديلاً أولاً.
+
+        جدولها قد يغيب عن قاعدة أقدم (مرآة المدير لجهاز عميل لم يُحدَّث بعد)،
+        فتُرجع قائمة فارغة بلا خطأ."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                raw = conn.execute(
+                    "SELECT id, sale_date, manual_no, name, note, discount_pct, rows_json, draft_json, "
+                    "created_at, updated_at FROM suspended_sales ORDER BY updated_at DESC, id DESC").fetchall()
+        except sqlite3.Error:
+            return []
+        out = []
+        for r in raw:
+            try:
+                rows = json.loads(r[6] or "[]")
+            except ValueError:
+                rows = []
+            try:
+                draft = json.loads(r[7] or "{}")
+            except ValueError:
+                draft = {}
+            out.append({"id": r[0], "date": r[1] or "", "manual_no": r[2] or "", "name": r[3] or "",
+                        "note": r[4] or "", "discount_pct": r[5] or "",
+                        "rows": [x for x in rows if isinstance(x, dict)] if isinstance(rows, list) else [],
+                        "draft": draft if isinstance(draft, dict) else {},
+                        "created_at": r[8] or "", "updated_at": r[9] or ""})
+        return out
+
+    def get_suspended_sale(self, rec_id):
+        return next((r for r in self.list_suspended_sales() if r["id"] == rec_id), None)
+
+    def save_suspended_sale(self, data, rec_id=None):
+        """يحفظ فاتورة معلّقة: تحديث المعلّقة نفسها إن كانت هي المفتوحة، وإلا جديدة. يرجع رقمها"""
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        vals = (data.get("date", ""), data.get("manual_no", ""), data.get("name", ""), data.get("note", ""),
+                data.get("discount_pct", ""), json.dumps(data.get("rows", []), ensure_ascii=False),
+                json.dumps(data.get("draft", {}), ensure_ascii=False))
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(self.SUSPENDED_TABLE_SQL)
+            if rec_id and conn.execute("SELECT 1 FROM suspended_sales WHERE id = ?", (rec_id,)).fetchone():
+                conn.execute("UPDATE suspended_sales SET sale_date = ?, manual_no = ?, name = ?, note = ?, "
+                             "discount_pct = ?, rows_json = ?, draft_json = ?, updated_at = ? WHERE id = ?",
+                             vals + (now, rec_id))
+            else:
+                cur = conn.execute("INSERT INTO suspended_sales (sale_date, manual_no, name, note, discount_pct, "
+                                   "rows_json, draft_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   vals + (now, now))
+                rec_id = cur.lastrowid
+            conn.commit()
+        self.mark_backup_dirty()          # تصل مرآة المدير مع النسخة التالية
+        return rec_id
+
+    def delete_suspended_sale(self, rec_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM suspended_sales WHERE id = ?", (rec_id,))
+                conn.commit()
+        except sqlite3.Error as e:
+            log_cloud_error("تعذّر حذف الفاتورة المعلّقة", e)
+            return False
+        self.mark_backup_dirty()
+        return True
+
+    @staticmethod
+    def suspended_totals(rec):
+        """إجماليات فاتورة معلّقة من سطورها (كأعمدة «العمليات»)"""
+        tot = dict.fromkeys(("ذهب", "فصوص", "أحجار بعد الخصم", "الماس", "خياس"), 0.0)
+        for row in rec.get("rows", []):
+            for k in tot:
+                try:
+                    tot[k] = round(tot[k] + float(row.get(k, 0.0) or 0.0), 2)
+                except (TypeError, ValueError):
+                    pass
+        return tot
+
+    def collect_sale_form(self):
+        """الفاتورة الحالية كما هي في الشاشة: رأسها، وسطورها، وما كُتب في خانات السطر ولم يُضف"""
+        def text(attr):
+            w = getattr(self, attr, None)
+            try:
+                return w.get().strip() if w is not None else ""
+            except Exception:
+                return ""
+        draft = {k: text(attr) for k, attr in self.SALE_DRAFT_FIELDS}
+        return {"date": text("sale_date"), "manual_no": text("sale_invoice_num"), "name": text("sale_name"),
+                "note": text("sale_note"), "discount_pct": text("sale_discount_pct"),
+                "rows": [dict(r) for r in getattr(self, "pending_sale_rows", [])],
+                "draft": {k: v for k, v in draft.items() if v}}
+
+    def fill_sale_form(self, data):
+        """يضع فاتورة في شاشة المبيعات كما حُفظت تماماً (رأسها وسطورها وخانات السطر)"""
+        def put(attr, value):
+            w = getattr(self, attr, None)
+            if w is None:
+                return
+            try:
+                w.delete(0, "end")
+                if value:
+                    w.insert(0, str(value))
+            except Exception:
+                pass
+        put("sale_date", data.get("date") or self.get_smart_default_date())
+        put("sale_invoice_num", data.get("manual_no", ""))
+        put("sale_note", data.get("note", ""))
+        try:
+            self.sale_name.set(data.get("name") or "المصنع")
+        except Exception:
+            pass
+        if data.get("discount_pct"):
+            try:
+                self.sale_discount_pct.set(data["discount_pct"])
+            except Exception:
+                pass
+        self.pending_sale_rows = [dict(r) for r in data.get("rows", []) if isinstance(r, dict)]
+        draft = data.get("draft") or {}
+        for key, attr in self.SALE_DRAFT_FIELDS:
+            put(attr, draft.get(key, ""))
+        if hasattr(self, "_recompute_sale_totals"):
+            self._recompute_sale_totals()
+
+    def clear_sale_form(self):
+        """فاتورة جديدة فارغة (التاريخ ونسبة الخصم يبقيان كما هما)"""
+        self.fill_sale_form({"date": self.sale_date.get().strip(), "name": "المصنع"})
+
+    def set_current_suspended(self, rec_id, rec=None):
+        """الفاتورة المعلّقة المفتوحة الآن في قسم المبيعات (None: لا شيء)، مع تذكير ثابت بها"""
+        self.current_suspended_id = rec_id
+        lbl = getattr(self, "lbl_suspended_open", None)
+        if lbl is None:
+            return
+        try:
+            if rec_id:
+                no = (rec or {}).get("manual_no") or f"#{rec_id}"
+                lbl.configure(text=f"📂 فاتورة معلّقة مفتوحة: {no}")
+            else:
+                lbl.configure(text="")
+        except Exception:
+            pass
+
+    def suspend_sale_invoice(self, silent=False):
+        """«تعليق الفاتورة»: تُحفظ الفاتورة الحالية كما هي في «المعلقات» وتُفرَّغ الشاشة لفاتورة
+        جديدة. لا حركة محاسبية ولا أثر على أي رصيد — تُفتح لاحقاً لاستكمالها ثم ترحيلها."""
+        data = self.collect_sale_form()
+        if not data["rows"] and not data["draft"]:
+            if not silent:
+                messagebox.showwarning("لا شيء لتعليقه",
+                                       "أضف سطراً واحداً على الأقل إلى الفاتورة قبل تعليقها.")
+            return None
+        try:
+            rec_id = self.save_suspended_sale(data, getattr(self, "current_suspended_id", None))
+        except sqlite3.Error as e:
+            log_cloud_error("تعذّر تعليق الفاتورة", e)
+            messagebox.showerror("تعذّر التعليق", f"لم تُحفظ الفاتورة المعلّقة:\n{e}")
+            return None
+        self.set_current_suspended(None)
+        self.clear_sale_form()
+        self.refresh_pending_sales_table()
+        self.update_suspended_count()
+        if getattr(self, "current_sales_subtab", "") == "المعلقات":
+            self.refresh_suspended_sales_table()
+        if not silent:
+            self.lbl_sales_status.configure(text="⏸️ عُلّقت الفاتورة — تجدها في «المعلقات»")
+            self.after(3000, lambda: self.lbl_sales_status.configure(text=""))
+            try:
+                self.sale_set_number.focus_set()
+            except Exception:
+                pass
+        return rec_id
+
+    def get_selected_suspended_id(self, action="فتح"):
+        tree = getattr(self, "suspended_tree", None)
+        if not tree:
+            return None
+        sel = tree.selection()
+        if not sel:
+            messagebox.showwarning("تنبيه", f"الرجاء تحديد الفاتورة المراد {action}ها من الجدول أولاً.")
+            return None
+        rec_id = self.suspended_map.get(sel[0])
+        if not rec_id:
+            messagebox.showinfo("تنبيه", "هذا السطر إجمالي وليس فاتورة معلّقة.")
+        return rec_id
+
+    def open_suspended_sale(self, rec_id=None):
+        """يفتح فاتورة معلّقة في قسم المبيعات ببياناتها كلها لاستكمالها من حيث توقفت"""
+        if rec_id is None:
+            rec_id = self.get_selected_suspended_id("فتح")
+        if not rec_id:
+            return
+        rec = self.get_suspended_sale(rec_id)
+        if rec is None:
+            messagebox.showwarning("تنبيه", "هذه الفاتورة لم تعد في المعلقات (رُحّلت أو حُذفت).")
+            self.refresh_suspended_sales_table()
+            return
+        if rec_id != getattr(self, "current_suspended_id", None):
+            current = self.collect_sale_form()
+            if current["rows"] or current["draft"]:
+                # لا تضيع فاتورة الشاشة الحالية: تُعلَّق هي أولاً
+                if not messagebox.askyesno(
+                        "فاتورة غير مرحّلة في الشاشة",
+                        f"في قسم المبيعات فاتورة فيها {len(current['rows'])} سطر لم تُرحَّل.\n\n"
+                        "ستُعلَّق أولاً (تجدها في المعلقات)، ثم تُفتح الفاتورة المختارة.\nهل تريد المتابعة؟"):
+                    return
+                self.suspend_sale_invoice(silent=True)
+            self.fill_sale_form(rec)
+            self.set_current_suspended(rec_id, rec)
+        self.switch_sales_subtab("المبيعات")
+        self.refresh_pending_sales_table()
+        self.lbl_sales_status.configure(text="📂 فُتحت الفاتورة المعلّقة — أكمل من حيث توقفت")
+        self.after(3000, lambda: self.lbl_sales_status.configure(text=""))
+        self.after(80, lambda: self.sale_set_number.focus_set())
+
+    def delete_selected_suspended_sale(self):
+        rec_id = self.get_selected_suspended_id("حذف")
+        if not rec_id:
+            return
+        rec = self.get_suspended_sale(rec_id) or {}
+        if not messagebox.askyesno(
+                "حذف فاتورة معلّقة",
+                f"حذف الفاتورة المعلّقة ({rec.get('manual_no') or '-'}) لـ ({rec.get('name') or '-'}) "
+                f"وسطورها ({len(rec.get('rows', []))}) نهائياً؟\n\nلم تُرحَّل، فلا أثر لحذفها على أي رصيد."):
+            return
+        if not self.delete_suspended_sale(rec_id):
+            return
+        if rec_id == getattr(self, "current_suspended_id", None):
+            # ما في الشاشة يبقى كما هو، لكنه لم يعد مرتبطاً بفاتورة معلّقة
+            self.set_current_suspended(None)
+        self.refresh_suspended_sales_table()
+        self.update_suspended_count()
+
+    def update_suspended_count(self):
+        """عدد المعلقات على زر القسم، فتُرى بنظرة دون فتحه"""
+        btn = getattr(self, "sales_subtab_buttons", {}).get("المعلقات")
+        if btn is None:
+            return
+        n = len(self.list_suspended_sales())
+        try:
+            btn.configure(text=f"⏸️ المعلقات ({n})" if n else "⏸️ المعلقات")
+        except Exception:
+            pass
+
+    def build_sales_suspended_ui(self, parent):
+        head = ctk.CTkFrame(parent, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(12, 4))
+        ctk.CTkLabel(head, text="⏸️ الفواتير المعلّقة (لم تُرحَّل — بلا أثر على الأرصدة)",
+                     font=ctk.CTkFont(family="Cairo", size=18, weight="bold"),
+                     text_color="#d4af37").pack(side="right", padx=10)
+        ctk.CTkButton(head, text="حذف 🗑️", font=("Cairo", 14, "bold"), width=120, height=34,
+                      fg_color=UI["danger"], hover_color=UI["danger_hover"],
+                      command=self.delete_selected_suspended_sale).pack(side="left", padx=5)
+        ctk.CTkButton(head, text="📂 فتح الفاتورة", font=("Cairo", 14, "bold"), width=170, height=34,
+                      fg_color=UI["success"], hover_color=UI["success_hover"],
+                      command=lambda: self.open_suspended_sale()).pack(side="left", padx=5)
+
+        self.suspended_table_frame = ttk.Frame(parent)
+        self.suspended_table_frame.pack(fill="both", expand=True, padx=20, pady=(4, 4))
+        self.suspended_tree = None
+        self.suspended_map = {}
+
+        self.lbl_suspended_totals = ctk.CTkLabel(parent, text="", font=("Cairo", 15, "bold"), text_color="#d4af37")
+        self.lbl_suspended_totals.pack(fill="x", padx=20, pady=(0, 6))
+        ctk.CTkLabel(parent, text="اضغط مرتين على أي فاتورة (أو Enter) لفتحها في قسم المبيعات "
+                                  "واستكمالها من حيث توقفت — وعند ترحيلها تنتقل إلى «العمليات»",
+                     font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 8))
+
+    def refresh_suspended_sales_table(self):
+        if not getattr(self, "suspended_table_frame", None):
+            return
+        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", "الأحجار بعد الخصم",
+                "الماس", "خياس", "عدد الأسطر", "آخر تعديل")
+        tree, _t, reused = self.reuse_or_create_tree(self.suspended_table_frame, cols, height=13)
+        self.suspended_tree = tree
+        tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        if not reused:
+            tree.bind("<Double-1>", lambda e: self.open_suspended_sale()
+                      if self.suspended_map.get(tree.identify_row(e.y)) else None)
+            tree.bind("<Return>", lambda e: self.open_suspended_sale())
+
+        def fmt(v):
+            return f"{v:.2f}" if v else "-"
+
+        self.suspended_map = {}
+        grand = dict.fromkeys(("ذهب", "فصوص", "أحجار بعد الخصم", "الماس", "خياس"), 0.0)
+        recs = self.list_suspended_sales()
+        current = getattr(self, "current_suspended_id", None)
+        for rec in recs:
+            t = self.suspended_totals(rec)
+            for k in grand:
+                grand[k] = round(grand[k] + t[k], 2)
+            mark = "📂 " if rec["id"] == current else ""
+            iid = tree.insert("", "end", values=(
+                mark + (rec["manual_no"] or "-"), rec["date"] or "-", rec["name"] or "-", rec["note"] or "-",
+                fmt(t["ذهب"]), fmt(t["فصوص"]), fmt(t["أحجار بعد الخصم"]), fmt(t["الماس"]), fmt(t["خياس"]),
+                len(rec["rows"]), rec["updated_at"][:16] or "-"))
+            self.suspended_map[iid] = rec["id"]
+        if recs:
+            tree.insert("", "end", values=(
+                "إجمالي المعلقات", "-", "-", "-", f"{grand['ذهب']:.2f}", f"{grand['فصوص']:.2f}",
+                f"{grand['أحجار بعد الخصم']:.2f}", f"{grand['الماس']:.2f}", f"{grand['خياس']:.2f}",
+                sum(len(r["rows"]) for r in recs), "-"), tags=("total_tag",))
+
+        self.apply_column_labels(tree, "sales_suspended")
+        self.fit_columns_to_content(tree, "sales_suspended", min_width=50, max_width=220)
+        self.enable_column_rename(tree, "sales_suspended", on_renamed=self.refresh_suspended_sales_table)
+        if hasattr(self, "lbl_suspended_totals"):
+            self.lbl_suspended_totals.configure(
+                text=(f"عدد الفواتير المعلّقة: {len(recs)}  |  الذهب: {grand['ذهب']:.2f}  |  "
+                      f"الفصوص: {grand['فصوص']:.2f}  |  الأحجار بعد الخصم: {grand['أحجار بعد الخصم']:.2f}  |  "
+                      f"الماس: {grand['الماس']:.2f}  |  الخياس: {grand['خياس']:.2f} جم") if recs
+                else "لا توجد فواتير معلّقة — «⏸️ تعليق الفاتورة» في قسم المبيعات يحفظها هنا")
+        self.update_suspended_count()
 
     def refresh_sales_table(self):
         if hasattr(self, 'lbl_sales_balance'):
