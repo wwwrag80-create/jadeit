@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.46.0"
+APP_VERSION = "1.47.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -457,6 +457,32 @@ def logo_tint_for(color, darker=0.80, lighter=1.15):
     """تدرّج (غامق، فاتح) حول لون واحد، متوسطه على الشعار = اللون نفسه تقريباً:
     تبقى ظلال الشريط وانحناءاته، ويُرى الشعار كله بذلك اللون"""
     return shade_color(color, darker), shade_color(color, lighter)
+
+
+def crisp_ctk_image(light, dark=None, size=(1, 1), widget=None):
+    """صورة واجهة حادّة: تُصغَّر مسبقاً بفلتر LANCZOS إلى بكسلات العرض الفعلية
+    (الحجم × تكبير ويندوز)، فلا تعيد المكتبة تحجيمها بفلترها الأنعم — الشعار
+    وحروفه الدقيقة تبقى حادّة على كل شاشة وكل نسبة تكبير."""
+    try:
+        s = float(ctk.ScalingTracker.get_widget_scaling(widget)) if widget is not None else 1.0
+    except Exception:
+        s = 1.0
+    px = (max(1, round(size[0] * s)), max(1, round(size[1] * s)))
+    try:
+        lanczos = Image.Resampling.LANCZOS
+    except AttributeError:
+        lanczos = Image.LANCZOS
+
+    def prep(img):
+        if img is None or img.size == px:
+            return img
+        try:
+            return img.resize(px, lanczos, reducing_gap=3.0)
+        except Exception:
+            return img
+    light_px = prep(light)
+    return ctk.CTkImage(light_image=light_px, dark_image=prep(dark) if dark is not None else light_px,
+                        size=size)
 
 
 def tint_logo(img, dark, light, opacity=1.0):
@@ -1183,7 +1209,8 @@ ctk.set_default_color_theme("blue")
 # ══════════════════════════════════════════════════════════════════════════
 UI = {
     "gold": "#C9A227", "gold_dark": "#9C7A12", "gold_soft": "#FBF4DC", "gold_line": "#E9D48C",
-    "ink": "#1F2937", "muted": "#6B7280", "line": "#E1E6ED",
+    # النص الثانوي بتباين ٥:١ على خلفية الصفحة (كان ٤٫٤:١)، وحدود البطاقات أوضح
+    "ink": "#1F2937", "muted": "#5E6776", "line": "#D5DCE6", "line_strong": "#B9C3D0",
     "canvas": "#EEF1F5", "surface": "#FFFFFF", "surface_alt": "#F6F8FB",
     "primary": "#1E5BB8", "primary_hover": "#174A96", "primary_soft": "#E8F0FC",
     "success": "#128A5B", "success_hover": "#0E6E48", "success_soft": "#E3F5EC",
@@ -1194,6 +1221,9 @@ UI = {
     "warning": "#D9771C", "warning_hover": "#B5610F", "warning_soft": "#FDF0E1",
     "violet": "#7A4BB5", "violet_hover": "#613A93",
     "midnight": "#0B1220", "midnight_2": "#13203A",
+    # الإطار العلوي لكل شاشة: شريط كحلي قوي بحافة ذهبية (مثل الشريط السفلي) يؤطّر مساحة العمل
+    "header": "#10213A", "header_2": "#1A3050", "header_edge": "#8C6D1F",
+    "header_text": "#FFFFFF", "header_muted": "#AEBDD3",
 }
 
 # لون نص شريط «رصيد الخزينة الحالي» البارز (فاتح، داكن) — وشعار الرئيسية بلونه نفسه
@@ -1262,11 +1292,11 @@ _LEGACY_TEXT_COLORS = {
     "#1f77b4": ("#1E5BB8", "#8FB6F2"),
     "#2ecc71": ("#0F7A50", "#6FD6A2"),
     "#e74c3c": ("#C0343C", "#F08A8F"),
-    "#e67e22": ("#B5610F", "#F5A35C"),
-    "#ff7f0e": ("#B5610F", "#F5A35C"),
-    "#8b8f95": ("#6B7280", "#9AA4B2"),
-    "#7f858c": ("#6B7280", "#9AA4B2"),
-    "#aaaaaa": ("#6B7280", "#9AA4B2"),
+    "#e67e22": ("#A3560B", "#F5A35C"),
+    "#ff7f0e": ("#A3560B", "#F5A35C"),
+    "#8b8f95": ("#5E6776", "#9AA4B2"),
+    "#7f858c": ("#5E6776", "#9AA4B2"),
+    "#aaaaaa": ("#5E6776", "#9AA4B2"),
 }
 
 
@@ -1300,7 +1330,9 @@ class ThemedLabel(ctk.CTkLabel):
         bg = self._fg_color if self._fg_color != "transparent" else self._bg_color
         light_bg = bg[0] if isinstance(bg, (list, tuple)) else bg
         dark_bg = bg[1] if isinstance(bg, (list, tuple)) else bg
-        tint = (pair[0] if self._is_light(light_bg) else color,
+        # على خلفية داكنة يُستعمل البديل الساطع المقروء (لا اللون القديم نفسه: الأزرق
+        # القديم على الكحلي كان ٢٫٣:١)، وعلى الفاتحة البديل الغامق
+        tint = (pair[0] if self._is_light(light_bg) else pair[1],
                 pair[1] if not self._is_light(dark_bg) else pair[0])
         super().configure(text_color=tint)
 
@@ -1315,13 +1347,13 @@ def _apply_theme_defaults():
     t["CTkToplevel"]["fg_color"] = [UI["canvas"], "#10141A"]
     t["CTkFrame"].update(corner_radius=10, fg_color=[UI["surface"], "#171C23"],
                          top_fg_color=[UI["surface_alt"], "#1D232B"],
-                         border_color=[UI["line"], "#2A313B"])
+                         border_color=[UI["line"], "#323B47"])
     t["CTkButton"].update(corner_radius=10, fg_color=[UI["primary"], UI["primary"]],
                           hover_color=[UI["primary_hover"], UI["primary_hover"]],
                           text_color=["#FFFFFF", "#FFFFFF"])
     field = dict(corner_radius=8, border_width=1, fg_color=["#FFFFFF", "#1E242C"],
-                 border_color=["#C9D1DC", "#3A434F"], text_color=[UI["ink"], "#E6EDF3"])
-    t["CTkEntry"].update(field, placeholder_text_color=["#9AA3AF", "#7D8793"])
+                 border_color=[UI["line_strong"], "#46515F"], text_color=[UI["ink"], "#E6EDF3"])
+    t["CTkEntry"].update(field, placeholder_text_color=["#7C8594", "#8A94A1"])
     t["CTkComboBox"].update(field, button_color=["#DCE2EA", "#3A434F"],
                             button_hover_color=["#C7D0DC", "#4A5461"])
     t["CTkOptionMenu"].update(corner_radius=8, fg_color=[UI["primary"], UI["primary"]],
@@ -1331,10 +1363,22 @@ def _apply_theme_defaults():
                              text_color=[UI["ink"], "#E6EDF3"])
     t["CTkLabel"]["text_color"] = [UI["ink"], "#E6EDF3"]
     t["CTkFont"].update(family="Cairo", size=13)
+    # أشرطة التمرير: رفيعة مستديرة بلون هادئ يتضح عند المرور (بدل أشرطة ويندوز القديمة)
+    t["CTkScrollbar"].update(corner_radius=6, border_spacing=3, fg_color="transparent",
+                             button_color=["#C3CCD8", "#3C4655"],
+                             button_hover_color=["#8E9AAC", "#5A6678"])
+
+
+BRAND_FONT_FILES = ("Cairo-Regular.ttf", "Cairo-Bold.ttf", "Cairo-SemiBold.ttf")
+LOADED_BRAND_FONTS = set()
 
 
 def load_brand_fonts():
     """يحمّل خط Cairo المرفق مع البرنامج (خاص بهذه العملية، لا يُثبَّت في النظام).
+
+    ثلاثة أوزان: العادي والعريض، و«Cairo SemiBold» (وزن ٦٠٠) لنص الجداول — أثقل
+    قليلاً من العادي فتبقى الأرقام والأسماء واضحة حادّة على الشاشات العادية
+    (١٣٦٦×٧٦٨ وما يشبهها) دون ثِقل العريض.
 
     ويندوز فقط: هو ما يعمل عليه البرنامج، ومحرّك النص فيه يشكّل العربية ويعكس
     اتجاهها من جداول الخط نفسه. أما لينكس (بيئة التطوير والفحص) فلا يشكّل Tk
@@ -1342,15 +1386,44 @@ def load_brand_fonts():
     """
     if not sys.platform.startswith("win"):
         return False
-    loaded = False
-    for name in ("Cairo-Regular.ttf", "Cairo-Bold.ttf"):
+    for name in BRAND_FONT_FILES:
         path = resource_path(os.path.join("fonts", name))
         if os.path.exists(path):
             try:
-                loaded = bool(ctk.FontManager.load_font(path)) or loaded
+                if ctk.FontManager.load_font(path):
+                    LOADED_BRAND_FONTS.add(name)
             except Exception as e:
                 log_cloud_error("تعذّر تحميل خط Cairo المرفق", e)
-    return loaded
+    return bool(LOADED_BRAND_FONTS)
+
+
+def table_font_family():
+    """خط نص الجداول: Cairo SemiBold متى حُمِّل، وإلا Cairo نفسه"""
+    return "Cairo SemiBold" if "Cairo-SemiBold.ttf" in LOADED_BRAND_FONTS else "Cairo"
+
+
+# تفضيلات الواجهة على هذا الجهاز وحده (المظهر…) — ملف محلي لا يُرفع للسحابة، فلا
+# يتبع جهازُ المدير اختيارَ العميل ولا العكس
+UI_PREFS_FILE = "ui_prefs.json"
+
+
+def load_ui_prefs():
+    try:
+        with open(os.path.join(APP_DATA_DIR, UI_PREFS_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_ui_pref(key, value):
+    prefs = load_ui_prefs()
+    prefs[key] = value
+    try:
+        with open(os.path.join(APP_DATA_DIR, UI_PREFS_FILE), "w", encoding="utf-8") as f:
+            json.dump(prefs, f, ensure_ascii=False)
+    except Exception as e:
+        log_cloud_error("تعذّر حفظ تفضيلات الواجهة", e)
 
 
 try:
@@ -2942,41 +3015,43 @@ class ScreenRouter(ctk.CTkFrame):
         wrapper = self._wrappers[name]
         content = self._contents[name]
 
-        # ═══ رأس الشاشة: بطاقة بيضاء واحدة ═══
-        #   يمين: أيقونة الشاشة في شارة ذهبية + عنوانها + وصف قصير لوظيفتها
+        # ═══ رأس الشاشة: إطار علوي كحلي قوي بحافة ذهبية رفيعة ═══
+        #   يؤطّر مساحة العمل مع الشريط السفلي الداكن، ويبقى بلونه في المظهرين
+        #   يمين: أيقونة الشاشة في شارة + عنوانها + وصف قصير لوظيفتها
         #   وسط:  الفترة والأرصدة شارات ملوّنة صغيرة (كانت شريطاً كاملاً)
         #   يسار: العودة للقائمة الرئيسية (أو زر Esc)
-        top_bar = ctk.CTkFrame(wrapper, fg_color=(UI["surface"], "#171C23"), corner_radius=14,
-                               border_width=1, border_color=(UI["line"], "#2A313B"))
+        head = (UI["header"], UI["header"])
+        top_bar = ctk.CTkFrame(wrapper, fg_color=head, corner_radius=14,
+                               border_width=1, border_color=(UI["header_edge"], UI["header_edge"]))
         top_bar.pack(fill="x", padx=5, pady=(5, 8), before=content)
 
         btn_back = ctk.CTkButton(top_bar, text="🏠  القائمة الرئيسية", font=("Cairo", 14, "bold"),
                                   fg_color="transparent", border_width=1,
-                                  border_color=(UI["line"], "#3A434F"),
-                                  text_color=(UI["ink"], "#E6EDF3"),
-                                  hover_color=(UI["surface_alt"], "#232A33"),
+                                  border_color=("#3D5475", "#3D5475"),
+                                  text_color=(UI["header_text"], UI["header_text"]),
+                                  hover_color=(UI["header_2"], UI["header_2"]),
                                   width=176, height=40, command=self._go_home)
         btn_back.pack(side="left", padx=(12, 4), pady=10)
         ctk.CTkLabel(top_bar, text="Esc", font=("Cairo", 11, "bold"), width=34, height=22,
-                     corner_radius=6, fg_color=(UI["surface_alt"], "#232A33"),
-                     text_color=(UI["muted"], "#9AA4B2")).pack(side="left", padx=(0, 8))
+                     corner_radius=6, fg_color=(UI["header_2"], UI["header_2"]),
+                     text_color=(UI["header_muted"], UI["header_muted"])).pack(side="left", padx=(0, 8))
 
         title_box = ctk.CTkFrame(top_bar, fg_color="transparent")
         title_box.pack(side="right", padx=(8, 12), pady=8)
         if icon:
             ctk.CTkLabel(title_box, text=icon, font=("Segoe UI Emoji", 22), width=48, height=48,
-                         corner_radius=12, fg_color=(UI["gold_soft"], "#2E2710")
-                         ).pack(side="right", padx=(10, 0))
+                         corner_radius=12, fg_color=("#2B2A1C", "#2B2A1C"),
+                         text_color=("#E9C75C", "#E9C75C")).pack(side="right", padx=(10, 0))
         texts = ctk.CTkFrame(title_box, fg_color="transparent")
         texts.pack(side="right")
         lbl_title = ctk.CTkLabel(texts, text=title, anchor="e", height=26,
                                  font=ctk.CTkFont(family="Cairo", size=19, weight="bold"),
-                                 text_color=(UI["ink"], "#F2F4F7"))
+                                 text_color=(UI["header_text"], UI["header_text"]))
         lbl_title.pack(anchor="e")
         self._title_labels[name] = lbl_title
         if subtitle:
             ctk.CTkLabel(texts, text=subtitle, anchor="e", height=18, font=("Cairo", 12),
-                         text_color=(UI["muted"], "#9AA4B2")).pack(anchor="e")
+                         text_color=(UI["header_muted"], UI["header_muted"])).pack(anchor="e")
 
         info_box = ctk.CTkFrame(top_bar, fg_color="transparent")
         info_box.pack(side="right", padx=10, pady=10)
@@ -2988,9 +3063,10 @@ class ScreenRouter(ctk.CTkFrame):
             lbl.pack(side="right", padx=4)
             return lbl
 
-        lbl_period = pill((UI["primary_soft"], "#1B2B45"), (UI["primary"], "#9CC0F5"))
-        lbl_treasury = pill((UI["gold_soft"], "#2E2710"), (UI["gold_dark"], "#F0CF6A"))
-        lbl_total = pill((UI["success_soft"], "#15301F"), (UI["success"], "#7FE0B0"))
+        # الشارات بألوانها الداكنة في المظهرين (على الإطار الكحلي)
+        lbl_period = pill(("#1B3050", "#1B3050"), ("#A9C8F7", "#A9C8F7"))
+        lbl_treasury = pill(("#33301C", "#33301C"), ("#F0CF6A", "#F0CF6A"))
+        lbl_total = pill(("#173A2A", "#173A2A"), ("#86E3B6", "#86E3B6"))
 
         self._screen_info_labels[name] = {
             "period": lbl_period, "treasury": lbl_treasury, "total": lbl_total}
@@ -3053,7 +3129,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # القادم من شاشة الدخول يبقى مخفياً ويُكبَّر عند ظهوره
             self.force_maximize()
         self.safe_minsize(1000, 650)
-        self.current_theme = "Light"
+        # المظهر المحفوظ على هذا الجهاز: فاتح أو داكن أو تلقائي (يتبع ويندوز)
+        self.current_theme = load_ui_prefs().get("theme", "Light")
+        if self.current_theme not in self.THEME_CYCLE:
+            self.current_theme = "Light"
+        try:
+            ctk.set_appearance_mode(self.current_theme)
+        except Exception:
+            self.current_theme = "Light"
+        try:
+            # تغيّر المظهر (من الزر أو من ويندوز في الوضع التلقائي) ← الجداول تتبعه فوراً
+            ctk.AppearanceModeTracker.add(lambda _mode: self.after(40, self.apply_design_system), self)
+        except Exception:
+            pass
 
         # قاعدة البيانات والنسخ الاحتياطية داخل المجلد المنظّم على القرص المحلي
         old_generic_path = os.path.join(DATA_DIR, "gold_workshop.db")
@@ -4218,43 +4306,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.schedule_backup()
 
     def setup_treeview_styles(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-        
-        bg_color = "#242424" if self.current_theme == "Dark" else "#f2f2f2"
-        fg_color = "#ffffff" if self.current_theme == "Dark" else "#000000"
-        field_bg = "#242424" if self.current_theme == "Dark" else "#ffffff"
-        
-        # --- تم تصغير الخط إلى 11 وارتفاع الصفوف ليتناسب مع النوافذ والأرشيف ---
-        style.configure("Treeview",
-                        background=bg_color,
-                        foreground=fg_color,
-                        fieldbackground=field_bg,
-                        rowheight=35,
-                        font=("Cairo", 13, "bold"))
-        
-        style.configure("Treeview.Heading",
-                        background="#1f77b4",
-                        foreground="#ffffff",
-                        font=("Cairo", 13, "bold"),
-                        padding=(5, 4),
-                        relief="flat")
-        
-        style.map("Treeview.Heading", background=[('active', '#144d75')])
+        """تنسيق الجداول يأتي من نظام التصميم وحده (apply_design_system)"""
+        self.apply_design_system()
+
+    # المظاهر بالترتيب الذي يدور عليه زر المظهر، ونص الزر لكل منها
+    THEME_CYCLE = ("Light", "Dark", "System")
+    # نص قصير يسعه الزر حتى على شريط اللابتوب الصغير
+    THEME_LABELS = {"Light": "☀️ فاتح", "Dark": "🌙 داكن", "System": "🖥️ تلقائي"}
 
     def toggle_theme(self):
-        # التنسيق الموحّد يُعاد تطبيقه بعد التبديل ليتبع المظهر الجديد
-        self.after(60, self.apply_design_system)
-        if self.current_theme == "Dark":
-            self.current_theme = "Light"
-            ctk.set_appearance_mode("Light")
-            self.btn_theme.configure(text="🎨 المظهر: فاتح ☀️")
-        else:
-            self.current_theme = "Dark"
-            ctk.set_appearance_mode("Dark")
-            self.btn_theme.configure(text="🎨 المظهر: داكن 🌙")
-            
-        self.setup_treeview_styles()
+        """فاتح ← داكن ← تلقائي (يتبع إعداد ويندوز نهاراً وليلاً) ← فاتح.
+
+        الاختيار يُحفظ على هذا الجهاز ويُفتح به البرنامج في المرة التالية. التنسيق
+        الموحّد للجداول يُطبَّق فوراً (لا نمط قديم يومض ثم يُستبدل).
+        """
+        cycle = self.THEME_CYCLE
+        cur = self.current_theme if self.current_theme in cycle else "Light"
+        self.current_theme = cycle[(cycle.index(cur) + 1) % len(cycle)]
+        ctk.set_appearance_mode(self.current_theme)
+        save_ui_pref("theme", self.current_theme)
+        try:
+            self.btn_theme.configure(text=self.THEME_LABELS[self.current_theme])
+        except Exception:
+            pass
+        self.apply_design_system()
         self.recalculate_all()
 
 
@@ -4443,6 +4518,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.current_display_month = datetime.datetime.now().strftime("%Y-%m")
         self.neutralize_auto_recovery_closings()
         self.migrate_casting_returns()
+        self.migrate_row_extras()
 
     AUTO_RECOVERY_CLOSE_NOTE = "مسترجع — أُلغي: كان إقفالاً تلقائياً عند الوارد (الإقفال بالزر وحده)"
 
@@ -4546,6 +4622,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.mark_backup_dirty()
             except Exception as e:
                 log_cloud_error("تعذّر حفظ تصحيح حركات مسترجع الكاستنج", e)
+        return len(changed)
+
+    def migrate_row_extras(self):
+        """يطابق نوع «الحركة الثانية» لصفوف الأقسام مع تعريفها الحالي (stage_row_extra).
+
+        الليزر في «بوليش 1» سُجّل قبضاً («قبض تلميع بف») في الإصدار 1.46.0، ثم صار صرفاً
+        بطلب العميل: تُحوَّل حركاته القديمة إلى «صرف تلميع بف» فيُضاف الليزر إلى الفاقد
+        الحالي بدل أن يُخصم منه. تُعرف بدقة: اسم «ليزر البوليش» لا يُسجَّل إلا من خانة الليزر.
+        نسخة العميل تحفظ التصحيح في قاعدتها (فيُرفع للسحابة)، ونسخة المدير في الذاكرة.
+        """
+        changed = []
+        try:
+            madin_type, qabd_type, _rec = self.get_stage_config("التلميع/البف")
+            extra = self.stage_row_extra(qabd_type)
+        except Exception:
+            return 0
+        if not extra:
+            return 0
+        want, other = (madin_type, qabd_type) if extra[2] > 0 else (qabd_type, madin_type)
+        for inv in self.invoices.values():
+            if inv.get("الاسم") == extra[0] and inv.get("النوع") == other:
+                inv["النوع"] = want
+                changed.append(inv)
+        if not changed:
+            return 0
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
+        if not IS_ADMIN_BUILD and getattr(self, "db_path", None):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.executemany("UPDATE invoices SET op_type = ? WHERE invoice_id = ?",
+                                     [(inv["النوع"], inv["رقم الفاتورة"]) for inv in changed])
+                    conn.commit()
+                self.mark_backup_dirty()
+            except Exception as e:
+                log_cloud_error("تعذّر حفظ تصحيح حركات الليزر", e)
         return len(changed)
 
     def save_invoice_to_db(self, inv_id, inv_data):
@@ -5153,7 +5264,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # ودُفع صف الإجمالي خارج الشاشة فلا يظهر إطلاقاً.
         # ارتفاع ثابت ومنع الانتشار: يضمن ظهور الشريط دائماً، فقد كان ينكمش
         # إلى صفر عندما يطلب جدول البيانات ارتفاعاً أكبر من المتاح
-        total_holder = ttk.Frame(wrapper, height=40)
+        self.ensure_totals_bar_style()
+        total_holder = ttk.Frame(wrapper, height=getattr(self, "_totals_row_h", 34) + 6)
         total_holder.pack(side="bottom", fill="x")
         total_holder.pack_propagate(False)
         ttk.Separator(wrapper, orient="horizontal").pack(side="bottom", fill="x", pady=(2, 0))
@@ -5162,18 +5274,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         body_frame.pack(side="top", fill="both", expand=True)
 
         data_tree = ttk.Treeview(body_frame, columns=columns, show="headings", height=height)
+        self.enable_row_hover(data_tree)
         for col in columns:
             data_tree.heading(col, text=col)
             data_tree.column(col, width=(col_widths or {}).get(col, 110), anchor="center", stretch=False)
 
-        vsb = ttk.Scrollbar(body_frame, orient="vertical", command=data_tree.yview)
+        vsb = self.make_scrollbar(body_frame, "vertical", data_tree.yview)
         data_tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         data_tree.pack(side="left", fill="both", expand=True)
 
-        # هامش يعادل عرض شريط التمرير الرأسي، حتى تصطف أعمدة الشجرتين رأسياً
-        # رغم غياب الشريط في شجرة الإجمالي
-        ttk.Frame(total_holder, width=17).pack(side="right", fill="y")
+        # هامش بعرض شريط التمرير الرأسي نفسه (ويكبر معه بتكبير ويندوز)، حتى تصطف
+        # أعمدة الشجرتين رأسياً رغم غياب الشريط في شجرة الإجمالي
+        ctk.CTkFrame(total_holder, width=14, height=1, corner_radius=0,
+                     fg_color=(self.DESIGN["light"]["bg"], self.DESIGN["dark"]["bg"])
+                     ).pack(side="right", fill="y")
 
         # show="" يُخفي شريط العناوين الفارغ فوق صف الإجمالي، فيظهر الصف
         # ملاصقاً للجدول تماماً بلا فراغ يفصله عنه
@@ -5199,10 +5314,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         try:
             style = ttk.Style()
+            d = getattr(self, "_design", None) or {}
+            total_font = d.get("total_font", ("Cairo", 14, "bold"))
+            # ارتفاعه من قياس خط الإجمالي نفسه (لا ٣٤ ثابتة تقصّ الخط على التكبير)
+            self._totals_row_h = self.table_row_height(total_font, 34)
             # رصاصي فاتح بنص أسود عريض — أوضح للقراءة من الغامق
             style.configure("Totals.Treeview",
                             background="#c4c9ce", fieldbackground="#c4c9ce",
-                            foreground="#000000", rowheight=34, borderwidth=0)
+                            foreground="#000000", rowheight=self._totals_row_h, borderwidth=0,
+                            font=total_font)
             # الصف يبقى بلونه حتى عند التحديد، فلا يتغيّر شكل الشريط بالنقر
             style.map("Totals.Treeview",
                       background=[("selected", "#c4c9ce")],
@@ -5222,6 +5342,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         try:
             for col in data_tree["columns"]:
                 total_tree.column(col, width=data_tree.column(col, "width"), stretch=False)
+            total_font = (getattr(self, "_design", None) or {}).get("total_font")
+            if total_font:
+                total_tree.tag_configure("total_tag", font=total_font)
         except Exception:
             pass
 
@@ -5308,13 +5431,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         table_frame.pack(fill="both", expand=True)
 
         data_tree = ttk.Treeview(table_frame, columns=columns, show="headings")
+        self.enable_row_hover(data_tree)
         for col in columns:
             data_tree.heading(col, text=self.wrap_header(col))
             data_tree.column(col, width=(col_widths or {}).get(col, 110),
                              anchor="center", stretch=False)
 
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=data_tree.yview)
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=data_tree.xview)
+        vsb = self.make_scrollbar(table_frame, "vertical", data_tree.yview)
+        hsb = self.make_scrollbar(table_frame, "horizontal", data_tree.xview)
         data_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         hsb.pack(side="bottom", fill="x")
         vsb.pack(side="right", fill="y")
@@ -5637,8 +5761,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             design = getattr(self, "_design", None) or {}
             body_size = int(design.get("font", 11) or 11)
             head_size = int(design.get("head", body_size) or body_size)
-            body_font = tkfont.Font(family="Cairo", size=body_size)
-            head_font = tkfont.Font(family="Cairo", size=head_size, weight="bold")
+            body_font = tkfont.Font(root=tree, font=design.get("body_font", ("Cairo", body_size)))
+            head_font = tkfont.Font(root=tree, font=design.get("head_font", ("Cairo", head_size, "bold")))
+            # خطوط الوسوم من نظام التصميم قبل القياس، فيُقاس الجدول بما سيُعرض فعلاً
+            self.normalize_tree_tags(tree)
 
             # قياس **عيّنة** من الصفوف لا كلها:
             # القياس السابق كان يستدعي measure() لكل خلية — مع ٥٠٠ صف و١٦
@@ -5690,10 +5816,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             specs = []
             for i, col_id in enumerate(cols):
                 label = self.get_column_label(table_key, col_id) if table_key else col_id
-                # العنوان يُقاس كاملاً: هو سطر واحد في رأس العمود
-                header_w = head_font.measure(str(label)) + 10
+                # العنوان يُقاس كاملاً: هو سطر واحد في رأس العمود (+ هامش الرأس الداخلي)
+                header_w = head_font.measure(str(label)) + 10 + 6
                 short = self.COMPACT_HEADERS.get(col_id) if str(label) == str(col_id) else None
-                short_w = (head_font.measure(short) + 10) if short else header_w
+                short_w = (head_font.measure(short) + 10 + 6) if short else header_w
                 content_w = widest([v[i] for v in rows if i < len(v)], body_font)
                 if total_font is not None:
                     content_w = max(content_w, widest([v[i] for v in total_rows if i < len(v)], total_font))
@@ -5839,40 +5965,51 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     #  بلا لمس أي منطق محاسبي.
     # ══════════════════════════════════════════════════════════════════
     # ألوان الجداول — من لوحة «منتصف الليل والذهب» نفسها: رأس كحلي هادئ،
-    # صفوف متناوبة خفيفة، والسطر المحدد بلون ذهبي ناعم يُقرأ بوضوح
+    # صفوف متناوبة خفيفة، والسطر المحدد بلون ذهبي ناعم يُقرأ بوضوح، وتظليل
+    # أزرق خفيف للصف تحت المؤشر (hover)
     DESIGN = {
         "light": {
             "bg":          "#ffffff",
-            "row_alt":     "#f5f7fa",
+            "row_alt":     "#f4f7fb",
             "text":        "#1f2937",
             "head_bg":     "#1e3a5f",
+            "head_hover":  "#27496f",
             "head_text":   "#ffffff",
-            "sel_bg":      "#f8e8b0",
+            "sel_bg":      "#f6e3a1",
             "sel_text":    "#2b2106",
-            "grid":        "#e1e6ed",
+            "grid":        "#d5dce6",
+            "hover":       "#e8f0fc",
         },
         "dark": {
-            "bg":          "#171c23",
-            "row_alt":     "#1d232b",
+            "bg":          "#151a21",
+            "row_alt":     "#1b222b",
             "text":        "#e6edf3",
             "head_bg":     "#22364f",
+            "head_hover":  "#2b4363",
             "head_text":   "#ffffff",
             "sel_bg":      "#4a3d14",
             "sel_text":    "#ffeab0",
-            "grid":        "#2a313b",
+            "grid":        "#323b47",
+            "hover":       "#223044",
         },
     }
 
     def design_metrics(self):
-        """مقاييس تتناسب مع دقة شاشة المستخدم.
+        """مقاييس تتناسب مع مساحة الشاشة **الفعلية** (بعد تكبير ويندوز).
 
-        الجداول والخطوط تكبر على الشاشات الكبيرة وتصغر على الصغيرة، فيبقى
-        النظام مقروءاً ومتناسقاً على كل المقاسات بلا تدخّل من المستخدم.
+        الشاشة تُقاس بعرضها المنطقي: ١٩٢٠ بكسل بتكبير ١٢٥٪ مساحتها ١٥٣٦ — فيُختار
+        لها خط ١٢ لا ١٤ (كان يُختار بالبكسل الحقيقي فيكبر الخط مرتين: مرة بالحجم
+        ومرة بتكبير ويندوز، فتضيق الجداول). الخطوط بالنقاط تكبر مع التكبير تلقائياً.
         """
         try:
             sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         except Exception:
             sw, sh = 1366, 768
+        try:
+            scale = float(ctk.ScalingTracker.get_window_scaling(self)) or 1.0
+        except Exception:
+            scale = 1.0
+        sw, sh = sw / scale, sh / scale
 
         if sw >= 2400:
             base, row_h, head = 15, 40, 15
@@ -5885,12 +6022,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         else:
             base, row_h, head = 11, 28, 11
 
-        # الشاشات القصيرة تحتاج صفوفاً أقصر وإلا ظهر عدد قليل منها
+        # الشاشات القصيرة تحتاج صفوفاً أقصر وإلا ظهر عدد قليل منها (والحد الأدنى
+        # الحقيقي يأتي من قياس الخط — table_row_height — فلا يُقصّ حرف)
         if sh <= 800:
             row_h = max(24, row_h - 4)
 
         return {"font": base, "row_h": row_h, "head": head,
                 "pad_x": max(6, base - 4), "pad_y": max(3, base // 3)}
+
+    @staticmethod
+    def row_height_for(ascent, descent, minimum=0, padding=2):
+        """أقل ارتفاع صف يسع حروف الخط كاملة (نقاط الياء وذيول الحروف).
+
+        الجدول يضع سطر النص (الصعود + النزول) في منتصف الصف ويقصّ ما يخرج عنه.
+        في Cairo الصعود كبير (١٫٣١ من حجم الخط) والنزول ٠٫٥٧، وأعمق ذيل حرف
+        ٠٫٤٦ ≈ ٨١٪ من النزول. فأدنى ارتفاع = الصعود − النزول + ٢ × ٠٫٨١ × النزول.
+        كان الصف ٢٤ بكسل ثابتاً فتُقصّ نقاط «ي» على تكبير ١٢٥٪ («النهائي» ← «النهائى»).
+        """
+        need = ascent - descent + 2 * 0.81 * descent
+        return max(int(minimum), int(need + 0.999) + padding)
+
+    def table_row_height(self, font_spec, minimum=0):
+        """ارتفاع صف الجدول من قياس الخط الحقيقي على هذه الشاشة (بتكبيرها)"""
+        try:
+            import tkinter.font as tkfont
+            f = tkfont.Font(root=self, font=font_spec)
+            return self.row_height_for(f.metrics("ascent"), f.metrics("descent"), minimum)
+        except Exception:
+            return int(minimum) or 28
 
     def apply_design_system(self):
         """يطبّق التنسيق الموحّد على كل جداول النظام دفعةً واحدة"""
@@ -5898,7 +6057,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             m = self.design_metrics()
             mode = "dark" if ctk.get_appearance_mode() == "Dark" else "light"
             c = self.DESIGN[mode]
-            self._design = dict(c, **m)
+            body = (table_font_family(), m["font"])
+            head = ("Cairo", m["head"], "bold")
+            total = ("Cairo", m["font"] + 1, "bold")
+            row_h = self.table_row_height(body, m["row_h"])
+            self._design = dict(c, **m, mode=mode, body_font=body, head_font=head, total_font=total,
+                                row_height=row_h)
 
             style = ttk.Style()
             try:
@@ -5906,27 +6070,36 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             except Exception:
                 pass
 
+            # حدود الجدول رفيعة بلون الشبكة، بلا حواف ثلاثية الأبعاد قديمة
             style.configure(
                 "Treeview",
                 background=c["bg"], fieldbackground=c["bg"], foreground=c["text"],
-                rowheight=m["row_h"], borderwidth=0, relief="flat",
-                font=("Cairo", m["font"]))
+                rowheight=row_h, borderwidth=1, relief="flat", font=body,
+                bordercolor=c["grid"], lightcolor=c["bg"], darkcolor=c["bg"])
 
             style.configure(
                 "Treeview.Heading",
                 background=c["head_bg"], foreground=c["head_text"],
-                relief="flat", borderwidth=0, padding=(4, m["pad_y"] + 2),
-                font=("Cairo", m["head"], "bold"))
+                # هامش رأسي معتدل: سطر Cairo طويل أصلاً (١٫٨٨ من حجم الخط)
+                relief="flat", borderwidth=0, padding=(6, max(2, m["pad_y"])), font=head,
+                bordercolor=c["head_bg"], lightcolor=c["head_bg"], darkcolor=c["head_bg"])
 
             style.map("Treeview.Heading",
-                      background=[("active", c["head_bg"])],
+                      background=[("active", c["head_hover"])],
                       foreground=[("active", c["head_text"])])
 
             style.map("Treeview",
                       background=[("selected", c["sel_bg"])],
                       foreground=[("selected", c["sel_text"])])
 
-            # شريط التمرير بنفس لغة الألوان
+            # جدول شجرة الحسابات: خط أكبر قليلاً (هرمي يُقرأ كقائمة)
+            style.configure("Accounts.Treeview", font=(table_font_family(), m["font"] + 2),
+                            rowheight=self.table_row_height((table_font_family(), m["font"] + 2), 30))
+
+            # حاويات الجداول بلون الجدول نفسه (يظهر خلف شريط التمرير الحديث)
+            style.configure("TFrame", background=c["bg"])
+
+            # أشرطة التمرير القديمة المتبقية بنفس لغة الألوان
             style.configure("Vertical.TScrollbar", background=c["grid"],
                             troughcolor=c["bg"], borderwidth=0, arrowsize=14)
             style.configure("Horizontal.TScrollbar", background=c["grid"],
@@ -5935,13 +6108,131 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # شريط الإجمالي يتبع النظام أيضاً
             self._totals_style_ready = False
             self.ensure_totals_bar_style()
+
+            # الجداول القائمة: ألوان الوسوم (التظليل، الإجمالي…) تتبع المظهر الجديد فوراً
+            for tree in list(getattr(self, "_styled_trees", ())):
+                try:
+                    if tree.winfo_exists():
+                        self.style_tree_rows(tree)
+                except Exception:
+                    pass
         except Exception as e:
             log_cloud_error("تعذّر تطبيق نظام التصميم", e)
+
+    def make_scrollbar(self, parent, orientation, command):
+        """شريط تمرير حديث (رفيع مستدير يتضح عند المرور) لكل جداول النظام"""
+        c_light, c_dark = self.DESIGN["light"], self.DESIGN["dark"]
+        kw = {"width": 14} if orientation == "vertical" else {"height": 14}
+        return ctk.CTkScrollbar(parent, orientation=orientation, command=command,
+                                bg_color=(c_light["bg"], c_dark["bg"]),
+                                fg_color=(c_light["bg"], c_dark["bg"]), **kw)
+
+    # وسوم ألوان قديمة داخل الجداول ← لون مقروء في كل مظهر (كما في ThemedLabel):
+    # الذهبي والبرتقالي الفاتحان كانا بتباين ٢:١ على الأبيض، والأسود يختفي على الداكن
+    _LEGACY_TREE_COLORS = {"#000000": ("#1f2937", "#e6edf3"), "black": ("#1f2937", "#e6edf3")}
+
+    def normalize_tree_tags(self, tree):
+        """خطوط الوسوم وألوانها من نظام التصميم لا بأحجام ثابتة متفرّقة.
+
+        كانت الجداول تضع لوسومها خطوطاً ثابتة (Cairo 13 أو 14 عريض) فيختلف حجم
+        النص من جدول لآخر ولا يتبع حجم الشاشة، وصفوف العمال كلها عريضة. الآن:
+        العريض يبقى عريضاً بحجم خط الجدول (والإجمالي أكبر بدرجة)، والعادي عادي،
+        والألوان القديمة الباهتة أو السوداء تُترجَم للون مقروء في المظهر الحالي.
+        """
+        d = getattr(self, "_design", None)
+        if not d:
+            return
+        try:
+            names = tree.tk.splitlist(tree.tk.call(tree._w, "tag", "names"))
+        except Exception:
+            names = ()
+        orig = getattr(tree, "_tag_orig", None)
+        if orig is None:
+            orig = tree._tag_orig = {}
+        dark = d.get("mode") == "dark"
+        for tag in names:
+            if tag in ("odd_row", "even_row", "hover_row"):
+                continue
+            try:
+                if tag not in orig:
+                    orig[tag] = (str(tree.tag_configure(tag, "font") or ""),
+                                 str(tree.tag_configure(tag, "foreground") or ""),
+                                 str(tree.tag_configure(tag, "background") or ""))
+                font_spec, fg, bg = orig[tag]
+                if font_spec:
+                    bold = "bold" in font_spec.lower()
+                    if tag == "total_tag":
+                        tree.tag_configure(tag, font=d["total_font"])
+                    else:
+                        # العريض بوجه Cairo Bold الحقيقي (لا تعريض مصطنع لـ SemiBold)
+                        tree.tag_configure(tag, font=("Cairo", d["font"], "bold") if bold
+                                           else d["body_font"])
+                # وسم بخلفية خاصة (شريط الإجمالي الرمادي) يبقى بلونَيه كما صُمّما معاً
+                pair = None if bg else (_LEGACY_TEXT_COLORS.get(fg.lower())
+                                        or self._LEGACY_TREE_COLORS.get(fg.lower()))
+                if pair:
+                    tree.tag_configure(tag, foreground=pair[1] if dark else pair[0])
+            except Exception:
+                continue
+
+    def enable_row_hover(self, tree):
+        """تظليل خفيف للصف تحت المؤشر: يسهّل تتبّع السطر عبر الجداول العريضة.
+
+        يُستدعى فور إنشاء الجدول قبل أي وسم آخر: في ttk الوسم الأسبق إنشاءً أعلى
+        أولوية، فيغلب التظليلُ لونَ الصفوف المتناوبة ولا يغيّر لون النص.
+        """
+        if getattr(tree, "_hover_bound", False):
+            return
+        c = getattr(self, "_design", None) or self.DESIGN["light"]
+        try:
+            tree.tag_configure("hover_row", background=c["hover"])
+        except Exception:
+            return
+        state = {"iid": None}
+
+        def clear(_e=None):
+            iid, state["iid"] = state["iid"], None
+            try:
+                if iid and tree.exists(iid):
+                    tree.item(iid, tags=tuple(t for t in (tree.item(iid, "tags") or ()) if t != "hover_row"))
+            except Exception:
+                pass
+
+        def on_motion(e):
+            try:
+                iid = tree.identify_row(e.y)
+            except Exception:
+                return
+            if iid == state["iid"]:
+                return
+            clear()
+            if iid:
+                try:
+                    tags = tuple(tree.item(iid, "tags") or ())
+                    tree.item(iid, tags=tags + ("hover_row",))
+                    state["iid"] = iid
+                except Exception:
+                    pass
+
+        tree.bind("<Motion>", on_motion, add="+")
+        tree.bind("<Leave>", clear, add="+")
+        tree._hover_bound = True
+        registry = getattr(self, "_styled_trees", None)
+        if registry is None:
+            import weakref
+            registry = self._styled_trees = weakref.WeakSet()
+        try:
+            registry.add(tree)
+        except Exception:
+            pass
 
     def style_tree_rows(self, tree):
         """صفوف متناوبة اللون: تسهّل تتبّع السطر الواحد عبر جدول عريض"""
         try:
             c = getattr(self, "_design", self.DESIGN["light"])
+            if getattr(tree, "_hover_bound", False):
+                tree.tag_configure("hover_row", background=c["hover"])
+            self.normalize_tree_tags(tree)
             tree.tag_configure("odd_row", background=c["bg"])
             tree.tag_configure("even_row", background=c["row_alt"])
             for i, iid in enumerate(tree.get_children()):
@@ -6000,11 +6291,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.apply_design_system()
 
         tree = ttk.Treeview(parent, columns=columns, show="headings", height=height)
+        # التظليل تحت المؤشر أولاً: أول وسم يُنشأ هو الأعلى أولوية في ttk
+        self.enable_row_hover(tree)
         for col in columns:
             tree.heading(col, text=self.wrap_header(col))
             tree.column(col, anchor="center")
 
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        vsb = self.make_scrollbar(parent, "vertical", tree.yview)
         tree.configure(yscrollcommand=vsb.set)
 
         vsb.pack(side="right", fill="y")
@@ -6030,19 +6323,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # وقبضاً للكاستنج نفسه بهذين الاسمين، فيزيد صرفها الفاقد الحالي ويُخصم قبضها منه:
     CAST_RETURN_NAME = "مسترجع الفاقد"      # عملية «مسترجع» (بلا صف): صرفها وقبضها
     TREE_RETURN_NAME = "مسترجع الأشجار"     # مسترجع أشجار الصف: قبض من فاقد صفه
-    # الليزر في «بوليش 1»: مثل القبض تماماً (قبض تلميع بف) يُخصم من صرف صفه، ويُسجَّل
-    # بهذا الاسم ليظهر في عموده الخاص
+    # الليزر في «بوليش 1»: مثل الصرف تماماً (صرف تلميع بف) يُضاف إلى فاقد صفه، ويُسجَّل
+    # بهذا الاسم ليظهر في عموده الخاص (كان قبضاً في 1.46.0 — migrate_row_extras يصحّحه)
     LASER_NAME = "ليزر البوليش"
 
     def stage_row_extra(self, qabd_type, recover_name=None):
-        """القبض الثاني المرتبط بصفوف قسم: (اسم حركته، عنوان خانته وعموده) أو None.
-          • الكاستنج ← «مسترجع الأشجار» (في الشاشة التي تعرض المسترجع)
-          • بوليش 1  ← «الليزر»
-        كلاهما قبضٌ للقسم على رقم الصف نفسه: يُخصم من فاقده الحالي كأي قبض."""
+        """الحركة الثانية المرتبطة بصفوف قسم: (اسم حركتها، عنوان خانتها وعمودها، أثرها) أو None.
+          • الكاستنج ← «مسترجع الأشجار» (في الشاشة التي تعرض المسترجع): قبضٌ، أثره −1
+          • بوليش 1  ← «الليزر»: صرفٌ، أثره +1
+        الأثر على الخياس والفاقد الحالي للقسم: الخياس = الصرف − القبض + الأثر × قيمتها."""
         if qabd_type == "قبض كاستنج":
-            return (self.TREE_RETURN_NAME, "مسترجع الأشجار") if recover_name else None
+            return (self.TREE_RETURN_NAME, "مسترجع الأشجار", -1) if recover_name else None
         if qabd_type == "قبض تلميع بف":
-            return (self.LASER_NAME, "الليزر")
+            return (self.LASER_NAME, "الليزر", 1)
         return None
 
     def is_row_recovery(self, inv, recover_name):
@@ -6065,7 +6358,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                        صرفها تحت الصرف، وقبضها تحت القبض.
         الخياس = الصرف − القبض − مسترجع الأشجار: كلها من الفاقد الحالي نفسه، ولا صلة لأيٍّ
         منها بحساب «مسترجع» المرحلة. والليزر في «بوليش 1» مثل مسترجع الأشجار تماماً
-        (القبض الثاني للصف — stage_row_extra) ويُجمع في الخانة نفسها g["مسترجع"].
+        (الحركة الثانية للصف — stage_row_extra) تُجمع في الخانة نفسها g["مسترجع"]، لكنه صرفٌ
+        يُضاف إلى الخياس (أثره +1) لا قبضٌ يُخصم منه.
         """
         recs = [inv for inv in self.period_invoices(self.current_display_month)
                 if inv.get("settled_status") == "ACTIVE" and inv.get("النوع") in (madin_type, qabd_type)]
@@ -6159,9 +6453,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if op_filter == "مسترجع":
             # عمليات المسترجع وحدها، والإجماليات لها وحدها
             rows = [r for r in rows if r[2].get("op") == "مسترجع"]
+        # أثر الحركة الثانية: مسترجع الأشجار قبضٌ (−1)، والليزر صرفٌ (+1)
+        extra_sign = extra[2] if extra else -1
         for row_num, name, g in rows:
-            # الخياس = الفاقد الحالي للصف: صرف − قبض − مسترجع الأشجار
-            khayas = round(g["مدين"] - g["دائن"] - g["مسترجع"], 2)
+            # الخياس = الفاقد الحالي للصف: صرف − قبض − مسترجع الأشجار (أو + الليزر)
+            khayas = round(g["مدين"] - g["دائن"] + extra_sign * g["مسترجع"], 2)
             tot_madin = round(tot_madin + g["مدين"], 2)
             tot_daen = round(tot_daen + g["دائن"], 2)
             tot_rec = round(tot_rec + g["مسترجع"], 2)
@@ -6193,7 +6489,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             item_id = tree.insert("", "end", values=tuple(vals), tags=tags)
             rows_map[item_id] = g["ids"]
 
-        tot_khayas = round(tot_madin - tot_daen - tot_rec, 2)
+        tot_khayas = round(tot_madin - tot_daen + extra_sign * tot_rec, 2)
         if rows_map:
             tvals = ["إجمالي الشهر"] + (["-"] if (recover_name or show_name) else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
@@ -6324,7 +6620,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ref_dt = ref["التاريخ"]
         ref_name = ref["الاسم"]
         ref_row = ref.get("row_number", "") or ""
-        sarf_inv = next((i for i in invs if i["النوع"] == madin_type), None)
+        # الليزر صرفٌ أيضاً: لا يُخلط بصرف الصف نفسه
+        sarf_inv = next((i for i in invs if i["النوع"] == madin_type and i is not rec_inv), None)
         # مسترجع الأشجار قبضٌ أيضاً: لا يُخلط بقبض الصف نفسه
         qabd_inv = next((i for i in invs if i["النوع"] == qabd_type and i is not rec_inv), None)
         base_inv = sarf_inv or qabd_inv
@@ -6451,15 +6748,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
             if row_extra:
                 # مسترجع الأشجار/الليزر: قبض من فاقد الصف نفسه (لا صلة له بحساب المسترجع)
+                extra_type = madin_type if row_extra[2] > 0 else qabd_type
                 if new_rec > 0:
                     if rec_inv:
-                        rec_inv.update({"الوزن": new_rec, "row_number": new_row_no, "التاريخ": new_dt})
+                        rec_inv.update({"الوزن": new_rec, "النوع": extra_type,
+                                        "row_number": new_row_no, "التاريخ": new_dt})
                         if not self.save_invoice_to_db(rec_inv["رقم الفاتورة"], rec_inv):
                             any_blocked = True
                     else:
                         self.invoice_counter += 1
                         inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt,
-                                    "الاسم": row_extra[0], "النوع": qabd_type, "الوزن": new_rec,
+                                    "الاسم": row_extra[0], "النوع": extra_type, "الوزن": new_rec,
                                     "البيان": row_extra[0], "settled_status": "ACTIVE", "trees_count": 0.0,
                                     "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no}
                         self.invoices[self.invoice_counter] = inv_data
@@ -6723,8 +7022,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             logo_img = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64)))
             w0, h0 = logo_img.size
             dw = int(200 * scale)
-            mini = ctk.CTkImage(light_image=logo_img, dark_image=logo_img,
-                                size=(dw, max(1, round(dw * h0 / w0))))
+            mini = crisp_ctk_image(logo_img, logo_img, (dw, max(1, round(dw * h0 / w0))), self)
             ctk.CTkLabel(head, image=mini, text="").pack()
         except Exception:
             ctk.CTkLabel(head, text="جاديت", font=("Cairo", 20, "bold"),
@@ -6922,7 +7220,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.lbl_gems_stones_balance = ctk.CTkLabel(treasury_display_frame, text="", font=("Cairo", 11))
         self.lbl_diamond_balance = ctk.CTkLabel(treasury_display_frame, text="", font=("Cairo", 11))
 
-        self.btn_theme = ctk.CTkButton(top_frame, text="🎨 المظهر", width=108, height=36, corner_radius=10, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
+        self.btn_theme = ctk.CTkButton(top_frame, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=36, corner_radius=10, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
         self.btn_theme.pack(side="right", padx=8, pady=6)
 
         # صف أدوات واحد: كل الأزرار جنباً إلى جنب أفقياً بلا تبعثر رأسي
@@ -7277,7 +7575,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # حجم معتدل: كبير بما يكفي ليبرز، وصغير بما يكفي ألا يطغى
             disp_w = max(240, min(420, int(avail * 0.26)))
             disp_h = round(disp_w * h / w)
-            ctk_logo = ctk.CTkImage(light_image=logo_img, dark_image=dark_logo or logo_img, size=(disp_w, disp_h))
+            # حادّة على كل تكبير: مصغّرة مسبقاً بفلتر LANCZOS لبكسلات العرض الفعلية
+            ctk_logo = crisp_ctk_image(logo_img, dark_logo or logo_img, (disp_w, disp_h), self)
             ctk.CTkLabel(logo_card, image=ctk_logo, text="",
                          fg_color=("#ffffff", "#12161c")).place(
                 relx=0.5, rely=0.5, anchor="center")
@@ -9232,8 +9531,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def submit_polish_buff_op(self):
         """ترحيل حركة «بوليش 1»: الصرف، والقبض، والليزر لصف واحد.
 
-        الليزر قبضٌ للقسم («قبض تلميع بف») باسم «ليزر البوليش» على رقم الصف نفسه:
-        يُخصم من الصرف في الخياس والفاقد الحالي والخزينة كأي قبض، ويظهر في عموده.
+        الليزر صرفٌ للقسم («صرف تلميع بف») باسم «ليزر البوليش» على رقم الصف نفسه:
+        يُضاف إلى الخياس والفاقد الحالي ويخرج من الخزينة كأي صرف، ويظهر في عموده.
         """
         date_val = self.pbuff_date.get().strip()
         name = "التلميع/البف"
@@ -9263,7 +9562,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return inv.get("الاسم") == self.LASER_NAME
 
         skipped = []
-        if sarf_v > 0 and self.stage_row_taken(row_num, lambda i: i.get("النوع") == "صرف تلميع بف"):
+        # الليزر صرفٌ أيضاً، فلا يُعدّ صرفاً للصف نفسه (ولا العكس)
+        if sarf_v > 0 and self.stage_row_taken(
+                row_num, lambda i: i.get("النوع") == "صرف تلميع بف" and not is_laser(i)):
             skipped.append("الصرف")
             sarf_v = 0.0
         if qabd_v > 0 and self.stage_row_taken(
@@ -9271,7 +9572,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             skipped.append("القبض")
             qabd_v = 0.0
         if laser_v > 0 and self.stage_row_taken(
-                row_num, lambda i: i.get("النوع") == "قبض تلميع بف" and is_laser(i)):
+                row_num, lambda i: i.get("النوع") in ("صرف تلميع بف", "قبض تلميع بف") and is_laser(i)):
             skipped.append("الليزر")
             laser_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
@@ -9285,7 +9586,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
         lines = [(sarf_v, "صرف تلميع بف", name, note),
                  (qabd_v, "قبض تلميع بف", name, note),
-                 (laser_v, "قبض تلميع بف", self.LASER_NAME,
+                 (laser_v, "صرف تلميع بف", self.LASER_NAME,
                   f"{self.LASER_NAME} — {note}" if note else self.LASER_NAME)]
         saved_any = False
         for value, op_type, who, bayan in lines:
@@ -12258,7 +12559,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             holder.pack(fill="both", expand=True)
             self._inquiry_holder = holder
 
-            self._inquiry_hsb = ttk.Scrollbar(holder, orient="horizontal")
+            self._inquiry_hsb = self.make_scrollbar(holder, "horizontal", None)
             self._inquiry_hsb.pack(side="bottom", fill="x")
 
             self._inquiry_tree_container = ctk.CTkFrame(holder, fg_color="transparent")
@@ -12768,11 +13069,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         cols = ("رقم الفاتورة", "التاريخ", "الاسم", "النوع", "الوزن", "البيان")
         tree = ttk.Treeview(t_frame, columns=cols, show="headings", height=9)
+        self.enable_row_hover(tree)
         for c in cols:
             tree.heading(c, text=c)
             tree.column(c, width=160 if c in ["التاريخ", "البيان"] else 120, anchor="center")
         
-        vsb = ttk.Scrollbar(t_frame, orient="vertical", command=tree.yview)
+        vsb = self.make_scrollbar(t_frame, "vertical", tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         tree.pack(side="left", fill="both", expand=True)
@@ -13442,7 +13744,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     t = inv.get("النوع")
                     who = inv.get("الاسم")
                     if t == madin_type:
-                        label = "صرف مسترجع" if who == self.CAST_RETURN_NAME else "صرف"
+                        label = ("صرف مسترجع" if who == self.CAST_RETURN_NAME
+                                 else "الليزر" if who == self.LASER_NAME else "صرف")
                         add(inv, inv["الوزن"], 0.0, inv.get("البيان") or label)
                     elif qabd_type and t == qabd_type:
                         label = (self.TREE_RETURN_NAME if who == self.TREE_RETURN_NAME
@@ -14148,7 +14451,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_submit_in.pack(pady=8)
 
         cols_in = ("رقم الفاتورة", "التاريخ", "الاسم", "النوع", "الوزن", "العيار", "وزن 18", "البيان")
-        self.tree_in = ttk.Treeview(main_frame, columns=cols_in, show="headings", height=16)
+        # من مصنع الجداول الموحّد: شريط تمرير حديث وتظليل الصف (كان بلا شريط تمرير إطلاقاً)
+        in_table_frame = ttk.Frame(main_frame)
+        self.tree_in = self.create_standard_treeview(in_table_frame, cols_in, height=16)
         self.tree_in.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
         for c in cols_in:
             self.tree_in.heading(c, text=c)
@@ -14165,7 +14470,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_edit_in = ctk.CTkButton(table_top_in, text="تعديل الحركة المحددة ✏️", font=("Cairo", 14, "bold"), fg_color="#b8860b", hover_color="#daa520", width=170, height=32, command=self.edit_selected_inout_row)
         btn_edit_in.pack(side="left", padx=5)
 
-        self.tree_in.pack(fill="both", expand=True, padx=15, pady=(2, 4))
+        in_table_frame.pack(fill="both", expand=True, padx=15, pady=(2, 4))
         self.tree_in.bind("<Double-1>", lambda e: self.edit_inout_record(self.tree_in))
 
         ctk.CTkLabel(main_frame, text="اضغط مرتين على أي سطر لتعديله، أو حدّده واضغط معاينة", font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 4))
@@ -14451,6 +14756,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if self.tree_in.get_children():
             self.tree_in.insert("", "end", iid="total_in", values=("-", "-", "-", "الإجمالي", "-", "-", f"{tot_gold_18:.2f}", f"فصوص وأحجار {tot_gems_stones:.2f} | ماس {tot_diamond:.2f}"), tags=("total_tag",))
+        # الأعمدة بعرض الجدول تماماً، وصفوف متناوبة، وخطوط الوسوم من نظام التصميم
+        self.fit_columns_to_content(self.tree_in, "inbound", min_width=56, max_width=260)
 
         if hasattr(self, 'lbl_in_summary'):
             self.lbl_in_summary.configure(text=f"إجمالي الوارد: ذهب (صافي 18) {tot_gold_18:.2f} جم | فصوص وأحجار {tot_gems_stones:.2f} | ماس {tot_diamond:.2f}")
@@ -17667,20 +17974,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree_frame = ttk.Frame(tab)
         tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
-        self.coa_tree = ttk.Treeview(tree_frame, show="tree", selectmode="browse")
+        # نمطها الخاص Accounts.Treeview (خط أكبر قليلاً): كانت تغيّر خط **كل** جداول
+        # النظام وارتفاع صفوفها بمجرد فتح هذه الشاشة
+        self.coa_tree = ttk.Treeview(tree_frame, show="tree", selectmode="browse",
+                                     style="Accounts.Treeview")
+        self.enable_row_hover(self.coa_tree)
         self.coa_tree.pack(side="right", fill="both", expand=True)
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.coa_tree.yview)
+        vsb = self.make_scrollbar(tree_frame, "vertical", self.coa_tree.yview)
         vsb.pack(side="left", fill="y")
         self.coa_tree.configure(yscrollcommand=vsb.set)
+        # ألوانها القديمة تُترجَم للون مقروء في كل مظهر (normalize_tree_tags)
         self.coa_tree.tag_configure("group", foreground="#d4af37")
         self.coa_tree.tag_configure("leaf", foreground="#1f77b4")
-
-        style = ttk.Style()
-        try:
-            style.configure("Treeview", font=("Cairo", 13), rowheight=30)
-            style.configure("Treeview.Heading", font=("Cairo", 13, "bold"))
-        except Exception:
-            pass
+        self.style_tree_rows(self.coa_tree)
 
         self.coa_tree.bind("<Double-1>", self.on_coa_double_click)
 
@@ -19895,7 +20201,9 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                          font=("Cairo", 14)).pack(pady=30)
             return
         for c in clients:
-            row = ctk.CTkFrame(self.list_frame, fg_color="#2c3e50", corner_radius=10)
+            # بطاقة فاتحة بإطار واضح ونص داكن (كانت كحلية بنص داكن — تباين ١٫٣:١ لا يُقرأ)
+            row = ctk.CTkFrame(self.list_frame, fg_color=(UI["surface"], "#1B222B"), corner_radius=12,
+                               border_width=1, border_color=(UI["line"], "#323B47"))
             row.pack(fill="x", pady=6, padx=5)
             status = "🟢 نشط" if c.get("is_active") else "🔴 موقوف"
             can_edit = bool(c.get("can_edit"))
@@ -19921,7 +20229,8 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             if not self.restricted:
                 edit_status = "✏️ التعديل مفتوح" if can_edit else "🔒 التعديل مقفول"
                 label_text += f"   |   {edit_status}"
-            ctk.CTkLabel(row, text=label_text, font=("Cairo", 14, "bold"), justify="right").pack(side="right", padx=15, pady=10)
+            ctk.CTkLabel(row, text=label_text, font=("Cairo", 14, "bold"), justify="right",
+                         text_color=(UI["ink"], "#E6EDF3")).pack(side="right", padx=15, pady=10)
             ctk.CTkButton(row, text="فتح الحساب (دخول كالعميل) 🔑", font=("Cairo", 13, "bold"),
                           fg_color="#d4af37", hover_color="#b8952e", text_color="black",
                           command=lambda cid=c["client_id"], name=c["business_name"]: self.open_as_client(cid, name)
@@ -20030,7 +20339,8 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 ctk.CTkLabel(list_frame, text="لا يوجد مدراء مساعدون حالياً", font=("Cairo", 13)).pack(pady=20)
                 return
             for a in admins:
-                row = ctk.CTkFrame(list_frame, fg_color="#2c3e50", corner_radius=8)
+                row = ctk.CTkFrame(list_frame, fg_color=(UI["surface"], "#1B222B"), corner_radius=10,
+                                   border_width=1, border_color=(UI["line"], "#323B47"))
                 row.pack(fill="x", pady=4, padx=3)
                 ctk.CTkLabel(row, text=a.get("username", ""), font=("Cairo", 14, "bold")).pack(side="right", padx=12, pady=10)
                 ctk.CTkButton(row, text="🗑️ حذف", font=("Cairo", 12, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=80,

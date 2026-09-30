@@ -44,7 +44,7 @@ LOCAL_MODULES = ("cloud_sync", "sync_down", "supabase_api", "gold_price")
 DATA_FILES = ("jadeite.ico", "jadeite_logo.png")
 # مجلدات تُضمَّن كما هي (خط Cairo العربي للواجهة)
 DATA_DIRS = ("fonts",)
-FONT_FILES = ("fonts/Cairo-Regular.ttf", "fonts/Cairo-Bold.ttf")
+FONT_FILES = ("fonts/Cairo-Regular.ttf", "fonts/Cairo-Bold.ttf", "fonts/Cairo-SemiBold.ttf")
 # مكتبات خارجية لازمة للتشغيل: (اسم الاستيراد، اسم الحزمة في pip)
 RUNTIME_PACKAGES = (("customtkinter", "customtkinter"), ("PIL", "Pillow"),
                     ("reportlab", "reportlab"), ("arabic_reshaper", "arabic-reshaper"),
@@ -104,8 +104,9 @@ def main():
 
     # ---------- ١) البيئة والملفات ----------
     step(1, "فحص البيئة والملفات")
-    if sys.version_info < (3, 9):
-        fail(f"يلزم بايثون 3.9 أو أحدث (الحالي {sys.version.split()[0]})")
+    # Pillow 12 وما بعده يتطلّب بايثون 3.10 على الأقل؛ والمجرَّب مع البرنامج 3.12
+    if sys.version_info < (3, 10):
+        fail(f"يلزم بايثون 3.10 أو أحدث — ويُفضّل 3.12 (الحالي {sys.version.split()[0]})")
     ok(f"بايثون {sys.version.split()[0]} ({'64' if sys.maxsize > 2**32 else '32'}-bit)")
     try:
         __import__("tkinter")
@@ -125,7 +126,9 @@ def main():
         print("   (تُخطّيت بطلبك)")
     else:
         run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"], "تحديث pip")
-        run([sys.executable, "-m", "pip", "install", "-r", "requirements-desktop.txt"], "تثبيت المكتبات")
+        # --upgrade: كل بناء بأحدث الإصدارات المتوافقة (لا تبقى مكتبة قديمة من بناء سابق)
+        run([sys.executable, "-m", "pip", "install", "--upgrade", "-r", "requirements-desktop.txt"],
+            "تثبيت المكتبات وتحديثها")
     absent = [pip for mod, pip in RUNTIME_PACKAGES + (("PyInstaller", "pyinstaller"),)
               if importlib.util.find_spec(mod) is None]
     if absent:

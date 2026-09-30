@@ -108,7 +108,12 @@ print("✔ النقر المزدوج يعرض كشف الصف بتاريخه و�
 # ═══ شريط الإجمالي لا ينكمش ═══
 sticky = ast.get_source_segment(src, next(x for x in cls.body if isinstance(x, ast.FunctionDef)
                                           and x.name == "create_sticky_total_tree"))
-assert "height=40" in sticky and "pack_propagate(False)" in sticky
-print("✔ شريط الإجمالي بارتفاع ثابت ٤٠ ومنع انتشار — لا يمكن أن ينكمش فيختفي")
+# الارتفاع ثابت لكنه يُحسب من قياس خط الإجمالي (٣٤ على الأقل + ٦ = ٤٠ على الأقل)
+# فلا يقصّ الخط عند تكبير ويندوز ١٢٥٪/١٥٠٪
+ens = ast.get_source_segment(src, next(x for x in cls.body if isinstance(x, ast.FunctionDef)
+                                       and x.name == "ensure_totals_bar_style"))
+assert "_totals_row_h" in sticky and "+ 6" in sticky and "pack_propagate(False)" in sticky
+assert "table_row_height(total_font, 34)" in ens
+print("✔ شريط الإجمالي بارتفاع ثابت (من قياس خطه، ٤٠ على الأقل) ومنع انتشار — لا يمكن أن ينكمش فيختفي")
 
 print("\n✅ كل الاختبارات نجحت")

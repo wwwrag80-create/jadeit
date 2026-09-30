@@ -118,8 +118,9 @@ assert "skipped.append(\"مسترجع الأشجار\")" in cast
 print("✔ الترحيل: مسترجع الأشجار قبضٌ للكاستنج برقم الصف، وخانته مرة واحدة لكل صف")
 rst = seg("render_stage_ops_table")
 assert '("صرف", "قبض") + rec_col + ("الخياس",)' in rst and "الصافي" not in rst
-assert 'khayas = round(g["مدين"] - g["دائن"] - g["مسترجع"], 2)' in rst
-print("✔ عمود «مسترجع الأشجار» بعد القبض ويُخصم من الخياس (لا عمود صافي منفصل)")
+assert 'khayas = round(g["مدين"] - g["دائن"] + extra_sign * g["مسترجع"], 2)' in rst
+assert 'extra_sign = extra[2] if extra else -1' in rst
+print("✔ عمود «مسترجع الأشجار» بعد القبض ويُخصم من الخياس (أثره −1، لا عمود صافي منفصل)")
 assert 'recover_name=recover_name' in seg("edit_selected_casting_row")
 assert "ent_rec" in seg("open_stage_op_edit_dialog")
 print("✔ نافذة التعديل تعرض مسترجع الأشجار وتحفظه")

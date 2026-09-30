@@ -1,9 +1,13 @@
 # مكتبات برنامج جاديت لسطح المكتب (نسخة العميل ونسخة المدير) + أداة البناء
-# تُثبَّت تلقائياً بواسطة build_client.bat / build_admin.bat داخل بيئة بناء مستقلة
-customtkinter>=5.2,<6
-Pillow>=10.0
-reportlab>=4.0
-arabic-reshaper>=3.0
-python-bidi>=0.4
-supabase>=2.0,<3
-pyinstaller>=6.0
+# تُثبَّت تلقائياً بواسطة build_client.bat / build_admin.bat داخل بيئة بناء مستقلة،
+# وتُحدَّث في كل بناء لأحدث إصدار متوافق (pip install --upgrade). الحدود العليا
+# تمنع إصداراً رئيسياً جديداً لم يُختبر مع البرنامج بعد.
+# مجرَّبة مع البرنامج: customtkinter 6.0.0 · Pillow 12.3 · reportlab 5.0.1 ·
+# supabase 2.31 · pyinstaller 6.22 · python-bidi 0.6.11 · arabic-reshaper 3.0.1
+customtkinter>=6.0,<7
+Pillow>=12.0,<13
+reportlab>=5.0,<6
+arabic-reshaper>=3.0.1,<4
+python-bidi>=0.6,<1
+supabase>=2.30,<3
+pyinstaller>=6.20,<7
