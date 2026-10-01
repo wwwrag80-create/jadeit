@@ -68,6 +68,8 @@ CHECKS = [
     ("نظام التصميم المحدَّث",  [PY, "test_design_v2.py", TARGET]),
     ("اللوحة الهادئة الموحّدة", [PY, "test_calm_palette.py", TARGET]),
     ("المراجعة الشاملة",      [PY, "test_full_review.py", TARGET]),
+    ("التراجع الخفيف",        [PY, "test_undo_log.py", TARGET]),
+    ("فحص سلامة الحسابات",    [PY, "test_integrity_check.py", TARGET]),
 ]
 
 failed = []

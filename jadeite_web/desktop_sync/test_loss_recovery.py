@@ -57,7 +57,7 @@ METHODS = [
     "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
-    "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db",
+    "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "_undo_note_row", "invoice_from_row",
     # الإقفال والبيانات القديمة
     "close_khayas_box", "close_split_khayas_box", "_post_closing_entry", "neutralize_auto_recovery_closings",
     "migrate_casting_returns",
@@ -72,11 +72,13 @@ METHODS = [
     # كشف الحساب والتراجع عن الإقفال
     "is_debit_nature_account", "get_account_ledger_rows", "_account_ledger_rows_all",
     "get_box_closing_entries",
+    # خطوات التراجع (الإقفال يفتح خطوة)
+    "push_undo", "_close_undo_step", "update_undo_buttons", "undo_step_label", "can_undo",
 ]
 ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
          "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME",
-         "LASER_NAME", "ACCOUNT_LABELS"]
+         "LASER_NAME", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS"]
 
 EXTRA = '''
 def check_edit_permission(self): return True

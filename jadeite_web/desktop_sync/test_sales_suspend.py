@@ -48,7 +48,7 @@ M9 = "2026-09"
 METHODS = [
     # البيان والترحيل والعمليات
     "sale_bayan", "sale_note_of", "post_sale_rows", "get_sale_invoice_groups", "get_sale_invoice_records",
-    "sale_records_to_rows", "commit_sale_invoice", "save_invoice_to_db", "mark_backup_dirty",
+    "sale_records_to_rows", "commit_sale_invoice", "save_invoice_to_db", "_undo_note_row", "invoice_from_row", "mark_backup_dirty",
     "inv_period", "inv_in_period", "invoices_by_period", "period_invoices",
     # المعلقات
     "list_suspended_sales", "get_suspended_sale", "save_suspended_sale", "delete_suspended_sale",

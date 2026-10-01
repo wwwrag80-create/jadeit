@@ -4537,6 +4537,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             conn.commit()
 
     def load_data_from_db(self):
+        # بيانات أُعيد تحميلها (استعادة نسخة مثلاً): خطوات التراجع السابقة لم تعد تخصّها
+        self._undo_stack, self._undo_open = [], None
         self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
         self.invoices = {}
         self.opening_balance = 0.0
@@ -4548,19 +4550,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 if row[1] in self.categories:
                     self.categories[row[1]].append(row[0])
 
-            cursor.execute("SELECT invoice_id, date_time, name, op_type, weight, before_w, after_w, note, settled_status, trees_count, set_number, row_number, manual_no, period FROM invoices")
+            cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices")
             for row in cursor.fetchall():
-                inv_id = row[0]
-                self.invoices[inv_id] = {
-                    "رقم الفاتورة": inv_id, "التاريخ": row[1], "الاسم": row[2],
-                    "النوع": row[3], "الوزن": row[4], "قبل": row[5], "بعد": row[6], "البيان": row[7],
-                    "settled_status": row[8], "trees_count": row[9] if len(row)>9 and row[9] else 0.0,
-                    "رقم الفاتورة اليدوي": row[12] if len(row) > 12 and row[12] else "",
-                    "set_number": row[10] if len(row)>10 and row[10] else "",
-                    "row_number": row[11] if len(row)>11 and row[11] else "",
-                    # الفترة المحاسبية صراحةً؛ وتُشتق من التاريخ لو كانت فارغة
-                    "period": (row[13] if len(row) > 13 and row[13] else str(row[1] or "")[:7])
-                }
+                self.invoices[row[0]] = self.invoice_from_row(row)
                 if row[3] == "رصيد افتتاحي":
                     self.opening_balance = row[4]
                     
@@ -4728,6 +4720,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             existing_row = cursor.fetchone()
             existing_manual = (existing_row[12] if existing_row and len(existing_row) > 12 and existing_row[12] else "")
             existing_period = (existing_row[13] if existing_row and len(existing_row) > 13 and existing_row[13] else "")
+            # داخل خطوة تراجع مفتوحة (حذف/إقفال): صورة الحركة قبل التغيير
+            self._undo_note_row(inv_id, existing_row)
 
             # ختم الفترة المحاسبية مركزياً لكل الحركات:
             #   • حركة جديدة  → الفترة المعروضة وقت التسجيل
@@ -4740,16 +4734,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # فاتورة موجودة بالفعل بقاعدة البيانات (تعديل على عملية سابقة) ومقفول عليه التعديل؟
             if existing_row and not self.check_edit_permission():
                 # نرجّع الذاكرة لنفس القيمة المخزّنة فعلياً بقاعدة البيانات (بدون أي تغيير وهمي)
-                self.invoices[inv_id] = {
-                    "رقم الفاتورة": existing_row[0], "التاريخ": existing_row[1], "الاسم": existing_row[2],
-                    "النوع": existing_row[3], "الوزن": existing_row[4], "قبل": existing_row[5], "بعد": existing_row[6],
-                    "البيان": existing_row[7], "settled_status": existing_row[8],
-                    "trees_count": existing_row[9] if existing_row[9] else 0.0,
-                    "set_number": existing_row[10] if existing_row[10] else "",
-                    "row_number": existing_row[11] if existing_row[11] else "",
-                    "رقم الفاتورة اليدوي": existing_manual,
-                    "period": existing_period or str(existing_row[1] or "")[:7]
-                }
+                self.invoices[inv_id] = self.invoice_from_row(existing_row)
                 # كائن حركة جديد مكان القديم: فهارس الأسماء والفترات تُبنى من جديد
                 self._inv_version = getattr(self, "_inv_version", 0) + 1
                 return False
@@ -4773,6 +4758,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return False
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            row = cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices WHERE invoice_id = ?",
+                                 (inv_id,)).fetchone()
+            if row:
+                # كل حذف قابل للتراجع: يفتح خطوة (أو ينضمّ لخطوة الضغطة نفسها)
+                if getattr(self, "_undo_open", None) is None:
+                    self.push_undo(f"حذف حركة ({row[2]} — {row[3]})", auto=True)
+                self._undo_note_row(inv_id, row, deleted=True)
             cursor.execute("DELETE FROM invoices WHERE invoice_id = ?", (inv_id,))
             conn.commit()
         if inv_id in self.invoices:
@@ -4792,13 +4784,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not self.check_delete_permission():
             return False
 
-        # لقطة للتراجع قبل أي تغيير
+        # خطوة تراجع قبل أي تغيير: الاسم وحركاته المحذوفة (إن حُذفت) تعود معاً
         self.push_undo(f"حذف الاسم ({worker_name})")
+        self._undo_note_name(worker_name, category)
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM names WHERE name = ? AND category = ?", (worker_name, category))
             if not keep_transactions:
+                for row in cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices "
+                                          "WHERE name = ? AND settled_status = 'ACTIVE'", (worker_name,)).fetchall():
+                    self._undo_note_row(row[0], row, deleted=True)
                 cursor.execute("DELETE FROM invoices WHERE name = ? AND settled_status = 'ACTIVE'",
                                (worker_name,))
             conn.commit()
@@ -4816,29 +4812,91 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # =====================================================================
     # --- التراجع عن آخر خطوة (مثل Ctrl+Z) ---
     # =====================================================================
+    # سجل خفيف لكل خطوة: الصورة السابقة **من القاعدة** لكل حركة تُحفظ أو تُحذف
+    # داخل الخطوة، والأسماء المحذوفة — لا نسخة كاملة من البيانات (كانت اللقطة
+    # الكاملة تتضخّم بعشرات الميغابايت مع آلاف الحركات).
     UNDO_LIMIT = 20
+    INVOICE_COLUMNS = ("invoice_id, date_time, name, op_type, weight, before_w, after_w, note, "
+                       "settled_status, trees_count, set_number, row_number, manual_no, period")
 
-    def push_undo(self, label):
-        """يحفظ لقطة من الحالة قبل عملية قابلة للتراجع.
+    @staticmethod
+    def invoice_from_row(row):
+        """صف جدول الحركات ← حركة في الذاكرة (المصدر الواحد للتحويل عند التحميل والتراجع)"""
+        return {
+            "رقم الفاتورة": row[0], "التاريخ": row[1], "الاسم": row[2],
+            "النوع": row[3], "الوزن": row[4], "قبل": row[5], "بعد": row[6], "البيان": row[7],
+            "settled_status": row[8], "trees_count": row[9] if len(row) > 9 and row[9] else 0.0,
+            "رقم الفاتورة اليدوي": row[12] if len(row) > 12 and row[12] else "",
+            "set_number": row[10] if len(row) > 10 and row[10] else "",
+            "row_number": row[11] if len(row) > 11 and row[11] else "",
+            # الفترة المحاسبية صراحةً؛ وتُشتق من التاريخ لو كانت فارغة
+            "period": (row[13] if len(row) > 13 and row[13] else str(row[1] or "")[:7]),
+        }
 
-        اللقطة نسخة من الحركات وشجرة الأسماء — وهما مصدر كل الأرقام في النظام،
-        فاستعادتهما تُرجع الوضع كما كان تماماً.
+    def push_undo(self, label, auto=False):
+        """يفتح خطوة تراجع باسمها. كل حركة تُحفظ أو تُحذف بعدها تُسجَّل صورتها
+        السابقة، وتُغلق الخطوة تلقائياً بانتهاء الحدث الجاري (الضغطة نفسها) —
+        فالترحيل العادي بعدها لا يدخل فيها.
+
+        auto=True: خطوة فتحها الحذف نفسه (اسمها يُشتق مما سُجّل فيها).
+        خطوة مفتوحة في الحدث نفسه تضمّ ما بعدها (حذف صندوق بعمّاله خطوة واحدة)،
+        والاسم الصريح يحلّ محلّ الاسم التلقائي.
         """
         try:
-            import copy
             if not hasattr(self, "_undo_stack"):
                 self._undo_stack = []
-            self._undo_stack.append({
-                "label": label,
-                "invoices": copy.deepcopy(self.invoices),
-                "categories": copy.deepcopy(self.categories),
-                "counter": self.invoice_counter,
-            })
+            step = getattr(self, "_undo_open", None)
+            if step is not None and step in self._undo_stack:
+                if step["auto"] and not auto:
+                    step["label"], step["auto"] = label, False
+                    self.update_undo_buttons()
+                return step
+            step = {"label": label, "auto": auto, "rows": {}, "names": [], "cats": [], "deleted": 0, "saved": 0}
+            self._undo_stack.append(step)
             if len(self._undo_stack) > self.UNDO_LIMIT:
                 self._undo_stack.pop(0)
+            self._undo_open = step
+            try:
+                self.after_idle(lambda: self._close_undo_step(step))
+            except Exception:
+                pass
             self.update_undo_buttons()
+            return step
         except Exception as e:
-            log_cloud_error("تعذّر حفظ لقطة التراجع", e)
+            log_cloud_error("تعذّر فتح خطوة التراجع", e)
+            return None
+
+    def _close_undo_step(self, step):
+        if getattr(self, "_undo_open", None) is step:
+            self._undo_open = None
+        # خطوة لم يُسجَّل فيها شيء (مُنع الحذف مثلاً) لا تبقى في المكدس
+        if not (step["rows"] or step["names"] or step["cats"]) and step in getattr(self, "_undo_stack", []):
+            self._undo_stack.remove(step)
+        self.update_undo_buttons()
+
+    def _undo_note_row(self, inv_id, row, deleted=False):
+        """يسجّل صورة الحركة قبل أول تغيير لها داخل الخطوة المفتوحة (None = حركة جديدة)"""
+        step = getattr(self, "_undo_open", None)
+        if step is None:
+            return
+        if inv_id not in step["rows"]:
+            step["rows"][inv_id] = tuple(row) if row else None
+        step["deleted" if deleted else "saved"] += 1
+
+    def _undo_note_name(self, name, category):
+        """اسم موجود فعلاً سيُحذف: يُسجَّل بموضعه ليعود في مكانه"""
+        step = getattr(self, "_undo_open", None)
+        names = self.categories.get(category, [])
+        if step is not None and name in names:
+            step["names"].append((name, category, names.index(name)))
+
+    def undo_step_label(self, step):
+        if not step.get("auto"):
+            return step["label"]
+        if step["saved"]:
+            return f"تعديل/حذف {len(step['rows'])} حركة"
+        n = step["deleted"]
+        return step["label"] if n <= 1 else f"حذف {n} حركات"
 
     def can_undo(self):
         return bool(getattr(self, "_undo_stack", []))
@@ -4847,19 +4905,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """يفعّل أو يعطّل أزرار التراجع حسب توفّر خطوة سابقة"""
         label = "↩️ تراجع"
         if self.can_undo():
-            label = f"↩️ تراجع: {self._undo_stack[-1]['label']}"
-        for btn in getattr(self, "_undo_buttons", []):
+            label = f"↩️ تراجع: {self.undo_step_label(self._undo_stack[-1])}"
+        for btn, compact in getattr(self, "_undo_buttons", []):
             try:
-                btn.configure(text=label if len(label) < 34 else "↩️ تراجع",
+                btn.configure(text="↩️ تراجع" if compact or len(label) >= 34 else label,
                               state="normal" if self.can_undo() else "disabled")
             except Exception:
                 continue
 
-    def register_undo_button(self, btn):
+    def register_undo_button(self, btn, compact=False):
+        """compact: زر الشريط العلوي يبقى قصيراً (اسم الخطوة يظهر في تأكيد التراجع)"""
         if not hasattr(self, "_undo_buttons"):
             self._undo_buttons = []
-        self._undo_buttons.append(btn)
+        self._undo_buttons.append((btn, compact))
         self.update_undo_buttons()
+
+    def _on_ctrl_z(self, event=None):
+        """Ctrl+Z خارج خانات الكتابة = تراجع عن آخر حذف أو إقفال"""
+        try:
+            focus = self.focus_get()
+        except Exception:
+            focus = None
+        if isinstance(focus, (tk.Entry, tk.Text)):
+            return None
+        self.undo_last_action()
+        return "break"
 
     def undo_last_action(self):
         """يُرجع الحالة إلى ما قبل آخر خطوة قابلة للتراجع"""
@@ -4869,58 +4939,67 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not self.check_edit_permission():
             return
 
-        snap = self._undo_stack[-1]
+        step = self._undo_stack[-1]
+        label = self.undo_step_label(step)
         if not messagebox.askyesno(
                 "تأكيد التراجع",
-                f"سيتم التراجع عن: {snap['label']}\n\n"
-                "وتعود البيانات كما كانت قبل هذه الخطوة. هل تريد المتابعة؟"):
+                f"سيتم التراجع عن: {label}\n\n"
+                f"وتعود {len(step['rows'])} حركة كما كانت قبل هذه الخطوة. هل تريد المتابعة؟"):
             return
 
-        snap = self._undo_stack.pop()
+        self._undo_stack.pop()
+        self._undo_open = None
         try:
-            self.invoices = snap["invoices"]
-            self.categories = snap["categories"]
-            self.invoice_counter = snap["counter"]
-            self.rewrite_database_from_memory()
+            self.apply_undo_step(step)
             self.recalculate_all()
+            for fn in ("refresh_journal_entries_table", "refresh_losses_tab", "refresh_khayas_category_buttons",
+                       "refresh_chart_of_accounts", "refresh_stage_buttons"):
+                if hasattr(self, fn):
+                    try:
+                        getattr(self, fn)()
+                    except Exception:
+                        pass
             self.update_undo_buttons()
-            messagebox.showinfo("تم التراجع", f"تم التراجع عن: {snap['label']}")
+            messagebox.showinfo("تم التراجع", f"تم التراجع عن: {label}")
         except Exception as e:
             log_cloud_error("تعذّر التراجع", e)
             messagebox.showerror("خطأ", f"تعذّر إتمام التراجع:\n{e}")
 
-    def rewrite_database_from_memory(self):
-        """يُعيد كتابة جدولَي الحركات والأسماء من الذاكرة (تنفيذ التراجع).
+    def apply_undo_step(self, step):
+        """يُعيد صور الحركات والأسماء المسجّلة في الخطوة.
 
-        تُكتب في معاملة واحدة: إما أن ينجح كل شيء أو لا يتغيّر شيء —
-        فلا تبقى القاعدة في حالة نصفية لو انقطع التنفيذ.
+        القاعدة أولاً في معاملة واحدة (إما كل شيء أو لا شيء)، ثم الذاكرة من
+        الصور نفسها — فتطابق الذاكرة ما يُحمَّل عند إعادة التشغيل تماماً.
         """
+        marks = ",".join("?" * 14)
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("BEGIN")
             try:
-                cur.execute("DELETE FROM invoices")
-                cur.execute("DELETE FROM names")
-                for inv in self.invoices.values():
-                    cur.execute("""INSERT INTO invoices
-                        (invoice_id, date_time, name, op_type, weight, before_w, after_w,
-                         note, settled_status, trees_count, set_number, row_number, manual_no, period)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (inv.get("رقم الفاتورة"), inv.get("التاريخ"), inv.get("الاسم"),
-                         inv.get("النوع"), inv.get("الوزن", 0.0), inv.get("قبل", 0.0),
-                         inv.get("بعد", 0.0), inv.get("البيان", ""),
-                         inv.get("settled_status", "ACTIVE"), inv.get("trees_count", 0.0),
-                         inv.get("set_number", ""), inv.get("row_number", ""),
-                         inv.get("رقم الفاتورة اليدوي", ""),
-                         inv.get("period") or self.inv_period(inv)))
-                for cat, names in self.categories.items():
-                    for n in names:
-                        cur.execute("INSERT OR IGNORE INTO names (name, category) VALUES (?, ?)",
-                                    (n, cat))
+                for inv_id, row in step["rows"].items():
+                    if row is None:
+                        cur.execute("DELETE FROM invoices WHERE invoice_id = ?", (inv_id,))
+                    else:
+                        cur.execute(f"INSERT OR REPLACE INTO invoices ({self.INVOICE_COLUMNS}) VALUES ({marks})",
+                                    row)
+                for name, cat, _idx in step["names"]:
+                    cur.execute("INSERT OR IGNORE INTO names (name, category) VALUES (?, ?)", (name, cat))
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
+        for inv_id, row in step["rows"].items():
+            if row is None:
+                self.invoices.pop(inv_id, None)
+            else:
+                self.invoices[inv_id] = self.invoice_from_row(row)
+        for cat in step["cats"]:
+            self.categories.setdefault(cat, [])
+        for name, cat, idx in reversed(step["names"]):
+            names = self.categories.setdefault(cat, [])
+            if name not in names:
+                names.insert(min(idx, len(names)), name)
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
         self.mark_backup_dirty()
 
     def save_name_to_db(self, name, category):
@@ -7306,6 +7385,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.btn_theme = ctk.CTkButton(top_frame, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=36, corner_radius=10, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
         self.btn_theme.pack(side="right", padx=8, pady=6)
 
+        # تراجع عام عن آخر حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
+        if not IS_ADMIN_BUILD:
+            btn_global_undo = ctk.CTkButton(
+                top_frame, text="↩️ تراجع", width=96, height=36, corner_radius=10,
+                font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent",
+                border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
+                hover_color=(UI["surface_alt"], "#232A33"), command=self.undo_last_action)
+            btn_global_undo.pack(side="right", padx=4, pady=6)
+            self.register_undo_button(btn_global_undo, compact=True)
+
         # صف أدوات واحد: كل الأزرار جنباً إلى جنب أفقياً بلا تبعثر رأسي
         period_column = ctk.CTkFrame(top_frame, fg_color="transparent")
         period_column.pack(side="right", padx=8, pady=4)
@@ -7464,7 +7553,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tv._go_home()
 
     def _on_ctrl_number_key(self, event):
-        """Ctrl + رقم (١–٦) يفتح شاشة الشريط الرئيسية بنفس ترتيبها"""
+        """Ctrl + رقم (١–٦) يفتح شاشة الشريط الرئيسية بنفس ترتيبها، وCtrl+Z للتراجع"""
+        if (getattr(event, "keysym", "") in ("z", "Z")
+                or (sys.platform.startswith("win") and getattr(event, "keycode", 0) == 90)):
+            if not IS_ADMIN_BUILD:
+                return self._on_ctrl_z(event)    # بأي لغة كتابة (المفتاح نفسه)
+            return
         idx = self._SHORTCUT_DIGITS.get(getattr(event, "char", "") or "")
         if idx is None:
             idx = self._SHORTCUT_DIGITS.get(getattr(event, "keysym", ""))
@@ -7702,6 +7796,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                text_color=(UI["ink"], "#F2F4F7"))
             val.pack(anchor="e")
             self.home_stat_labels[key] = val
+
+        # فحص سلامة الحسابات في متناول اليد من الرئيسية (للعميل والمدير معاً — قراءة فقط)
+        ctk.CTkButton(header_row, text="🩺 فحص سلامة الحسابات", width=180, height=34, corner_radius=10,
+                      font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                      command=self.open_integrity_check_window,
+                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=4)
 
         self.home_arrange_mode = False
         self.home_swap_pick = None
@@ -12160,8 +12260,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "هل تريد المتابعة؟", parent=win):
                 return
 
-            # لقطة تراجع قبل التنفيذ (يمكن التراجع عن التراجع نفسه)
-            self.push_undo(f"تراجع عن إقفال ({display})")
+            # خطوة تراجع قبل التنفيذ (يمكن التراجع عن إعادة الفتح نفسها)
+            self.push_undo(f"إعادة فتح إقفال ({display})")
 
             deleted = blocked = 0
             for inv_id in entry["ids"]:
@@ -17700,6 +17800,276 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self._open_file(path)
 
     # =========================================================================
+    # --- فحص سلامة الحسابات: كل شاشة تطابق الأخرى في كل فترة (قراءة فقط) ---
+    # =========================================================================
+    _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+    _PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+    def statement_balance(self, account, from_m="", to_m="", period_rows_only=False):
+        """رصيد كشف حساب كما تعرضه شاشة «كشف حساب» (بطبيعة الحساب مدين/دائن)"""
+        debit = self.is_debit_nature_account(account)
+        bal = 0.0
+        for r in self.get_account_ledger_rows(account, from_m or "", to_m or ""):
+            if period_rows_only and r.get("is_opening"):
+                continue
+            bal += (r["مدين"] - r["دائن"]) if debit else (r["دائن"] - r["مدين"])
+        return round(bal, 2)
+
+    def run_integrity_checks(self):
+        """يطابق أرقام الشاشات بعضها ببعض في كل فترة، ويفحص سلامة القيود والبيانات.
+
+        يرجع (النتائج، الملاحظات): النتائج {المجموعة: [عدد المطابق، [المخالفات]]}،
+        والملاحظات أمور تستحق النظر وليست أخطاء حسابية. لا يغيّر أي بيانات،
+        والفترة المعروضة تعود كما كانت حتى لو فشل فحص.
+        """
+        results, notes = {}, []
+
+        def check(group, cond, detail):
+            entry = results.setdefault(group, [0, []])
+            if cond:
+                entry[0] += 1
+            else:
+                entry[1].append(detail)
+
+        def close(a, b, tol=0.011):
+            return abs(round(a, 2) - round(b, 2)) <= tol
+
+        active = [i for i in self.invoices.values() if i.get("settled_status") == "ACTIVE"]
+        # الفترات الصالحة وحدها تُطابَق شاشاتها؛ الحركة بفترة تالفة تُكشف في «سلامة الحركات»
+        periods = sorted({self.inv_period(i) for i in active if self._PERIOD_RE.match(self.inv_period(i) or "")})
+        saved_month = self.current_display_month
+        try:
+            # ١) الخزينة: الدفتر = التقرير الشهري = كشف «حساب الخزينة»، وكل فترة تبدأ بنهاية سابقتها
+            ledger = {r["period"]: r for r in self.get_treasury_ledger()}
+            report = {r["period"]: r for r in self.get_monthly_report_rows()}
+            prev = None
+            for p in periods:
+                if p not in ledger:
+                    check("الخزينة", False, f"{p}: الفترة غائبة عن دفتر الخزينة")
+                    continue
+                closing = ledger[p]["closing"]
+                if p in report:
+                    check("الخزينة", close(report[p]["end"], closing),
+                          f"{p}: التقرير الشهري {report[p]['end']:.2f} ≠ دفتر الخزينة {closing:.2f}")
+                if prev in ledger:
+                    check("الخزينة", close(ledger[p]["carry"], ledger[prev]["closing"]),
+                          f"{p}: رصيد أول الفترة {ledger[p]['carry']:.2f} ≠ نهاية {prev} {ledger[prev]['closing']:.2f}")
+                st = self.statement_balance("حساب الخزينة", to_m=p)
+                check("الخزينة", close(st, closing),
+                      f"{p}: كشف «حساب الخزينة» {st:.2f} ≠ دفتر الخزينة {closing:.2f}")
+                prev = p
+
+            # ٢) كل صندوق خياس: الفاقد الحالي في شاشة الخسائر = كشف حساب الصندوق لفترته،
+            #    وحسابا الفاقد والمسترجع = كشفاهما
+            boxes = self.get_khayas_box_categories()
+            for cat in boxes:
+                acc = self.get_box_account_name(cat)
+                for p in periods:
+                    cur = self.get_current_unclosed_khayas(cat, month=p)
+                    st = -self.statement_balance(acc, from_m=p, to_m=p, period_rows_only=True)
+                    check("صناديق الخياس ↔ كشوفها", close(cur, st),
+                          f"{self.get_display_label(cat)} {p}: الفاقد الحالي {cur:.2f} ≠ كشف «{acc}» {st:.2f}")
+                loss_acc = self.get_box_loss_account(cat)
+                lt, ls = self.get_box_loss_total(cat), self.statement_balance(loss_acc)
+                check("حسابات الفاقد والمسترجع", close(lt, ls),
+                      f"{self.get_display_label(cat)}: شاشة الخسائر {lt:.2f} ≠ كشف «{loss_acc}» {ls:.2f}")
+                rec = self.get_box_recovery_name(cat)
+                if rec:
+                    rt, rs = self.get_box_recovered_total(cat), self.statement_balance(rec)
+                    check("حسابات الفاقد والمسترجع", close(rt, rs),
+                          f"{self.get_display_label(cat)}: المسترجع {rt:.2f} ≠ كشف «{rec}» {rs:.2f}")
+            total_loss = round(sum(self.get_box_loss_total(c) for c in boxes), 2)
+            parent = self.statement_balance(self.LOSS_PARENT_ACCOUNT)
+            check("حسابات الفاقد والمسترجع", close(total_loss, parent),
+                  f"مجموع حسابات الفاقد {total_loss:.2f} ≠ كشف «{self.LOSS_PARENT_ACCOUNT}» {parent:.2f}")
+
+            # ٣) جدول كل مرحلة = الفاقد الحالي + المُقفل لصندوقها في كل فترة
+            for cat in self.get_all_stage_categories():
+                if cat == "خياس الطقوم":
+                    continue
+                madin, qabd, _m = self.get_stage_config(cat)
+                recover = self.TREE_RETURN_NAME if cat == "الكاستنج" else None
+                extra = self.stage_row_extra(qabd, recover)
+                sign = extra[2] if extra else -1
+                for p in periods:
+                    self.current_display_month = p
+                    rows = self.collect_stage_ops_rows(madin, qabd, recover)
+                    table = round(sum(g["مدين"] - g["دائن"] + sign * g["مسترجع"] for _r, _n, g in rows), 2)
+                    box = self.get_box_khayas_cumulative(cat, month=p)
+                    closed = self.get_box_closed_total(cat, month=p)
+                    check("جداول المراحل ↔ صناديقها", close(table, box + closed),
+                          f"{self.get_display_label(cat)} {p}: إجمالي الجدول {table:.2f} ≠ "
+                          f"الفاقد الحالي {box:.2f} + المُقفل {closed:.2f}")
+            self.current_display_month = saved_month
+
+            # ٤) المبيعات: جدول العمليات = كشف «المبيعات» لكل فترة
+            for p in periods:
+                ops = round(sum(g["ذهب"] + g["فصوص"] + g["أحجار بعد الخصم"] + g["الماس"]
+                                for g in self.get_sale_invoice_groups(p)), 2)
+                st = self.statement_balance("المبيعات", from_m=p, to_m=p, period_rows_only=True)
+                check("المبيعات", close(ops, st), f"{p}: جدول العمليات {ops:.2f} ≠ كشف «المبيعات» {st:.2f}")
+
+            # ٥) المواد: الرصيد = كشف حسابها
+            for mat, acc in (("فصوص وأحجار", "حساب فصوص وأحجار"), ("الماس", "حساب الألماس")):
+                a, b = self.get_material_balance(mat), self.statement_balance(acc)
+                check("المواد", close(a, b), f"{mat}: الرصيد {a:.2f} ≠ كشف «{acc}» {b:.2f}")
+
+            # ٦) القيود اليومية: كل رقم قيد طرفان (مدين ودائن) بالوزن نفسه وفي الفترة نفسها
+            legs_by_ref, no_ref = {}, 0
+            for inv in active:
+                if inv.get("النوع") not in self.JOURNAL_TYPES:
+                    continue
+                ref = inv.get("set_number") or ""
+                if ref:
+                    legs_by_ref.setdefault(ref, []).append(inv)
+                else:
+                    no_ref += 1
+            for ref, legs in sorted(legs_by_ref.items()):
+                debit = [l for l in legs if l["النوع"] == "قيد يومي مدين"]
+                credit = [l for l in legs if l["النوع"] == "قيد يومي دائن"]
+                if len(debit) != 1 or len(credit) != 1:
+                    check("القيود اليومية", False,
+                          f"{ref}: {len(debit)} طرف مدين و{len(credit)} طرف دائن (المفروض طرف لكلٍّ)")
+                    continue
+                d, c = debit[0], credit[0]
+                check("القيود اليومية", close(d["الوزن"], c["الوزن"], tol=0.005)
+                      and self.inv_period(d) == self.inv_period(c),
+                      f"{ref}: المدين {d['الوزن']:.2f} ({self.inv_period(d)}) ≠ الدائن {c['الوزن']:.2f} "
+                      f"({self.inv_period(c)})")
+            if no_ref:
+                notes.append(f"{no_ref} طرف قيد يومي بلا رقم قيد (قيود قديمة لا يمكن ربط طرفيها)")
+
+            # ٧) سلامة كل حركة: تاريخ وفترة صحيحان ووزن رقمي غير سالب
+            for inv in self.invoices.values():
+                problems = []
+                if not self._DATE_RE.match(str(inv.get("التاريخ") or "")):
+                    problems.append(f"تاريخ غير صالح «{inv.get('التاريخ')}»")
+                if not self._PERIOD_RE.match(self.inv_period(inv) or ""):
+                    problems.append(f"فترة غير صالحة «{self.inv_period(inv)}»")
+                w = inv.get("الوزن")
+                if not isinstance(w, (int, float)) or w < 0:
+                    problems.append(f"وزن غير صالح {w!r}")
+                check("سلامة الحركات", not problems,
+                      f"حركة {inv.get('رقم الفاتورة')} ({inv.get('الاسم')} — {inv.get('النوع')}): "
+                      + "، ".join(problems))
+
+            # ٨) الذاكرة = قاعدة البيانات (ما تراه الشاشات هو المحفوظ فعلاً)
+            if getattr(self, "db_path", None) and os.path.exists(self.db_path):
+                with sqlite3.connect(self.db_path) as conn:
+                    db = {r[0]: r for r in conn.execute(
+                        "SELECT invoice_id, name, op_type, weight, settled_status FROM invoices")}
+                only_mem, only_db = set(self.invoices) - set(db), set(db) - set(self.invoices)
+                check("الذاكرة = القاعدة", not only_mem and not only_db,
+                      f"حركات في الشاشات لا في القاعدة: {len(only_mem)}، وفي القاعدة لا في الشاشات: {len(only_db)}")
+                diff = [i for i in set(db) & set(self.invoices)
+                        if (self.invoices[i].get("الاسم"), self.invoices[i].get("النوع"),
+                            round(self.invoices[i].get("الوزن") or 0.0, 4), self.invoices[i].get("settled_status"))
+                        != (db[i][1], db[i][2], round(db[i][3] or 0.0, 4), db[i][4])]
+                check("الذاكرة = القاعدة", not diff, f"{len(diff)} حركة تختلف بين الشاشات والقاعدة (مثال {sorted(diff)[:3]})")
+
+            # ملاحظة: أسماء في القيود غير مسجّلة في شجرة الحسابات (غالباً خطأ كتابة)
+            known = set(self.get_journal_entry_account_options())
+            unknown = sorted({i.get("الاسم") for i in active if i.get("النوع") in self.JOURNAL_TYPES
+                              and i.get("الاسم") not in known})
+            if unknown:
+                notes.append("أسماء في القيود اليومية غير مسجّلة في شجرة الحسابات: " + "، ".join(unknown[:8])
+                             + (" …" if len(unknown) > 8 else ""))
+        finally:
+            self.current_display_month = saved_month
+        return results, notes
+
+    def integrity_report_text(self, results, notes, seconds=None):
+        bad = sum(len(v[1]) for v in results.values())
+        good = sum(v[0] for v in results.values())
+        lines = [f"فحص سلامة الحسابات — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                 ("✅ كل الحسابات متطابقة" if not bad else f"⚠️ {bad} مخالفة") + f" — {good} مطابقة"
+                 + (f" ({seconds:.1f} ث)" if seconds is not None else ""), ""]
+        for group, (ok_n, fails) in results.items():
+            lines.append(f"{'✔' if not fails else '✘'} {group}: {ok_n} مطابق" + (f"، {len(fails)} مخالف" if fails else ""))
+            lines.extend(f"     • {d}" for d in fails[:50])
+            if len(fails) > 50:
+                lines.append(f"     … و{len(fails) - 50} غيرها")
+        if notes:
+            lines.append("")
+            lines.extend(f"ℹ️ {n}" for n in notes)
+        return "\n".join(lines)
+
+    def open_integrity_check_window(self):
+        """نافذة «فحص سلامة الحسابات»: ملخص لكل مجموعة ثم تفصيل المخالفات بقيمها"""
+        win = ctk.CTkToplevel(self)
+        win.title("فحص سلامة الحسابات")
+        win.geometry("920x720")
+        win.transient(self)
+        win.focus_force()
+
+        ctk.CTkLabel(win, text="🩺 فحص سلامة الحسابات", font=("Cairo", 20, "bold"),
+                     text_color=(UI["title"], "#C9D6E8")).pack(pady=(14, 0))
+        ctk.CTkLabel(win, text="يطابق الخزينة والصناديق والكشوف والمبيعات والمواد والقيود في كل فترة — قراءة فقط",
+                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        summary = ctk.CTkLabel(win, text="جاري الفحص…", font=("Cairo", 16, "bold"), corner_radius=10,
+                               fg_color=(UI["surface_alt"], "#1D232B"), height=40)
+        summary.pack(fill="x", padx=18, pady=6)
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side="bottom", pady=(4, 12))
+        frame = ttk.Frame(win)
+        frame.pack(fill="x", padx=18, pady=4)
+        cols = ("المجموعة", "المطابق", "المخالف")
+        tree = self.create_standard_treeview(frame, cols, height=9)
+        for c, w in zip(cols, (360, 120, 120)):
+            tree.column(c, width=w, anchor="center")
+        details = ctk.CTkTextbox(win, font=("Cairo", 13), wrap="word")
+        details.pack(fill="both", expand=True, padx=18, pady=6)
+        try:
+            details._textbox.tag_configure("rtl", justify="right")
+        except Exception:
+            pass
+        state = {"text": ""}
+
+        def run():
+            summary.configure(text="جاري الفحص…")
+            win.update_idletasks()
+            t0 = time.time()
+            try:
+                results, notes = self.run_integrity_checks()
+            except Exception as e:
+                log_cloud_error("تعذّر فحص سلامة الحسابات", e)
+                summary.configure(text=f"تعذّر إكمال الفحص: {e}", text_color=UI["danger"])
+                return
+            seconds = time.time() - t0
+            for item in tree.get_children():
+                tree.delete(item)
+            bad = 0
+            for group, (ok_n, fails) in results.items():
+                bad += len(fails)
+                tree.insert("", "end", values=(("✔ " if not fails else "✘ ") + group, ok_n, len(fails)),
+                            tags=("bad",) if fails else ())
+            tree.tag_configure("bad", foreground=UI["danger"])
+            good = sum(v[0] for v in results.values())
+            summary.configure(
+                text=(f"✅ كل الحسابات متطابقة — {good} مطابقة" if not bad
+                      else f"⚠️ {bad} مخالفة تحتاج مراجعة — {good} مطابقة"),
+                text_color=UI["success"] if not bad else UI["danger"])
+            state["text"] = self.integrity_report_text(results, notes, seconds)
+            details.configure(state="normal")
+            details.delete("1.0", "end")
+            details.insert("1.0", state["text"], "rtl")
+            details.configure(state="disabled")
+
+        def copy_report():
+            if state["text"]:
+                self.clipboard_clear()
+                self.clipboard_append(state["text"])
+                summary.configure(text=summary.cget("text") + "  —  نُسخ التقرير")
+
+        for text, cmd, style in (("🔄 إعادة الفحص", run, "primary"), ("📋 نسخ التقرير", copy_report, "secondary"),
+                                 ("إغلاق", win.destroy, "secondary")):
+            ctk.CTkButton(btns, text=text, command=cmd, width=150, height=40, font=("Cairo", 14, "bold"),
+                          **BUTTON_STYLES[style]).pack(side="left", padx=6)
+        win.after(80, run)
+        return win
+
+    # =========================================================================
     # --- القيود اليومية: نظام محاسبي عام (من حساب مدين / إلى حساب دائن) يؤثر في أي حساب بالنظام ---
     # =========================================================================
     def get_journal_entry_account_options(self):
@@ -17746,6 +18116,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.je_amount = ctk.CTkEntry(amount_row, justify="center", font=("Cairo", 15), width=140, height=40)
         self.je_amount.pack(side="right", padx=8)
 
+        # البيان: سبب القيد يُحفظ على طرفيه ويظهر في الجدول وكشف الحساب والطباعة
+        note_row = ctk.CTkFrame(tab, fg_color="transparent")
+        note_row.pack(pady=(0, 4))
+        ctk.CTkLabel(note_row, text="البيان:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=8)
+        self.je_note = ctk.CTkEntry(note_row, justify="right", font=("Cairo", 14), width=420, height=38,
+                                    placeholder_text="سبب القيد (اختياري)")
+        self.je_note.pack(side="right", padx=8)
+
         btn_submit = ctk.CTkButton(tab, text="✅ ترحيل العملية", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), height=46, fg_color="#144d75", hover_color="#0d3350", command=self.submit_journal_entry)
         btn_submit.pack(pady=15)
 
@@ -17763,8 +18141,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_journal_entries_table()
 
     def print_journal_entries_screen(self):
-        cols = ("التاريخ", "من حساب (مدين)", "إلى حساب (دائن)", "القيمة")
-        col_ratios = [1.1, 1.5, 1.5, 0.9]
+        cols = ("التاريخ", "من حساب (مدين)", "إلى حساب (دائن)", "القيمة", "البيان")
+        col_ratios = [1.0, 1.3, 1.3, 0.8, 1.4]
         debit_by_ref, credit_by_ref = {}, {}
         for inv in self.invoices.values():
             if inv.get("settled_status") != "ACTIVE": continue
@@ -17780,7 +18158,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             d = debit_by_ref.get(ref)
             cr = credit_by_ref.get(ref)
             base = d or cr
-            rows.append((base.get("التاريخ", "")[:16], d.get("الاسم", "-") if d else "-", cr.get("الاسم", "-") if cr else "-", f"{base.get('الوزن', 0):.2f}"))
+            rows.append((base.get("التاريخ", "")[:16], d.get("الاسم", "-") if d else "-", cr.get("الاسم", "-") if cr else "-",
+                         f"{base.get('الوزن', 0):.2f}", self.journal_note(d, cr)))
         self.print_generic_table_screen("📖 القيود اليومية", cols, col_ratios, rows, "journal_entries_screen")
 
     def submit_journal_entry(self):
@@ -17797,6 +18176,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         date_val = self.read_entry_date(date_val)
         if not date_val:
             return
+        note = self.je_note.get().strip() if hasattr(self, "je_note") else ""
         # اسم غير مسجّل غالباً خطأ كتابة: قيدٌ عليه يُنشئ حساباً وهمياً لا يظهر في
         # أرصدة الموردين ولا الصناديق. لا نمنعه (قد يكون حساباً جديداً مقصوداً)، بل نؤكّد
         known = set(self.get_journal_entry_account_options())
@@ -17815,7 +18195,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showerror("خطأ", "الرجاء إدخال قيمة صحيحة أكبر من صفر.")
             return
 
-        if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل هذا القيد اليومي؟\nمن حساب (مدين): {from_name}\nإلى حساب (دائن): {to_name}\nالقيمة: {amount:.2f}"):
+        if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل هذا القيد اليومي؟\nمن حساب (مدين): {from_name}\nإلى حساب (دائن): {to_name}\nالقيمة: {amount:.2f}"
+                                   + (f"\nالبيان: {note}" if note else "")):
             return
 
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
@@ -17823,14 +18204,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.invoice_counter += 1
         inv_from = {"رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": from_name,
-                    "النوع": "قيد يومي مدين", "الوزن": amount, "البيان": "", "settled_status": "ACTIVE",
+                    "النوع": "قيد يومي مدين", "الوزن": amount, "البيان": note, "settled_status": "ACTIVE",
                     "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": entry_ref}
         self.invoices[self.invoice_counter] = inv_from
         self.save_invoice_to_db(self.invoice_counter, inv_from)
 
         self.invoice_counter += 1
         inv_to = {"رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": to_name,
-                  "النوع": "قيد يومي دائن", "الوزن": amount, "البيان": "", "settled_status": "ACTIVE",
+                  "النوع": "قيد يومي دائن", "الوزن": amount, "البيان": note, "settled_status": "ACTIVE",
                   "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": entry_ref}
         self.invoices[self.invoice_counter] = inv_to
         self.save_invoice_to_db(self.invoice_counter, inv_to)
@@ -17838,6 +18219,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.je_from_name.set("")
         self.je_to_name.set("")
         self.je_amount.delete(0, 'end')
+        if hasattr(self, "je_note"):
+            self.je_note.delete(0, 'end')
 
         self.register_operation_period(date_val)
         self.recalculate_all()
@@ -17858,8 +18241,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         cols = ("رقم القيد", "التاريخ", "من حساب (مدين)", "إلى حساب (دائن)", "القيمة", "البيان")
         col_ratios = [0.8, 1.1, 1.3, 1.3, 0.8, 1.0]
         rows = [(entry_ref, debit_inv["التاريخ"][:16], debit_inv["الاسم"], credit_inv["الاسم"],
-                 f"{debit_inv['الوزن']:.2f}", debit_inv.get("البيان") or "قيد يومي")]
+                 f"{debit_inv['الوزن']:.2f}", self.journal_note(debit_inv, credit_inv) or "قيد يومي")]
         self.print_generic_table_screen("📖 فاتورة قيد يومي", cols, col_ratios, rows, "journal_entry_operation")
+
+    @staticmethod
+    def journal_note(debit, credit):
+        """بيان القيد من أي طرفيه (القيود القديمة بلا بيان تبقى فارغة)"""
+        for leg in (debit, credit):
+            text = str((leg or {}).get("البيان") or "").strip()
+            if text:
+                return text
+        return ""
 
     def refresh_journal_entries_table(self):
         if not hasattr(self, 'je_table_frame') or not self.je_table_frame:
@@ -17874,10 +18266,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if hasattr(self, 'je_to_name'):
             self.je_to_name.configure(values=self.get_journal_entry_account_options())
 
-        cols = ("التاريخ", "من حساب (مدين)", "إلى حساب (دائن)", "القيمة")
+        cols = ("التاريخ", "من حساب (مدين)", "إلى حساب (دائن)", "القيمة", "البيان")
         self.je_tree = self.create_standard_treeview(self.je_table_frame, cols, height=10)
         for c in cols:
-            w = 220 if "حساب" in c else 150
+            w = 220 if "حساب" in c else 260 if c == "البيان" else 150
             self.je_tree.column(c, width=w, anchor="center")
 
         debit_by_ref, credit_by_ref = {}, {}
@@ -17898,7 +18290,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             base = d or cr
             self.je_tree.insert("", "end", values=(
                 base.get("التاريخ", ""), d.get("الاسم", "-") if d else "-", cr.get("الاسم", "-") if cr else "-",
-                f"{base.get('الوزن', 0):.2f}"
+                f"{base.get('الوزن', 0):.2f}", self.journal_note(d, cr)
             ))
 
     # =========================================================================
@@ -18112,6 +18504,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "هل تريد إقفالها الآن؟"):
             return
 
+        # كل إقفال خطوة تراجع مستقلة (يفتحها close_split_khayas_box بعد تأكيده)
         for cat, month, _amount in pending:
             try:
                 self.close_split_khayas_box(cat, month=month)
@@ -18213,6 +18606,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # تاريخ القيد: آخر يوم في الشهر المُقفَل، فيظهر في نهاية سجل فترته
         # بدل أن يبدو حركةً من شهر لاحق
         full_dt = self.period_closing_datetime(month)
+        self.push_undo(f"إقفال {self.get_display_label(cat)} {month}")
 
         # نوزّع المتبقّي على مكوّنَي المعادلة بنسبتهما، فلا يُقفل شيء أُقفل
         # سابقاً، ويبقى مجموع القيدين = المتبقّي بالضبط
@@ -18262,6 +18656,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # القيد يُؤرَّخ في آخر الفترة المُقفَلة ويُختم بها، فيبقى في سجلّها
         full_dt = self.period_closing_datetime(month)
+        self.push_undo(f"إقفال {display_name} {month}")
         entry_ref = f"JE-{self.invoice_counter + 1}"
         bayan = f"إقفال فاقد فترة {month}"
         amount = abs(current)
@@ -18508,6 +18903,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def perform_khayas_box_deletion(self, stage_name):
         """التنفيذ الفعلي للحذف: الحركات ثم الحسابات ثم إعادة بناء الشاشات"""
+        # خطوة تراجع واحدة تضمّ الحركات والعمّال والقسم معاً
+        step = self.push_undo(f"حذف صندوق ({stage_name})")
+        if step is not None and stage_name in self.categories:
+            step["cats"].append(stage_name)
         madin, qabd, mustarja = self.get_stage_config(stage_name)
         box_account = self.get_box_account_name(stage_name)
 

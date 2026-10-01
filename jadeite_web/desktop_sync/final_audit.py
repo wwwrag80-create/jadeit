@@ -11,7 +11,7 @@ errors, warnings = [], []
 print(f"الملف: {SRC} | {len(src.splitlines()):,} سطر")
 
 # ---------- ٢) استدعاءات self غير معرّفة ----------
-INHERITED = {"after","title","geometry","update_idletasks","state","attributes","minsize",
+INHERITED = {"after","after_idle","title","geometry","update_idletasks","state","attributes","minsize",
  "winfo_screenwidth","winfo_screenheight","protocol","destroy","mainloop","withdraw","focus_force",
  "grab_set","transient","bind","configure","winfo_children","pack_forget","eval","grid_columnconfigure",
  "resizable","deiconify","pack","wait_window","update","quit","iconbitmap","columnconfigure",

@@ -50,7 +50,7 @@ assert "keep_transactions=False" in box
 print("✔ حذف صندوق الخياس يحذف حركاته صراحةً (سلوك مقصود بعد تأكيد المستخدم)")
 
 # ═══ ٤) التراجع ═══
-for fn in ("push_undo", "undo_last_action", "rewrite_database_from_memory", "can_undo"):
+for fn in ("push_undo", "undo_last_action", "apply_undo_step", "can_undo"):
     assert any(isinstance(m, ast.FunctionDef) and m.name == fn for m in cls.body), fn
 print("✔ دوال التراجع موجودة")
 
@@ -58,13 +58,13 @@ undo = seg("undo_last_action")
 assert "askyesno" in undo and "recalculate_all" in undo
 print("✔ التراجع يطلب تأكيداً ثم يُعيد الحساب الشامل")
 
-rw = seg("rewrite_database_from_memory")
+rw = seg("apply_undo_step")
 assert 'cur.execute("BEGIN")' in rw and "conn.rollback()" in rw
-print("✔ إعادة الكتابة في معاملة واحدة مع تراجع عند الفشل (لا حالة نصفية)")
+print("✔ التراجع في معاملة واحدة مع تراجع عند الفشل (لا حالة نصفية)")
 
 push = seg("push_undo")
-assert "UNDO_LIMIT" in push and "deepcopy" in push
-print("✔ اللقطة نسخة مستقلة، والمكدس محدود فلا تتضخّم الذاكرة")
+assert "UNDO_LIMIT" in push and "deepcopy" not in push
+print("✔ الخطوة سجل خفيف بالحركات المتغيّرة وحدها، والمكدس محدود فلا تتضخّم الذاكرة")
 
 # ═══ ٥) ترتيب الأسماء ═══
 rtl = seg("rtl")
