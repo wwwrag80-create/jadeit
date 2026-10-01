@@ -67,6 +67,7 @@ CHECKS = [
     ("المبيعات: المعلقات والبيان", [PY, "test_sales_suspend.py", TARGET]),
     ("نظام التصميم المحدَّث",  [PY, "test_design_v2.py", TARGET]),
     ("اللوحة الهادئة الموحّدة", [PY, "test_calm_palette.py", TARGET]),
+    ("المراجعة الشاملة",      [PY, "test_full_review.py", TARGET]),
 ]
 
 failed = []

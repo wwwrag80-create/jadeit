@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.48.0"
+APP_VERSION = "1.49.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4806,7 +4806,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if worker_name in self.categories.get(category, []):
             self.categories[category].remove(worker_name)
         if not keep_transactions:
-            self.invoices = {k: v for k, v in self.invoices.items() if v["الاسم"] != worker_name}
+            # الذاكرة كالقاعدة تماماً: تُحذف الحركات النشطة وحدها (كانت تُحذف من الذاكرة كل
+            # حركات الاسم فتعود المؤرشفة والمعلوماتية بعد إعادة التشغيل)
+            self.invoices = {k: v for k, v in self.invoices.items()
+                             if not (v["الاسم"] == worker_name and v.get("settled_status") == "ACTIVE")}
         self.mark_backup_dirty()
         return True
 
@@ -5197,6 +5200,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return 0.0
         ledger = self.get_treasury_ledger(before=month)
         return round(ledger[-1]["closing"], 2) if ledger else 0.0
+
+    _DATE_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+    def read_entry_date(self, text, parent=None):
+        """تاريخ العملية من خانته بصيغة واحدة YYYY-MM-DD (والأرقام الهندية تُحوَّل)، أو None مع
+        تنبيه. كانت أغلب شاشات الترحيل تقبل أي نص فيُحفظ تاريخ مكسور يخلّ بترتيب الحركات."""
+        text = str(text or "").translate(self._DATE_DIGITS).strip().replace("/", "-")
+        try:
+            return datetime.datetime.strptime(text[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            kw = {"parent": parent} if parent is not None else {}
+            messagebox.showwarning("التاريخ غير صحيح",
+                                   "الرجاء إدخال التاريخ بالصيغة YYYY-MM-DD (مثل 2026-10-01).", **kw)
+            return None
 
     def get_smart_default_date(self):
         """تاريخ العملية الافتراضي: **تاريخ اليوم الحقيقي** دائماً.
@@ -6682,6 +6699,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ref_dt = ref["التاريخ"]
         ref_name = ref["الاسم"]
         ref_row = ref.get("row_number", "") or ""
+        # أي حركة جديدة تُضاف للصف بالتعديل تبقى في فترة الصف نفسها، لا الفترة المعروضة
+        ref_period = self.inv_period(ref)
         # الليزر صرفٌ أيضاً: لا يُخلط بصرف الصف نفسه
         sarf_inv = next((i for i in invs if i["النوع"] == madin_type and i is not rec_inv), None)
         # مسترجع الأشجار قبضٌ أيضاً: لا يُخلط بقبض الصف نفسه
@@ -6797,7 +6816,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt, "الاسم": ref_name,
                                     "النوع": op_type, "الوزن": value, "البيان": new_note, "settled_status": "ACTIVE",
                                     "trees_count": new_trees, "قبل": 0.0, "بعد": 0.0,
-                                    "set_number": new_set_no, "row_number": new_row_no}
+                                    "set_number": new_set_no, "row_number": new_row_no, "period": ref_period}
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
                             any_blocked = True
@@ -6822,7 +6841,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt,
                                     "الاسم": row_extra[0], "النوع": extra_type, "الوزن": new_rec,
                                     "البيان": row_extra[0], "settled_status": "ACTIVE", "trees_count": 0.0,
-                                    "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no}
+                                    "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no,
+                                    "period": ref_period}
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
                             any_blocked = True
@@ -8933,8 +8953,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         name = stage_name
         note = w["note"].get().strip()
         row_num = w["row_num"].get().strip()
+        date_val = self.read_entry_date(date_val)
         if not date_val:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
             return
         if not row_num:
             messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
@@ -9137,8 +9157,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         note = self.cast_note.get().strip()
         row_num = self.cast_row_num.get().strip()
         month = self.current_display_month
+        date_val = self.read_entry_date(date_val)
         if not date_val:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
             return
         if not row_num:
             messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
@@ -9236,8 +9256,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """
         date_val = self.cast_date.get().strip()
         note = self.cast_note.get().strip()
+        date_val = self.read_entry_date(date_val)
         if not date_val:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
             return
         sarf_v = self._read_weight(self.cast_sarf)
         qabd_v = self._read_weight(self.cast_qabd)
@@ -9451,8 +9471,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         name = "التلميع"
         note = self.polish_note.get().strip()
         row_num = self.polish_row_num.get().strip()
+        date_val = self.read_entry_date(date_val)
         if not date_val:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
             return
         if not row_num:
             messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
@@ -9604,8 +9624,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         name = "التلميع/البف"
         note = self.pbuff_note.get().strip()
         row_num = self.pbuff_row_num.get().strip()
+        date_val = self.read_entry_date(date_val)
         if not date_val:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال التاريخ.")
             return
         if not row_num:
             messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
@@ -9906,8 +9926,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
 
         # التاريخ إلزامي لأنه هو ما يحدد الفترة المحاسبية التي تُسجَّل فيها الحركة
-        if len(date_val) < 7 or date_val[4] != '-':
-            messagebox.showwarning("التاريخ مطلوب", "الرجاء إدخال التاريخ بالصيغة الصحيحة YYYY-MM-DD قبل الترحيل.")
+        date_val = self.read_entry_date(date_val)
+        if not date_val:
             return
 
         # ══════════════════════════════════════════════════════════════
@@ -10226,6 +10246,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tot = {k: 0.0 for k in ("صرف", "قبض", "ليز", "بوليش", "مفنش 8", "مفنش 4", "سلك راجع",
                                 "قبل", "بعد", "الخياس", "trees", "فاقد", "مسموح 8", "مسموح 4",
                                 "ذهب صافي", "راجع عيار")}
+        # الراجع/عيار لكل صف من المصدر الموحّد مع صناديق الخياس (سلك الصف بعياره، أو آخر
+        # عيار للعامل في الفترة إن لم يُسجَّل للصف عيار) — فيتطابق الكشف والصناديق دائماً
+        raji_rows, last_purity = self.worker_rows_raji(worker_invs) if group_by_row else ({}, 0.0)
 
         for gkey, data in ordered:
             note = data["note"]
@@ -10246,7 +10269,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 tot["الخياس"] = round(tot["الخياس"] + data["الخياس"], 2)
                 row_id = self.op_ledger_tree.insert("", "end", values=(gkey, f"{data['قبل']:.2f}", f"{data['بعد']:.2f}", f"{data['الخياس']:.2f}", note))
             elif cat == "المركبين":
-                raji_v = raji_ayar(data['سلك راجع'], data['عيار'])
+                raji_v = raji_rows.get(gkey, 0.0)
+                if data['سلك راجع'] > 0 and not data['عيار']:
+                    data['عيار'] = last_purity
                 # ذهب/باقي (الفاقد اللحظي) يخصم الآن (الراجع/عيار) أيضاً
                 faqid = round(data['صرف'] - data['قبض'] + data['ليز'] - raji_v, 2)
                 tot["فاقد"] = round(tot["فاقد"] + faqid, 2)
@@ -10260,7 +10285,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 tot["ذهب صافي"] = round(tot["ذهب صافي"] + net_gold, 2)
                 row_id = self.op_ledger_tree.insert("", "end", values=name_prefix + (row_label, data['set_number'], f"{data['صرف']:.2f}", f"{data['قبض']:.2f}", f"{data['ليز']:.2f}", f"{data['سلك راجع']:.2f}", f"{data['عيار']:.1f}", f"{raji_v:.3f}", f"{faqid:.2f}", f"{allow8:.3f}", "-", f"{net_gold:.2f}", note), tags=row_tags)
             else:
-                raji_v = raji_ayar(data['سلك راجع'], data['عيار'])
+                raji_v = raji_rows.get(gkey, 0.0)
+                if data['سلك راجع'] > 0 and not data['عيار']:
+                    data['عيار'] = last_purity
                 # ذهب/باقي (الفاقد اللحظي) يخصم الآن (الراجع/عيار) أيضاً
                 faqid = round(data['صرف'] - data['قبض'] - data['بوليش'] + data['ليز'] - data['مفنش 8'] - data['مفنش 4'] - raji_v, 2)
                 tot["فاقد"] = round(tot["فاقد"] + faqid, 2)
@@ -10664,7 +10691,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                             "الاسم": worker_name, "النوع": op_type, "الوزن": value,
                             "البيان": new_note, "settled_status": "ACTIVE", "trees_count": 0.0,
                             "قبل": 0.0, "بعد": 0.0, "set_number": new_set_no,
-                            "row_number": new_row_no,
+                            "row_number": new_row_no, "period": month,
                         }
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
@@ -11081,8 +11108,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     ledger["بعد"] += inv.get("بعد", 0.0)
                     ledger["خياس_مكائن"] += inv["الوزن"]
 
-        if ledger["السلك الراجع"] > 0 and ledger["العيار بعد الفحص"] > 0:
-            ledger["المرجع 750"] = round((ledger["السلك الراجع"] * ledger["العيار بعد الفحص"]) / 750.0, 2)
+        # المرجع ٧٥٠: سلك كل صف بعياره هو (كما في كشف حركة العامل)، لا مجموع السلك بآخر
+        # عيار — كان العامل الذي فحص سلكه بعيارين في الشهر يُحسب كله بالعيار الأخير
+        if ledger["السلك الراجع"] > 0:
+            mine = [inv for inv in source if inv.get("التاريخ") and inv["الاسم"] == name
+                    and self.inv_in_period(inv, m_check)
+                    and (include_settled or inv["settled_status"] == "ACTIVE")]
+            raji_rows, _last = self.worker_rows_raji(mine)
+            ledger["المرجع 750"] = round(sum(raji_rows.values()), 2)
 
         if category == "المركبين":
             ledger["ذهب/باقي"] = round(ledger["الصرف"] - ledger["القبض"] + ledger["الليز"], 2)
@@ -11103,6 +11136,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ledger["الخياس"] = round(ledger["المرجع 750"] - ledger["ذهب/صافي"], 2)
 
         return ledger
+
+    @staticmethod
+    def worker_rows_raji(invs):
+        """الراجع بعيار ٧٥٠ لكل صف من حركات عامل في فترة: ({رقم الصف: الراجع}، آخر عيار).
+
+        لكل صف: سلكه الراجع × عياره ÷ ٧٥٠. الصف الذي فيه سلك بلا عيار مسجَّل في صفه
+        يأخذ آخر عيار مسجَّل للعامل في الفترة (من يسجّل العيار مرة واحدة في صف مستقل).
+        مصدر واحد لكشف حركة العامل وصناديق الخياس، فلا يختلف رقماهما.
+        """
+        wire, purity, last = {}, {}, 0.0
+        for inv in sorted(invs, key=lambda x: (str(x.get("التاريخ", "")), x.get("رقم الفاتورة", 0) or 0)):
+            row = inv.get("row_number", "") or ""
+            t = inv.get("النوع")
+            w = inv.get("الوزن", 0.0) or 0.0
+            if t == "السلك الراجع":
+                wire[row] = wire.get(row, 0.0) + w
+            elif t == "العيار بعد الفحص":
+                purity[row] = w
+                if w > 0:
+                    last = w
+        return {row: raji_ayar(w, purity.get(row) or last) for row, w in wire.items()}, last
 
     def get_section_khayas_split(self, cat_name, target_month=None, include_settled=False):
         """يفصل خياس قسم المصنعين/المركبين إلى مكوّنيه المحاسبيين:
@@ -12175,8 +12229,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat_name not in ("المصنعين", "المركبين"):
             return self.get_current_unclosed_khayas(cat_name)
 
+        # الفترة المعروضة للطرفين: ذهب/صافي الفترة ناقص ما أُقفل **منها** (كان يُطرح منه
+        # ما أُقفل في كل الفترات فيصغر الرقم بعد أول إقفال لشهر سابق)
         excess = self.get_section_excess_loss(cat_name)
-        closed = self.get_box_closed_total(cat_name)
+        closed = self.get_box_closed_total(cat_name, month=self.current_display_month)
 
         # كل الخياس مُقفل: لم يبقَ ذهب عند القسم إطلاقاً
         if self.get_current_unclosed_khayas(cat_name) <= 0.005:
@@ -12909,9 +12965,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 data["الخياس"] = w
                 data["trees"] = inv.get("trees_count", 0.0)
 
+        # الراجع/عيار يُخصم من الفاقد اللحظي كما في كشف حركة العامل: سلك كل حركة بعيارها،
+        # أو آخر عيار للعامل في الفترة إن لم يُسجَّل لها عيار (كانت هذه النافذة لا تخصمه)
+        _rows_raji, last_purity = self.worker_rows_raji(worker_invs)
         for dt, data in grouped_data.items():
             inv_str = str(data["inv_id"])
             note = data["note"]
+            if data["سلك راجع"] > 0 and not data["عيار"]:
+                data["عيار"] = last_purity
+            raji_v = raji_ayar(data["سلك راجع"], data["عيار"])
             
             if worker_name == "الكاستينج":
                 k_per_tree = round(data["الخياس"] / data["trees"], 2) if data["trees"] > 0 else 0.0
@@ -12921,10 +12983,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             elif cat == "الآلة/المكائن":
                 sub_tree.insert("", "end", values=(inv_str, dt, f"{data['قبل']:.2f}", f"{data['بعد']:.2f}", f"{data['الخياس']:.2f}", note))
             elif cat == "المركبين":
-                faqid = data['صرف'] - data['قبض'] + data['ليز']
+                faqid = data['صرف'] - data['قبض'] + data['ليز'] - raji_v
                 sub_tree.insert("", "end", values=(inv_str, dt, data['set_number'], f"{data['صرف']:.2f}", f"{data['قبض']:.2f}", f"{data['ليز']:.2f}", f"{data['سلك راجع']:.2f}", f"{data['عيار']:.1f}", f"{faqid:.2f}", note))
             else: # المصنعين
-                faqid = data['صرف'] - data['قبض'] - data['بوليش'] + data['ليز'] - data['مفنش 8'] - data['مفنش 4']
+                faqid = data['صرف'] - data['قبض'] - data['بوليش'] + data['ليز'] - data['مفنش 8'] - data['مفنش 4'] - raji_v
                 sub_tree.insert("", "end", values=(inv_str, dt, data['set_number'], f"{data['صرف']:.2f}", f"{data['قبض']:.2f}", f"{data['ليز']:.2f}", f"{data['بوليش']:.2f}", f"{data['مفنش 8']:.2f}", f"{data['مفنش 4']:.2f}", f"{data['سلك راجع']:.2f}", f"{data['عيار']:.1f}", f"{faqid:.2f}", note))
 
         def delete_single_inv():
@@ -12958,6 +13020,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # جلب كل الحركات المرتبطة بهذه البصمة الزمنية
             invs_to_edit = [inv for inv in self.invoices.values() if inv.get("الاسم") == worker_name and inv.get("التاريخ") == ref_dt]
             if not invs_to_edit: return
+            # الخانة الجديدة تنضمّ لصف الحركة نفسه وفترتها (كانت تُنشأ بلا رقم صف فتظهر صفاً
+            # منفصلاً «بدون ترقيم»، وبفترة الشاشة المعروضة لا فترة الحركة)
+            ref_row = next((i.get("row_number") for i in invs_to_edit if i.get("row_number")), "")
+            ref_period = self.inv_period(invs_to_edit[0])
             
             edit_win = ctk.CTkToplevel(self)
             edit_win.title(f"تعديل سجلات الحركة المجمعة - {ref_dt}")
@@ -13066,10 +13132,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                     "رقم الفاتورة": self.invoice_counter, "التاريخ": ref_dt,
                                     "الاسم": worker_name, "النوع": f_key, "الوزن": val,
                                     "البيان": new_note, "settled_status": "ACTIVE",
-                                    "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": new_set
+                                    "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": new_set,
+                                    "row_number": ref_row, "period": ref_period
                                 }
                                 self.invoices[self.invoice_counter] = inv_data
-                                self.save_invoice_to_db(self.invoice_counter, inv_data)
+                                if not self.save_invoice_to_db(self.invoice_counter, inv_data):
+                                    any_blocked = True
                         elif val == 0 and f_key in inv_ids:
                             if f_key != "العيار بعد الفحص":
                                 idx = inv_ids[f_key]
@@ -13793,8 +13861,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cat = box_names[account_key]
             if cat in ("المصنعين", "المركبين"):
                 worker_types_madin = {"صرف ذهب", "الليز"}
-                worker_types_daen = {"قبض ذهب", "البوليش", "المفنش ٨ بالالف", "المفنش ٤ بالالف"}
+                # الأنواع نفسها التي تدخل (ذهب/باقي) في معادلة القسم: المركبون صرف − قبض + ليز فقط
+                worker_types_daen = ({"قبض ذهب"} if cat == "المركبين" else
+                                     {"قبض ذهب", "البوليش", "المفنش ٨ بالالف", "المفنش ٤ بالالف"})
                 names_in_cat = set(self.categories.get(cat, []))
+                worker_periods = set()
                 for inv in self.invoices.values():
                     if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
                     if inv.get("الاسم") not in names_in_cat: continue
@@ -13802,6 +13873,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if t not in worker_types_madin and t not in worker_types_daen: continue
                     add(inv, inv["الوزن"] if t in worker_types_madin else 0.0,
                         inv["الوزن"] if t in worker_types_daen else 0.0, t)
+                    worker_periods.add(self.inv_period(inv))
+                # بقية المعادلة المعتمدة في آخر كل فترة: الحركات أعلاه تعطي (ذهب/باقي)، وهذان
+                # السطران يخصمان (المرجع ٧٥٠) و(الخياس الموجب) — فرصيد الفترة في الكشف = الفاقد
+                # الحالي في شاشة الخسائر = سطر «الخياس الفعلي» في كشف الخزينة (كان الكشف
+                # يقف عند ذهب/باقي فيختلف عن البطاقة التي يُفتح منها)
+                for period in sorted(p for p in worker_periods if p):
+                    _faqid, marja, pos, _total = self.get_section_khayas_parts(cat, target_month=period)
+                    for amount, label, bayan in (
+                            (marja, "المرجع ٧٥٠", f"السلك الراجع بعياره — فترة {period}"),
+                            (pos, "الخياس الموجب", f"خصم الخياس الموجب (المعادلة المعتمدة) — فترة {period}")):
+                        if abs(amount) < 0.005:
+                            continue
+                        rows.append({
+                            "رقم الفاتورة": "-", "التاريخ": self.period_closing_datetime(period)[:16],
+                            "الاسم": label, "مدين": 0.0 if amount > 0 else abs(amount),
+                            "دائن": amount if amount > 0 else 0.0,
+                            "البيان": bayan, "period": period, "_last": True,
+                        })
             else:
                 # حركات المرحلة: الصرف والقبض، ومنها مسترجع الكاستنج من فاقده الحالي
                 # (الوارد لحساب مسترجع المرحلة في كشف ذلك الحساب)
@@ -14556,7 +14645,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def submit_inbound(self):
         try:
-            d_val = self.in_date.get().strip()
+            d_val = self.read_entry_date(self.in_date.get().strip())
+            if not d_val:
+                return
             voucher = self.in_invoice_num.get().strip()
             if not voucher:
                 messagebox.showwarning("رقم الفاتورة مطلوب", "لازم تسجل رقم الفاتورة يدوياً قبل الترحيل.")
@@ -15387,12 +15478,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     r["خياس"] = round(r["خياس"] + w, 2)
         return [rows[s] for s in order]
 
-    def post_sale_rows(self, rows, name, full_dt, manual_no, note=""):
+    def post_sale_rows(self, rows, name, full_dt, manual_no, note="", period=None):
         """يسجّل سطور فاتورة مبيعات كحركات محاسبية (نفس منطق الترحيل الأصلي، مصدر واحد موحّد
         يستخدمه الترحيل الجديد وتعديل الفاتورة المرحّلة معاً). يرجع قائمة (رقم التشغيل، التاريخ، الاسم).
 
-        note: بيان الفاتورة — يُلحق ببيان كل حركة بعد دورها (sale_bayan)."""
+        note: بيان الفاتورة — يُلحق ببيان كل حركة بعد دورها (sale_bayan).
+        period: فترة الفاتورة الأصلية عند تعديلها — تبقى فيها ولا تنتقل للفترة المعروضة
+        (الترحيل الجديد بلا فترة يُختم بالفترة المعروضة كأي حركة)."""
         committed_groups = []
+
+        def store(record):
+            if period:
+                record["period"] = period
+            self.invoices[record["رقم الفاتورة"]] = record
+            self.save_invoice_to_db(record["رقم الفاتورة"], record)
         for row in rows:
             gold_v = row.get("ذهب", 0.0)
             diamond_v = row.get("الماس", 0.0)
@@ -15425,8 +15524,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         "قبل": raw_ref, "بعد": 0.0, "set_number": set_num, "row_number": row_num,
                         "رقم الفاتورة اليدوي": manual_no
                     }
-                    self.invoices[self.invoice_counter] = inv_data
-                    self.save_invoice_to_db(self.invoice_counter, inv_data)
+                    store(inv_data)
 
             # خياس البوليش: حالته MEMO فيُستثنى من الخزينة وكشفها ومن صندوق
             # خياس التلميع النهائي، ويبقى محفوظاً للعرض وإعادة البناء والقالب.
@@ -15438,8 +15536,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_POLISH, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
-                self.invoices[self.invoice_counter] = polish_data
-                self.save_invoice_to_db(self.invoice_counter, polish_data)
+                store(polish_data)
 
             # خياس المركب: مصدره حركات المركبين في مراحل التصنيع وهو محمّل هناك
             # أصلاً على صندوق المركبين. يُسجَّل هنا بحالة MEMO لحفظه مع الفاتورة
@@ -15453,8 +15550,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
-                self.invoices[self.invoice_counter] = asm_data
-                self.save_invoice_to_db(self.invoice_counter, asm_data)
+                store(asm_data)
 
             # سطر الصافي: معلوماتي بحت بحالة MEMO — خارج كل حسابات الخزينة
             # والفواقد، ووظيفته الوحيدة عرض الصافي بلا إعادة حسابه من حركات متفرقة
@@ -15466,8 +15562,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_NET, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
-                self.invoices[self.invoice_counter] = net_data
-                self.save_invoice_to_db(self.invoice_counter, net_data)
+                store(net_data)
 
             # خياس الطقم: لا يدخل ضمن أوزان الطقم المباعة، بل يُرحّل لصندوق (خياس الطقوم)
             if khayas_v > 0:
@@ -15480,8 +15575,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "settled_status": "ACTIVE", "trees_count": KHAYAS_MARK_FINAL, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
-                self.invoices[self.invoice_counter] = khayas_data
-                self.save_invoice_to_db(self.invoice_counter, khayas_data)
+                store(khayas_data)
 
             committed_groups.append((set_num, full_dt, name))
         return committed_groups
@@ -15544,6 +15638,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("تنبيه", "لم يتم العثور على حركات هذه الفاتورة.")
             return
         old_manual_no, old_date, old_name = key
+        # الفاتورة تبقى في فترتها الأصلية بعد الحفظ، حتى لو فُتحت من البحث أو التدقيق
+        # وأنت على فترة أخرى (كانت تُعاد كتابتها بالفترة المعروضة فتنتقل إليها)
+        old_period = self.inv_period(min(recs, key=lambda x: x.get("رقم الفاتورة", 0)))
         edit_rows = self.sale_records_to_rows(recs)
         old_note = next((n for n in (self.sale_note_of(r.get("البيان")) for r in
                                      sorted(recs, key=lambda x: x.get("رقم الفاتورة", 0))) if n), "")
@@ -15835,7 +15932,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.recalculate_all()
                     return
 
-            self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip())
+            self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip(),
+                                period=old_period)
 
             self.register_operation_period(new_date)
             self.recalculate_all()
@@ -16700,7 +16798,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not messagebox.askyesno("تأكيد الاعتماد", f"هل أنت متأكد من اعتماد وترحيل هذه الفاتورة لـ ({name})؟\nسيتم تسجيل {len(self.pending_sale_rows)} سطر/أسطر ولا يمكن التراجع إلا بالتعديل أو الحذف لاحقاً."):
             return
 
-        date_val = self.sale_date.get().strip() or self.get_smart_default_date()
+        date_val = self.read_entry_date(self.sale_date.get().strip() or self.get_smart_default_date())
+        if not date_val:
+            return
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
         note_widget = getattr(self, "sale_note", None)
         note = note_widget.get().strip() if note_widget is not None else ""
@@ -17693,6 +17793,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         if from_name == to_name:
             messagebox.showwarning("تنبيه", "لا يمكن أن يكون حساب المدين وحساب الدائن نفس الاسم.")
+            return
+        date_val = self.read_entry_date(date_val)
+        if not date_val:
             return
         # اسم غير مسجّل غالباً خطأ كتابة: قيدٌ عليه يُنشئ حساباً وهمياً لا يظهر في
         # أرصدة الموردين ولا الصناديق. لا نمنعه (قد يكون حساباً جديداً مقصوداً)، بل نؤكّد
@@ -19128,9 +19231,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "رقم الفاتورة اليدوي": row[12] if len(row) > 12 and row[12] else ""
         }
 
+        # حركة من فاتورة مبيعات ← نافذة الفاتورة كاملة: تعديل سطر واحد منها هنا كان يترك سطور
+        # الصافي والخياسات المحفوظة معها على قيمها القديمة
+        if inv["النوع"] in self.SALE_TYPES or inv["النوع"] == "خياس طقوم":
+            key = (inv["رقم الفاتورة اليدوي"] or "", inv["التاريخ"], inv["الاسم"])
+            if self.get_sale_invoice_records(key):
+                self.open_sale_invoice_editor(key)
+                return
+
+        # طرف قيد يومي: التعديل والحذف يشملان الطرف الآخر معاً، فيبقى القيد متوازناً (كان يُعدَّل
+        # أو يُحذف طرف واحد فيختلّ القيد: مدين بلا دائن أو بمبلغ مختلف — ومنها قيود الإقفال)
+        partner = None
+        if inv["النوع"] in self.JOURNAL_TYPES:
+            partner = self.journal_partner(self.invoices.get(inv_id) or inv)
+
         win = ctk.CTkToplevel(self)
         win.title(f"تعديل الفاتورة رقم: {inv_id}")
-        win.geometry("500x480")
+        win.geometry("500x520" if partner else "500x480")
         win.attributes("-topmost", True)
 
         entries_edit = []
@@ -19198,8 +19315,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         entry_note.insert(0, inv["البيان"])
         entry_note.pack(pady=8)
         entries_edit.append(entry_note)
+        if partner is not None:
+            ctk.CTkLabel(win, text=f"قيد يومي ({inv.get('set_number') or '-'}): المبلغ والتاريخ والبيان والحذف تُطبَّق "
+                                   f"على طرفيه معاً — والطرف الآخر «{partner.get('الاسم')}»",
+                         font=("Cairo", 12), wraplength=440, text_color=(UI["muted"], "#9AA4B2")).pack(pady=(0, 4))
+
+        def valid_date(text):
+            text = (text or "").strip()
+            try:
+                datetime.datetime.strptime(text[:10], "%Y-%m-%d")
+                return True
+            except ValueError:
+                return False
 
         def save_changes():
+            if not valid_date(entry_date.get()):
+                messagebox.showerror("خطأ", "الرجاء إدخال التاريخ بالصيغة YYYY-MM-DD.", parent=win)
+                return
             try:
                 new_name = entry_name.get().strip()
                 if inv["النوع"] == "خياس الاله/المكائن":
@@ -19222,6 +19354,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     inv["قبل"] = raw_w; inv["بعد"] = carat; inv["الوزن"] = round((raw_w * carat) / 18.0, 2)
                 else:
                     new_w = round(float(entry_weight.get()), 2)
+                    if new_w < 0:
+                        messagebox.showerror("خطأ", "لا يمكن إدخال وزن بالسالب.", parent=win)
+                        return
                     inv["الوزن"] = new_w
 
                 inv["التاريخ"] = entry_date.get().strip()
@@ -19232,6 +19367,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 if not saved_ok:
                     return  # تم المنع (رسالة "غير مسموح" ظهرت بالفعل) — لا تحدّث أي حاجة ولا تقفل النافذة
                 if inv_id in self.invoices: self.invoices[inv_id] = inv
+                if partner is not None:
+                    # الطرف الآخر بالمبلغ والتاريخ والبيان نفسها (اسمه يبقى كما هو)
+                    partner["الوزن"] = inv["الوزن"]
+                    partner["التاريخ"] = inv["التاريخ"]
+                    partner["البيان"] = inv["البيان"]
+                    self.save_invoice_to_db(partner["رقم الفاتورة"], partner)
                 
                 if is_archived or inv.get("settled_status") == "SETTLED" or inv.get("settled_status") == "SETTLED_INOUT":
                     self.sync_all_archives()
@@ -19244,10 +19385,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 messagebox.showerror("خطأ", "تأكد من صحة الأرقام والتاريخ المدخل", parent=win)
 
         def delete_record():
-            if messagebox.askyesno("تأكيد الحذف", "هل أنت متأكد من حذف هذه الحركة نهائياً؟ سيتم تحديث وتعديل جميع الأرصدة المرتبطة بها."):
+            question = ("هل أنت متأكد من حذف هذه الحركة نهائياً؟ سيتم تحديث وتعديل جميع الأرصدة المرتبطة بها."
+                        if partner is None else
+                        f"سيُحذف القيد اليومي بطرفيه معاً (هذا الطرف و«{partner.get('الاسم')}»)، فلا يبقى طرف بلا مقابل.\n"
+                        "هل أنت متأكد؟")
+            if messagebox.askyesno("تأكيد الحذف", question):
                 deleted_ok = self.delete_invoice_from_db(inv_id)
                 if not deleted_ok:
                     return  # تم المنع (رسالة "غير مسموح" ظهرت بالفعل)
+                if partner is not None:
+                    self.delete_invoice_from_db(partner["رقم الفاتورة"])
                 
                 if is_archived or inv.get("settled_status") == "SETTLED" or inv.get("settled_status") == "SETTLED_INOUT":
                     self.sync_all_archives()

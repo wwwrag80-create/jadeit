@@ -59,9 +59,11 @@ METHODS = [
     "bind_enter_navigation", "bind_arrow_navigation", "plan_column_widths",
     # فتح المسودة يُبقي خياس المركب المحفوظ حتى يتغيّر رقم التشغيل (ويُخفي سطر المصدر)
     "normalize_set_number", "show_assembler_source",
+    # تاريخ الترحيل بصيغة واحدة (والأرقام الهندية تُحوَّل)
+    "read_entry_date",
 ]
 ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
-         "SHRINKABLE_COLUMNS", "_SET_DIGITS"]
+         "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 
 EXTRA = '''
 def check_edit_permission(self): return True
@@ -232,8 +234,10 @@ ops = seg("refresh_sales_ops_table")
 assert '"الاسم", "البيان", "الذهب"' in ops and 'g.get("البيان", "")' in ops
 assert 'self.fit_columns_to_content(tree, "sales_ops"' in ops
 editor = seg("open_sale_invoice_editor")
-assert "self.sale_note_of(" in editor and "ent_note.get().strip())" in editor
-assert "self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip())" in editor
+assert "self.sale_note_of(" in editor and "ent_note.get().strip()" in editor
+# البيان يُمرَّر، والفاتورة تبقى في فترتها الأصلية عند الحفظ
+assert "self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip()," in editor
+assert "period=old_period" in editor
 print("✔ جدول العمليات: عمود البيان بعد الاسم؛ ونافذة التعديل تعرض البيان وتحفظه")
 
 # ═══ ٢) تعليق الفاتورة: بلا أي حركة محاسبية ═══

@@ -68,12 +68,12 @@ METHODS = [
     "submit_casting_recovery_op", "collect_stage_ops_rows", "render_stage_ops_table",
     "is_row_recovery", "is_recovery_op", "row_sort_key", "stage_row_extra",
     # بوليش ١ (الليزر) والتلميع — بلا خانة اسم، وأسماء الحسابات الثابتة
-    "submit_polish_buff_op", "submit_polish_op", "stage_row_taken", "get_account_label", "migrate_row_extras",
+    "submit_polish_buff_op", "submit_polish_op", "stage_row_taken", "get_account_label", "migrate_row_extras", "read_entry_date",
     # كشف الحساب والتراجع عن الإقفال
     "is_debit_nature_account", "get_account_ledger_rows", "_account_ledger_rows_all",
     "get_box_closing_entries",
 ]
-ATTRS = ["BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
+ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
          "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME",
          "LASER_NAME", "ACCOUNT_LABELS"]
