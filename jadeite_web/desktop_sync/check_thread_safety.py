@@ -61,6 +61,19 @@ elif "daemon=True" not in gpx:
 else:
     checks.append("gold_price: خيط daemon ولا يلمس الواجهة")
 
+scl = io.open("scale_reader.py", encoding="utf-8").read()
+if any(w in scl for w in ("ctk.", "tkinter", "messagebox.")):
+    problems.append("scale_reader يلمس الواجهة مباشرة")
+elif "daemon=True" not in scl:
+    problems.append("خيط الميزان ليس daemon")
+else:
+    checks.append("scale_reader: خيط daemon ولا يلمس الواجهة")
+tick = next((m for m in cls.body if isinstance(m, ast.FunctionDef) and m.name == "_scale_tick"), None)
+if tick is None or "self.after(" not in ast.get_source_segment(src, tick):
+    problems.append("مؤشر الميزان لا يُحدَّث عبر after من خيط الواجهة")
+else:
+    checks.append("مؤشر الميزان يُحدَّث من خيط الواجهة بـ after (القارئ لا يلمسها)")
+
 sd = io.open("sync_down.py", encoding="utf-8").read()
 if any(w in sd for w in ("ctk.", "tkinter", "messagebox.")):
     problems.append("sync_down يلمس الواجهة مباشرة")

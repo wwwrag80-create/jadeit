@@ -19,7 +19,7 @@ for node in ast.walk(cls):
         for t in node.targets:
             if isinstance(t, ast.Attribute) and t.attr == "_screen_builders":
                 builders = [k.value for k in node.value.keys]
-assert builders and len(builders) == 14, builders
+assert builders and len(builders) == 15, builders      # +لوحة المؤشرات (الدفعة ١٦)
 print(f"✔ {len(builders)} شاشة مسجّلة للبناء عند أول فتح")
 
 registered = set(re.findall(r'self\.tabview\.add\("([^"]+)"\)', src))

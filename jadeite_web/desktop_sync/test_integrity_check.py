@@ -215,7 +215,7 @@ txt = World().integrity_report_text(*World().run_integrity_checks(), seconds=1.2
 assert "✅ كل الحسابات متطابقة" in txt and "(1.2 ث)" in txt
 win = body("open_integrity_check_window")
 assert "self.run_integrity_checks()" in win and "clipboard_append" in win
-assert "command=self.open_integrity_check_window" in body("build_home_screen")
+assert "self.open_integrity_check_window" in body("build_home_screen")
 print("✔ نافذة الفحص: ملخص ثم جدول المجموعات ثم التفصيل، مع إعادة الفحص ونسخ التقرير، من الرئيسية")
 
 print("\n✅ فحص سلامة الحسابات سليم")

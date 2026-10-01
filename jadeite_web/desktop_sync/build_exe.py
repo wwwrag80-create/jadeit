@@ -39,7 +39,7 @@ TARGETS = {
 }
 
 # وحدات يستوردها البرنامج من مجلده — تُضمَّن داخل exe
-LOCAL_MODULES = ("cloud_sync", "sync_down", "supabase_api", "gold_price")
+LOCAL_MODULES = ("cloud_sync", "sync_down", "supabase_api", "gold_price", "scale_reader")
 # ملفات يقرؤها البرنامج وقت التشغيل عبر resource_path
 DATA_FILES = ("jadeite.ico", "jadeite_logo.png")
 # مجلدات تُضمَّن كما هي (خط Cairo العربي للواجهة)
@@ -48,7 +48,7 @@ FONT_FILES = ("fonts/Cairo-Regular.ttf", "fonts/Cairo-Bold.ttf", "fonts/Cairo-Se
 # مكتبات خارجية لازمة للتشغيل: (اسم الاستيراد، اسم الحزمة في pip)
 RUNTIME_PACKAGES = (("customtkinter", "customtkinter"), ("PIL", "Pillow"),
                     ("reportlab", "reportlab"), ("arabic_reshaper", "arabic-reshaper"),
-                    ("bidi", "python-bidi"), ("supabase", "supabase"))
+                    ("bidi", "python-bidi"), ("supabase", "supabase"), ("serial", "pyserial"))
 
 SECRET_PATTERNS = (
     re.compile(rb"sb_secret_[A-Za-z0-9_-]{8,}"),

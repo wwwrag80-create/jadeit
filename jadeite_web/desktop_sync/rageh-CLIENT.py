@@ -9,7 +9,8 @@ import contextlib
 import sqlite3
 import subprocess
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
+import tkinter.font as tkfont
 import customtkinter as ctk
 from PIL import Image
 
@@ -96,6 +97,14 @@ except Exception:
     GoldPriceWatcher = gram_price = None
     GOLD_PRICE_AVAILABLE = False
 
+# الميزان الإلكتروني (منفذ تسلسلي): اختياري — بدون الوحدة أو pyserial تُعطَّل الميزة وحدها
+try:
+    import scale_reader
+    SCALE_MODULE_AVAILABLE = True
+except Exception:
+    scale_reader = None
+    SCALE_MODULE_AVAILABLE = False
+
 try:
     from cloud_sync import CloudSync, install_sync_schema
     from sync_down import sync_down
@@ -128,7 +137,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.50.0"
+APP_VERSION = "1.51.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -267,6 +276,7 @@ APP_DATA_DIR = get_app_data_dir()
 DATA_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Data"))
 BACKUPS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Backups"))
 INVOICES_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Invoices"))
+EXPORTS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Exports"))       # تصدير الجداول إلى Excel
 LOGS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Logs"))
 
 # (أُلغي ملف الجلسة نهائياً — لا يُخزَّن أي سر على القرص)
@@ -1430,6 +1440,285 @@ class ThemedLabel(ctk.CTkLabel):
 
 
 ctk.CTkLabel = ThemedLabel
+
+
+class HoverTip:
+    """تلميح يظهر بعد نصف ثانية من الوقوف على زر أو مؤشر، ويختفي بالخروج أو النقر"""
+
+    def __init__(self, widget, text, delay=550):
+        self.widget, self.text, self.delay = widget, text, delay
+        self._job = self._win = None
+        for seq, fn in (("<Enter>", self._schedule), ("<Leave>", self._hide), ("<ButtonPress>", self._hide)):
+            try:
+                widget.bind(seq, fn, add="+")
+            except Exception:
+                pass
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        try:
+            self._job = self.widget.after(self.delay, self._show)
+        except Exception:
+            self._job = None
+
+    def _cancel(self):
+        if self._job is not None:
+            try:
+                self.widget.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+
+    def _show(self):
+        self._job = None
+        try:
+            if self._win is not None or not self.widget.winfo_exists():
+                return
+            x = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            try:
+                tw.attributes("-topmost", True)
+            except Exception:
+                pass
+            tk.Label(tw, text=self.text, justify="right", bg="#10213A", fg="#FFFFFF", font=("Cairo", 11),
+                     padx=10, pady=5, wraplength=340).pack()
+            tw.update_idletasks()
+            tw.wm_geometry(f"+{max(0, x - tw.winfo_width() // 2)}+{y}")
+            self._win = tw
+        except Exception:
+            self._win = None
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except Exception:
+                pass
+            self._win = None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  رسوم لوحة المؤشرات — على Canvas بلا مكتبات إضافية، بمواصفات موحّدة:
+#  خط ٢ بكسل ونقطة نهاية ٨ بكسل بحلقة بلون السطح، أعمدة ≤ ٢٤ بكسل بفجوة ٢ بكسل
+#  ونهاية مستديرة، شبكة شعرية خافتة، تسمية النهاية وحدها، ولوحة قيم عند المرور.
+#  الألوان: أزرق ثم برتقالي (مُتحقَّق منهما لعمى الألوان في المظهرين)، والنص بألوان النص.
+# ══════════════════════════════════════════════════════════════════════════
+CHART_SERIES = {"light": ("#2A78D6", "#EB6834"), "dark": ("#3987E5", "#D95926")}
+
+
+def chart_palette():
+    dark = ctk.get_appearance_mode() == "Dark"
+    return {"surface": "#171C23" if dark else "#FFFFFF", "grid": "#2A313B" if dark else "#E6EAF0",
+            "ink": "#E6EDF3" if dark else UI["ink"], "muted": "#9AA4B2" if dark else UI["muted"],
+            "tip": "#232A33" if dark else "#F6F8FB",
+            "series": CHART_SERIES["dark" if dark else "light"]}
+
+
+def nice_ticks(lo, hi, count=4):
+    """تدريج مقروء (0، 250، 500…) يغطي المدى ويشمل الصفر"""
+    lo, hi = min(0.0, lo), max(0.0, hi)
+    if hi - lo < 1e-9:
+        hi = lo + 1.0
+    raw = (hi - lo) / count
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    start = math.floor(lo / step) * step
+    ticks, v = [], start
+    while v <= hi + step * 1e-6:
+        ticks.append(round(v, 10))
+        v += step
+    if ticks[-1] < hi:
+        ticks.append(ticks[-1] + step)
+    return ticks
+
+
+def fmt_compact(v, decimals=0):
+    """أرقام المحاور: 1,250 أو 12.5K أو 1.2M"""
+    a = abs(v)
+    if a >= 1_000_000:
+        return f"{v / 1_000_000:.1f}M"
+    if a >= 10_000:
+        return f"{v / 1000:.0f}K"
+    return f"{v:,.{decimals}f}"
+
+
+class MiniChart(tk.Canvas):
+    """رسم بياني خفيف: «line» خطوط عبر الفترات، «bars» أعمدة مجمّعة، «hbars» أشرطة أفقية.
+    set_data(labels, [(اسم السلسلة، القيم)]) ثم يُرسم ويُعاد رسمه مع تغيّر الحجم."""
+
+    PAD = {"l": 62, "r": 74, "t": 14, "b": 30}
+
+    def __init__(self, master, kind="line", height=230, unit="", decimals=2, **kw):
+        self.pal = chart_palette()
+        super().__init__(master, height=height, highlightthickness=0, bd=0, bg=self.pal["surface"], **kw)
+        self.kind, self.unit, self.decimals = kind, unit, decimals
+        self.labels, self.series = [], []
+        self._geom = None
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<Motion>", self._on_motion)
+        self.bind("<Leave>", lambda e: self.delete("hover"))
+
+    def set_data(self, labels, series):
+        self.labels = list(labels)
+        self.series = [(name, [None if v is None else float(v) for v in values]) for name, values in series]
+        self.redraw()
+
+    def fmt(self, v):
+        return "—" if v is None else f"{v:,.{self.decimals}f}" + (f" {self.unit}" if self.unit else "")
+
+    # ------------------------------------------------------------ الرسم
+    def redraw(self):
+        self.delete("all")
+        self.pal = chart_palette()
+        self.configure(bg=self.pal["surface"])
+        w, h = max(self.winfo_width(), 200), max(self.winfo_height(), 120)
+        values = [v for _n, vals in self.series for v in vals if v is not None]
+        if not self.labels or not values:
+            self.create_text(w / 2, h / 2, text="لا توجد بيانات بعد", fill=self.pal["muted"],
+                             font=("Cairo", 12))
+            return
+        if self.kind == "hbars":
+            return self._draw_hbars(w, h)
+        P = self.PAD
+        x0, x1, y0, y1 = P["l"], w - P["r"], P["t"], h - P["b"]
+        ticks = nice_ticks(min(values), max(values))
+        lo, hi = ticks[0], ticks[-1]
+
+        def ypos(v):
+            return y1 - (v - lo) / (hi - lo) * (y1 - y0)
+        for t in ticks:                                 # شبكة شعرية + أرقام المحور
+            y = ypos(t)
+            self.create_line(x0, y, x1, y, fill=self.pal["grid"], width=1)
+            self.create_text(x0 - 8, y, text=fmt_compact(t), anchor="e", fill=self.pal["muted"],
+                             font=("Cairo", 10))
+        n = len(self.labels)
+        band = (x1 - x0) / max(1, n)
+        step = max(1, math.ceil(n / max(1, int((x1 - x0) / 70))))   # تسميات لا تتزاحم
+        for i, lab in enumerate(self.labels):
+            if (n - 1 - i) % step == 0:            # من الأحدث للخلف بخطوة ثابتة: الأخيرة تظهر دائماً
+                self.create_text(x0 + band * (i + 0.5), y1 + 14, text=lab, fill=self.pal["muted"],
+                                 font=("Cairo", 10))
+        self._geom = (x0, x1, y0, y1, band, ypos)
+        if self.kind == "bars":
+            self._draw_bars(ypos, x0, band, lo)
+        else:
+            self._draw_lines(ypos, x0, band)
+
+    def _draw_lines(self, ypos, x0, band):
+        ends = []
+        for si, (name, vals) in enumerate(self.series):
+            color = self.pal["series"][si % len(self.pal["series"])]
+            pts = [(x0 + band * (i + 0.5), ypos(v)) for i, v in enumerate(vals) if v is not None]
+            if len(pts) >= 2:
+                self.create_line(*[c for p in pts for c in p], fill=color, width=2,
+                                 capstyle="round", joinstyle="round")
+            if pts:
+                x, y = pts[-1]
+                self.create_oval(x - 5, y - 5, x + 5, y + 5, fill=color, outline=self.pal["surface"], width=2)
+                last = next(v for v in reversed(vals) if v is not None)
+                ends.append((y, x, last))
+        # تسمية النهاية وحدها — وتُترك للوحة القيم إن تقاربت النهايات
+        if len(ends) == 1 or (len(ends) == 2 and abs(ends[0][0] - ends[1][0]) >= 16):
+            for y, x, v in ends:
+                self.create_text(x + 10, y, text=fmt_compact(v, self.decimals if abs(v) < 10_000 else 0),
+                                 anchor="w", fill=self.pal["ink"], font=("Cairo", 10, "bold"))
+
+    def _draw_bars(self, ypos, x0, band, lo):
+        k = len(self.series)
+        bw = min(24.0, band * 0.7 / max(1, k) - 2)
+        base = ypos(max(lo, 0.0))
+        for i in range(len(self.labels)):
+            left = x0 + band * (i + 0.5) - (k * bw + (k - 1) * 2) / 2
+            for si, (_name, vals) in enumerate(self.series):
+                v = vals[i]
+                if v is None:
+                    continue
+                color = self.pal["series"][si % len(self.pal["series"])]
+                bx = left + si * (bw + 2)
+                top = ypos(v)
+                y_a, y_b = (top, base) if v >= 0 else (base, top)
+                if abs(y_b - y_a) < 1:
+                    continue
+                r = min(4, abs(y_b - y_a) / 2, bw / 2)
+                # نهاية البيانات مستديرة ٤ بكسل، والقاعدة مربّعة
+                end_y = y_a if v >= 0 else y_b
+                self.create_rectangle(bx, y_a + (r if v >= 0 else 0), bx + bw, y_b - (0 if v >= 0 else r),
+                                      fill=color, outline="")
+                self.create_oval(bx, end_y - (0 if v >= 0 else 2 * r), bx + bw,
+                                 end_y + (2 * r if v >= 0 else 0), fill=color, outline="")
+
+    def _draw_hbars(self, w, h):
+        """أشرطة أفقية من اليمين (التسمية يميناً والشريط يمتد يساراً): الطول بالقيمة المطلقة،
+        والسالب (زيادة) باللون الثاني ويُذكر في القيمة"""
+        name, vals = self.series[0]
+        n = len(self.labels)
+        try:
+            measure = tkfont.Font(family="Cairo", size=11).measure
+            label_w = max(measure(lab) for lab in self.labels) + 18
+        except Exception:
+            label_w = 150
+        value_w, top = 84, 10
+        row = max(22, min(34, (h - top * 2) / max(1, n)))
+        x_right, x_left = w - label_w, value_w
+        peak = max(abs(v) for v in vals if v is not None) or 1.0
+        self._geom = ("h", top, row)
+        for i, (lab, v) in enumerate(zip(self.labels, vals)):
+            yc = top + row * (i + 0.5)
+            self.create_text(w - 8, yc, text=lab, anchor="e", fill=self.pal["ink"], font=("Cairo", 11))
+            if v is None:
+                continue
+            color = self.pal["series"][0 if v >= 0 else 1]
+            length = (x_right - x_left) * abs(v) / peak
+            bh = min(18, row - 6)
+            if length >= 1:
+                self.create_rectangle(x_right - length + 4, yc - bh / 2, x_right, yc + bh / 2, fill=color, outline="")
+                self.create_oval(x_right - length, yc - bh / 2, x_right - length + 8, yc + bh / 2, fill=color,
+                                 outline="")
+            self.create_text(x_right - length - 6, yc, text=f"{v:,.{self.decimals}f}", anchor="e",
+                             fill=self.pal["ink"], font=("Cairo", 10, "bold"))
+        if any(v is not None and v < 0 for v in vals):     # مفتاح اللونين حين توجد زيادة (سالب)
+            for j, (cap, color) in enumerate((("فاقد", self.pal["series"][0]), ("زيادة (سالب)", self.pal["series"][1]))):
+                x = 10 + j * 110
+                self.create_rectangle(x, h - 14, x + 14, h - 10, fill=color, outline="")
+                self.create_text(x + 20, h - 12, text=cap, anchor="w", fill=self.pal["ink"], font=("Cairo", 10))
+
+    # ------------------------------------------------------------ المرور
+    def _on_motion(self, event):
+        self.delete("hover")
+        if not self._geom or not self.labels:
+            return
+        if self._geom[0] == "h":
+            _h, top, row = self._geom
+            i = int((event.y - top) // row)
+            if not 0 <= i < len(self.labels):
+                return
+            lines = [self.labels[i], self.fmt(self.series[0][1][i])]
+        else:
+            x0, x1, y0, y1, band, _ypos = self._geom
+            if not x0 <= event.x <= x1:
+                return
+            i = min(len(self.labels) - 1, max(0, int((event.x - x0) // band)))
+            cx = x0 + band * (i + 0.5)
+            self.create_line(cx, y0, cx, y1, fill=self.pal["muted"], width=1, tags="hover")
+            lines = [self.labels[i]] + [f"{name}: {self.fmt(vals[i])}" for name, vals in self.series]
+        text = "\n".join(lines)
+        right = event.x > self.winfo_width() / 2
+        lower = event.y > self.winfo_height() / 2              # في النصف الأسفل تنمو اللوحة لأعلى
+        tx = event.x - 12 if right else event.x + 12
+        ty = event.y - 12 if lower else event.y + 12
+        item = self.create_text(tx, ty, text=text, anchor=("s" if lower else "n") + ("e" if right else "w"),
+                                fill=self.pal["ink"], font=("Cairo", 10, "bold"), tags="hover", justify="right")
+        bx = self.bbox(item)
+        if bx and bx[3] + 6 > self.winfo_height():          # لا تخرج اللوحة من أسفل الرسم
+            self.move(item, 0, self.winfo_height() - bx[3] - 8)
+            bx = self.bbox(item)
+        if bx:
+            rect = self.create_rectangle(bx[0] - 8, bx[1] - 5, bx[2] + 8, bx[3] + 5, fill=self.pal["tip"],
+                                         outline=self.pal["grid"], tags="hover")
+            self.tag_lower(rect, item)
 
 
 def _apply_theme_defaults():
@@ -4021,6 +4310,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.gold_watcher.stop()
         except Exception:
             pass
+        try:
+            if getattr(self, 'scale_reader', None):
+                self.scale_reader.stop(timeout=0.5)
+        except Exception:
+            pass
         """يحاول رفع نسخة أخيرة للسحابة قبل إغلاق البرنامج (بدون تعطيل الإغلاق لو فشل الاتصال)"""
         if not IS_ADMIN_BUILD:
             try:
@@ -5008,7 +5302,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     except Exception:
                         pass
             self.update_undo_buttons()
-            messagebox.showinfo("تم التراجع", f"تم التراجع عن: {label}")
+            self.toast(f"↩️ تم التراجع عن: {label}", "success")
         except Exception as e:
             log_cloud_error("تعذّر التراجع", e)
             messagebox.showerror("خطأ", f"تعذّر إتمام التراجع:\n{e}")
@@ -5487,6 +5781,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         data_tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         data_tree.pack(side="left", fill="both", expand=True)
+        self.enable_table_tools(data_tree)
 
         # هامش بعرض شريط التمرير الرأسي نفسه (ويكبر معه بتكبير ويندوز)، حتى تصطف
         # أعمدة الشجرتين رأسياً رغم غياب الشريط في شجرة الإجمالي
@@ -5636,6 +5931,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         data_tree = ttk.Treeview(table_frame, columns=columns, show="headings")
         self.enable_row_hover(data_tree)
+        self.enable_table_tools(data_tree)
         for col in columns:
             data_tree.heading(col, text=self.wrap_header(col))
             data_tree.column(col, width=(col_widths or {}).get(col, 110),
@@ -5740,6 +6036,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         main_frame = ttk.Frame(row)
         main_frame.pack(side="right", fill="both", expand=True)
         main_tree = self.create_standard_treeview(main_frame, main_cols, height=height)
+        main_tree._no_sort = True        # الترتيب يفصله عن عمود الاسم الملاصق — النسخ والتصدير متاحان
         if main_col_widths:
             for col, w in main_col_widths.items():
                 main_tree.column(col, width=w, anchor="center", stretch=False)
@@ -6491,6 +6788,173 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         parent._cached_total_tree = total
         return tree, total, False
 
+    # ═══ أدوات كل جدول: الترتيب بالنقر على العنوان، وبزر الفأرة الأيمن: نسخ، تصدير Excel، بحث ═══
+    _NUM_CLEAN = re.compile(r"[,\u200e\u200f\s]|جم|ر\.س|‰|%")
+    SORT_ARROWS = (" ▲", " ▼")
+
+    @classmethod
+    def cell_number(cls, value):
+        """قيمة خلية رقماً إن كانت رقمية (تُزال الفواصل والوحدات وعلامات الاتجاه)، وإلا None"""
+        text = cls._NUM_CLEAN.sub("", str(value if value is not None else ""))
+        if not text or text in ("-", "—"):
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def enable_table_tools(self, tree):
+        if getattr(tree, "_tools_bound", False):
+            return
+        tree._tools_bound = True
+        tree.bind("<Button-3>", lambda e: self.show_table_menu(tree, e), add="+")
+        for seq in ("<Control-c>", "<Control-C>"):
+            tree.bind(seq, lambda e: (self.copy_tree_rows(tree, selected=True), "break")[1], add="+")
+        # ButtonRelease: الجداول التي يُعدَّل اسم عمودها بالنقر (Button-1) تُرتَّب من القائمة
+        tree.bind("<ButtonRelease-1>", lambda e: self._on_tree_header_click(tree, e), add="+")
+
+    def table_headers(self, tree):
+        cols = [c for c in tree["columns"] if not str(c).startswith("_")]
+        heads = []
+        for c in cols:
+            text = str(tree.heading(c).get("text", c)).replace("\n", " ")
+            for arrow in self.SORT_ARROWS:
+                text = text.replace(arrow, "")
+            heads.append(text.strip() or str(c))
+        return cols, heads
+
+    def _on_tree_header_click(self, tree, event):
+        if getattr(tree, "_rename_bound", False) or getattr(tree, "_no_sort", False):
+            return
+        if tree.identify_region(event.x, event.y) != "heading":
+            return
+        try:
+            col = tree["columns"][int(tree.identify_column(event.x).replace("#", "")) - 1]
+        except (ValueError, IndexError):
+            return
+        last = getattr(tree, "_sort_state", None)
+        self.sort_tree_by(tree, col, descending=bool(last and last[0] == col and not last[1]))
+
+    def sort_tree_by(self, tree, col, descending=False):
+        """يرتّب صفوف الجدول بعمود (الأرقام رقمياً، والنص والتاريخ أبجدياً)؛ صف الإجمالي يبقى آخراً"""
+        items = list(tree.get_children(""))
+        pinned = [i for i in items if "total_tag" in (tree.item(i, "tags") or ())]
+        rest = [i for i in items if i not in pinned]
+
+        def key(i):
+            raw = tree.set(i, col)
+            num = self.cell_number(raw)
+            return (0, num, "") if num is not None else (1, 0.0, str(raw))
+        numbers = sorted((i for i in rest if key(i)[0] == 0), key=key, reverse=descending)
+        texts = sorted((i for i in rest if key(i)[0] == 1), key=key, reverse=descending)
+        for idx, i in enumerate(numbers + texts + pinned):
+            tree.move(i, "", idx)
+        tree._sort_state = (col, descending)
+        cols, heads = self.table_headers(tree)
+        for c, h in zip(cols, heads):
+            try:
+                tree.heading(c, text=self.wrap_header(h) + (self.SORT_ARROWS[1 if descending else 0] if c == col else ""))
+            except Exception:
+                pass
+
+    def tree_rows(self, tree, selected=False):
+        """(العناوين، الصفوف) كما تُعرض — ومعها صف الإجمالي الملاصق إن وُجد"""
+        cols, heads = self.table_headers(tree)
+        items = tree.selection() if selected else tree.get_children("")
+        rows = [[str(tree.set(i, c)) for c in cols] for i in items]
+        total = getattr(tree, "_total_tree", None)
+        if total is not None and not selected:
+            try:
+                rows += [[str(total.set(i, c)) for c in cols] for i in total.get_children("")]
+            except Exception:
+                pass
+        return heads, rows
+
+    def copy_tree_rows(self, tree, selected=False):
+        heads, rows = self.tree_rows(tree, selected=selected)
+        if not rows:
+            self.toast("حدّد صفاً أولاً" if selected else "الجدول فارغ", "warn", parent=tree)
+            return 0
+        text = "\n".join("\t".join(r) for r in [heads] + rows)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.toast(f"📋 نُسخ {len(rows)} صف — الصقه في Excel أو أي برنامج", "success", parent=tree)
+        return len(rows)
+
+    @staticmethod
+    def write_table_csv(path, heads, rows):
+        """CSV بترميز UTF-8 مع BOM: يفتحه Excel بالعربية سليمة مباشرة"""
+        import csv
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(heads)
+            w.writerows(rows)
+        return path
+
+    def export_tree_csv(self, tree, path=None):
+        heads, rows = self.tree_rows(tree)
+        if not rows:
+            self.toast("الجدول فارغ", "warn", parent=tree)
+            return None
+        if path is None:
+            path = filedialog.asksaveasfilename(
+                parent=tree.winfo_toplevel(), initialdir=EXPORTS_DIR, defaultextension=".csv",
+                initialfile=f"jadeite_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                filetypes=[("Excel (CSV)", "*.csv")], title="تصدير الجدول إلى Excel")
+            if not path:
+                return None
+        self.write_table_csv(path, heads, rows)
+        self.toast(f"📤 صُدِّر {len(rows)} صف إلى Excel", "success", parent=tree)
+        try:
+            self._open_file(path)
+        except Exception:
+            pass
+        return path
+
+    def find_in_tree(self, tree, text=None):
+        """يحدّد كل صف يحتوي النص ويعرض أولها"""
+        if text is None:
+            text = ctk.CTkInputDialog(title="بحث في الجدول", text="اكتب ما تبحث عنه (اسم، رقم، تاريخ…):").get_input()
+        text = (text or "").strip()
+        if not text:
+            return []
+        hits = [i for i in tree.get_children("") if any(text in str(v) for v in tree.item(i, "values"))]
+        tree.selection_set(hits)
+        if hits:
+            tree.see(hits[0])
+            tree.focus(hits[0])
+        self.toast(f"🔍 {len(hits)} صف يحتوي «{text}»" if hits else f"لا يوجد «{text}» في الجدول",
+                   "success" if hits else "warn", parent=tree)
+        return hits
+
+    def show_table_menu(self, tree, event):
+        menu = tk.Menu(tree, tearoff=0, font=("Cairo", 12))
+        region = tree.identify_region(event.x, event.y)
+        row = tree.identify_row(event.y)
+        if row and row not in tree.selection():
+            tree.selection_set(row)
+        if region == "heading" and not getattr(tree, "_no_sort", False):
+            try:
+                col = tree["columns"][int(tree.identify_column(event.x).replace("#", "")) - 1]
+                label = dict(zip(*self.table_headers(tree))).get(col, col)
+                menu.add_command(label=f"▲ ترتيب تصاعدي حسب «{label}»",
+                                 command=lambda: self.sort_tree_by(tree, col, False))
+                menu.add_command(label=f"▼ ترتيب تنازلي حسب «{label}»",
+                                 command=lambda: self.sort_tree_by(tree, col, True))
+                menu.add_separator()
+            except (ValueError, IndexError):
+                pass
+        menu.add_command(label="📋 نسخ الصفوف المحددة   Ctrl+C", command=lambda: self.copy_tree_rows(tree, True))
+        menu.add_command(label="📋 نسخ الجدول كاملاً", command=lambda: self.copy_tree_rows(tree, False))
+        menu.add_command(label="📤 تصدير إلى Excel", command=lambda: self.export_tree_csv(tree))
+        menu.add_separator()
+        menu.add_command(label="🔍 بحث في الجدول…", command=lambda: self.find_in_tree(tree))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
     def create_standard_treeview(self, parent, columns, height=15):
         # كل جداول النظام تمرّ من هنا، فالتنسيق الموحّد يصلها جميعاً
         if not getattr(self, "_design", None):
@@ -6508,6 +6972,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         vsb.pack(side="right", fill="y")
         tree.pack(side="left", fill="both", expand=True)
+        self.enable_table_tools(tree)
 
         return tree
 
@@ -7020,6 +7485,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ("صناديق المصنع",   "🏭", "صناديق المصنع"),
     ]
     SIDEBAR_SECONDARY = [
+        ("لوحة المؤشرات",   "🧭", "لوحة المؤشرات"),
         ("ربح/خسارة الطقم", "📈", "ربح / خسارة الطقم"),
         ("كشف حساب",        "📑", "كشف حساب"),
         ("التقرير الشهري",  "📊", "التقرير الشهري"),
@@ -7039,6 +7505,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "شاشة الخسائر": "لكل مرحلة: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
         "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج",
         "ربح/خسارة الطقم": "خياسات كل طقم ومسترجعها وربحه أو خسارته",
+        "لوحة المؤشرات": "مؤشرات الإدارة: الخزينة والفاقد والمبيعات والطقوم المفتوحة عبر الفترات",
         "كشف حساب": "حركة أي حساب مع رصيد أول المدة المُرحَّل",
         "التقرير الشهري": "رصيد الخزينة لكل الفترات — كل فترة تبدأ بنهاية سابقتها",
         "أرشيف الفواتير": "كل الفواتير المرحّلة: معاينة وطباعة وتعديل",
@@ -7381,8 +7848,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             height=int(38 * scale), corner_radius=10,
             command=self.toggle_sidebar_arrange).pack(fill="x", padx=10, pady=(0, 4))
 
-        ctk.CTkLabel(self.sidebar, text="زر الفأرة الأيمن: تعديل الاسم أو النقل  ·  Esc: الرئيسية",
-                     font=("Cairo", 10), text_color=UI["muted"]).pack(pady=(0, 10))
+        ctk.CTkLabel(self.sidebar, text="يمين الفأرة: تعديل/نقل  ·  Esc: الرئيسية  ·  F1: الاختصارات",
+                     font=("Cairo", 10), text_color=UI["muted"], wraplength=max(120, self.sidebar_width() - 24),
+                     justify="center").pack(pady=(0, 10))
 
     def create_layout(self):
         # الشريط الجانبي أولاً وبكامل ارتفاع النافذة (من أعلاها لأسفلها)،
@@ -7442,6 +7910,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 hover_color=(UI["surface_alt"], "#232A33"), command=self.undo_last_action)
             btn_global_undo.pack(side="right", padx=4, pady=6)
             self.register_undo_button(btn_global_undo, compact=True)
+            HoverTip(btn_global_undo, "تراجع عن آخر حذف أو إقفال (Ctrl+Z) — آخر ٢٠ خطوة")
 
         # صف أدوات واحد: كل الأزرار جنباً إلى جنب أفقياً بلا تبعثر رأسي
         period_column = ctk.CTkFrame(top_frame, fg_color="transparent")
@@ -7547,6 +8016,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.tabview.add("القيود اليومية")
         self.tabview.add("شاشة الخسائر")
         self.tabview.add("ربح/خسارة الطقم")
+        self.tabview.add("لوحة المؤشرات")
 
         # ═══════════════════════════════════════════════════════════════
         #  بناء كسول للشاشات
@@ -7573,15 +8043,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "شاشة الخسائر":     self.build_losses_tab,
             "الحسابات":         self.build_chart_of_accounts_tab,
             "ربح/خسارة الطقم":  self.build_sets_profit_tab,
+            "لوحة المؤشرات":    self.build_dashboard_tab,
         }
         self._built_screens = set()
 
         self.bind("<Escape>", self._on_escape_key, add="+")
         self.bind("<Control-KeyPress>", self._on_ctrl_number_key, add="+")
+        self.bind_all("<F1>", lambda e: self.open_shortcuts_help(), add="+")
 
         self.ensure_default_khayas_boxes()
         self.remove_legacy_casting_box()
         self.build_gold_price_bar()
+        if not IS_ADMIN_BUILD:
+            self.build_scale_indicator()
         self.build_home_screen()
         self.show_home_screen()
         self.update_edit_status_ui()
@@ -7665,6 +8139,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             command=lambda label: self.set_value_karat(names[label]))
         karat_menu.set(f"عيار {self.KARAT_LATIN[self.value_karat()]}")
         karat_menu.pack(side="left", padx=(0, 4))
+        HoverTip(karat_menu, "عيار تقييم الأرصدة بالريال (يُحفظ لهذا الجهاز)")
         self.lbl_gold_value = ctk.CTkLabel(self.gold_bar, text="", font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
                                            text_color="#E9C75C")
         self.lbl_gold_value.pack(side="left", padx=(4, 8))
@@ -7720,6 +8195,295 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lbl.configure(text=text)
         except Exception:
             pass
+
+    # ═══ إشعار عابر (toast): رسالة نجاح/تنبيه قصيرة لا توقف العمل ولا تحتاج «موافق» ═══
+    TOAST_COLORS = {"info": ("#1E3A5F", "#FFFFFF"), "success": ("#1F6E4A", "#FFFFFF"),
+                    "warn": ("#8A5A00", "#FFFFFF"), "error": ("#B4343C", "#FFFFFF")}
+
+    def toast(self, text, kind="info", ms=2600, parent=None):
+        """يعرض رسالة قصيرة أسفل النافذة (النشطة أو parent) ثم تختفي وحدها"""
+        try:
+            host = parent.winfo_toplevel() if parent is not None else self
+            old = getattr(host, "_jade_toast", None)
+            if old is not None:
+                try:
+                    old.destroy()
+                except Exception:
+                    pass
+            bg, fg = self.TOAST_COLORS.get(kind, self.TOAST_COLORS["info"])
+            frame = ctk.CTkFrame(host, fg_color=bg, corner_radius=12)
+            ctk.CTkLabel(frame, text=text, text_color=fg, font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
+                         wraplength=520).pack(padx=18, pady=8)
+            frame.place(relx=0.5, rely=1.0, y=-64, anchor="s")
+            frame.lift()
+            host._jade_toast = frame
+            host.after(ms, lambda: frame.winfo_exists() and frame.destroy())
+            return frame
+        except Exception:
+            return None
+
+    # ═══ الميزان الإلكتروني: F2 داخل خانة الوزن يكتب القراءة المستقرة ═══
+    SCALE_PREF_KEYS = ("scale_enabled", "scale_port", "scale_baud", "scale_preset")
+
+    def scale_settings(self):
+        prefs = load_ui_prefs()
+        preset = prefs.get("scale_preset")
+        presets = scale_reader.PRESETS if SCALE_MODULE_AVAILABLE else {}
+        return {"enabled": bool(prefs.get("scale_enabled", False)),
+                "port": str(prefs.get("scale_port") or ""),
+                "baud": int(prefs.get("scale_baud") or (scale_reader.DEFAULT_BAUD if SCALE_MODULE_AVAILABLE else 9600)),
+                "preset": preset if preset in presets else (scale_reader.DEFAULT_PRESET if SCALE_MODULE_AVAILABLE else "")}
+
+    def start_scale_reader(self):
+        """يشغّل قارئ الميزان حسب إعداد هذا الجهاز (أو يوقفه إن عُطّل)"""
+        old = getattr(self, "scale_reader", None)
+        if old is not None:
+            try:
+                old.stop(timeout=0.5)
+            except Exception:
+                pass
+        self.scale_reader = None
+        conf = self.scale_settings()
+        if not (SCALE_MODULE_AVAILABLE and conf["enabled"] and conf["port"]):
+            return None
+        self.scale_reader = scale_reader.ScaleReader(conf["port"], conf["baud"],
+                                                     scale_reader.PRESETS.get(conf["preset"]))
+        self.scale_reader.start()
+        return self.scale_reader
+
+    def build_scale_indicator(self):
+        """مؤشر الميزان في الشريط السفلي (الضغط عليه يفتح الإعداد) و F2 في أي نافذة"""
+        bar = getattr(self, "gold_bar", None)
+        if bar is None:
+            return
+        self.lbl_scale = ctk.CTkLabel(bar, text="⚖️ الميزان", cursor="hand2",
+                                      font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                                      text_color="#C9D6E8")
+        self.lbl_scale.pack(side="left", padx=(6, 8))
+        self.lbl_scale.bind("<Button-1>", lambda e: self.open_scale_settings())
+        HoverTip(self.lbl_scale, "الميزان الإلكتروني: اضغط للإعداد — وF2 داخل أي خانة وزن يكتب القراءة المستقرة")
+        self.bind_all("<F2>", self._on_scale_key, add="+")
+        self.start_scale_reader()
+        self._scale_tick()
+
+    def _scale_tick(self):
+        """يحدّث مؤشر الميزان كل نصف ثانية من خيط الواجهة (القارئ لا يلمس الواجهة)"""
+        lbl = getattr(self, "lbl_scale", None)
+        try:
+            if lbl is None or not lbl.winfo_exists():
+                return
+            reader = getattr(self, "scale_reader", None)
+            lbl.configure(text=reader.status_text() if reader is not None else "⚖️ الميزان: غير مضبوط")
+            self.after(500, self._scale_tick)
+        except Exception:
+            pass
+
+    def _on_scale_key(self, event=None):
+        widget = getattr(event, "widget", None) if event is not None else None
+        try:
+            focus = self.focus_get()
+        except Exception:
+            focus = None
+        self.insert_scale_weight(focus if isinstance(focus, tk.Entry) else widget)
+        return "break"
+
+    def insert_scale_weight(self, entry=None, attempts=0):
+        """يكتب وزن الميزان المستقر في الخانة؛ ينتظر الثبات حتى ٣ ثوانٍ ثم ينبّه"""
+        reader = getattr(self, "scale_reader", None)
+        if reader is None:
+            self.toast("⚖️ الميزان غير مضبوط — اضغط مؤشر الميزان أسفل الشاشة لإعداده", "warn", parent=entry)
+            return False
+        if not isinstance(entry, tk.Entry):
+            self.toast("ضع المؤشر في خانة الوزن ثم اضغط F2", "warn", parent=entry)
+            return False
+        r = reader.current()
+        if r is None:
+            self.toast("⚖️ لا توجد قراءة من الميزان — تأكد من توصيله وتشغيله", "error", parent=entry)
+            return False
+        if not r["stable"]:
+            if attempts < 12:
+                self.after(250, lambda: self.insert_scale_weight(entry, attempts + 1))
+                return None
+            self.toast("⚖️ القراءة غير مستقرة — انتظر ثبات الميزان ثم أعد F2", "warn", parent=entry)
+            return False
+        if r["grams"] < 0:
+            self.toast("⚖️ الوزن سالب — أعد تصفير الميزان", "warn", parent=entry)
+            return False
+        entry.delete(0, "end")
+        entry.insert(0, f"{r['grams']:.2f}")
+        self.toast(f"⚖️ {r['grams']:.2f} جم من الميزان", "success", ms=1600, parent=entry)
+        return True
+
+    def open_scale_settings(self):
+        """إعداد الميزان لهذا الجهاز: المنفذ، السرعة، نوع الميزان — مع قراءة حيّة للتجربة"""
+        win = ctk.CTkToplevel(self)
+        win.title("إعداد الميزان الإلكتروني")
+        win.geometry("560x450")
+        win.transient(self)
+        win.focus_force()
+        ctk.CTkLabel(win, text="⚖️ الميزان الإلكتروني", font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(win, text="وصّل الميزان بكابل RS-232 أو USB، واختر منفذه ونوعه.\n"
+                               "بعدها: ضع المؤشر في أي خانة وزن واضغط F2 فيُكتب الوزن المستقر.",
+                     font=("Cairo", 12), text_color=UI["muted"], justify="center").pack(pady=(0, 8))
+        if not SCALE_MODULE_AVAILABLE or not scale_reader.SERIAL_AVAILABLE:
+            ctk.CTkLabel(win, text="مكتبة الاتصال بالمنافذ (pyserial) غير مثبّتة في هذه النسخة.",
+                         font=("Cairo", 13, "bold"), text_color=UI["danger"]).pack(pady=20)
+            ctk.CTkButton(win, text="إغلاق", command=win.destroy, **BUTTON_STYLES["secondary"]).pack()
+            return win
+        conf = self.scale_settings()
+        form = ctk.CTkFrame(win, fg_color="transparent")
+        form.pack(pady=4)
+
+        def row(label, widget_factory):
+            r = ctk.CTkFrame(form, fg_color="transparent")
+            r.pack(fill="x", pady=4)
+            ctk.CTkLabel(r, text=label, font=("Cairo", 13, "bold"), width=120, anchor="e").pack(side="right", padx=6)
+            w = widget_factory(r)
+            w.pack(side="right", padx=6)
+            return w
+
+        ports = [p for p, _d in scale_reader.list_ports()]
+        port_box = row("المنفذ:", lambda r: ctk.CTkComboBox(r, values=ports or [""], width=260, font=("Cairo", 13)))
+        port_box.set(conf["port"] or (ports[0] if ports else ""))
+        baud_box = row("السرعة:", lambda r: ctk.CTkOptionMenu(r, values=[str(b) for b in scale_reader.BAUD_RATES],
+                                                              width=260, font=("Cairo", 13)))
+        baud_box.set(str(conf["baud"]))
+        preset_box = row("نوع الميزان:", lambda r: ctk.CTkOptionMenu(r, values=list(scale_reader.PRESETS),
+                                                                     width=260, font=("Cairo", 13)))
+        preset_box.set(conf["preset"])
+        enabled = ctk.BooleanVar(value=conf["enabled"])
+        ctk.CTkCheckBox(win, text="تفعيل الميزان على هذا الجهاز", variable=enabled,
+                        font=("Cairo", 13, "bold")).pack(pady=6)
+        live = ctk.CTkLabel(win, text="", font=("Cairo", 15, "bold"), corner_radius=10, height=44,
+                            fg_color=(UI["surface_alt"], "#1D232B"))
+        live.pack(fill="x", padx=24, pady=8)
+        raw = ctk.CTkLabel(win, text="", font=("Cairo", 11), text_color=UI["muted"])
+        raw.pack()
+
+        def save():
+            save_ui_pref("scale_enabled", bool(enabled.get()))
+            save_ui_pref("scale_port", port_box.get().strip())
+            save_ui_pref("scale_baud", int(baud_box.get()))
+            save_ui_pref("scale_preset", preset_box.get())
+            self.start_scale_reader()
+            self.toast("✅ حُفظ إعداد الميزان" if enabled.get() else "أُوقف الميزان على هذا الجهاز", "success",
+                       parent=win)
+
+        def tick():
+            if not win.winfo_exists():
+                return
+            reader = getattr(self, "scale_reader", None)
+            if reader is None:
+                live.configure(text="الميزان غير مفعّل — اختر المنفذ وفعّله ثم «حفظ وتشغيل»")
+            else:
+                r = reader.current()
+                live.configure(text=(f"{r['grams']:.3f} جم  " + ("✓ مستقر" if r["stable"] else "… يتحرّك"))
+                               if r else ("غير متصل: " + reader.error if reader.error else "بانتظار قراءة…"))
+                raw.configure(text=f"آخر سطر من الميزان: {reader.last_raw}" if reader.last_raw else "")
+            win.after(400, tick)
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=10)
+        ctk.CTkButton(btns, text="💾 حفظ وتشغيل", width=150, height=40, font=("Cairo", 14, "bold"),
+                      command=save, **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
+        ctk.CTkButton(btns, text="إغلاق", width=110, height=40, font=("Cairo", 14, "bold"),
+                      command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        tick()
+        return win
+
+    SHORTCUTS = (
+        ("Ctrl + 1 … 6", "فتح الشاشات الرئيسية بترتيب الشريط الجانبي"),
+        ("Esc", "العودة للقائمة الرئيسية"),
+        ("Enter / الأسهم", "الانتقال بين الخانات، وEnter في آخر خانة يرحّل"),
+        ("F2", "كتابة وزن الميزان الإلكتروني المستقر في الخانة"),
+        ("Ctrl + Z", "التراجع عن آخر حذف أو إقفال"),
+        ("Ctrl + B", "تتبّع رقم تشغيل (امسح باركود التذكرة)"),
+        ("Ctrl + C", "نسخ الصفوف المحددة من أي جدول"),
+        ("زر الفأرة الأيمن على جدول", "نسخ، تصدير إلى Excel، بحث، ترتيب"),
+        ("النقر على عنوان عمود", "ترتيب الجدول به (نقرة ثانية تعكس الترتيب)"),
+        ("F1", "هذه القائمة"),
+    )
+
+    def open_shortcuts_help(self):
+        win = getattr(self, "_shortcuts_win", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            return win
+        win = ctk.CTkToplevel(self)
+        self._shortcuts_win = win
+        win.title("اختصارات لوحة المفاتيح")
+        win.geometry("700x540")
+        win.transient(self)
+        ctk.CTkLabel(win, text="⌨️ اختصارات تسرّع العمل", font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(16, 8))
+        box = ctk.CTkFrame(win, corner_radius=12, fg_color=(UI["surface"], "#171C23"), border_width=1,
+                           border_color=(UI["line"], "#2A313B"))
+        box.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+        for key, what in self.SHORTCUTS:
+            row = ctk.CTkFrame(box, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=5)
+            ctk.CTkLabel(row, text=key, width=240, height=30, corner_radius=8, font=("Cairo", 13, "bold"),
+                         fg_color=(UI["surface_alt"], "#232A33"), text_color=(UI["title"], "#C9D6E8")).pack(side="right")
+            ctk.CTkLabel(row, text=what, anchor="e", font=("Cairo", 13),
+                         text_color=(UI["ink"], "#E6EDF3")).pack(side="right", fill="x", expand=True, padx=12)
+        ctk.CTkButton(win, text="إغلاق", width=120, height=36, command=win.destroy,
+                      **BUTTON_STYLES["secondary"]).pack(pady=(0, 14))
+        return win
+
+    # ═══ مركز التنبيهات في الرئيسية: ما يحتاج متابعة الآن، وكل تنبيه يفتح شاشته ═══
+    BACKUP_ALERT_DAYS = 3
+
+    def local_backup_age_days(self, now=None):
+        files = self.list_local_backups() if hasattr(self, "backup_dir") else []
+        if not files:
+            return None
+        newest = os.path.getmtime(files[0])
+        return int(((now or time.time()) - newest) // 86400)
+
+    def home_alerts(self, today=None):
+        """[(المستوى، النص، الإجراء)] — المتأخر عند العمال، الفترات غير المُقفلة، وعمر النسخة الاحتياطية"""
+        alerts = []
+        jobs = self.open_jobs(today=today)
+        late = [j for j in jobs if j["overdue"]]
+        if late:
+            alerts.append(("warn", f"{len(late):,} طقم متأخر عند العمال (أكثر من {self.overdue_days()} يوم) "
+                                   f"بذهب {sum(j['issued'] for j in late):,.2f} جم", self.open_open_jobs_report))
+        unclosed = [(c, m) for c in self.WORKER_SECTIONS for m, _a in self.get_unclosed_periods(c)]
+        if unclosed:
+            alerts.append(("warn", f"{len(unclosed)} فترة سابقة لم يُقفل خياسها (" +
+                           "، ".join(sorted({m for _c, m in unclosed})[:4]) + ")",
+                           lambda: self.navigate_to_screen("صناديق الخياس")))
+        if not IS_ADMIN_BUILD:
+            age = self.local_backup_age_days()
+            if age is None:
+                alerts.append(("info", "لا توجد نسخة احتياطية محلية بعد — احفظ نسخة الآن", self.open_backup_manager))
+            elif age >= self.BACKUP_ALERT_DAYS:
+                alerts.append(("info", f"آخر نسخة احتياطية محلية منذ {age} يوم", self.open_backup_manager))
+        return alerts
+
+    def refresh_home_alerts(self):
+        frame = getattr(self, "home_alerts_frame", None)
+        if frame is None:
+            return
+        try:
+            alerts = self.home_alerts()
+        except Exception as e:
+            log_cloud_error("تعذّر حساب التنبيهات", e)
+            return
+        for w in frame.winfo_children():
+            w.destroy()
+        head = ctk.CTkFrame(frame, fg_color="transparent")
+        head.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(head, text=f"🔔 التنبيهات ({len(alerts)})" if alerts else "🔔 التنبيهات",
+                     font=("Cairo", 14, "bold"), text_color=UI_TITLE).pack(side="right")
+        if not alerts:
+            ctk.CTkLabel(frame, text="✅ لا تنبيهات — كل شيء تحت السيطرة", font=("Cairo", 13),
+                         text_color=(UI["ink"], "#E6EDF3"), anchor="e").pack(fill="x", padx=16, pady=(0, 10))
+            return
+        for level, text, action in alerts[:4]:
+            ctk.CTkButton(frame, text=("⚠️  " if level == "warn" else "ℹ️  ") + text, anchor="e",
+                          height=32, font=("Cairo", 13, "bold"), command=action,
+                          **BUTTON_STYLES["danger" if level == "warn" else "secondary"]).pack(fill="x", padx=12, pady=3)
+        ctk.CTkFrame(frame, height=6, fg_color="transparent").pack()
 
     def _on_gold_price(self, snapshot):
         """يُستدعى من الخيط الخلفي — يمرّ عبر after حتى لا يُسقط Tkinter"""
@@ -7804,7 +8568,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_home_screens_default(self):
         return ["الحسابات", "الرصيد الافتتاحي", "الوارد", "المبيعات", "الموردين", "مراحل التصنيع",
                 "صناديق الخياس", "صناديق المصنع", "كشف حساب", "التقرير الشهري", "أرشيف الفواتير",
-                "القيود اليومية", "شاشة الخسائر", "ربح/خسارة الطقم"]
+                "القيود اليومية", "شاشة الخسائر", "ربح/خسارة الطقم", "لوحة المؤشرات"]
 
     def load_home_order(self):
         """يقرأ ترتيب الشاشات المحفوظ، ويصلحه تلقائياً لو أُضيفت أو حُذفت شاشة في نسخة أحدث"""
@@ -7884,7 +8648,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # ═══ ملخص الفترة المعروضة: أربع بطاقات هادئة أسفل الشعار ═══
         stats_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        stats_row.pack(fill="x", padx=24, pady=(4, 14))
+        stats_row.pack(fill="x", padx=24, pady=(4, 8))
+
+        # إجراءات سريعة للإدارة (للعميل والمدير معاً — كلها قراءة)
+        quick = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        quick.pack(fill="x", padx=30, pady=(0, 8))
+        for text, cmd, style, tip in (
+                ("🧭 لوحة المؤشرات", lambda: self.navigate_to_screen("لوحة المؤشرات"), "primary",
+                 "مؤشرات الإدارة ورسومها: الخزينة، نسبة الفاقد، المبيعات والوارد، الصناديق، الطقوم المفتوحة"),
+                ("🧾 الطقوم المفتوحة", self.open_open_jobs_report, "secondary",
+                 "ما صُرف ولم يُستلم منه شيء، بعمره بالأيام، والذهب عند كل عامل الآن"),
+                ("🩺 فحص سلامة الحسابات", self.open_integrity_check_window, "secondary",
+                 "يطابق الخزينة والصناديق والكشوف والمبيعات والقيود في كل فترة — قراءة فقط"),
+                ("⌨️ الاختصارات", self.open_shortcuts_help, "secondary", "كل اختصارات لوحة المفاتيح (F1)")):
+            b = ctk.CTkButton(quick, text=text, height=36, corner_radius=10, command=cmd,
+                              font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), **BUTTON_STYLES[style])
+            b.pack(side="right", padx=4, fill="x", expand=True)
+            HoverTip(b, tip)
+        # مركز التنبيهات: ما يحتاج متابعة الآن (يُحدَّث مع ملخص الفترة)
+        self.home_alerts_frame = ctk.CTkFrame(self.home_frame, corner_radius=14, border_width=1,
+                                              fg_color=(UI["surface"], "#171C23"), border_color=(UI["line"], "#2A313B"))
+        self.home_alerts_frame.pack(fill="x", padx=30, pady=(0, 14))
         self.home_stat_labels = {}
         # أيقونات البطاقات الأربع على خلفية واحدة هادئة (كانت أربعة ألوان)
         tint = (UI["primary_soft"], "#1B2B45")
@@ -7908,11 +8692,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             val.pack(anchor="e")
             self.home_stat_labels[key] = val
 
-        # فحص سلامة الحسابات في متناول اليد من الرئيسية (للعميل والمدير معاً — قراءة فقط)
-        ctk.CTkButton(header_row, text="🩺 فحص سلامة الحسابات", width=180, height=34, corner_radius=10,
-                      font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                      command=self.open_integrity_check_window,
-                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=4)
 
         self.home_arrange_mode = False
         self.home_swap_pick = None
@@ -7968,6 +8747,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.lbl_home_hint.configure(text=self.home_greeting_text())
         except Exception as e:
             log_cloud_error("تعذّر تحديث ملخص الشاشة الرئيسية", e)
+        self.refresh_home_alerts()
 
     def render_home_buttons(self):
         """يعيد رسم أزرار الشاشات حسب الترتيب المحفوظ (٣ شاشات في كل عمود، من اليمين لليسار)"""
@@ -8106,6 +8886,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "الرصيد الافتتاحي": ("refresh_opening_table",),
         "صناديق المصنع": ("refresh_factory_boxes_table",),
         "ربح/خسارة الطقم": ("refresh_sets_profit_tab",),
+        "لوحة المؤشرات": ("refresh_dashboard",),
     }
 
     def _refresh_dynamic_stages(self):
@@ -8766,11 +9547,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_del_row.pack(side="left", padx=3)
 
         # تذكرة التشغيل للصف المحدد (أو للرقم المكتوب) وتتبّع أي رقم بالمسح (Ctrl+B)
-        ctk.CTkButton(ledger_header, text="🏷️ تذكرة", font=("Cairo", 12, "bold"), width=90, height=30,
-                      command=self.print_stage_job_ticket, **BUTTON_STYLES["secondary"]).pack(side="left", padx=3)
-        ctk.CTkButton(ledger_header, text="🔎 تتبّع رقم", font=("Cairo", 12, "bold"), width=105, height=30,
-                      command=lambda: self.open_set_number_trace(self.stage_selected_set_number() or None),
-                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=3)
+        btn_ticket = ctk.CTkButton(ledger_header, text="🏷️ تذكرة", font=("Cairo", 12, "bold"), width=90, height=30,
+                                   command=self.print_stage_job_ticket, **BUTTON_STYLES["secondary"])
+        btn_ticket.pack(side="left", padx=3)
+        HoverTip(btn_ticket, "تذكرة تشغيل بباركود وQR للصف المحدد أو للرقم المكتوب في خانته")
+        btn_trace = ctk.CTkButton(ledger_header, text="🔎 تتبّع رقم", font=("Cairo", 12, "bold"), width=105, height=30,
+                                  command=lambda: self.open_set_number_trace(self.stage_selected_set_number() or None),
+                                  **BUTTON_STYLES["secondary"])
+        btn_trace.pack(side="left", padx=3)
+        HoverTip(btn_trace, "رحلة رقم التشغيل كاملة عبر الأقسام والفترات (أو Ctrl+B ثم امسح الباركود)")
 
         # زر التلوين لقسمي المصنعين والمركبين: يتبع القسم المعروض حالياً،
         # وإعداده محفوظ لكل قسم على حدة
@@ -11160,12 +11945,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_close_khayas = ctk.CTkButton(header_bar, text="🔒 إقفال الخياس", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=130, height=36, command=lambda: self.close_khayas_box(self.current_view_cat))
         btn_close_khayas.pack(side="left", padx=5, pady=6)
 
+        # الطقوم المفتوحة والذهب عند العمال (مع التأخير بالأيام)
+        btn_jobs = ctk.CTkButton(header_bar, text="🧾 الطقوم المفتوحة", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                                 width=140, height=36, command=self.open_open_jobs_report, **BUTTON_STYLES["secondary"])
+        btn_jobs.pack(side="left", padx=5, pady=6)
+        HoverTip(btn_jobs, "ما صُرف ولم يُستلم منه شيء، بعمره بالأيام، والذهب عند كل عامل الآن")
+
         # أداء العمال عبر الفترات: نسبة الفاقد إلى الإنتاج بالألف واتجاهها
-        ctk.CTkButton(header_bar, text="📊 أداء العمال", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                      width=120, height=36,
-                      command=lambda: self.open_worker_performance_report(
-                          self.current_view_cat if self.current_view_cat in self.WORKER_SECTIONS else "المصنعين"),
-                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=5, pady=6)
+        btn_perf = ctk.CTkButton(header_bar, text="📊 أداء العمال", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                                 width=120, height=36,
+                                 command=lambda: self.open_worker_performance_report(
+                                     self.current_view_cat if self.current_view_cat in self.WORKER_SECTIONS else "المصنعين"),
+                                 **BUTTON_STYLES["secondary"])
+        btn_perf.pack(side="left", padx=5, pady=6)
+        HoverTip(btn_perf, "نسبة الفاقد إلى الإنتاج بالألف لكل عامل وفترة، واتجاهها")
+        HoverTip(btn_close_khayas, "يُرحّل الخياس الفعلي للقسم المعروض إلى حساب فاقده بقيد يومي (قابل للتراجع)")
 
         # صف مستقل كامل العرض لتبويبات/أزرار الصناديق، حتى يتسع لأي عدد صناديق تُضاف مستقبلاً دون ازدحام
         top_bar = ctk.CTkFrame(tab, fg_color="transparent")
@@ -18281,6 +19075,409 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=("Cairo", 14, "bold"),
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         build()
+        return win
+
+    # =========================================================================
+    # --- الطقوم المفتوحة والذهب عند العمال: ما صُرف ولم يُستلم منه شيء، وعمره ---
+    # =========================================================================
+    JOB_ISSUE_TYPES = ("صرف ذهب", "الليز")
+    JOB_RECEIPT_TYPES = ("قبض ذهب", "المفنش ٨ بالالف", "المفنش ٤ بالالف", "البوليش", "السلك الراجع")
+    DEFAULT_OVERDUE_DAYS = 7
+    OVERDUE_CHOICES = (3, 5, 7, 10, 14, 21, 30)
+
+    def overdue_days(self):
+        try:
+            days = int(load_ui_prefs().get("overdue_days", self.DEFAULT_OVERDUE_DAYS))
+        except (TypeError, ValueError):
+            days = self.DEFAULT_OVERDUE_DAYS
+        return days if days > 0 else self.DEFAULT_OVERDUE_DAYS
+
+    def worker_jobs(self):
+        """أعمال المصنّعين والمركّبين من حركاتهم النشطة:
+          • رقم التشغيل عملٌ واحد عند العامل نفسه **عبر الفترات** (يُصرف في شهر ويُستلم في التالي)؛
+            وحركات الصف بلا رقم تأخذ رقم صفّها.
+          • الصف بلا رقم تشغيل عملٌ في فترته، وما لا صف له عملٌ واحد «بدون ترقيم» للعامل في الفترة.
+        لكل عمل: المصروف (صرف + ليز) والمستلم (قبض، المفنش، البوليش، السلك الراجع) وتاريخ أول صرف."""
+        by_name = self.invoices_by_name()
+        jobs = {}
+        for sec in self.WORKER_SECTIONS:
+            for name in self.categories.get(sec, []):
+                invs = sorted((i for i in by_name.get(name, ()) if i.get("settled_status") == "ACTIVE"),
+                              key=lambda i: (str(i.get("التاريخ", "")), i.get("رقم الفاتورة", 0)))
+                row_set = {}
+                for inv in invs:
+                    row = (inv.get("row_number") or "").strip()
+                    sn = self.normalize_set_number(inv.get("set_number"))
+                    if row and sn:
+                        row_set.setdefault((self.inv_period(inv), row), sn)
+                for inv in invs:
+                    t = inv.get("النوع")
+                    if t not in self.JOB_ISSUE_TYPES and t not in self.JOB_RECEIPT_TYPES:
+                        continue
+                    period = self.inv_period(inv)
+                    row = (inv.get("row_number") or "").strip()
+                    sn = self.normalize_set_number(inv.get("set_number")) or row_set.get((period, row), "")
+                    key = ("SET", name, sn) if sn else ("ROW", name, period, row)
+                    job = jobs.setdefault(key, {"name": name, "section": sec, "set_number": sn, "row": row,
+                                                "period": period, "issued": 0.0, "received": 0.0,
+                                                "first_issue": "", "ids": []})
+                    w = inv.get("الوزن", 0.0) or 0.0
+                    job["ids"].append(inv.get("رقم الفاتورة"))
+                    if t in self.JOB_ISSUE_TYPES:
+                        job["issued"] = round(job["issued"] + w, 2)
+                        if t == "صرف ذهب" and not job["first_issue"]:
+                            job["first_issue"] = str(inv.get("التاريخ", ""))
+                            job["period"], job["row"] = period, row or job["row"]
+                    else:
+                        job["received"] = round(job["received"] + w, 2)
+        return jobs
+
+    def open_jobs(self, today=None, overdue_days=None):
+        """الأعمال المفتوحة: صُرف لها ذهب ولم يُستلم منها شيء بعد — الأقدم أولاً، بعمرها بالأيام"""
+        today = today or datetime.date.today()
+        limit = overdue_days or self.overdue_days()
+        out = []
+        for job in self.worker_jobs().values():
+            if job["issued"] <= 0.005 or job["received"] > 0.005 or not job["first_issue"]:
+                continue
+            try:
+                issued_on = datetime.datetime.strptime(job["first_issue"][:10], "%Y-%m-%d").date()
+                age = max(0, (today - issued_on).days)
+            except ValueError:
+                age = None
+            out.append(dict(job, age=age, overdue=age is not None and age >= limit))
+        out.sort(key=lambda j: (-(j["age"] if j["age"] is not None else -1), j["name"]))
+        return out
+
+    def gold_at_workers(self, jobs=None, month=None):
+        """لكل عامل: الذهب عنده الآن (ذهب/باقي في دفتره للفترة) وأعماله المفتوحة وأقدمها"""
+        jobs = self.open_jobs() if jobs is None else jobs
+        month = month or self.current_display_month
+        rows = []
+        for sec in self.WORKER_SECTIONS:
+            for name in self.categories.get(sec, []):
+                mine = [j for j in jobs if j["name"] == name]
+                held = round(self.calculate_single_ledger(name, sec, target_month=month)["ذهب/باقي"], 2)
+                if not mine and abs(held) < 0.005:
+                    continue
+                ages = [j["age"] for j in mine if j["age"] is not None]
+                rows.append({"name": name, "section": sec, "held": held, "open": len(mine),
+                             "open_gold": round(sum(j["issued"] for j in mine), 2),
+                             "oldest": max(ages) if ages else None,
+                             "overdue": sum(1 for j in mine if j["overdue"])})
+        rows.sort(key=lambda r: (-r["overdue"], -(r["oldest"] or 0), -r["held"]))
+        return rows
+
+    def open_open_jobs_report(self):
+        """نافذة «الطقوم المفتوحة والذهب عند العمال» — للمتابعة اليومية وضبط الذهب خارج الخزينة"""
+        win = ctk.CTkToplevel(self)
+        win.title("الطقوم المفتوحة والذهب عند العمال")
+        win.geometry("1150x700")
+        win.transient(self)
+        win.focus_force()
+        ctk.CTkLabel(win, text="🧾 الطقوم المفتوحة والذهب عند العمال", font=("Cairo", 19, "bold"),
+                     text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(win, text="المفتوح: صُرف له ذهب ولم يُستلم منه شيء بعد · رقم التشغيل يُتابَع عبر الفترات · "
+                               "الذهب عند العامل = ذهب/باقي في دفتره للفترة المعروضة",
+                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(pady=2)
+        summary = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"))
+        summary.pack(pady=(2, 4))
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side="bottom", pady=(4, 12))
+        top = ttk.Frame(win)
+        top.pack(fill="x", padx=18, pady=(2, 6))
+        bottom = ttk.Frame(win)
+        bottom.pack(fill="both", expand=True, padx=18, pady=(2, 6))
+        state = {"jobs": []}
+
+        def build(*_a):
+            for f in (top, bottom):
+                for w in f.winfo_children():
+                    w.destroy()
+            limit = self.overdue_days()
+            jobs = self.open_jobs(overdue_days=limit)
+            workers = self.gold_at_workers(jobs)
+            state["jobs"] = jobs
+            wcols = ("العامل", "القسم", "الذهب عنده الآن", "طقوم مفتوحة", "ذهبها", "أقدمها (يوم)", "متأخرة")
+            wt = self.create_standard_treeview(top, wcols, height=6)
+            for c in wcols:
+                wt.column(c, width=170 if c == "العامل" else 120, anchor="center")
+            wt.tag_configure("late", foreground=UI["danger"])
+            for r in workers:
+                wt.insert("", "end", values=(r["name"], self.get_display_label(r["section"]), f"{r['held']:.2f}",
+                                             r["open"], f"{r['open_gold']:.2f}",
+                                             "—" if r["oldest"] is None else r["oldest"], r["overdue"]),
+                          tags=("late",) if r["overdue"] else ())
+            jcols = ("رقم التشغيل", "العامل", "القسم", "الصف", "الفترة", "تاريخ الصرف", "العمر (يوم)",
+                     "الذهب المصروف", "الحالة")
+            jt = self.create_standard_treeview(bottom, jcols, height=12)
+            for c in jcols:
+                jt.column(c, width=150 if c in ("العامل", "تاريخ الصرف") else 105, anchor="center")
+            jt.tag_configure("late", foreground=UI["danger"])
+            for i, j in enumerate(jobs):
+                jt.insert("", "end", iid=str(i), values=(
+                    j["set_number"] or "—", j["name"], self.get_display_label(j["section"]), j["row"] or "—",
+                    j["period"], j["first_issue"][:10], "—" if j["age"] is None else j["age"],
+                    f"{j['issued']:.2f}", "⚠️ متأخر" if j["overdue"] else "مفتوح"),
+                    tags=("late",) if j["overdue"] else ())
+
+            def trace(_e=None):
+                sel = jt.selection()
+                if sel and state["jobs"][int(sel[0])]["set_number"]:
+                    self.open_set_number_trace(state["jobs"][int(sel[0])]["set_number"])
+            jt.bind("<Double-1>", trace)
+            late = sum(1 for j in jobs if j["overdue"])
+            held = round(sum(r["held"] for r in workers), 2)
+            summary.configure(
+                text=(f"{len(jobs)} طقم مفتوح بذهب {sum(j['issued'] for j in jobs):.2f} جم — "
+                      f"{late} متأخر (أكثر من {limit} يوم) — الذهب عند العمال الآن {held:.2f} جم"),
+                text_color=UI["danger"] if late else (UI["title"], "#C9D6E8"))
+
+        ctk.CTkLabel(bar, text="يُعدّ متأخراً بعد:", font=("Cairo", 13, "bold")).pack(side="right", padx=6)
+        days_menu = ctk.CTkOptionMenu(bar, values=[f"{d} يوم" for d in self.OVERDUE_CHOICES], width=110,
+                                      font=("Cairo", 13),
+                                      command=lambda v: (save_ui_pref("overdue_days", int(v.split()[0])), build()))
+        days_menu.set(f"{self.overdue_days()} يوم")
+        days_menu.pack(side="right", padx=6)
+
+        def print_report():
+            jobs = state["jobs"]
+            cols = ("رقم التشغيل", "العامل", "الصف", "الفترة", "تاريخ الصرف", "العمر (يوم)", "الذهب المصروف", "الحالة")
+            rows = [(j["set_number"] or "—", j["name"], j["row"] or "—", j["period"], j["first_issue"][:10],
+                     "—" if j["age"] is None else str(j["age"]), f"{j['issued']:.2f}",
+                     "متأخر" if j["overdue"] else "مفتوح") for j in jobs]
+            self.print_generic_table_screen("🧾 الطقوم المفتوحة", cols, [0.9, 1.3, 0.6, 0.8, 1.0, 0.8, 0.9, 0.7],
+                                            rows, "open_jobs", subtitle=summary.cget("text"))
+
+        ctk.CTkButton(btns, text="🖨️ طباعة", width=140, height=40, font=("Cairo", 14, "bold"),
+                      command=print_report, **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
+        ctk.CTkButton(btns, text="🔄 تحديث", width=120, height=40, font=("Cairo", 14, "bold"),
+                      command=build, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        ctk.CTkButton(btns, text="إغلاق", width=110, height=40, font=("Cairo", 14, "bold"),
+                      command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        build()
+        return win
+
+    # =========================================================================
+    # --- لوحة المؤشرات: الأرقام التي تتابعها الإدارة، ورسومها عبر الفترات ---
+    # =========================================================================
+    DASH_SPANS = {"آخر ٦ فترات": 6, "آخر ١٢ فترة": 12, "كل الفترات": None}
+
+    def dashboard_data(self, n_periods=12, today=None):
+        """أرقام اللوحة من المصادر نفسها التي تبني الشاشات: دفتر الخزينة ومكوّنات الفترة،
+        ودفاتر العمال (نسبة الفاقد)، وشاشة الخسائر (الفاقد الحالي)، والطقوم المفتوحة"""
+        ledger = self.get_treasury_ledger()
+        periods = [r["period"] for r in ledger]
+        if n_periods:
+            periods = periods[-n_periods:]
+        closing = {r["period"]: round(r["closing"], 2) for r in ledger}
+        comps = {p: self.treasury_period_components(p) for p in periods}
+        month = self.current_display_month
+        ratios = {}
+        for sec in self.WORKER_SECTIONS:
+            ratios[sec] = [self.worker_performance_rows(sec, [p])[1]["ratio"] for p in periods]
+        jobs = self.open_jobs(today=today)
+        boxes = []
+        for cat in self.get_khayas_box_categories():
+            cur = self.get_box_loss_summary(cat, month=month)["current"]
+            if abs(cur) >= 0.005:
+                boxes.append((self.get_display_label(cat), round(cur, 2)))
+        boxes.sort(key=lambda b: -abs(b[1]))
+        cur_comp = self.treasury_period_components(month)
+        prev = [p for p in (r["period"] for r in ledger) if p < month]
+        prev_comp = self.treasury_period_components(prev[-1]) if prev else None
+        return {
+            "periods": periods,
+            "treasury": [closing[p] for p in periods],
+            "sales": [round(-comps[p]["sales"], 2) for p in periods],
+            "inbound": [round(comps[p]["inbound"], 2) for p in periods],
+            "khayas": [round(-(comps[p]["boxes"] + comps[p]["workers"] + comps[p]["closed"]), 2) for p in periods],
+            "ratios": ratios,
+            "boxes": boxes,
+            "month": month,
+            "kpi": {
+                "treasury": round(getattr(self, "current_treasury_balance", closing.get(month, 0.0)), 2),
+                "total": round(getattr(self, "current_total_gold", 0.0), 2),
+                "sales": round(-cur_comp["sales"], 2),
+                "inbound": round(cur_comp["inbound"], 2),
+                "khayas": round(-(cur_comp["boxes"] + cur_comp["workers"] + cur_comp["closed"]), 2),
+                "prev_sales": round(-prev_comp["sales"], 2) if prev_comp else None,
+                "prev_treasury": closing.get(prev[-1]) if prev else None,
+                "open_jobs": len(jobs), "overdue_jobs": sum(1 for j in jobs if j["overdue"]),
+                "open_gold": round(sum(j["issued"] for j in jobs), 2),
+                "ratio": {sec: self.worker_performance_rows(sec, [month])[1]["ratio"]
+                          for sec in self.WORKER_SECTIONS},
+            },
+        }
+
+    def build_dashboard_tab(self):
+        tab = self.tabview.tab("لوحة المؤشرات")
+        try:
+            tab.configure(fg_color=(UI["canvas"], "#10141A"))
+        except Exception:
+            pass
+        bar = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+                           border_width=1, border_color=(UI["line"], "#2A313B"))
+        bar.pack(fill="x", padx=16, pady=(8, 6))
+        ctk.CTkLabel(bar, text="المدى:", font=("Cairo", 13, "bold"),
+                     text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(12, 4), pady=8)
+        self.dash_span = ctk.CTkOptionMenu(bar, values=list(self.DASH_SPANS), width=140, font=("Cairo", 13),
+                                           command=lambda _v: self.refresh_dashboard())
+        self.dash_span.set("آخر ١٢ فترة")
+        self.dash_span.pack(side="right", padx=4, pady=8)
+        ctk.CTkButton(bar, text="🔄 تحديث", width=100, height=32, font=("Cairo", 13, "bold"),
+                      command=self.refresh_dashboard, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        ctk.CTkButton(bar, text="🧾 الطقوم المفتوحة", width=140, height=32, font=("Cairo", 13, "bold"),
+                      command=self.open_open_jobs_report, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        ctk.CTkButton(bar, text="🩺 فحص السلامة", width=130, height=32, font=("Cairo", 13, "bold"),
+                      command=self.open_integrity_check_window, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        self.lbl_dash_note = ctk.CTkLabel(bar, text="", font=("Cairo", 12), text_color=UI["muted"])
+        self.lbl_dash_note.pack(side="right", padx=10)
+
+        body = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        tiles = ctk.CTkFrame(body, fg_color="transparent")
+        tiles.pack(fill="x", padx=4, pady=(2, 8))
+        self.dash_tiles = {}
+        specs = (("treasury", "رصيد الخزينة"), ("total", "الرصيد الحالي (الذهب كله)"),
+                 ("khayas", "خياس الفترة"), ("ratio", "نسبة الفاقد إلى الإنتاج"),
+                 ("sales", "مبيعات الفترة"), ("jobs", "الطقوم المفتوحة"))
+        for i, (key, caption) in enumerate(specs):
+            card = ctk.CTkFrame(tiles, corner_radius=14, border_width=1, fg_color=(UI["surface"], "#171C23"),
+                                border_color=(UI["line"], "#2A313B"))
+            card.grid(row=0, column=len(specs) - 1 - i, padx=5, sticky="nsew")
+            tiles.grid_columnconfigure(len(specs) - 1 - i, weight=1, uniform="tile")
+            ctk.CTkLabel(card, text=caption, font=("Cairo", 12), text_color=(UI["muted"], "#9AA4B2"),
+                         anchor="e").pack(fill="x", padx=14, pady=(10, 0))
+            value = ctk.CTkLabel(card, text="—", anchor="e",
+                                 font=ctk.CTkFont(family="Cairo", size=30 if key == "treasury" else 22, weight="bold"),
+                                 text_color=(UI["ink"], "#F2F4F7"))
+            value.pack(fill="x", padx=14)
+            sub = ctk.CTkLabel(card, text="", font=("Cairo", 11), anchor="e", text_color=(UI["muted"], "#9AA4B2"))
+            sub.pack(fill="x", padx=14, pady=(0, 10))
+            if key == "jobs":
+                for w in (card, value, sub):
+                    w.bind("<Button-1>", lambda e: self.open_open_jobs_report())
+                    w.configure(cursor="hand2")
+            self.dash_tiles[key] = (value, sub)
+
+        grid = ctk.CTkFrame(body, fg_color="transparent")
+        grid.pack(fill="both", expand=True, padx=4)
+        grid.grid_columnconfigure((0, 1), weight=1, uniform="chart")
+        self.dash_charts = {}
+        charts = (("treasury", "رصيد الخزينة آخر كل فترة (جم)", "line", "جم", None),
+                  ("ratio", "نسبة الفاقد إلى الإنتاج (بالألف)", "line", "‰", ("المصنعين", "المركبين")),
+                  ("flow", "المبيعات والوارد لكل فترة (جم)", "bars", "جم", ("المبيعات", "الوارد")),
+                  ("boxes", "الفاقد الحالي في كل صندوق — الفترة المعروضة (جم)", "hbars", "جم", None))
+        for i, (key, title, kind, unit, legend) in enumerate(charts):
+            card = ctk.CTkFrame(grid, corner_radius=14, border_width=1, fg_color=(UI["surface"], "#171C23"),
+                                border_color=(UI["line"], "#2A313B"))
+            card.grid(row=i // 2, column=1 - i % 2, padx=5, pady=5, sticky="nsew")
+            head = ctk.CTkFrame(card, fg_color="transparent")
+            head.pack(fill="x", padx=12, pady=(10, 2))
+            ctk.CTkLabel(head, text=title, font=("Cairo", 14, "bold"), text_color=UI_TITLE).pack(side="right")
+            if legend:
+                for si, name in enumerate(legend):
+                    key_box = ctk.CTkFrame(head, width=14, height=4, corner_radius=2,
+                                           fg_color=(CHART_SERIES["light"][si], CHART_SERIES["dark"][si]))
+                    ctk.CTkLabel(head, text=self.get_display_label(name) if name in self.WORKER_SECTIONS else name,
+                                 font=("Cairo", 12), text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(8, 3))
+                    key_box.pack(side="left")
+            chart = MiniChart(card, kind=kind, unit=unit, decimals=2, height=230)
+            chart.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+            ctk.CTkButton(card, text="📋 الأرقام", width=90, height=26, font=("Cairo", 11, "bold"),
+                          command=lambda k=key, t=title: self.show_dashboard_table(k, t),
+                          **BUTTON_STYLES["secondary"]).pack(anchor="w", padx=12, pady=(0, 8))
+            self.dash_charts[key] = chart
+        self.refresh_dashboard()
+
+    def refresh_dashboard(self):
+        tiles = getattr(self, "dash_tiles", None)
+        if not tiles:
+            return
+        span = self.DASH_SPANS.get(self.dash_span.get(), 12) if hasattr(self, "dash_span") else 12
+        try:
+            data = self.dashboard_data(span)
+        except Exception as e:
+            log_cloud_error("تعذّر تحديث لوحة المؤشرات", e)
+            return
+        self._dash_data = data
+        k = data["kpi"]
+
+        def sar(grams):
+            v = self.sar_value(grams) if hasattr(self, "sar_value") else None
+            return f"≈ {en(v, 0)} ر.س" if v is not None else ""
+
+        def delta(cur, prev):
+            if prev is None:
+                return ""
+            d = round(cur - prev, 2)
+            arrow = "▲" if d > 0 else "▼" if d < 0 else "■"
+            return f"{arrow} {en(abs(d))} عن الفترة السابقة"
+
+        tiles["treasury"][0].configure(text=f"{en(k['treasury'])} جم")
+        tiles["treasury"][1].configure(text="  ·  ".join(x for x in (sar(k["treasury"]),
+                                                                    delta(k["treasury"], k["prev_treasury"])) if x))
+        tiles["total"][0].configure(text=f"{en(k['total'])} جم")
+        tiles["total"][1].configure(text=sar(k["total"]) or "الخزينة + ما في الصناديق")
+        tiles["khayas"][0].configure(text=f"{en(k['khayas'])} جم")
+        tiles["khayas"][1].configure(text=f"فترة {data['month']} — كل الصناديق والعمال")
+        rs = k["ratio"]
+        tiles["ratio"][0].configure(text="\n".join(
+            f"{self.get_display_label(sec)}: " + (f"{rs[sec]:,.2f} ‰" if rs[sec] is not None else "—")
+            for sec in self.WORKER_SECTIONS), font=ctk.CTkFont(family="Cairo", size=15, weight="bold"))
+        tiles["ratio"][1].configure(text="الفاقد ÷ الإنتاج × ١٠٠٠ — الفترة المعروضة")
+        tiles["sales"][0].configure(text=f"{en(k['sales'])} جم")
+        tiles["sales"][1].configure(text=delta(k["sales"], k["prev_sales"]) or f"الوارد {en(k['inbound'])} جم")
+        tiles["jobs"][0].configure(text=f"{k['open_jobs']:,} طقم",
+                                   text_color=(UI["danger"], "#F4A3A8") if k["overdue_jobs"] else (UI["ink"], "#F2F4F7"))
+        tiles["jobs"][1].configure(text=(f"⚠️ {k['overdue_jobs']} متأخر · " if k["overdue_jobs"] else "")
+                                   + f"ذهبها {en(k['open_gold'])} جم")
+        P = data["periods"]
+        self.dash_charts["treasury"].set_data(P, [("رصيد الخزينة", data["treasury"])])
+        self.dash_charts["ratio"].set_data(P, [(self.get_display_label(sec), data["ratios"][sec])
+                                               for sec in self.WORKER_SECTIONS])
+        self.dash_charts["flow"].set_data(P, [("المبيعات", data["sales"]), ("الوارد", data["inbound"])])
+        self.dash_charts["boxes"].set_data([b[0] for b in data["boxes"]], [("الفاقد الحالي", [b[1] for b in data["boxes"]])])
+        if hasattr(self, "lbl_dash_note"):
+            self.lbl_dash_note.configure(text=f"{len(P)} فترة · حتى {P[-1] if P else '—'}")
+
+    def show_dashboard_table(self, key, title):
+        """عرض أرقام الرسم جدولاً (لمن يفضّل الأرقام، وللنسخ والطباعة)"""
+        data = getattr(self, "_dash_data", None)
+        if not data:
+            return None
+        if key == "boxes":
+            cols, rows = ("الصندوق", "الفاقد الحالي"), [(n, f"{v:.2f}") for n, v in data["boxes"]]
+        elif key == "ratio":
+            cols = ("الفترة",) + tuple(self.get_display_label(s) + " ‰" for s in self.WORKER_SECTIONS)
+            rows = [(p,) + tuple("—" if data["ratios"][s][i] is None else f"{data['ratios'][s][i]:.2f}"
+                                 for s in self.WORKER_SECTIONS) for i, p in enumerate(data["periods"])]
+        elif key == "flow":
+            cols = ("الفترة", "المبيعات", "الوارد", "الخياس")
+            rows = [(p, f"{data['sales'][i]:.2f}", f"{data['inbound'][i]:.2f}", f"{data['khayas'][i]:.2f}")
+                    for i, p in enumerate(data["periods"])]
+        else:
+            cols = ("الفترة", "رصيد الخزينة آخرها")
+            rows = [(p, f"{data['treasury'][i]:.2f}") for i, p in enumerate(data["periods"])]
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        win.geometry("560x460")
+        win.transient(self)
+        ctk.CTkLabel(win, text=title, font=("Cairo", 15, "bold"), text_color=UI_TITLE).pack(pady=(12, 6))
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+        tree = self.create_standard_treeview(frame, cols, height=12)
+        for c in cols:
+            tree.column(c, width=150, anchor="center")
+        for r in rows:
+            tree.insert("", "end", values=r)
+        ctk.CTkButton(win, text="🖨️ طباعة", width=120, height=34, font=("Cairo", 13, "bold"),
+                      command=lambda: self.print_generic_table_screen(title, cols, [1.0] * len(cols), rows,
+                                                                      "dashboard_" + key),
+                      **BUTTON_STYLES["primary"]).pack(pady=(0, 10))
         return win
 
     # =========================================================================

@@ -11,3 +11,5 @@ arabic-reshaper>=3.0.1,<4
 python-bidi>=0.6,<1
 supabase>=2.30,<3
 pyinstaller>=6.20,<7
+# قراءة الميزان الإلكتروني من المنفذ التسلسلي (RS-232/USB)
+pyserial>=3.5,<4
