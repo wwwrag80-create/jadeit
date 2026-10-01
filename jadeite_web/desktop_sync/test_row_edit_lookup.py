@@ -5,9 +5,19 @@ import ast, io, textwrap
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 tree = ast.parse(src)
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
-m = next(x for x in cls.body if isinstance(x, ast.FunctionDef) and x.name == "get_assembler_khayas_for_set")
+# البحث وكل ما يعتمد عليه (توحيد رقم التشغيل، الفهرس، الفترة) من البرنامج نفسه
+NEEDED = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "normalize_set_number", "get_assembler_khayas_for_set",
+          "get_assembler_khayas_details", "assembler_khayas_index", "inv_period", "inv_in_period")
+chunks = []
+for x in cls.body:
+    name = x.name if isinstance(x, ast.FunctionDef) else (
+        x.targets[0].id if isinstance(x, ast.Assign) and isinstance(x.targets[0], ast.Name) else None)
+    if name in NEEDED:
+        seg = ast.get_source_segment(src, x)
+        deco = "".join("@" + ast.get_source_segment(src, d) + "\n" for d in getattr(x, "decorator_list", []))
+        chunks.append(textwrap.dedent(deco + seg))
 ns = {"ALLOWANCE_8": 0.008}
-exec("class S:\n" + textwrap.indent(textwrap.dedent(ast.get_source_segment(src, m)), "    "), ns)
+exec("class S:\n" + "\n".join(textwrap.indent(c, "    ") for c in chunks), ns)
 app = ns["S"]()
 app.current_display_month = "2026-08"
 app.categories = {"المركبين": ["سالم"], "المصنعين": ["أحمد"]}
@@ -62,9 +72,9 @@ assert app.get_assembler_khayas_for_set("") == 0.0
 assert app.get_assembler_khayas_for_set(None) == 0.0
 print("✔ رقم غير موجود أو فارغ → 0.0 بلا خطأ")
 
-app.invoices[5] = dict(inv(5, "سالم", "قبض ذهب", 500.0, "1", set_no="9"), settled_status="SETTLED")
+app.invoices[5] = dict(inv(5, "سالم", "قبض ذهب", 500.0, "1", set_no="9"), settled_status="MEMO")
 assert app.get_assembler_khayas_for_set("9") == 2.4
-print("✔ الحركات الملغاة مستثناة")
+print("✔ السطور المعلوماتية (MEMO) مستثناة")
 
 # ═══ الأخطاء لم تُكتم ═══
 auto = ast.get_source_segment(src, next(x for x in cls.body if isinstance(x, ast.FunctionDef)

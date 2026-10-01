@@ -28,9 +28,14 @@ print(f"✔ الصافي = (الفصوص + الأحجار بعد الخصم) −
 
 # ---------- ٢) خياس المركب من مراحل التصنيع ----------
 chunks = []
-for name in ("get_assembler_khayas_for_set",):
-    m = next(x for x in cls.body if isinstance(x, ast.FunctionDef) and x.name == name)
-    chunks.append(textwrap.dedent(ast.get_source_segment(src, m)))
+NEEDED = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "normalize_set_number", "get_assembler_khayas_for_set",
+          "get_assembler_khayas_details", "assembler_khayas_index", "inv_period", "inv_in_period")
+for x in cls.body:
+    name = x.name if isinstance(x, ast.FunctionDef) else (
+        x.targets[0].id if isinstance(x, ast.Assign) and isinstance(x.targets[0], ast.Name) else None)
+    if name in NEEDED:
+        deco = "".join("@" + ast.get_source_segment(src, d) + "\n" for d in getattr(x, "decorator_list", []))
+        chunks.append(textwrap.dedent(deco + ast.get_source_segment(src, x)))
 raji_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "raji_ayar")
 ns2 = {"RAJI_PURITY": 750.0, "ALLOWANCE_8": 0.008}
 exec(ast.get_source_segment(src, raji_fn), ns2)
@@ -59,7 +64,8 @@ app.invoices = {
 
 # المصدر الآن عمود (مسموح/٨) = القبض × ٨ بالألف
 v = app.get_assembler_khayas_for_set("T-1")
-assert v == round(97 * 0.008 + 48.5 * 0.008, 2), v
+# مجموع قيم عمود مسموح/٨ كما تظهر في كشف كل عامل (كل صف مقرّب): 0.78 + 0.39
+assert v == round(round(97 * 0.008, 2) + round(48.5 * 0.008, 2), 2) == 1.17, v
 print(f"✔ خياس المركب لرقم التشغيل T-1 = {v} (مجموع مسموح/٨ لكل عمال المركبين)")
 assert app.get_assembler_khayas_for_set("") == 0.0
 assert app.get_assembler_khayas_for_set("لا-يوجد") == 0.0

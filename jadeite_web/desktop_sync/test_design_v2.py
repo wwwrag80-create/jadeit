@@ -42,10 +42,21 @@ def module_func(name):
     return "\n".join(lines[node.lineno - 1:node.end_lineno])
 
 
+def module_values(*names):
+    """ثوابت الوحدة بترتيبها في الملف (بعضها يُبنى من بعض: UI ← أساليب الأزرار ← الألوان القديمة)"""
+    ns = {}
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", None) in names for t in n.targets):
+            exec(compile(ast.Module([n], []), TARGET, "exec"), ns)
+    return ns
+
+
 seg = method_src
-UI = ast.literal_eval(module_node("UI").value)
+CONST = module_values("UI", "BUTTON_STYLES", "BUTTON_ROLE_STYLE", "TREASURY_BAR_TEXT", "UI_TITLE",
+                      "_CALM_TITLE", "_CALM_LABEL", "_LEGACY_TEXT_COLORS")
+UI = CONST["UI"]
 DESIGN = class_value("DESIGN")
-LEGACY = ast.literal_eval(module_node("_LEGACY_TEXT_COLORS").value)
+LEGACY = CONST["_LEGACY_TEXT_COLORS"]
 
 
 def lum(h):
@@ -84,7 +95,10 @@ assert contrast("#6B7280", UI["canvas"]) < 4.5 and contrast(UI["muted"], UI["can
 print(f"✔ النص الثانوي: {contrast('#6B7280', UI['canvas']):.2f} ← {contrast(UI['muted'], UI['canvas']):.2f}")
 
 hdr = seg("_ensure_header", ROUTER)
-for pill_bg, pill_fg in re.findall(r'pill\(\("(#[0-9A-Fa-f]{6})", "#[0-9A-Fa-f]{6}"\), \("(#[0-9A-Fa-f]{6})", "#[0-9A-Fa-f]{6}"\)\)', hdr):
+pills = re.findall(r'pill\((\(.*?\)), (\(.*?\))\)', hdr)
+assert len(pills) == 3, pills
+for bg_expr, fg_expr in pills:
+    pill_bg, pill_fg = eval(bg_expr, {"UI": UI})[0], eval(fg_expr, {"UI": UI})[0]
     assert contrast(pill_fg, pill_bg) >= 4.5, (pill_fg, pill_bg)
 assert 'fg_color=head' in hdr and 'border_color=(UI["header_edge"], UI["header_edge"])' in hdr
 print("✔ الإطار العلوي لكل شاشة كحلي بحافة ذهبية، وشاراته مقروءة (≥ ٤٫٥:١)")

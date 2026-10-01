@@ -57,9 +57,11 @@ METHODS = [
     "delete_selected_suspended_sale", "update_suspended_count",
     # التنقل وتوزيع الأعمدة
     "bind_enter_navigation", "bind_arrow_navigation", "plan_column_widths",
+    # فتح المسودة يُبقي خياس المركب المحفوظ حتى يتغيّر رقم التشغيل (ويُخفي سطر المصدر)
+    "normalize_set_number", "show_assembler_source",
 ]
 ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
-         "SHRINKABLE_COLUMNS"]
+         "SHRINKABLE_COLUMNS", "_SET_DIGITS"]
 
 EXTRA = '''
 def check_edit_permission(self): return True

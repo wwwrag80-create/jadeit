@@ -31,7 +31,7 @@ CHECKS = [
     ("صف الإجمالي الثابت",  [PY, "test_sticky_totals.py"]),
     ("تعديل الصف والجلب",   [PY, "test_row_edit_lookup.py"]),
     ("التحديث الكسول",      [PY, "test_lazy_refresh.py"]),
-    ("خياس المركب",         [PY, "test_assembler_khayas.py"]),
+    ("خياس المركب",         [PY, "test_assembler_khayas.py", TARGET]),
     ("قواعد رقم التشغيل",   [PY, "test_set_number_rules.py"]),
     ("تنقّل نوافذ التعديل", [PY, "test_edit_navigation.py"]),
     ("التاريخ والتراجع",     [PY, "test_live_date_undo.py"]),
@@ -66,6 +66,7 @@ CHECKS = [
     ("أزرار أقسام الخياس",   [PY, "test_khayas_buttons.py", TARGET]),
     ("المبيعات: المعلقات والبيان", [PY, "test_sales_suspend.py", TARGET]),
     ("نظام التصميم المحدَّث",  [PY, "test_design_v2.py", TARGET]),
+    ("اللوحة الهادئة الموحّدة", [PY, "test_calm_palette.py", TARGET]),
 ]
 
 failed = []

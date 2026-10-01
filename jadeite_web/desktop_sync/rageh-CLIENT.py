@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.47.0"
+APP_VERSION = "1.48.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1212,22 +1212,47 @@ UI = {
     # النص الثانوي بتباين ٥:١ على خلفية الصفحة (كان ٤٫٤:١)، وحدود البطاقات أوضح
     "ink": "#1F2937", "muted": "#5E6776", "line": "#D5DCE6", "line_strong": "#B9C3D0",
     "canvas": "#EEF1F5", "surface": "#FFFFFF", "surface_alt": "#F6F8FB",
-    "primary": "#1E5BB8", "primary_hover": "#174A96", "primary_soft": "#E8F0FC",
-    "success": "#128A5B", "success_hover": "#0E6E48", "success_soft": "#E3F5EC",
-    "danger": "#C8373F", "danger_hover": "#A42A31", "danger_soft": "#FCEAEA",
+    # ══ لوحة هادئة موحّدة: لون رئيسي واحد (كحلي مزرق من لون الإطار العلوي) لكل
+    # الأزرار الأساسية والتحديد، ورمادي فاتح للأزرار الثانوية، والأحمر للحذف والسالب
+    # فقط، والذهبي للشعار والخزينة وحدهما. الأدوار القديمة (نجاح/تعديل/تحذير/بنفسجي)
+    # تبقى أسماءً في الكود لكنها تُرسم بهذه الألوان القليلة نفسها ══
+    "primary": "#2A5285", "primary_hover": "#21436E", "primary_soft": "#E8EEF6",
+    "success": "#2A5285", "success_hover": "#21436E", "success_soft": "#E8EEF6",
+    "danger": "#B4343C", "danger_hover": "#962A31", "danger_soft": "#FBEDEE",
     "neutral": "#5B6472", "neutral_hover": "#454D5A",
-    "edit": "#B07D12", "edit_hover": "#8F650C",
-    "navy": "#1F3A5F", "navy_hover": "#152A46",
-    "warning": "#D9771C", "warning_hover": "#B5610F", "warning_soft": "#FDF0E1",
-    "violet": "#7A4BB5", "violet_hover": "#613A93",
+    "edit": "#5B6472", "edit_hover": "#454D5A",
+    "navy": "#2A5285", "navy_hover": "#21436E",
+    "warning": "#5B6472", "warning_hover": "#454D5A", "warning_soft": "#EDF1F6",
+    "violet": "#2A5285", "violet_hover": "#21436E",
+    # الزر الثانوي: رمادي فاتح بنص داكن وحافة رفيعة (عرض، تعديل، طباعة، تفريغ…)
+    "secondary": "#E9EDF2", "secondary_hover": "#DCE2EA", "secondary_border": "#C5CEDA",
+    # عناوين الأقسام وإجماليات الجداول: كحلي هادئ بدل الذهبي والبرتقالي والأخضر
+    "title": "#1E3A5F",
     "midnight": "#0B1220", "midnight_2": "#13203A",
     # الإطار العلوي لكل شاشة: شريط كحلي قوي بحافة ذهبية (مثل الشريط السفلي) يؤطّر مساحة العمل
     "header": "#10213A", "header_2": "#1A3050", "header_edge": "#8C6D1F",
-    "header_text": "#FFFFFF", "header_muted": "#AEBDD3",
+    "header_text": "#FFFFFF", "header_muted": "#AEBDD3", "header_pill_text": "#DCE5F2",
 }
+
+# ألوان الأزرار حسب أسلوبها (فاتح، داكن): أساسي ممتلئ، وثانوي فاتح، وحذف هادئ
+BUTTON_STYLES = {
+    "primary": dict(fg_color=(UI["primary"], UI["primary"]), hover_color=(UI["primary_hover"], UI["primary_hover"]),
+                    text_color=("#FFFFFF", "#FFFFFF"), border_width=0),
+    "secondary": dict(fg_color=(UI["secondary"], "#2A323D"), hover_color=(UI["secondary_hover"], "#353F4C"),
+                      text_color=(UI["ink"], "#E6EDF3"), border_width=1,
+                      border_color=(UI["secondary_border"], "#46515F")),
+    "danger": dict(fg_color=(UI["danger_soft"], "#3A1F22"), hover_color=("#F5DADC", "#4A2629"),
+                   text_color=("#A3262E", "#F4A3A8"), border_width=1, border_color=("#E7B9BD", "#6B3236")),
+}
+# كل دور قديم ← أسلوبه: الأدوار الكثيرة صارت ثلاثة أساليب فقط
+BUTTON_ROLE_STYLE = {"primary": "primary", "success": "primary", "navy": "primary", "violet": "primary",
+                     "neutral": "secondary", "edit": "secondary", "warning": "secondary", "gold": "secondary",
+                     "danger": "danger"}
 
 # لون نص شريط «رصيد الخزينة الحالي» البارز (فاتح، داكن) — وشعار الرئيسية بلونه نفسه
 TREASURY_BAR_TEXT = (UI["gold_dark"], "#F0CF6A")
+# عناوين الأقسام والكشوف والإجماليات (فاتح، داكن): كحلي هادئ واحد في كل الشاشات
+UI_TITLE = (UI["title"], "#C9D6E8")
 
 # لون الزر القديم ← (لونه في اللوحة، لون المرور عليه)
 _LEGACY_BUTTON_COLORS = {
@@ -1252,21 +1277,33 @@ _LEGACY_HOVER_COLORS = {
 }
 
 
+# لون الدور في اللوحة ← الدور (الأزرار التي تمرّر UI["edit"] وأمثاله مباشرةً). الذهبي ليس
+# منها: زر «دخول» الذهبي في شاشة الدخول الداكنة هوية البرنامج ويبقى كما هو
+_ROLE_BY_HEX = {}
+for _role in ("primary", "success", "navy", "violet", "neutral", "edit", "warning", "danger"):
+    _ROLE_BY_HEX.setdefault(UI[_role].lower(), _role)
+
+
+def button_style_for(fg):
+    """أسلوب الزر (primary/secondary/danger) من لونه: قديماً صريحاً أو دوراً من اللوحة."""
+    if not isinstance(fg, str):
+        return None
+    f = fg.lower()
+    role = _LEGACY_BUTTON_COLORS.get(f) or ("gold" if f in ("#d4af37", "#b8952e") else None) \
+        or _ROLE_BY_HEX.get(f)
+    return BUTTON_ROLE_STYLE.get(role) if role else None
+
+
 def _themed_button_kwargs(kw):
-    """يترجم ألوان الزر الصريحة القديمة إلى لوحة التصميم الموحّدة."""
-    fg = kw.get("fg_color")
-    if isinstance(fg, str):
-        role = _LEGACY_BUTTON_COLORS.get(fg.lower())
-        if role:
-            kw["fg_color"] = UI[role]
-            kw["hover_color"] = UI.get(role + "_hover", kw.get("hover_color"))
-        elif fg.lower() in ("#d4af37", "#b8952e"):
-            kw["fg_color"] = UI["gold"]
-            kw.setdefault("text_color", UI["midnight"])
-            kw["hover_color"] = UI["gold_line"]
-    hv = kw.get("hover_color")
-    if isinstance(hv, str) and hv.lower() in _LEGACY_HOVER_COLORS:
-        kw["hover_color"] = UI[_LEGACY_HOVER_COLORS[hv.lower()]]
+    """يترجم ألوان الزر الصريحة القديمة إلى لوحة التصميم الموحّدة: ثلاثة أساليب فقط
+    (أساسي، ثانوي، حذف) بدل ثمانية ألوان — فتهدأ الشاشات ويُعرف دور الزر من شكله."""
+    style = button_style_for(kw.get("fg_color"))
+    if style:
+        kw.update(BUTTON_STYLES[style])
+    else:
+        hv = kw.get("hover_color")
+        if isinstance(hv, str) and hv.lower() in _LEGACY_HOVER_COLORS:
+            kw["hover_color"] = UI[_LEGACY_HOVER_COLORS[hv.lower()]]
     cr = kw.get("corner_radius")
     if isinstance(cr, int) and cr < 8:
         kw["corner_radius"] = 8
@@ -1287,13 +1324,20 @@ ctk.CTkButton = ThemedButton
 
 # لون النص القديم ← (بديله الواضح على الخلفية الفاتحة، بديله على الخلفية الداكنة)
 # الذهبي والأخضر الفاتحان كانا يُقرآن بصعوبة على البطاقات البيضاء (تباين ٢:١)
+# اللوحة الهادئة: العناوين والإجماليات (كانت ذهبية/برتقالية/خضراء/بنفسجية) بالكحلي
+# الهادئ، وعناوين الخانات (كانت زرقاء) بالرمادي الداكن، ويبقى الأحمر للأخطاء والسالب
+_CALM_TITLE = (UI["title"], "#C9D6E8")
+_CALM_LABEL = ("#334155", "#CBD5E1")
 _LEGACY_TEXT_COLORS = {
-    "#d4af37": ("#8A6A0E", "#E9C75C"),
-    "#1f77b4": ("#1E5BB8", "#8FB6F2"),
-    "#2ecc71": ("#0F7A50", "#6FD6A2"),
-    "#e74c3c": ("#C0343C", "#F08A8F"),
-    "#e67e22": ("#A3560B", "#F5A35C"),
-    "#ff7f0e": ("#A3560B", "#F5A35C"),
+    "#d4af37": _CALM_TITLE,
+    "#1f77b4": _CALM_LABEL,
+    "#2ecc71": _CALM_TITLE,
+    "#e74c3c": ("#B4343C", "#F08A8F"),
+    "#e67e22": _CALM_TITLE,
+    "#ff7f0e": _CALM_TITLE,
+    "#f39c12": _CALM_TITLE,
+    "#f1c40f": _CALM_TITLE,
+    "#9b59b6": _CALM_TITLE,
     "#8b8f95": ("#5E6776", "#9AA4B2"),
     "#7f858c": ("#5E6776", "#9AA4B2"),
     "#aaaaaa": ("#5E6776", "#9AA4B2"),
@@ -1356,9 +1400,25 @@ def _apply_theme_defaults():
     t["CTkEntry"].update(field, placeholder_text_color=["#7C8594", "#8A94A1"])
     t["CTkComboBox"].update(field, button_color=["#DCE2EA", "#3A434F"],
                             button_hover_color=["#C7D0DC", "#4A5461"])
-    t["CTkOptionMenu"].update(corner_radius=8, fg_color=[UI["primary"], UI["primary"]],
-                              button_color=[UI["primary_hover"], UI["primary_hover"]],
-                              button_hover_color=[UI["navy"], UI["navy"]])
+    # القوائم المنسدلة بشكل الخانات نفسه (كانت زرقاء ممتلئة بين الخانات البيضاء)
+    t["CTkOptionMenu"].update(corner_radius=8, fg_color=["#FFFFFF", "#1E242C"],
+                              button_color=["#DCE2EA", "#3A434F"], button_hover_color=["#C7D0DC", "#4A5461"],
+                              text_color=[UI["ink"], "#E6EDF3"], text_color_disabled=["#7C8594", "#8A94A1"])
+    # أدوات الاختيار والتقدّم باللون الرئيسي الواحد
+    for _w in ("CTkCheckBox", "CTkSwitch", "CTkRadioButton", "CTkSlider", "CTkProgressBar"):
+        if _w in t:
+            if "fg_color" in t[_w] and _w in ("CTkCheckBox", "CTkRadioButton"):
+                t[_w]["fg_color"] = [UI["primary"], UI["primary"]]
+            if "progress_color" in t[_w]:
+                t[_w]["progress_color"] = [UI["primary"], UI["primary"]]
+            if "button_color" in t[_w] and _w == "CTkSlider":
+                t[_w]["button_color"] = [UI["primary"], UI["primary"]]
+    if "CTkSegmentedButton" in t:
+        t["CTkSegmentedButton"].update(
+            selected_color=[UI["primary"], UI["primary"]], selected_hover_color=[UI["primary_hover"], UI["primary_hover"]],
+            # غير المختار رمادي محايد يُقرأ عليه النص الأبيض (نص الشريط لون واحد للجزأين)
+            unselected_color=["#66707E", "#3A434F"], unselected_hover_color=["#58616E", "#4A5461"],
+            fg_color=["#66707E", "#3A434F"], text_color=["#FFFFFF", "#FFFFFF"])
     t["DropdownMenu"].update(fg_color=["#FFFFFF", "#1E242C"], hover_color=[UI["primary_soft"], "#2A313B"],
                              text_color=[UI["ink"], "#E6EDF3"])
     t["CTkLabel"]["text_color"] = [UI["ink"], "#E6EDF3"]
@@ -3063,10 +3123,10 @@ class ScreenRouter(ctk.CTkFrame):
             lbl.pack(side="right", padx=4)
             return lbl
 
-        # الشارات بألوانها الداكنة في المظهرين (على الإطار الكحلي)
-        lbl_period = pill(("#1B3050", "#1B3050"), ("#A9C8F7", "#A9C8F7"))
-        lbl_treasury = pill(("#33301C", "#33301C"), ("#F0CF6A", "#F0CF6A"))
-        lbl_total = pill(("#173A2A", "#173A2A"), ("#86E3B6", "#86E3B6"))
+        # الشارات بلون واحد هادئ على الإطار الكحلي؛ الخزينة وحدها بالذهبي (لون الشعار)
+        lbl_period = pill((UI["header_2"], UI["header_2"]), (UI["header_pill_text"], UI["header_pill_text"]))
+        lbl_treasury = pill((UI["header_2"], UI["header_2"]), ("#F0CF6A", "#F0CF6A"))
+        lbl_total = pill((UI["header_2"], UI["header_2"]), (UI["header_pill_text"], UI["header_pill_text"]))
 
         self._screen_info_labels[name] = {
             "period": lbl_period, "treasury": lbl_treasury, "total": lbl_total}
@@ -5530,6 +5590,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         name_tree.heading("الاسم", text="الاسم")
         name_tree.column("الاسم", width=name_col_width, anchor="center", stretch=False)
         name_tree.tag_configure("orange_name", foreground="#e67e22", font=("Cairo", 13, "bold"))
+        self.normalize_tree_tags(name_tree)       # ألوان الوسوم من اللوحة الهادئة في المظهرين
         name_tree.pack(fill="y")
 
         main_frame = ttk.Frame(row)
@@ -5707,7 +5768,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "آخر تعديل": "التعديل",
     }
     # أعمدة نصية يجوز أن يُقصّ طرف محتواها حين تضيق الشاشة جداً — الأرقام لا تُقصّ
-    SHRINKABLE_COLUMNS = ("البيان", "الاسم", "العملية", "النوع", "ملاحظات")
+    SHRINKABLE_COLUMNS = ("البيان", "الاسم", "العملية", "النوع", "ملاحظات", "المصدر")
 
     @staticmethod
     def plan_column_widths(desired, floors, avail):
@@ -5975,10 +6036,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "head_bg":     "#1e3a5f",
             "head_hover":  "#27496f",
             "head_text":   "#ffffff",
-            "sel_bg":      "#f6e3a1",
-            "sel_text":    "#2b2106",
+            # التحديد بدرجة من اللون الرئيسي نفسه (كان أصفر ذهبياً): لون واحد في كل النظام
+            "sel_bg":      "#d3dfef",
+            "sel_text":    "#10213a",
             "grid":        "#d5dce6",
-            "hover":       "#e8f0fc",
+            "hover":       "#edf2f8",
         },
         "dark": {
             "bg":          "#151a21",
@@ -5987,8 +6049,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "head_bg":     "#22364f",
             "head_hover":  "#2b4363",
             "head_text":   "#ffffff",
-            "sel_bg":      "#4a3d14",
-            "sel_text":    "#ffeab0",
+            "sel_bg":      "#2b4a75",
+            "sel_text":    "#ffffff",
             "grid":        "#323b47",
             "hover":       "#223044",
         },
@@ -7142,15 +7204,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 btn_more.configure(text="▾  أخرى")
 
         more_card = ctk.CTkFrame(nav, corner_radius=12, border_width=1,
-                                 border_color=UI["gold_line"],
-                                 fg_color=(UI["gold_soft"], UI["gold_soft"]), height=btn_h)
+                                 border_color=UI["line"],
+                                 fg_color=(UI["surface_alt"], UI["surface_alt"]), height=btn_h)
         more_card.pack(fill="x", pady=(10, 4), padx=2)
         more_card.pack_propagate(False)
         btn_more = ctk.CTkButton(
             more_card, text="▾  أخرى", anchor="e",
             font=ctk.CTkFont(family="Cairo", size=font_size, weight="bold"),
-            fg_color="transparent", hover_color=("#F6E7B8", "#F6E7B8"),
-            text_color=(UI["gold_dark"], UI["gold_dark"]), corner_radius=10, height=btn_h - 6,
+            fg_color="transparent", hover_color=(UI["secondary"], UI["secondary"]),
+            text_color=(UI["ink"], UI["ink"]), corner_radius=10, height=btn_h - 6,
             command=toggle_more)
         btn_more.pack(fill="both", expand=True, padx=3, pady=3)
 
@@ -7205,12 +7267,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.lbl_live_treasury.pack(padx=14, pady=3)
 
         # ====== شريط الرصيد الحالي (الخزينة + كل صناديق الخياس) ======
+        # بلون هادئ محايد: الذهبي لشريط الخزينة وحده (لون الشعار)
         total_bar = ctk.CTkFrame(treasury_display_frame, corner_radius=12,
-                                  fg_color=(UI["success_soft"], "#16261a"), border_width=1,
-                                  border_color=("#A7DCC3", "#2E6B4D"))
+                                  fg_color=(UI["surface_alt"], "#1D232B"), border_width=1,
+                                  border_color=(UI["line"], "#323B47"))
         total_bar.pack(fill="x", pady=(0, 6))
 
-        self.lbl_total_gold = ctk.CTkLabel(total_bar, text="الرصيد الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=(UI["success"], "#7FE0B0"), cursor="hand2")
+        self.lbl_total_gold = ctk.CTkLabel(total_bar, text="الرصيد الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=(UI["title"], "#C9D6E8"), cursor="hand2")
         self.lbl_total_gold.pack(padx=14, pady=3)
         self.lbl_total_gold.bind("<Button-1>", lambda e: self.show_gold_balance_breakdown())
 
@@ -7598,11 +7661,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         stats_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         stats_row.pack(fill="x", padx=24, pady=(4, 14))
         self.home_stat_labels = {}
-        for key, icon, caption, tint in (
-                ("count", "🧮", "حركات الفترة", (UI["surface_alt"], "#1D232B")),
-                ("khayas", "⚖️", "الخياس", (UI["warning_soft"], "#33261A")),
-                ("inbound", "📥", "الوارد", (UI["success_soft"], "#15301F")),
-                ("sales", "🧾", "المبيعات / الصادر", (UI["gold_soft"], "#2E2710"))):
+        # أيقونات البطاقات الأربع على خلفية واحدة هادئة (كانت أربعة ألوان)
+        tint = (UI["primary_soft"], "#1B2B45")
+        for key, icon, caption in (
+                ("count", "🧮", "حركات الفترة"),
+                ("khayas", "⚖️", "الخياس"),
+                ("inbound", "📥", "الوارد"),
+                ("sales", "🧾", "المبيعات / الصادر")):
             card = ctk.CTkFrame(stats_row, corner_radius=14, border_width=1,
                                 fg_color=(UI["surface"], "#171C23"), border_color=(UI["line"], "#2A313B"))
             card.pack(side="right", fill="x", expand=True, padx=6)
@@ -8463,7 +8528,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ledger_header = ctk.CTkFrame(self.mfg_inst_container, fg_color="transparent")
         ledger_header.pack(fill="x", padx=18, pady=(0, 2))
 
-        self.lbl_op_ledger_title = ctk.CTkLabel(ledger_header, text="كشف حركة العامل المحدد", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color=(UI["gold_dark"], "#F1D27A"))
+        self.lbl_op_ledger_title = ctk.CTkLabel(ledger_header, text="كشف حركة العامل المحدد", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color=UI_TITLE)
         self.lbl_op_ledger_title.pack(side="right")
 
         btn_del_row = ctk.CTkButton(ledger_header, text="🗑️ حذف", font=("Cairo", 13, "bold"), fg_color=UI["danger"], hover_color=UI["danger_hover"], width=90, height=30, command=self.op_ledger_delete_selected)
@@ -8493,7 +8558,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_edit_row.pack(side="left", padx=3)
 
         # سطر الإجماليات يُحجز أسفل الشاشة قبل الجدول، فيأخذ الجدول كل ما بينهما
-        self.lbl_op_ledger_totals = ctk.CTkLabel(self.mfg_inst_container, text="", font=("Cairo", 14, "bold"), text_color=(UI["gold_dark"], "#F1D27A"))
+        self.lbl_op_ledger_totals = ctk.CTkLabel(self.mfg_inst_container, text="", font=("Cairo", 14, "bold"), text_color=UI_TITLE)
         self.lbl_op_ledger_totals.pack(side="bottom", fill="x", padx=18, pady=(0, 6))
 
         self.op_ledger_table_frame = ttk.Frame(self.mfg_inst_container)
@@ -8556,17 +8621,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.style_segment_buttons(self.stage_buttons, getattr(self, "current_op_stage", None))
 
     def style_segment_buttons(self, buttons, active_key):
-        """أزرار الأقسام كشريط تبويب: المختار ذهبي بارز، والبقية بيضاء هادئة بحافة رفيعة —
-        فيعرف المستخدم بنظرة أين هو (كانت كلها بلون واحد)."""
+        """أزرار الأقسام كشريط تبويب: المختار باللون الرئيسي الواحد للنظام، والبقية بيضاء
+        هادئة بنص داكن وحافة رفيعة — فيعرف المستخدم بنظرة أين هو بلا ألوان إضافية."""
         for key, btn in buttons.items():
             try:
                 if key == active_key:
-                    btn.configure(fg_color=UI["gold"], hover_color=UI["gold_line"],
-                                  text_color=UI["midnight"], border_width=0)
+                    btn.configure(fg_color=(UI["primary"], UI["primary"]),
+                                  hover_color=(UI["primary_hover"], UI["primary_hover"]),
+                                  text_color=("#FFFFFF", "#FFFFFF"), border_width=0)
                 else:
                     btn.configure(fg_color=(UI["surface"], "#171C23"),
                                   hover_color=(UI["primary_soft"], "#232A33"),
-                                  text_color=(UI["primary"], "#9CC0F5"),
+                                  text_color=(UI["ink"], "#E6EDF3"),
                                   border_width=1, border_color=(UI["line"], "#3A434F"))
             except Exception:
                 pass
@@ -8824,7 +8890,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bar = ctk.CTkFrame(parent, fg_color="transparent")
         bar.pack(fill="x", padx=18, pady=(0, 2))
         w["title"] = ctk.CTkLabel(bar, text=title, font=ctk.CTkFont(family="Cairo", size=15, weight="bold"),
-                                  text_color=(UI["gold_dark"], "#F1D27A"))
+                                  text_color=UI_TITLE)
         w["title"].pack(side="right")
         ctk.CTkButton(bar, text="🗑️ حذف", font=("Cairo", 13, "bold"), width=90, height=30,
                       fg_color=UI["danger"], hover_color=UI["danger_hover"], command=on_delete).pack(side="left", padx=3)
@@ -8836,7 +8902,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # سطر الإجماليات يُحجز أسفل الشاشة قبل الجدول، فيأخذ الجدول كل ما بينهما
         w["totals"] = ctk.CTkLabel(parent, text="", font=("Cairo", 14, "bold"),
-                                   text_color=(UI["gold_dark"], "#F1D27A"))
+                                   text_color=UI_TITLE)
         w["totals"].pack(side="bottom", fill="x", padx=18, pady=(0, 6))
         w["table_frame"] = ttk.Frame(parent)
         w["table_frame"].pack(fill="both", expand=True, padx=18, pady=(0, 2))
@@ -10857,7 +10923,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # إعادة الرصف عند تغيّر العرض (تكبير النافذة، شاشة أصغر…)
         self.khayas_category_bar.bind("<Configure>", self.layout_khayas_category_buttons)
 
-        self.summary_bar = ctk.CTkFrame(tab, height=70, corner_radius=10, border_width=2, border_color="#d4af37", fg_color="#2c3e50")
+        self.summary_bar = ctk.CTkFrame(tab, height=70, corner_radius=10, border_width=1, border_color=(UI["line_strong"], "#46515F"), fg_color=(UI["surface_alt"], "#1D232B"))
         self.summary_bar.pack(side="bottom", fill="x", padx=10, pady=10)
         
         self.lbl_section_summary = ctk.CTkLabel(self.summary_bar, text="إجمالي الخياس الفعلي للقسم: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=20, weight="bold"), text_color="#f1c40f")
@@ -10882,6 +10948,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         
         tree.tag_configure("section_tag", foreground="#f39c12", font=("Cairo", 16, "bold"))
         tree.tag_configure("total_tag", foreground="#e74c3c", font=("Cairo", 17, "bold"))
+        self.normalize_tree_tags(tree)
         
         for c in cols:
             tree.column(c, width=250, anchor="center")
@@ -13021,7 +13088,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             btn_save.pack(pady=15)
 
         # شريط عرض الإجماليات أسفل النافذة باللغة العربية بناءً على طلبك وخط عريض وواضح
-        totals_frame = ctk.CTkFrame(win, fg_color="#2c3e50", corner_radius=8, height=45)
+        totals_frame = ctk.CTkFrame(win, fg_color=(UI["surface_alt"], "#1D232B"), corner_radius=8, height=45)
         totals_frame.pack(fill="x", padx=20, pady=(5, 5))
         
         lbl_st = ctk.CTkLabel(totals_frame, text=f"💎 إجمالي الأحجار: {type_totals['احجار']:.2f}", font=("Cairo", 18, "bold"), text_color="#1f77b4")
@@ -13841,7 +13908,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.account_statement_table_frame.pack(fill="both", expand=True, padx=20, pady=10)
         self.account_statement_tree = None
 
-        balance_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color="#1a1a1a")
+        balance_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
         balance_bar.pack(fill="x", padx=20, pady=(0, 6))
         self.lbl_account_statement_balance = ctk.CTkLabel(balance_bar, text="", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#f1c40f")
         self.lbl_account_statement_balance.pack(pady=10)
@@ -14057,6 +14124,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # وبقية الحسابات (الموردين، المسترجعات، المبيعات) تبقى على صيغة دائن - مدين
         use_madin_daen = self.is_debit_nature_account(account_key)
         self.account_statement_tree.tag_configure("opening_tag", foreground="#1f77b4", font=("Cairo", 13, "bold"))
+        self.normalize_tree_tags(self.account_statement_tree)
         running = 0.0
         opening = None
         tot_madin = tot_daen = 0.0
@@ -14097,6 +14165,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         cols = ("الشهر", "رصيد بداية الفترة", "المبيعات / الصادر ➖", "الخياس ➖", "الوارد ➕", "قيود الخزينة ±", "رصيد نهاية الفترة ⚖️")
         self.report_tree = self.create_standard_treeview(t_frame, cols, height=16)
         self.report_tree.tag_configure("highlight_row", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        self.normalize_tree_tags(self.report_tree)
 
         for c in cols:
             self.report_tree.column(c, width=170, anchor="center")
@@ -14477,7 +14546,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_preview_in_row = ctk.CTkButton(main_frame, text="👁️ معاينة السطر المحدد", font=("Cairo", 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", height=36, command=self.preview_selected_inout_row)
         btn_preview_in_row.pack(pady=(0, 6))
 
-        balance_bar = ctk.CTkFrame(main_frame, corner_radius=10, fg_color="#1a1a1a")
+        balance_bar = ctk.CTkFrame(main_frame, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
         balance_bar.pack(fill="x", padx=15, pady=(4, 6))
         self.lbl_in_summary = ctk.CTkLabel(balance_bar, text="إجمالي الوارد: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#f1c40f")
         self.lbl_in_summary.pack(pady=10)
@@ -14852,7 +14921,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # أرصدة المواد: شارة هادئة أعلى الشاشة بدل شريط يقتطع من مساحة الجدول
         self.lbl_sales_balance = ctk.CTkLabel(
             sub_bar, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-            fg_color=(UI["gold_soft"], "#2A2410"), text_color=(UI["gold_dark"], "#F1D27A"),
+            fg_color=(UI["surface_alt"], "#1D232B"), text_color=UI_TITLE,
             corner_radius=8, height=32)
         self.lbl_sales_balance.pack(side="left", padx=4, ipadx=12)
 
@@ -14929,9 +14998,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
          self.sale_diamond, self.sale_stones_discount, self.sale_khayas, self.sale_khayas_polish,
          self.sale_khayas_assembler) = [add_field(i, t) for i, t in enumerate(labels)]
 
-        # خياس المركب يُجلب تلقائياً من مراحل التصنيع بمجرد كتابة رقم التشغيل
-        self.sale_set_number.bind("<KeyRelease>", self.autofill_assembler_khayas, add="+")
+        # خياس المركب يُجلب تلقائياً من مراحل التصنيع بمجرد كتابة رقم التشغيل (بعد
+        # توقّف الكتابة لحظة)، وفوراً عند مغادرة الخانة
+        self.sale_set_number.bind("<KeyRelease>", self.schedule_assembler_autofill, add="+")
         self.sale_set_number.bind("<FocusOut>", self.autofill_assembler_khayas, add="+")
+        # مصدر خياس المركب تحت الخانات: العامل والصف والفترة التي جاء منها، أو أن
+        # الرقم غير موجود في المركبين — فيُرى سبب أي قيمة بعينه (يختفي حين يفرغ)
+        self.lbl_assembler_source = ctk.CTkLabel(fields_row, text="", font=("Cairo", 12),
+                                                 text_color=(UI["muted"], "#9AA4B2"), anchor="e")
+        self.lbl_assembler_source.grid(row=2, column=0, columnspan=n_cols, padx=6, pady=(4, 0), sticky="e")
+        self.lbl_assembler_source.grid_remove()
+        self._assembler_set_fetched = None
         # الوزنان يُحسبان تلقائياً ويظهران في الجدول، فلا داعي لخانتَي إدخال لهما.
         # نُبقيهما ككائنين مخفيّين لأن كوداً آخر يقرأ منهما ويكتب فيهما.
         hidden_holder = ctk.CTkFrame(fields_row, fg_color="transparent")
@@ -15026,7 +15103,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         pending_top.pack(fill="x", padx=18, pady=(2, 2))
         ctk.CTkLabel(pending_top, text="📝 سطور الفاتورة الحالية (لم تُرحَّل بعد)",
                      font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
-                     text_color=(UI["gold_dark"], "#F1D27A")).pack(side="right")
+                     text_color=UI_TITLE).pack(side="right")
         ctk.CTkLabel(pending_top, text="✏️ تعديل كل خانات الصف   ·   🗑️ حذفه — من العمود الأول (أو نقرتان على الصف)",
                      font=("Cairo", 12), text_color=(UI["muted"], "#9AA3AF")).pack(side="right", padx=14)
         self.btn_sales_sort = ctk.CTkButton(
@@ -15057,7 +15134,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.btn_suspend_sale.pack(side="right", padx=6)
         # الفاتورة المعلّقة المفتوحة الآن: تذكير ثابت بجانب الزرّين حتى تُرحَّل أو تُعلَّق
         self.lbl_suspended_open = ctk.CTkLabel(
-            commit_bar, text="", font=("Cairo", 13, "bold"), text_color=(UI["gold_dark"], "#F1D27A"),
+            commit_bar, text="", font=("Cairo", 13, "bold"), text_color=UI_TITLE,
             wraplength=260, justify="left")
         self.lbl_suspended_open.grid(row=0, column=0, padx=12, sticky="w")
         self.lbl_sales_status = ctk.CTkLabel(commit_bar, text="", font=("Cairo", 14, "bold"),
@@ -15175,6 +15252,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       fg_color="#8b0000", hover_color="#a52a2a", command=self.delete_selected_sale_invoice).pack(side="left", padx=5)
         ctk.CTkButton(head, text="تعديل الفاتورة ✏️", font=("Cairo", 14, "bold"), width=155, height=34,
                       fg_color="#b8860b", hover_color="#daa520", command=self.edit_selected_sale_invoice).pack(side="left", padx=5)
+        # يقارن خياس المركب المسجّل في كل الفواتير المرحّلة بكشف المركبين الآن
+        ctk.CTkButton(head, text="🔍 تدقيق خياس المركب", font=("Cairo", 14, "bold"), width=185, height=34,
+                      fg_color="#555555", hover_color="#333333", command=self.open_assembler_khayas_audit).pack(side="left", padx=5)
 
         self.sales_ops_table_frame = ttk.Frame(parent)
         self.sales_ops_table_frame.pack(fill="both", expand=True, padx=20, pady=(4, 4))
@@ -15526,6 +15606,53 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         lbl_state = ctk.CTkLabel(win, text="", font=("Cairo", 13, "bold"), text_color="#f1c40f")
         lbl_state.pack(pady=(0, 2))
+        # مصدر خياس المركب للسطر المحمّل، وتنبيه إن خالف المسجّلُ كشفَ المركبين
+        lbl_asm = ctk.CTkLabel(win, text="", font=("Cairo", 12), text_color=(UI["muted"], "#9AA4B2"),
+                               wraplength=1000, justify="right")
+        lbl_asm.pack(padx=18, pady=(0, 2))
+        asm_state = {"set": ""}       # آخر رقم تشغيل جُلب له خياس المركب في هذه النافذة
+
+        def fetch_assembler(event=None):
+            """رقم تشغيل جديد/معدَّل ← خياس المركب من كشف المركبين (كما في شاشة المبيعات)"""
+            set_no = self.normalize_set_number(entries["set_number"].get())
+            if set_no == asm_state["set"]:
+                return
+            asm_state["set"] = set_no
+            try:
+                details = self.get_assembler_khayas_details(set_no)
+                entries["خياس المركب"].delete(0, "end")
+                if abs(details[0]) > 0.0001:
+                    entries["خياس المركب"].insert(0, f"{details[0]:g}")
+                lbl_asm.configure(text=self.describe_assembler_khayas(set_no, details),
+                                  text_color=(UI["muted"], "#9AA4B2"))
+            except Exception as e:
+                log_cloud_error("تعذّر جلب خياس المركب في نافذة تعديل الفاتورة", e)
+
+        def check_loaded_assembler(r):
+            """سطر محمّل للتعديل: يقارن خياس المركب المسجّل بقيمته الصحيحة الآن"""
+            set_no = self.normalize_set_number(r.get("set_number"))
+            asm_state["set"] = set_no
+            if not set_no:
+                lbl_asm.configure(text="")
+                return
+            details = self.get_assembler_khayas_details(set_no)
+            correct, stored = details[0], round(r.get("خياس المركب", 0.0) or 0.0, 2)
+            source = self.describe_assembler_khayas(set_no, details)
+            # المطابق بلون هادئ، والمخالف بالأحمر (اللون المحجوز للأخطاء) ليُرى فوراً
+            calm, alert = (UI["muted"], "#9AA4B2"), (UI["danger"], "#F08A8F")
+            if abs(stored - correct) <= 0.005:
+                lbl_asm.configure(text="✔ " + source, text_color=calm)
+            elif correct > 0:
+                entries["خياس المركب"].delete(0, "end")
+                entries["خياس المركب"].insert(0, f"{correct:g}")
+                lbl_asm.configure(text=(f"⚠️ خياس المركب المسجّل {stored:.2f} والصحيح من كشف المركبين {correct:.2f} — "
+                                        f"وُضع الصحيح في الخانة: اضغط (حفظ السطر) ثم (حفظ تعديلات الفاتورة)\n{source}"),
+                                  text_color=alert)
+            else:
+                lbl_asm.configure(text=(f"⚠️ خياس المركب المسجّل {stored:.2f} لكن {source} — راجع الرقم "
+                                        "قبل الحفظ"), text_color=alert)
+
+        entries["set_number"].bind("<FocusOut>", fetch_assembler, add="+")
 
         btns_row = ctk.CTkFrame(win, fg_color="transparent")
         btns_row.pack(fill="x", padx=18, pady=(2, 4))
@@ -15566,6 +15693,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ent.delete(0, 'end')
             selected_idx["i"] = None
             lbl_state.configure(text="")
+            lbl_asm.configure(text="")
+            asm_state["set"] = ""
 
         def refresh_rows_tree():
             for item in rows_tree.get_children():
@@ -15619,6 +15748,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ent.insert(0, str(val) if k in ("set_number", "row_number") else (f"{val:g}" if val else ""))
             selected_idx["i"] = idx
             lbl_state.configure(text=f"✏️ يتم الآن تعديل السطر رقم ({idx + 1}) — اضغط (حفظ السطر) بعد التعديل")
+            check_loaded_assembler(r)
 
         def save_row():
             vals = read_fields()
@@ -15779,54 +15909,194 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         entry.bind("<Return>", lambda e: do_add())
         ctk.CTkButton(win, text="✅ إضافة", font=("Cairo", 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=do_add).pack(pady=15)
 
+    # أرقام هندية/فارسية ← أرقام لاتينية: «٧٠٠٣» و«7003» رقم تشغيل واحد
+    _SET_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+    # حالات قبوض المركبين التي يُقرأ منها خياس المركب: ما يُحتسب في الأرصدة، وما
+    # أُقفل بالأرشفة القديمة (SETTLED) — الإقفال لا يُلغي ذهباً قُبض فعلاً على رقم
+    # التشغيل. السطور المعلوماتية (MEMO) مستثناة
+    ASSEMBLER_KHAYAS_STATUSES = ("ACTIVE", "SETTLED_INOUT", "SETTLED")
+
+    @classmethod
+    def normalize_set_number(cls, text):
+        """رقم التشغيل بصيغة واحدة للمقارنة: بلا فراغات زائدة وبأرقام لاتينية."""
+        return " ".join(str(text or "").translate(cls._SET_DIGITS).split())
+
     def get_assembler_khayas_for_set(self, set_number, month=None):
         """قيمة عمود (مسموح/٨) لرقم تشغيل معيّن، من قسم **المركبين** حصراً.
 
         تُحاكي هذه الدالة كشف مراحل التصنيع خطوةً بخطوة حتى يتطابق الرقم معه
         حرفياً:
-          ١) تُجمَّع حركات كل عامل مركّب في صفوف حسب (رقم الصف) — نفس تجميع الكشف.
-          ٢) رقم تشغيل الصف = **أول رقم غير فارغ** يظهر في حركاته، وهو بالضبط
-             ما يعرضه الكشف في عمود رقم التشغيل.
+          ١) تُجمَّع حركات كل عامل مركّب في صفوف حسب (الفترة، رقم الصف) — نفس
+             تجميع الكشف، فالكشف يعرض فترة واحدة ورقم الصف يتكرّر بين الفترات.
+          ٢) رقم تشغيل الصف = **أول رقم غير فارغ** في حركاته بترتيب التاريخ، وهو
+             بالضبط ما يعرضه الكشف في عمود رقم التشغيل.
           ٣) الصفوف التي رقم تشغيلها = المطلوب فقط تدخل الحساب.
-          ٤) مسموح/٨ = مجموع (قبض ذهب) لتلك الصفوف × ٨ بالألف.
+          ٤) مسموح/٨ لكل صف = قبض الذهب × ٨ بالألف مقرّباً كما يظهر في عموده،
+             والنتيجة مجموع قيم العمود للصفوف المطابقة.
 
-        سبب الأرقام الخاطئة سابقاً: كان الحساب يشمل قسم المصنعين أيضاً، ويضم
-        كل حركات الصف حتى لو حملت أرقام تشغيل أخرى. الآن التطابق مع الكشف تام.
+        أسباب الأرقام الخاطئة سابقاً:
+          • قسم المصنعين كان يدخل الحساب، وحركات الصف بأرقام تشغيل أخرى.
+          • التجميع كان بـ(العامل، رقم الصف) عبر **كل** الفترات: الصف ١ في أغسطس
+            والصف ١ في سبتمبر صارا صفاً واحداً — فرقم أحدهما يجلب مجموع الشهرين،
+            ورقم الآخر لا يُجلب إطلاقاً (صفر).
+          • «٧٠٠٣» بأرقام هندية لم تطابق «7003»، وصفوف الإقفال القديم كانت تُهمَل.
 
         البحث يشمل كل الفترات (رقم التشغيل فريد عبر الزمن)، ما لم يُمرَّر شهر.
         """
-        set_number = (set_number or "").strip()
-        if not set_number:
-            return 0.0
+        return self.get_assembler_khayas_details(set_number, month)[0]
 
+    def get_assembler_khayas_details(self, set_number, month=None):
+        """(خياس المركب، الصفوف التي جاء منها) — كل صف: العامل والفترة ورقم الصف
+        والقبض ومسموح/٨ كما في كشف المركبين، ليرى المستخدم مصدر الرقم بعينه."""
+        set_number = self.normalize_set_number(set_number)
+        if not set_number:
+            return 0.0, []
+        return self.assembler_khayas_index(month).get(set_number, (0.0, []))
+
+    def assembler_khayas_index(self, month=None):
+        """كل أرقام التشغيل في كشف المركبين ← (خياس المركب، صفوفه) بمسحٍ واحد للحركات.
+        يستخدمه البحث عن رقم واحد، وتدقيق كل فواتير المبيعات دفعةً واحدة."""
         assemblers = set(self.categories.get("المركبين", []))
         if not assemblers:
-            return 0.0
+            return {}
 
-        # (١) تجميع حركات المركبين في صفوف: (العامل، رقم الصف)
+        # (١) تجميع حركات المركبين في صفوف: (العامل، الفترة، رقم الصف) بترتيب التاريخ
+        rows = [inv for inv in self.invoices.values()
+                if inv.get("settled_status") in self.ASSEMBLER_KHAYAS_STATUSES
+                and inv.get("الاسم") in assemblers
+                and (not month or self.inv_in_period(inv, month))]
+        rows.sort(key=lambda x: (str(x.get("التاريخ", "")), x.get("رقم الفاتورة", 0) or 0))
         groups = {}
-        for inv in self.invoices.values():
-            if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"):
-                continue
-            name = inv.get("الاسم")
-            if name not in assemblers:
-                continue
-            if month and not self.inv_in_period(inv, month):
-                continue
-
-            key = (name, (inv.get("row_number", "") or "").strip())
+        for inv in rows:
+            key = (inv.get("الاسم"), self.inv_period(inv), (inv.get("row_number", "") or "").strip())
             g = groups.setdefault(key, {"set_number": "", "قبض": 0.0})
 
             # (٢) أول رقم تشغيل غير فارغ هو رقم الصف — كما في الكشف تماماً
-            if not g["set_number"] and (inv.get("set_number", "") or "").strip():
-                g["set_number"] = (inv.get("set_number", "") or "").strip()
+            if not g["set_number"]:
+                g["set_number"] = self.normalize_set_number(inv.get("set_number", ""))
 
             if inv.get("النوع") == "قبض ذهب":
-                g["قبض"] += inv.get("الوزن", 0.0)
+                g["قبض"] += inv.get("الوزن", 0.0) or 0.0
 
-        # (٣) و(٤) الصفوف المطابقة فقط، ومسموح/٨ عليها
-        total = sum(g["قبض"] for g in groups.values() if g["set_number"] == set_number)
-        return round(total * ALLOWANCE_8, 2)
+        # (٣) و(٤) كل رقم تشغيل ← صفوفه، ومسموح/٨ لكل صف كما يظهر في عموده
+        index = {}
+        for (name, period, row), g in groups.items():
+            if not g["set_number"]:
+                continue
+            m = {"name": name, "period": period, "row": row, "qabd": round(g["قبض"], 2),
+                 "allow8": round(g["قبض"] * ALLOWANCE_8, 2)}
+            total, matches = index.get(g["set_number"], (0.0, []))
+            index[g["set_number"]] = (round(total + m["allow8"], 2), matches + [m])
+        return index
+
+    def audit_sale_assembler_khayas(self, month=None):
+        """سطور فواتير المبيعات المرحّلة التي يختلف «خياس المركب» المسجّل فيها عن
+        قيمته الصحيحة الآن في كشف المركبين (مسموح/٨ لرقم التشغيل).
+
+        للقراءة فقط: لا يغيّر شيئاً؛ التصحيح من نافذة تعديل الفاتورة نفسها."""
+        index = self.assembler_khayas_index()
+        by_key = {}
+        for inv in self.invoices.values():
+            if inv.get("settled_status") not in SALE_READ_STATUSES:
+                continue
+            t = inv.get("النوع")
+            if t not in self.SALE_TYPES and t != "خياس طقوم":
+                continue
+            if not self.inv_in_period(inv, month):
+                continue
+            key = (inv.get("رقم الفاتورة اليدوي", "") or "", inv.get("التاريخ", ""), inv.get("الاسم", ""))
+            by_key.setdefault(key, []).append(inv)
+        found, checked = [], 0
+        for key, recs in by_key.items():
+            for r in self.sale_records_to_rows(recs):
+                set_no = self.normalize_set_number(r.get("set_number"))
+                if not set_no:
+                    continue
+                checked += 1
+                correct, matches = index.get(set_no, (0.0, []))
+                stored = round(r.get("خياس المركب", 0.0) or 0.0, 2)
+                if abs(stored - correct) > 0.005:
+                    found.append({"key": key, "set_number": set_no, "row_number": r.get("row_number", ""),
+                                  "stored": stored, "correct": correct, "matches": matches,
+                                  "invoice_no": key[0] or min(i.get("رقم الفاتورة", 0) for i in recs)})
+        found.sort(key=lambda d: (d["key"][1], str(d["invoice_no"]), d["set_number"]))
+        return found, checked
+
+    def open_assembler_khayas_audit(self):
+        """نافذة تدقيق خياس المركب في كل فواتير المبيعات المرحّلة (كل الفترات)."""
+        win = ctk.CTkToplevel(self)
+        win.title("تدقيق خياس المركب")
+        self.fit_dialog_to_screen(win, 1150, 620)
+        win.transient(self)
+
+        ctk.CTkLabel(win, text="🔍 تدقيق خياس المركب في فواتير المبيعات المرحّلة",
+                     font=("Cairo", 17, "bold"), text_color=(UI["ink"], "#E6EDF3")).pack(pady=(12, 2))
+        ctk.CTkLabel(win, text=("يقارن «خياس المركب» المسجّل في كل سطر برقم تشغيل بقيمته الصحيحة الآن في كشف "
+                                "المركبين (مسموح/٨ لصفوف رقم التشغيل). لا يغيّر شيئاً — التصحيح من نافذة تعديل الفاتورة."),
+                     font=("Cairo", 12), text_color=(UI["muted"], "#9AA4B2"), wraplength=1000).pack(padx=18)
+        lbl_result = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"))
+        lbl_result.pack(pady=(6, 4))
+
+        table_frame = ttk.Frame(win)
+        table_frame.pack(fill="both", expand=True, padx=18, pady=4)
+        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "رقم التشغيل", "المسجّل", "الصحيح", "الفرق", "المصدر")
+        tree = self.create_standard_treeview(table_frame, cols, height=12)
+        rows_map = {}
+
+        def run():
+            for item in tree.get_children():
+                tree.delete(item)
+            rows_map.clear()
+            found, checked = self.audit_sale_assembler_khayas()
+            for d in found:
+                rows = [m for m in d["matches"] if m["allow8"]] or d["matches"]
+                src = "  +  ".join(f"{m['name']} — الصف {m['row'] or '-'} — {m['period']}: {m['allow8']:.2f}"
+                                   for m in rows) or "غير موجود في كشف المركبين"
+                item = tree.insert("", "end", values=(
+                    d["invoice_no"], d["key"][1], d["key"][2], d["set_number"], f"{d['stored']:.2f}",
+                    f"{d['correct']:.2f}", f"{d['correct'] - d['stored']:+.2f}", src))
+                rows_map[item] = d["key"]
+            if found:
+                lbl_result.configure(text=f"⚠️ {len(found)} سطراً يختلف خياس المركب فيها — من {checked} سطراً برقم تشغيل",
+                                     text_color=(UI["danger"], "#F28B82"))
+            else:
+                lbl_result.configure(text=f"✔ كل السطور مطابقة لكشف المركبين ({checked} سطراً برقم تشغيل)",
+                                     text_color=(UI["success"], "#7EE2B8"))
+            self.fit_columns_to_content(tree, None, min_width=60, max_width=420)
+
+        def open_selected(event=None):
+            sel = tree.selection()
+            key = rows_map.get(sel[0]) if sel else None
+            if not key:
+                messagebox.showwarning("تنبيه", "حدّد سطراً من الجدول أولاً.", parent=win)
+                return
+            self.open_sale_invoice_editor(key)
+
+        tree.bind("<Double-1>", open_selected)
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=(4, 12))
+        ctk.CTkButton(btns, text="✏️ فتح الفاتورة للتعديل", font=("Cairo", 14, "bold"), width=200, height=36,
+                      fg_color=UI["primary"], hover_color=UI["primary_hover"],
+                      command=open_selected).pack(side="right", padx=6)
+        ctk.CTkButton(btns, text="↻ إعادة التدقيق", font=("Cairo", 14, "bold"), width=160, height=36,
+                      fg_color=UI["neutral"], hover_color=UI["neutral_hover"],
+                      command=run).pack(side="right", padx=6)
+        run()
+
+    def describe_assembler_khayas(self, set_number, details=None):
+        """سطر قصير تحت الخانات: من أين جاء خياس المركب (أو أنه غير موجود).
+        details: ناتج get_assembler_khayas_details إن حُسب للتو (لا يُعاد البحث)."""
+        set_number = self.normalize_set_number(set_number)
+        if not set_number:
+            return ""
+        total, matches = details or self.get_assembler_khayas_details(set_number)
+        if not matches:
+            return f"رقم التشغيل {set_number} غير موجود في قسم المركبين بمراحل التصنيع — خياس المركب فارغ"
+        # الصفوف ذات القيمة فقط (صف بلا قبض بعدُ يُذكر حين لا يوجد غيره ليُفهم سبب الصفر)
+        shown = [m for m in matches if m["allow8"]] or matches
+        parts = [f"{m['name']} — الصف {m['row'] or 'بدون ترقيم'} — فترة {m['period']}: "
+                 f"قبض {m['qabd']:.2f} × ٨ بالألف = {m['allow8']:.2f}" for m in shown]
+        return f"خياس المركب للتشغيل {set_number} = {total:.2f}  ←  من المركبين: " + "  +  ".join(parts)
 
     def autofill_assembler_khayas(self, event=None):
         """يملأ خانة (خياس المركب) تلقائياً حسب رقم التشغيل المكتوب.
@@ -15836,15 +16106,55 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """
         if not hasattr(self, "sale_khayas_assembler"):
             return
+        job = getattr(self, "_assembler_job", None)
+        if job is not None:
+            self._assembler_job = None
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
         try:
-            value = self.get_assembler_khayas_for_set(self.sale_set_number.get())
+            key = self.normalize_set_number(self.sale_set_number.get())
+            # الرقم نفسه ما زال مكتوباً والخانة ممتلئة ← لا يُعاد الجلب: المرور على
+            # الخانة بالأسهم أو Enter لا يمسح خياساً عدّله المستخدم بيده
+            if (key == getattr(self, "_assembler_set_fetched", None)
+                    and self.sale_khayas_assembler.get().strip()):
+                return
+            details = self.get_assembler_khayas_details(key)
+            self._assembler_set_fetched = key
+            value = details[0]
             self.sale_khayas_assembler.delete(0, 'end')
             if abs(value) > 0.0001:
                 self.sale_khayas_assembler.insert(0, f"{value:g}")
+            self.show_assembler_source(self.describe_assembler_khayas(key, details))
             if hasattr(self, "_recompute_sale_totals"):
                 self._recompute_sale_totals()
         except Exception as e:
             log_cloud_error("تعذّر جلب خياس المركب تلقائياً", e)
+
+    def schedule_assembler_autofill(self, event=None):
+        """الجلب بعد توقّف الكتابة ١٨٠ ملّي ثانية — لا مع كل حرف (البحث يمسح كل الحركات)"""
+        job = getattr(self, "_assembler_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._assembler_job = self.after(180, self.autofill_assembler_khayas)
+
+    def show_assembler_source(self, text):
+        """سطر المصدر تحت خانات المبيعات: يظهر بنصه ويختفي حين يفرغ."""
+        lbl = getattr(self, "lbl_assembler_source", None)
+        if lbl is None:
+            return
+        try:
+            lbl.configure(text=text or "")
+            if text:
+                lbl.grid()
+            else:
+                lbl.grid_remove()
+        except Exception:
+            pass
 
     def bind_vertical_navigation(self, fields, on_last=None, window=None):
         """تنقّل بين خانات نافذة التعديل بـ Enter و↑ ↓.
@@ -16021,6 +16331,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_diamond.delete(0, 'end')
         self.sale_weight_standing.delete(0, 'end')
         self.sale_weight_bound.delete(0, 'end')
+        self._assembler_set_fetched = None
+        self.show_assembler_source("")
         self.sale_set_number.focus_set()
 
         self.refresh_pending_sales_table()
@@ -16217,7 +16529,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head = ctk.CTkFrame(win, fg_color="transparent")
         head.pack(fill="x", padx=18, pady=(14, 4))
         ctk.CTkLabel(head, text=f"✏️ تعديل السطر رقم {row.get('row_number') or idx + 1}",
-                     font=("Cairo", 18, "bold"), text_color=(UI["gold_dark"], "#F1D27A")).pack(side="right")
+                     font=("Cairo", 18, "bold"), text_color=UI_TITLE).pack(side="right")
         lbl_live = ctk.CTkLabel(head, text="", font=("Cairo", 13, "bold"),
                                 fg_color=(UI["primary_soft"], "#1B2A44"), text_color=(UI["primary"], "#9CC0F5"),
                                 corner_radius=8, height=30)
@@ -16560,6 +16872,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         draft = data.get("draft") or {}
         for key, attr in self.SALE_DRAFT_FIELDS:
             put(attr, draft.get(key, ""))
+        # خياس المركب المحفوظ مع المسودة يبقى كما هو حتى يتغيّر رقم التشغيل
+        self._assembler_set_fetched = self.normalize_set_number(draft.get("set_number", "")) or None
+        self.show_assembler_source("")
         if hasattr(self, "_recompute_sale_totals"):
             self._recompute_sale_totals()
 
@@ -17303,7 +17618,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.je_date.insert(0, self.get_smart_default_date())
         self.je_date.pack(side="right", padx=5)
 
-        self.je_invoice_display = ctk.CTkLabel(date_row, text=f"# {self.invoice_counter + 1}", font=("Cairo", 15, "bold"), text_color="#d4af37", fg_color="#1a1a1a", corner_radius=6, width=90, height=38)
+        self.je_invoice_display = ctk.CTkLabel(date_row, text=f"# {self.invoice_counter + 1}", font=("Cairo", 15, "bold"), text_color="#d4af37", fg_color=(UI["surface_alt"], "#1D232B"), corner_radius=6, width=90, height=38)
         self.je_invoice_display.pack(side="right", padx=5)
         ctk.CTkLabel(date_row, text="رقم الفاتورة:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
 
@@ -17607,7 +17922,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             display_name = self.get_display_label(cat)
             ctk.CTkLabel(card, text=f"{icon}  صندوق خياس {display_name}",
                          font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
-                         text_color=(UI["gold_dark"], "#F1D27A")).pack(pady=(12, 8))
+                         text_color=UI_TITLE).pack(pady=(12, 8))
 
             # أربعة أقسام لكل صندوق: الخياس الحالي، الفاقد (كل الفترات)، المسترجع، الصافي
             stats = ctk.CTkFrame(card, fg_color="transparent")
@@ -17615,7 +17930,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             stats.grid_columnconfigure((0, 1), weight=1, uniform="stat")
 
             def stat(row, col, title, fg, soft, account=None):
-                box = ctk.CTkFrame(stats, corner_radius=10, fg_color=soft)
+                box = ctk.CTkFrame(stats, corner_radius=10, fg_color=soft, border_width=1,
+                                   border_color=(UI["line"], "#2A313B"))
                 box.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
                 title_lbl = ctk.CTkLabel(box, text=title, font=("Cairo", 12, "bold"), wraplength=170,
                                          text_color=(UI["muted"], "#9AA3AF"))
@@ -17635,13 +17951,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # من اليمين: العمود ١ ثم العمود ٠. عنوانا الفاقد والمسترجع اسما حسابيهما
             # كما في شجرة الحسابات وكشف الحساب (مثلاً «مسترجع كاستنج»)
             loss_account, recovery_account = self.get_box_loss_account(cat), self.get_box_recovery_name(cat)
-            lbl_current = stat(0, 1, "الفاقد الحالي", (UI["danger"], "#F08A8F"), (UI["danger_soft"], "#2A1A1C"),
-                               account=self.get_box_account_name(cat))
-            lbl_loss = stat(0, 0, loss_account, (UI["gold_dark"], "#F1D27A"), (UI["gold_soft"], "#2E2710"),
-                            account=loss_account)
-            lbl_recovered = stat(1, 1, recovery_account, (UI["primary"], "#9CC0F5"), (UI["primary_soft"], "#1B2B45"),
-                                 account=recovery_account)
-            lbl_net = stat(1, 0, "الصافي (الفاقد − المسترجع)", (UI["success"], "#7EE2B0"), (UI["success_soft"], "#15291F"))
+            # الأقسام الأربعة بلون واحد هادئ (كانت أحمر وذهبي وأزرق وأخضر): العنوان يميّزها
+            calm_fg, calm_bg = (UI["title"], "#C9D6E8"), (UI["surface_alt"], "#1D232B")
+            lbl_current = stat(0, 1, "الفاقد الحالي", calm_fg, calm_bg, account=self.get_box_account_name(cat))
+            lbl_loss = stat(0, 0, loss_account, calm_fg, calm_bg, account=loss_account)
+            lbl_recovered = stat(1, 1, recovery_account, calm_fg, calm_bg, account=recovery_account)
+            lbl_net = stat(1, 0, "الصافي (الفاقد − المسترجع)", calm_fg, calm_bg)
             ctk.CTkLabel(card, text="الفاقد الحالي للفترة المختارة — والبقية لكل الفترات", font=("Cairo", 11),
                          text_color=(UI["muted"], "#9AA3AF")).pack(pady=(2, 0))
 
@@ -18347,7 +18662,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.archive_rows_map = {}
 
         # ====== لوحة إجراءات الفاتورة المحددة ======
-        action_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color="#1a1a1a")
+        action_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
         action_bar.pack(fill="x", padx=20, pady=(0, 15))
         self.lbl_archive_selected = ctk.CTkLabel(action_bar, text="اختر فاتورة من الجدول أعلاه لعرض إجراءاتها", font=("Cairo", 13, "bold"), text_color="#aaaaaa")
         self.lbl_archive_selected.pack(side="right", padx=15, pady=12)
@@ -18955,7 +19270,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.pack(pady=20)
         
-        btn_save_edit = ctk.CTkButton(btn_frame, text="حفظ التعديلات", font=("Cairo", 15, "bold"), height=40, fg_color="green", command=save_changes)
+        btn_save_edit = ctk.CTkButton(btn_frame, text="حفظ التعديلات", font=("Cairo", 15, "bold"), height=40, fg_color=UI["primary"], command=save_changes)
         btn_save_edit.pack(side="right", padx=10)
         ctk.CTkButton(btn_frame, text="حذف الحركة ❌", font=("Cairo", 15, "bold"), height=40, fg_color="#c0392b", hover_color="#922b21", command=delete_record).pack(side="left", padx=10)
         self.apply_edit_lock_to_button(btn_save_edit, win)
@@ -20253,7 +20568,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         card.pack(fill="x", padx=40, pady=30)
         ctk.CTkLabel(card, text="🔑 مفتاح المدير غير مضبوط على هذا الجهاز" if no_key
                      else "⚠️ تعذّر عرض حسابات العملاء",
-                     font=("Cairo", 19, "bold"), text_color=(UI["gold_dark"], "#F1D27A")).pack(pady=(18, 6))
+                     font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(18, 6))
         reason = ("لهذا لا تظهر أسماء الحسابات: لوحة المدير تقرأ حسابات العملاء بالمفتاح السري للمشروع،\n"
                   "والمفتاح لا يُكتب داخل البرنامج أبداً (حتى لا يتسرّب مع أي نسخة)." if no_key else error)
         ctk.CTkLabel(card, text=reason, font=("Cairo", 13), justify="center", wraplength=760,
