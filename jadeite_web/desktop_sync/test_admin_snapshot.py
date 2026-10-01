@@ -40,11 +40,12 @@ TMP = tempfile.mkdtemp(prefix="admin_snapshot_")
 errors = []
 ns = {"os": os, "sys": sys, "sqlite3": sqlite3, "shutil": shutil, "base64": base64, "datetime": datetime,
       "contextlib": contextlib, "threading": __import__("threading"), "hashlib": __import__("hashlib"),
-      "time": __import__("time"),
+      "time": __import__("time"), "zlib": __import__("zlib"),
       "APP_VERSION": "9.9.9", "IS_ADMIN_BUILD": True, "SUPABASE_AVAILABLE": True,
       "SUPABASE_URL": "https://x", "SUPABASE_SECRET_KEY": "",
       "log_cloud_error": lambda *a, **k: errors.append(a)}
 for name in ("MIRROR_META_TIME", "MIRROR_META_VERSION", "MIRROR_META_SOURCE", "ADMIN_LEDGER_FALLBACK_NOTE",
+             "BACKUP_MAGIC", "SQLITE_HEADER", "decode_backup_payload",
              "_remove_db_files", "snapshot_db_bytes", "is_sqlite_db_healthy", "reset_local_cache",
              "_backup_readers", "cloud_download_backup", "cloud_backup_stamp", "load_client_mirror",
              "mark_mirror_source", "admin_secret_dir", "_load_admin_secret_key", "save_admin_secret_key",

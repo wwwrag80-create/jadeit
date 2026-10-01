@@ -10,6 +10,11 @@ src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
 seg = lambda n: ast.get_source_segment(src, next(m for m in cls.body
                                                  if isinstance(m, ast.FunctionDef) and m.name == n))
+# توحيد أرقام رقم التشغيل («٧٧» = «77») — يستخدمه البحث عن صف الرقم
+SET_NORM = textwrap.indent(textwrap.dedent(
+    ast.get_source_segment(src, next(m for m in cls.body if isinstance(m, ast.Assign)
+                                     and getattr(m.targets[0], "id", "") == "_SET_DIGITS"))
+    + "\n@classmethod\n" + seg("normalize_set_number")), "    ") + "\n"
 
 # ═══ دالة البحث ═══
 ns = {}
@@ -19,7 +24,7 @@ exec("class S:\n"
      '        return p if p else str(inv.get("التاريخ", ""))[:7]\n'
      "    @classmethod\n    def inv_in_period(cls, inv, month):\n"
      "        return True if not month else cls.inv_period(inv) == month\n"
-     + textwrap.indent(textwrap.dedent(seg("find_row_by_set_number")), "    "), ns)
+     + SET_NORM + textwrap.indent(textwrap.dedent(seg("find_row_by_set_number")), "    "), ns)
 app = ns["S"]()
 app.current_display_month = "2026-09"
 app.categories = {"المصنعين": ["أحمد", "سالم"]}

@@ -182,7 +182,9 @@ def main():
            "--name", name, "--icon", "jadeite.ico", "--paths", HERE,
            # ثيمات customtkinter (ملفات json) — بدونها لا يفتح البرنامج أصلاً
            "--collect-data", "customtkinter",
-           "--collect-submodules", "supabase"]
+           "--collect-submodules", "supabase",
+           # باركود وQR تذكرة التشغيل (يُستورد داخل الدالة عند الطباعة)
+           "--collect-submodules", "reportlab.graphics.barcode"]
     for m in LOCAL_MODULES:
         cmd += ["--hidden-import", m]
     for f in DATA_FILES:

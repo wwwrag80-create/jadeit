@@ -41,6 +41,7 @@ import json
 import math
 import random
 import time
+import zlib
 
 SUPABASE_URL = "https://ttpqksvtnhoulghgovob.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ymRG7rKUf-704V3j1bNwgg_b1IvlMlX"
@@ -89,10 +90,10 @@ SUPABASE_SECRET_KEY = ""   # مُزال عمداً من نسخة العميل (�
 
 # ================= وحدات المزامنة السحابية =================
 try:
-    from gold_price import GoldPriceWatcher
+    from gold_price import GoldPriceWatcher, gram_price
     GOLD_PRICE_AVAILABLE = True
 except Exception:
-    GoldPriceWatcher = None
+    GoldPriceWatcher = gram_price = None
     GOLD_PRICE_AVAILABLE = False
 
 try:
@@ -127,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.49.0"
+APP_VERSION = "1.50.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -838,10 +839,44 @@ def snapshot_db_bytes(db_path):
         _remove_db_files(tmp)
 
 
+# النسخة الكاملة تُرفع مضغوطة (قاعدة SQLite تنضغط عدة أضعاف) وبعلامة في أولها تميّزها؛
+# والقراءة تقبل الصيغتين، فنسخ العملاء القديمة غير المضغوطة تُفتح كما هي.
+# ⚠️ حدّث نسخة المدير قبل العملاء (أو معهم): المدير القديم لا يعرف الصيغة المضغوطة.
+BACKUP_MAGIC = b"JADEZ1\n"
+SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def encode_backup_payload(raw):
+    """بايتات قاعدة SQLite ← نص base64 للرفع: مضغوطة بـ zlib وفي أولها العلامة"""
+    return base64.b64encode(BACKUP_MAGIC + zlib.compress(raw, 6)).decode("ascii")
+
+
+def decode_backup_payload(text):
+    """نص النسخة من السحابة ← بايتات قاعدة SQLite (مضغوطة أو قديمة غير مضغوطة).
+    يرمي ValueError لأي محتوى آخر، فلا يُكتب ملف تالف مكان القاعدة."""
+    blob = base64.b64decode(text)
+    if blob.startswith(BACKUP_MAGIC):
+        try:
+            blob = zlib.decompress(blob[len(BACKUP_MAGIC):])
+        except zlib.error as e:
+            raise ValueError(f"النسخة السحابية المضغوطة تالفة: {e}") from e
+    if not blob.startswith(SQLITE_HEADER):
+        raise ValueError("النسخة السحابية ليست قاعدة بيانات صالحة")
+    return blob
+
+
+def rpc_missing(error):
+    """هل فشل الطلب لأن الدالة غير مثبّتة على السحابة بعد؟ (فنرجع للمسار القديم)"""
+    text = str(error)
+    return "PGRST202" in text or "42883" in text or "Could not find the function" in text
+
+
 def cloud_upload_backup(client_id, db_path):
     """يرفع نسخة كاملة من قاعدة البيانات المحلية للسحابة — تعمل في الخلفية ولا تعطّل البرنامج عند فشلها.
 
-    هذه النسخة هي ما يفتحه المدير بالضبط (مرآة حرفية لجهاز العميل)."""
+    هذه النسخة هي ما يفتحه المدير بالضبط (مرآة حرفية لجهاز العميل).
+    تُرفع مضغوطة، وبرمز مزامنة الجلسة عبر upload_backup_secure (لا يكتب فوق نسخة
+    عميل إلا جهازه)؛ وإن لم تُثبَّت تلك الدالة بعد (17_backup_security.sql) فبالدالة القديمة."""
     # نسخة المدير مرآة للقراءة: قاعدتها مبنية مما رفعه العميل، فرفعها كان يطمس
     # نسخة العميل الاحتياطية على السحابة بنسخة المدير (كل ١٠ دقائق أثناء التصفّح)
     if IS_ADMIN_BUILD:
@@ -851,7 +886,16 @@ def cloud_upload_backup(client_id, db_path):
         return False
     try:
         raw = snapshot_db_bytes(db_path)
-        encoded = base64.b64encode(raw).decode("ascii")
+        encoded = encode_backup_payload(raw)
+        token = CURRENT_SYNC_TOKEN
+        if token:
+            try:
+                sb.rpc("upload_backup_secure", {"p_client_id": client_id, "p_sync_token": token,
+                                                "p_backup_data": encoded}).execute()
+                return True
+            except Exception as e:
+                if not rpc_missing(e):
+                    raise
         sb.rpc("upload_backup", {"p_client_id": client_id, "p_backup_data": encoded}).execute()
         return True
     except Exception as e:
@@ -877,7 +921,11 @@ def cloud_download_backup(client_id, target_db_path):
             last_err = e
             continue
         if res.data and res.data[0].get("out_backup_data"):
-            raw = base64.b64decode(res.data[0]["out_backup_data"])
+            try:
+                raw = decode_backup_payload(res.data[0]["out_backup_data"])
+            except (ValueError, TypeError) as e:
+                log_cloud_error("النسخة المنزّلة من السحابة غير صالحة", e)
+                return False
             with open(target_db_path, "wb") as f:
                 f.write(raw)
             return True
@@ -7553,12 +7601,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tv._go_home()
 
     def _on_ctrl_number_key(self, event):
-        """Ctrl + رقم (١–٦) يفتح شاشة الشريط الرئيسية بنفس ترتيبها، وCtrl+Z للتراجع"""
+        """Ctrl + رقم (١–٦) يفتح شاشة الشريط الرئيسية بنفس ترتيبها، وCtrl+Z للتراجع، وCtrl+B لتتبّع رقم تشغيل"""
         if (getattr(event, "keysym", "") in ("z", "Z")
                 or (sys.platform.startswith("win") and getattr(event, "keycode", 0) == 90)):
             if not IS_ADMIN_BUILD:
                 return self._on_ctrl_z(event)    # بأي لغة كتابة (المفتاح نفسه)
             return
+        if (getattr(event, "keysym", "") in ("b", "B")
+                or (sys.platform.startswith("win") and getattr(event, "keycode", 0) == 66)):
+            self.open_set_number_trace()         # Ctrl+B: امسح باركود التذكرة لتتبّع رقمها
+            return "break"
         idx = self._SHORTCUT_DIGITS.get(getattr(event, "char", "") or "")
         if idx is None:
             idx = self._SHORTCUT_DIGITS.get(getattr(event, "keysym", ""))
@@ -7605,11 +7657,69 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                           text_color="#F5A35C")
             return
 
+        # قيمة الخزينة والرصيد الحالي بالريال من سعر جرام عيار التقييم (يُختار هنا ويُحفظ للجهاز)
+        names = {f"عيار {self.KARAT_LATIN[k]}": k for k in self.VALUE_KARATS}
+        karat_menu = ctk.CTkOptionMenu(
+            self.gold_bar, values=list(names), width=96, height=26, font=("Cairo", 12, "bold"),
+            fg_color="#22304A", button_color="#2D3E5E", button_hover_color="#3A4A66", text_color="#E9C75C",
+            command=lambda label: self.set_value_karat(names[label]))
+        karat_menu.set(f"عيار {self.KARAT_LATIN[self.value_karat()]}")
+        karat_menu.pack(side="left", padx=(0, 4))
+        self.lbl_gold_value = ctk.CTkLabel(self.gold_bar, text="", font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
+                                           text_color="#E9C75C")
+        self.lbl_gold_value.pack(side="left", padx=(4, 8))
+        self.refresh_gold_value_label()
+
         try:
             self.gold_watcher = GoldPriceWatcher(on_update=self._on_gold_price)
             self.gold_watcher.start()
         except Exception as e:
             log_cloud_error("تعذّر تشغيل مراقب سعر الذهب", e)
+
+    # ═══ قيمة الأرصدة بالريال: الجرامات × سعر جرام عيار التقييم (معادلة شريط السعر نفسها) ═══
+    VALUE_KARATS = ("٢٤", "٢٢", "٢١", "١٨")
+    KARAT_LATIN = {"٢٤": "24", "٢٢": "22", "٢١": "21", "١٨": "18"}
+    DEFAULT_VALUE_KARAT = "١٨"         # عيار ٧٥٠ — العيار المرجعي للمصنع (المرجع ٧٥٠)
+
+    def value_karat(self):
+        if getattr(self, "_value_karat", None) is None:
+            k = load_ui_prefs().get("gold_value_karat", self.DEFAULT_VALUE_KARAT)
+            self._value_karat = k if k in self.VALUE_KARATS else self.DEFAULT_VALUE_KARAT
+        return self._value_karat
+
+    def set_value_karat(self, karat):
+        if karat in self.VALUE_KARATS:
+            self._value_karat = karat
+            save_ui_pref("gold_value_karat", karat)
+            self.refresh_gold_value_label()
+
+    def gram_value_sar(self):
+        """سعر جرام عيار التقييم بالريال من آخر سعر معروف للأونصة، أو None بلا سعر"""
+        watcher = getattr(self, "gold_watcher", None)
+        ounce = getattr(watcher, "ounce_price", None) if watcher is not None else None
+        if not ounce or gram_price is None:
+            return None
+        return gram_price(ounce, self.value_karat()) or None
+
+    def sar_value(self, grams):
+        """قيمة وزن ذهب بالريال (None بلا سعر — لا نعرض قيمة مخترعة)"""
+        price = self.gram_value_sar()
+        return None if price is None else round((grams or 0.0) * price, 2)
+
+    def refresh_gold_value_label(self):
+        lbl = getattr(self, "lbl_gold_value", None)
+        if lbl is None:
+            return
+        treasury = self.sar_value(getattr(self, "current_treasury_balance", 0.0))
+        if treasury is None:
+            text = "💰 القيمة بالريال: بانتظار سعر الذهب"
+        else:
+            total = self.sar_value(getattr(self, "current_total_gold", 0.0))
+            text = f"💰 الخزينة ≈ {en(treasury, 0)} ر.س   ·   الرصيد ≈ {en(total, 0)} ر.س"
+        try:
+            lbl.configure(text=text)
+        except Exception:
+            pass
 
     def _on_gold_price(self, snapshot):
         """يُستدعى من الخيط الخلفي — يمرّ عبر after حتى لا يُسقط Tkinter"""
@@ -7620,6 +7730,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.lbl_gold_price.configure(
                     text=self.gold_watcher.display_text(),
                     text_color="#F5F1E3" if snapshot.get("ounce") else "#F5A35C")
+                self.refresh_gold_value_label()
             except Exception:
                 pass
         try:
@@ -8653,6 +8764,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_del_row = ctk.CTkButton(ledger_header, text="🗑️ حذف", font=("Cairo", 13, "bold"), fg_color=UI["danger"], hover_color=UI["danger_hover"], width=90, height=30, command=self.op_ledger_delete_selected)
         btn_del_row.pack(side="left", padx=3)
+
+        # تذكرة التشغيل للصف المحدد (أو للرقم المكتوب) وتتبّع أي رقم بالمسح (Ctrl+B)
+        ctk.CTkButton(ledger_header, text="🏷️ تذكرة", font=("Cairo", 12, "bold"), width=90, height=30,
+                      command=self.print_stage_job_ticket, **BUTTON_STYLES["secondary"]).pack(side="left", padx=3)
+        ctk.CTkButton(ledger_header, text="🔎 تتبّع رقم", font=("Cairo", 12, "bold"), width=105, height=30,
+                      command=lambda: self.open_set_number_trace(self.stage_selected_set_number() or None),
+                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=3)
 
         # زر التلوين لقسمي المصنعين والمركبين: يتبع القسم المعروض حالياً،
         # وإعداده محفوظ لكل قسم على حدة
@@ -9948,6 +10066,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             f.bind("<Return>", lambda e, nxt=nav_chain[i + 1]: nxt.focus_set() or "break")
         nav_chain[-1].bind("<Return>", lambda e: (self.submit_unified_op(), "break")[1])
         self.bind_arrow_navigation(nav_chain)
+        # قارئ الباركود يكتب الرقم ثم Enter: يُوحَّد الرقم ويُملأ صفّه المسجّل قبل الانتقال
+        set_ent = self.current_win_entries.get("رقم التشغيل")
+        if set_ent is not None:
+            set_ent.bind("<Return>", self.on_stage_set_number_entered, add="+")
+            set_ent.bind("<FocusOut>", self.on_stage_set_number_entered, add="+")
 
         # تحديث كشف حركة العامل/المكينة المعروض أسفل الشاشة فور تغيير الاختيار
         self.refresh_op_ledger_table()
@@ -9955,7 +10078,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def row_set_numbers(self, name, row_num, month=None):
         """أرقام التشغيل المسجّلة لصف عاملٍ في الفترة (عادةً رقم واحد)"""
         month = month or self.current_display_month
-        return {(inv.get("set_number", "") or "").strip() for inv in self.invoices.values()
+        return {self.normalize_set_number(inv.get("set_number")) for inv in self.invoices.values()
                 if inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE"
                 and self.inv_in_period(inv, month)
                 and (inv.get("row_number", "") or "").strip() == (row_num or "").strip()
@@ -10001,7 +10124,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         رقم التشغيل يخصّ صفاً واحداً وعاملاً واحداً، فهو يُعرّف الصف تعريفاً
         كاملاً. يرجع: (اسم العامل، رقم الصف) أو (None, None).
         """
-        set_num = (set_num or "").strip()
+        # بصيغة واحدة: «٧٧٠٠١» و«77001» رقم واحد (المسح بالقارئ يكتب أرقاماً لاتينية)
+        set_num = self.normalize_set_number(set_num)
         if not set_num:
             return None, None
         month = month or self.current_display_month
@@ -10012,7 +10136,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 continue
             if not self.inv_in_period(inv, month):
                 continue
-            if (inv.get("set_number", "") or "").strip() == set_num:
+            if self.normalize_set_number(inv.get("set_number")) == set_num:
                 return inv.get("الاسم"), (inv.get("row_number", "") or "").strip()
         return None, None
 
@@ -10041,7 +10165,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat in ("المصنعين", "المركبين"):
             set_entry = self.current_win_entries.get("رقم التشغيل")
             row_entry = self.current_win_entries.get("رقم الصف")
-            set_typed = set_entry.get().strip() if set_entry is not None else ""
+            set_typed = self.normalize_set_number(set_entry.get()) if set_entry is not None else ""
             row_typed = row_entry.get().strip() if row_entry is not None else ""
 
             owner, owner_row = self.find_row_by_set_number(cat, set_typed)
@@ -10160,7 +10284,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # جلب قيمة رقم التشغيل ورقم الصف
             set_num = ""
             if "رقم التشغيل" in self.current_win_entries:
-                set_num = self.current_win_entries["رقم التشغيل"].get().strip()
+                set_num = self.normalize_set_number(self.current_win_entries["رقم التشغيل"].get())
 
             row_num = ""
             if "رقم الصف" in self.current_win_entries:
@@ -11036,6 +11160,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_close_khayas = ctk.CTkButton(header_bar, text="🔒 إقفال الخياس", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=130, height=36, command=lambda: self.close_khayas_box(self.current_view_cat))
         btn_close_khayas.pack(side="left", padx=5, pady=6)
 
+        # أداء العمال عبر الفترات: نسبة الفاقد إلى الإنتاج بالألف واتجاهها
+        ctk.CTkButton(header_bar, text="📊 أداء العمال", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                      width=120, height=36,
+                      command=lambda: self.open_worker_performance_report(
+                          self.current_view_cat if self.current_view_cat in self.WORKER_SECTIONS else "المصنعين"),
+                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=5, pady=6)
+
         # صف مستقل كامل العرض لتبويبات/أزرار الصناديق، حتى يتسع لأي عدد صناديق تُضاف مستقبلاً دون ازدحام
         top_bar = ctk.CTkFrame(tab, fg_color="transparent")
         top_bar.pack(fill="x", padx=10, pady=5)
@@ -11408,6 +11539,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.current_total_gold = self.get_total_gold_balance()
         if hasattr(self, 'lbl_total_gold'):
             self.lbl_total_gold.configure(text=f"الرصيد الحالي: {en(self.current_total_gold)} جم")
+        self.refresh_gold_value_label()
         self.refresh_screen_info_bar()
 
         if hasattr(self, 'lbl_gems_stones_balance'):
@@ -12082,7 +12214,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         win = ctk.CTkToplevel(self)
         win.title("تفصيل الرصيد الحالي")
-        win.geometry("430x520")
+        win.geometry("520x560")
         win.transient(self)
         win.grab_set()
         win.focus_force()
@@ -12095,20 +12227,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=18, pady=6)
 
+        priced = self.gram_value_sar() is not None
         for label, value in parts:
             if abs(value) < 0.005:
                 continue      # لا نزحم القائمة بأصفار
             row = ctk.CTkFrame(body, fg_color="transparent")
             row.pack(fill="x", pady=3)
             ctk.CTkLabel(row, text=label, font=("Cairo", 13, "bold"), anchor="e").pack(side="right")
-            ctk.CTkLabel(row, text=f"{value:.2f} جم", font=("Cairo", 13),
+            value_text = f"{value:.2f} جم"
+            if priced:
+                value_text += f"  ≈ {en(self.sar_value(value), 0)} ر.س"
+            ctk.CTkLabel(row, text=value_text, font=("Cairo", 13),
                          text_color="#d4af37" if value >= 0 else "#e74c3c").pack(side="left")
 
         sep = ctk.CTkFrame(win, height=2, fg_color="#d4af37")
         sep.pack(fill="x", padx=18, pady=8)
 
         ctk.CTkLabel(win, text=f"الإجمالي: {total:.2f} جم", font=("Cairo", 17, "bold"),
-                     text_color="#2ecc71").pack(pady=(0, 6))
+                     text_color="#2ecc71").pack(pady=(0, 2))
+        if priced:
+            ctk.CTkLabel(win, text=f"القيمة ≈ {en(self.sar_value(total), 0)} ر.س  (عيار "
+                                   f"{self.KARAT_LATIN[self.value_karat()]} × {en(self.gram_value_sar())} ر.س للجرام)",
+                         font=("Cairo", 12, "bold"), text_color=UI["muted"]).pack(pady=(0, 6))
         ctk.CTkLabel(
             win,
             text="ملاحظة: الخياس المُقفل لا يظهر هنا لأنه رُحّل لحساب الخسائر\nوأصبح فاقداً فعلياً لا ذهباً نملكه.",
@@ -17798,6 +17938,350 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception as e:
             messagebox.showerror("خطأ", f"تعذّرت الطباعة المباشرة، تم فتح الملف بدلاً من ذلك لتطبعه يدوياً.\n{e}")
             self._open_file(path)
+
+    # =========================================================================
+    # --- رقم التشغيل: تتبّع رحلته كاملة، وتذكرة تشغيل بباركود ورمز QR ---
+    # =========================================================================
+    WORKER_SECTIONS = ("المصنعين", "المركبين")
+    TRACE_STATUSES = ("ACTIVE", "SETTLED", "SETTLED_INOUT")
+
+    def set_number_trace(self, set_no):
+        """كل حركات رقم تشغيل في كل الفترات بترتيب التاريخ: الحركات التي تحمل الرقم نفسه
+        (أياً كانت صيغة أرقامه)، ومعها بقية حركات صفّه عند المصنّع/المركّب (القبض والسلك
+        والعيار تُسجَّل غالباً على الصف بلا رقم التشغيل). القيود اليومية مستثناة (أرقامها JE-n)."""
+        key = self.normalize_set_number(set_no)
+        if not key:
+            return []
+        workers = {n for sec in self.WORKER_SECTIONS for n in self.categories.get(sec, [])}
+        direct, rows = [], set()
+        for inv in self.invoices.values():
+            if (inv.get("settled_status") not in self.TRACE_STATUSES or inv.get("النوع") in self.JOURNAL_TYPES
+                    or self.normalize_set_number(inv.get("set_number")) != key):
+                continue
+            direct.append(inv)
+            row = (inv.get("row_number") or "").strip()
+            if row and inv.get("الاسم") in workers:
+                rows.add((inv.get("الاسم"), self.inv_period(inv), row))
+        seen = {id(i) for i in direct}
+        same_row = [inv for inv in self.invoices.values()
+                    if id(inv) not in seen and inv.get("settled_status") in self.TRACE_STATUSES
+                    and (inv.get("الاسم"), self.inv_period(inv), (inv.get("row_number") or "").strip()) in rows]
+        return sorted(direct + same_row, key=lambda i: (str(i.get("التاريخ", "")), i.get("رقم الفاتورة", 0)))
+
+    def trace_section(self, inv):
+        """القسم الذي تظهر فيه الحركة (لعمود «القسم» في التتبّع)"""
+        for sec in self.WORKER_SECTIONS:
+            if inv.get("الاسم") in self.categories.get(sec, []):
+                return sec
+        if inv.get("النوع") in self.SALE_TYPES or inv.get("النوع") in ("خياس طقوم", "صادر ذهب"):
+            return "المبيعات"
+        return inv.get("النوع", "")
+
+    def job_ticket_info(self, set_no):
+        """بيانات تذكرة التشغيل: أول صرف ذهب للرقم عند المصنّع/المركّب (وإلا أول حركة له)"""
+        moves = self.set_number_trace(set_no)
+        if not moves:
+            return None
+        worker_moves = [m for m in moves if self.trace_section(m) in self.WORKER_SECTIONS]
+        first = next((m for m in worker_moves if m.get("النوع") == "صرف ذهب"), None) or \
+            (worker_moves[0] if worker_moves else moves[0])
+        # صرف العامل نفسه وحده: الذهب نفسه يُصرف للمصنّع ثم للمركّب فلا يُجمع مرتين
+        issued = round(sum(m.get("الوزن", 0.0) or 0.0 for m in worker_moves
+                           if m.get("النوع") == "صرف ذهب" and m.get("الاسم") == first.get("الاسم")), 2)
+        return {"set_number": self.normalize_set_number(set_no), "worker": first.get("الاسم", ""),
+                "section": self.trace_section(first), "row": (first.get("row_number") or "").strip(),
+                "date": str(first.get("التاريخ", ""))[:10], "period": self.inv_period(first),
+                "issued": issued, "moves": len(moves)}
+
+    def print_job_ticket(self, set_no):
+        """تذكرة تشغيل صغيرة (١٠٠×٧٠ مم): الرقم بخط كبير، باركود Code128 يقرؤه أي قارئ
+        كأنه كُتب بلوحة المفاتيح، ورمز QR بالرقم نفسه، وبيانات الصرف الأول."""
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً.")
+            return None
+        info = self.job_ticket_info(set_no)
+        if not info:
+            messagebox.showwarning("غير موجود", f"لا توجد حركات برقم التشغيل ({set_no}).")
+            return None
+        from reportlab.graphics.barcode import code128, qr
+        from reportlab.graphics.shapes import Drawing
+        from reportlab.graphics import renderPDF
+
+        W, H = 100 * mm, 70 * mm
+        code = info["set_number"]
+        safe = re.sub(r"[^0-9A-Za-z_-]+", "_", code)
+        out_path = os.path.join(INVOICES_DIR, f"job_ticket_{safe}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        c = pdf_canvas.Canvas(out_path, pagesize=(W, H))
+        M = 4 * mm
+
+        def txt(x, y, s, size=9, bold=False, align="right"):
+            c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
+            s = ar(s)
+            if align == "right":
+                c.drawRightString(x, y, s)
+            elif align == "left":
+                c.drawString(x, y, s)
+            else:
+                c.drawCentredString(x, y, s)
+
+        c.setLineWidth(0.8)
+        c.roundRect(2 * mm, 2 * mm, W - 4 * mm, H - 4 * mm, 3 * mm)
+        txt(W - M, H - M - 4 * mm, "مصنع جاديت للتصنيع", size=10, bold=True)
+        txt(M, H - M - 4 * mm, "تذكرة تشغيل", size=10, bold=True, align="left")
+        c.line(M, H - M - 6.5 * mm, W - M, H - M - 6.5 * mm)
+
+        # الرقم بخط كبير ثم الباركود بعرض مناسب لأي قارئ
+        txt(W / 2, H - M - 15 * mm, f"رقم التشغيل: {code}", size=15, bold=True, align="center")
+        bar = code128.Code128(code, barHeight=13 * mm, barWidth=max(0.6, min(1.4, 62 * mm / max(1, 11 * len(code) + 35))))
+        bar.drawOn(c, M, H - M - 32 * mm)
+
+        # QR بالرقم نفسه (يمسحه الجوال أو القارئ ثنائي الأبعاد)
+        size = 24 * mm
+        widget = qr.QrCodeWidget(code)
+        x0, y0, x1, y1 = widget.getBounds()
+        d = Drawing(size, size, transform=[size / (x1 - x0), 0, 0, size / (y1 - y0), 0, 0])
+        d.add(widget)
+        renderPDF.draw(d, c, W - M - size, 5 * mm)
+
+        def pair(x, y, label, value, size=8.5):
+            """العنوان بالعربية ثم قيمته يساره كما هي: التاريخ والفترة داخل جملة عربية
+            كانت تنقلب (٢٠٢٦-٠٩ ← ٠٩-٢٠٢٦) بإعادة الترتيب ثنائي الاتجاه"""
+            c.setFont(_ARABIC_FONT_NAME, size)
+            label_s = ar(label + ": ")
+            c.drawRightString(x, y, label_s)
+            value = str(value)
+            c.drawRightString(x - c.stringWidth(label_s, _ARABIC_FONT_NAME, size), y,
+                              ar(value) if re.search("[\u0600-\u06FF]", value) else value)
+
+        x = W - M - size - 3 * mm
+        pair(x, 23 * mm, "العامل", f"{info['worker']} ({info['section']})")
+        pair(x, 18.4 * mm, "الصف", info["row"] or "-")
+        pair(x, 13.8 * mm, "الفترة", info["period"])
+        pair(x, 9.2 * mm, "تاريخ الصرف", info["date"])
+        pair(x, 4.6 * mm + 0.6 * mm, "صرف ذهب (جم)", f"{info['issued']:.2f}")
+        c.showPage()
+        c.save()
+        self._open_file(out_path)
+        return out_path
+
+    def open_set_number_trace(self, set_no=None):
+        """«تتبّع رقم التشغيل»: امسح الباركود أو اكتب الرقم ← رحلته كاملة بكل الأقسام والفترات"""
+        if set_no is None:
+            dlg = ctk.CTkInputDialog(title="تتبّع رقم التشغيل", text="امسح باركود التذكرة أو اكتب رقم التشغيل:")
+            set_no = dlg.get_input()
+        key = self.normalize_set_number(set_no)
+        if not key:
+            return None
+        moves = self.set_number_trace(key)
+        if not moves:
+            messagebox.showinfo("لا توجد نتائج", f"لا توجد حركات برقم التشغيل ({key}) في أي فترة.")
+            return None
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"تتبّع رقم التشغيل {key}")
+        win.geometry("1100x620")
+        win.transient(self)
+        win.focus_force()
+        ctk.CTkLabel(win, text=f"🔎 رحلة رقم التشغيل ({key})", font=("Cairo", 19, "bold"),
+                     text_color=UI_TITLE).pack(pady=(14, 2))
+        info = self.job_ticket_info(key)
+        sold = sorted({(m.get("رقم الفاتورة اليدوي") or "").strip() for m in moves
+                       if self.trace_section(m) == "المبيعات" and (m.get("رقم الفاتورة اليدوي") or "").strip()})
+        summary = (f"العامل: {info['worker']} ({info['section']}) — الصف {info['row'] or '-'} — "
+                   f"صرف ذهب {info['issued']:.2f} جم — {len(moves)} حركة")
+        if sold:
+            summary += f" — بيع في الفاتورة: {'، '.join(sold)}"
+        ctk.CTkLabel(win, text=summary, font=("Cairo", 13, "bold"), text_color=UI["muted"]).pack(pady=(0, 2))
+        asm = self.describe_assembler_khayas(key)
+        if asm:
+            ctk.CTkLabel(win, text=asm, font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side="bottom", pady=(4, 12))
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=18, pady=6)
+        cols = ("التاريخ", "القسم", "الاسم", "الصف", "النوع", "الوزن", "الفترة", "البيان")
+        tree = self.create_standard_treeview(frame, cols, height=14)
+        for col, w in zip(cols, (150, 100, 150, 60, 150, 90, 80, 220)):
+            tree.column(col, width=w, anchor="center")
+        for m in moves:
+            tree.insert("", "end", values=(
+                str(m.get("التاريخ", ""))[:16], self.trace_section(m), m.get("الاسم", ""),
+                (m.get("row_number") or "").strip() or "-", m.get("النوع", ""),
+                f"{m.get('الوزن', 0.0) or 0.0:.2f}", self.inv_period(m), m.get("البيان") or ""))
+        ctk.CTkButton(btns, text="🏷️ طباعة تذكرة التشغيل", width=200, height=40, font=("Cairo", 14, "bold"),
+                      command=lambda: self.print_job_ticket(key), **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
+        ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=("Cairo", 14, "bold"),
+                      command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        return win
+
+    def stage_selected_set_number(self):
+        """رقم التشغيل من الصف المحدد في كشف العامل، وإلا من خانة رقم التشغيل في النموذج"""
+        tree = getattr(self, "op_ledger_tree", None)
+        try:
+            sel = tree.selection() if tree is not None else ()
+            if sel:
+                cols = list(tree["columns"])
+                if "رقم التشغيل" in cols:
+                    value = str(tree.item(sel[0], "values")[cols.index("رقم التشغيل")]).strip()
+                    if value and value != "-":
+                        return self.normalize_set_number(value)
+        except Exception:
+            pass
+        ent = getattr(self, "current_win_entries", {}).get("رقم التشغيل")
+        return self.normalize_set_number(ent.get()) if ent is not None else ""
+
+    def print_stage_job_ticket(self):
+        set_no = self.stage_selected_set_number()
+        if not set_no:
+            messagebox.showwarning("تنبيه", "حدّد صفاً في كشف العامل أو اكتب رقم التشغيل في خانته أولاً.")
+            return None
+        return self.print_job_ticket(set_no)
+
+    def on_stage_set_number_entered(self, event=None):
+        """بعد مسح الباركود أو كتابة رقم التشغيل في المصنعين/المركبين: يوحّد أرقامه، ولو كان
+        الرقم مسجّلاً لصفٍّ عند العامل نفسه تُملأ خانة «رقم الصف» تلقائياً (فيُكمل القبض على صفه)."""
+        entries = getattr(self, "current_win_entries", {})
+        set_ent, row_ent = entries.get("رقم التشغيل"), entries.get("رقم الصف")
+        if set_ent is None:
+            return
+        typed = set_ent.get()
+        clean = self.normalize_set_number(typed)
+        if clean != typed:
+            set_ent.delete(0, "end")
+            set_ent.insert(0, clean)
+        if not clean or row_ent is None or row_ent.get().strip():
+            return
+        owner, owner_row = self.find_row_by_set_number(self.current_op_cat, clean)
+        if owner and owner_row and owner == self.clean_name(self.combo_op_name.get()):
+            row_ent.insert(0, owner_row)
+
+    # =========================================================================
+    # --- تقرير أداء العمال: نسبة الفاقد إلى الإنتاج بالألف لكل عامل وفترة ---
+    # =========================================================================
+    TREND_STEP = 0.05          # فرق النسبة بالألف الذي يُعدّ تغيّراً لا ثباتاً
+
+    def worker_performance_rows(self, cat, periods, open_period=None):
+        """أداء عمال المصنعين أو المركبين عبر فترات، من دفتر العامل نفسه (calculate_single_ledger):
+
+          • الإنتاج = «حجم الإنتاج» (المصنعون: المفنش ٨ + ٤، والمركبون: القبض).
+          • الفاقد  = ذهب/صافي − المرجع ٧٥٠ = −الخياس: ما نقص عند العامل بعد المسموح ٨/٤
+                      والراجع؛ سالبه زيادة لصالحه.
+          • النسبة  = الفاقد ÷ الإنتاج × ١٠٠٠ (بالألف)، والاتجاه من آخر فترتين لهما نسبة.
+        open_period: الفترة الجارية — قد يكون فيها ذهب صُرف ولم يُقبض بعد، فلا تدخل الاتجاه
+        (كانت ستُظهر كل عامل «يزداد» في أول الشهر).
+        يرجع الصفوف مرتبة من الأعلى نسبةً، وإجمالي القسم.
+        """
+        rows = []
+        sec_prod = sec_loss = 0.0
+        for name in self.categories.get(cat, []):
+            cells, prod_sum, loss_sum = {}, 0.0, 0.0
+            for p in periods:
+                led = self.calculate_single_ledger(name, cat, target_month=p)
+                prod, loss = round(led["حجم الإنتاج"], 2), round(-led["الخياس"], 2)
+                if abs(prod) < 0.005 and abs(loss) < 0.005:
+                    continue
+                cells[p] = (prod, loss, round(loss / prod * 1000, 2) if prod > 0 else None)
+                prod_sum += prod
+                loss_sum += loss
+            if not cells:
+                continue
+            ratios = [cells[p][2] for p in periods
+                      if p in cells and cells[p][2] is not None and p != open_period]
+            trend = "—"
+            if len(ratios) >= 2:
+                diff = ratios[-1] - ratios[-2]
+                trend = ("⬆️ يزداد" if diff > self.TREND_STEP else "⬇️ يتحسّن" if diff < -self.TREND_STEP
+                         else "➖ ثابت")
+            rows.append({"name": name, "cells": cells, "production": round(prod_sum, 2),
+                         "loss": round(loss_sum, 2), "trend": trend,
+                         "ratio": round(loss_sum / prod_sum * 1000, 2) if prod_sum > 0 else None})
+            sec_prod += prod_sum
+            sec_loss += loss_sum
+        rows.sort(key=lambda r: (r["ratio"] is None, -(r["ratio"] or 0.0), r["name"]))
+        section = {"production": round(sec_prod, 2), "loss": round(sec_loss, 2),
+                   "ratio": round(sec_loss / sec_prod * 1000, 2) if sec_prod > 0 else None}
+        return rows, section
+
+    def open_worker_performance_report(self, cat="المصنعين"):
+        """نافذة «أداء العمال»: عمود لكل فترة بنسبة الفاقد بالألف، ثم الإجمالي والاتجاه.
+        الصف الذي نسبته أعلى من متوسط القسم يظهر بلون التنبيه."""
+        win = ctk.CTkToplevel(self)
+        win.title("أداء العمال")
+        win.geometry("1150x640")
+        win.transient(self)
+        win.focus_force()
+        ctk.CTkLabel(win, text="📊 أداء العمال — نسبة الفاقد إلى الإنتاج (بالألف)", font=("Cairo", 19, "bold"),
+                     text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(win, text="الفاقد = ذهب/صافي − المرجع ٧٥٠ (بعد المسموح ٨/٤)  ·  النسبة = الفاقد ÷ الإنتاج × ١٠٠٠  "
+                               "·  الاتجاه من آخر فترتين منتهيتين  ·  السالب زيادة لصالح العامل",
+                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(pady=4)
+        section_var = ctk.StringVar(value=cat)
+        span_var = ctk.StringVar(value="آخر ٦ فترات")
+        spans = {"آخر ٣ فترات": 3, "آخر ٦ فترات": 6, "آخر ١٢ فترة": 12, "كل الفترات": None}
+        summary = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"))
+        summary.pack(pady=(2, 4))
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side="bottom", pady=(4, 12))
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=18, pady=6)
+        state = {"tree": None, "cols": (), "rows": [], "title": ""}
+
+        def build():
+            sec = section_var.get()
+            n = spans.get(span_var.get())
+            recorded = sorted(p for p in self.get_recorded_periods() if p)
+            periods = recorded[-n:] if n else recorded
+            open_period = datetime.datetime.now().strftime("%Y-%m")
+            rows, total = self.worker_performance_rows(sec, periods, open_period=open_period)
+            for w in frame.winfo_children():
+                w.destroy()
+            cols = (("العامل",) + tuple(f"{p} جارية" if p == open_period else f"{p} ‰" for p in periods)
+                    + ("الإنتاج", "الفاقد", "النسبة ‰", "الاتجاه"))
+            tree = self.create_standard_treeview(frame, cols, height=14)
+            for c in cols:
+                tree.column(c, width=160 if c == "العامل" else 112 if "جارية" in c else 95, anchor="center")
+            tree.tag_configure("warn", foreground=UI["danger"])
+            avg = total["ratio"]
+            table = []
+            for r in rows:
+                vals = [r["name"]]
+                for p in periods:
+                    cell = r["cells"].get(p)
+                    vals.append("—" if not cell else (f"{cell[2]:.2f}" if cell[2] is not None else f"فاقد {cell[1]:.2f}"))
+                vals += [f"{r['production']:.2f}", f"{r['loss']:.2f}",
+                         f"{r['ratio']:.2f}" if r["ratio"] is not None else "—", r["trend"]]
+                warn = avg is not None and r["ratio"] is not None and r["ratio"] > avg + self.TREND_STEP
+                tree.insert("", "end", values=vals, tags=("warn",) if warn else ())
+                table.append(tuple(vals))
+            summary.configure(text=(
+                f"{self.get_display_label(sec)}: {len(rows)} عامل — الإنتاج {total['production']:.2f} جم — "
+                f"الفاقد {total['loss']:.2f} جم — متوسط القسم "
+                + (f"{avg:.2f} ‰" if avg is not None else "—")))
+            state.update(tree=tree, cols=cols, rows=table,
+                         title=f"📊 أداء العمال — {self.get_display_label(sec)} ({periods[0] if periods else ''} … "
+                               f"{periods[-1] if periods else ''})")
+
+        for value in self.WORKER_SECTIONS:
+            ctk.CTkRadioButton(bar, text=self.get_display_label(value), value=value, variable=section_var,
+                               command=build, font=("Cairo", 13, "bold")).pack(side="right", padx=8)
+        ctk.CTkOptionMenu(bar, values=list(spans), variable=span_var, command=lambda _v: build(),
+                          font=("Cairo", 13), width=140).pack(side="right", padx=12)
+
+        def print_report():
+            if state["rows"]:
+                ratios = [1.4] + [0.8] * (len(state["cols"]) - 1)
+                self.print_generic_table_screen(state["title"], state["cols"], ratios, state["rows"],
+                                                "worker_performance", subtitle=summary.cget("text"))
+
+        ctk.CTkButton(btns, text="🖨️ طباعة التقرير", width=170, height=40, font=("Cairo", 14, "bold"),
+                      command=print_report, **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
+        ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=("Cairo", 14, "bold"),
+                      command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+        build()
+        return win
 
     # =========================================================================
     # --- فحص سلامة الحسابات: كل شاشة تطابق الأخرى في كل فترة (قراءة فقط) ---

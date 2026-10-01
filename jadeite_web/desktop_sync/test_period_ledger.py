@@ -55,6 +55,7 @@ body += textwrap.dedent('''
     cloud_sync = None
     def get_total_gold_balance(self): return 0.0
     def refresh_screen_info_bar(self): pass
+    def refresh_gold_value_label(self): pass
     def get_material_balance(self, m): return 0.0
     def get_stage_totals_for_month(self, cat, month): return 0.0, 0.0
     def mark_all_screens_dirty(self): pass

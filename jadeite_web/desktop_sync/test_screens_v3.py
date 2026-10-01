@@ -126,7 +126,8 @@ assert "ent_rec" in seg("open_stage_op_edit_dialog")
 print("✔ نافذة التعديل تعرض مسترجع الأشجار وتحفظه")
 
 # ═══ ٣) قاعدة الصف والخانة للمصنعين والمركبين ═══
-P = build(["plan_unified_values", "row_set_numbers", "inv_period", "inv_in_period"])
+P = build(["plan_unified_values", "row_set_numbers", "inv_period", "inv_in_period", "normalize_set_number"],
+          attrs=("_SET_DIGITS",))
 
 
 class Ent:
