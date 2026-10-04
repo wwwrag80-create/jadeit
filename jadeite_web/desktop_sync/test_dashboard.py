@@ -4,7 +4,7 @@
 
   • خط الخزينة = دفتر الخزينة لكل فترة، والمبيعات/الوارد/الخياس = مكوّنات الفترة (كالرئيسية والتقرير).
   • نسبة الفاقد لكل قسم = تقرير أداء العمال للفترة، والفاقد الحالي لكل صندوق = شاشة الخسائر.
-  • بطاقة الطقوم المفتوحة = تقرير الطقوم المفتوحة، والمدى (٦/١٢/الكل) يقصّ الفترات من آخرها.
+  • المدى (٦/١٢/الكل) يقصّ الفترات من آخرها.
   • التدريج مقروء ويشمل الصفر، والأرقام الكبيرة مختصرة، ولونا السلسلتين مُتحقَّق منهما لعمى الألوان.
 """
 import ast, io, math, sys, textwrap
@@ -68,9 +68,6 @@ class App(mns["Base"]):
     def worker_performance_rows(self, sec, periods):
         return [], {"ratio": (2.0 if sec == "المصنعين" else 3.0) * int(periods[0][-1])}
 
-    def open_jobs(self, today=None):
-        return [{"issued": 5.0, "overdue": True}, {"issued": 7.5, "overdue": False}]
-
     def get_khayas_box_categories(self):
         return ["الكاستنج", "المصنعين", "التلميع"]
 
@@ -90,11 +87,11 @@ assert d["boxes"] == [("لـالمصنعين", -12.0), ("لـالكاستنج", 
 k = d["kpi"]
 assert k["treasury"] == 950.0 and k["total"] == 1010.0 and k["prev_treasury"] == 800.0
 assert k["sales"] == 90.0 and k["prev_sales"] == 80.0 and k["inbound"] == 180.0
-assert k["open_jobs"] == 2 and k["overdue_jobs"] == 1 and k["open_gold"] == 12.5
+assert not any(x in k for x in ("open_jobs", "overdue_jobs", "open_gold")), "الطقوم المفتوحة أُزيلت من اللوحة"
 assert k["ratio"] == {"المصنعين": 18.0, "المركبين": 27.0}
 assert len(app.dashboard_data(None)["periods"]) == 9 and len(app.dashboard_data(12)["periods"]) == 9
 print("✔ اللوحة: الخزينة من دفترها، والمبيعات والوارد والخياس من مكوّنات الفترة، والنسب من أداء العمال، "
-      "والصناديق من شاشة الخسائر، والطقوم من تقريرها — والمقارنة بالفترة السابقة")
+      "والصناديق من شاشة الخسائر — والمقارنة بالفترة السابقة")
 
 # ═══ ٣) الربط في البرنامج ═══
 assert '("لوحة المؤشرات",   "🧭", "لوحة المؤشرات")' in src
@@ -103,11 +100,17 @@ assert '"لوحة المؤشرات": ("refresh_dashboard",)' in src and '"لوح
 assert '"لوحة المؤشرات": "مؤشرات الإدارة' in src
 build = body("build_dashboard_tab")
 assert build.count("MiniChart(") == 1 and '"hbars"' in build and '"bars"' in build and '"line"' in build
-assert "self.show_dashboard_table(k, t)" in build and "self.open_open_jobs_report" in build
+assert "self.show_dashboard_table(k, t)" in build and "open_jobs" not in build and "الطقوم المفتوحة" not in build
 assert "navigate_to_screen(\"لوحة المؤشرات\")" in body("build_home_screen")
 mc = module_src("MiniChart")
 assert "width=2" in mc and "min(24.0" in mc and 'tags="hover"' in mc and "لا توجد بيانات بعد" in mc
 print("✔ شاشة «لوحة المؤشرات» مسجّلة (الشريط، البناء الكسول، التحديث، الرئيسية)، بأربعة رسوم ولوحة قيم عند المرور "
       "وزر «الأرقام» لكل رسم")
+
+# ميزة «الطقوم المفتوحة والمتأخرة» أُزيلت بطلب المستخدم (الدفعة ١٨) — لا بقايا لها في البرنامج
+for gone in ("open_open_jobs_report", "worker_jobs", "open_jobs", "gold_at_workers", "overdue_days",
+             "JOB_ISSUE_TYPES", "الطقوم المفتوحة", "طقم متأخر"):
+    assert gone not in src, gone
+print("✔ ميزة الطقوم المفتوحة والمتأخرة أُزيلت كاملة: النافذة، تنبيه الرئيسية، الأزرار، وبطاقة اللوحة")
 
 print("\n✅ لوحة المؤشرات سليمة")

@@ -164,14 +164,11 @@ class AlertsApp(ns["Base"]):
     backup_dir = "x"
     actions = []
 
-    def __init__(self, jobs, unclosed, backups):
-        self._jobs, self._unclosed, self._backups = jobs, unclosed, backups
+    def __init__(self, unclosed, backups):
+        self._unclosed, self._backups = unclosed, backups
 
-    def open_jobs(self, today=None): return self._jobs
-    def overdue_days(self): return 7
     def get_unclosed_periods(self, cat): return self._unclosed.get(cat, [])
     def list_local_backups(self): return self._backups
-    def open_open_jobs_report(self): pass
     def open_backup_manager(self): pass
     def navigate_to_screen(self, n): AlertsApp.actions.append(n)
 
@@ -182,21 +179,20 @@ old = os.path.join(tmp, "old.db")
 open(fresh, "w").close()
 open(old, "w").close()
 os.utime(old, (time.time() - 5 * 86400, time.time() - 5 * 86400))
-a = AlertsApp([{"overdue": True, "issued": 10.0}, {"overdue": False, "issued": 3.0}],
-              {"المصنعين": [("2026-08", 5.0)], "المركبين": [("2026-08", 1.0), ("2026-07", 2.0)]}, [old])
+a = AlertsApp({"المصنعين": [("2026-08", 5.0)], "المركبين": [("2026-08", 1.0), ("2026-07", 2.0)]}, [old])
 al = a.home_alerts()
-assert [x[0] for x in al] == ["warn", "warn", "info"], al
-assert "1 طقم متأخر" in al[0][1] and "10.00 جم" in al[0][1]
-assert "3 فترة سابقة" in al[1][1] and "2026-07، 2026-08" in al[1][1]
-assert "منذ 5 يوم" in al[2][1]
-al[1][2]()
+assert [x[0] for x in al] == ["warn", "info"], al
+assert "3 فترة سابقة" in al[0][1] and "2026-07، 2026-08" in al[0][1]
+assert "منذ 5 يوم" in al[1][1]
+assert not any("متأخر" in x[1] for x in al), "تنبيه الطقوم المتأخرة أُزيل"
+al[0][2]()
 assert AlertsApp.actions == ["صناديق الخياس"], "تنبيه الفترات يفتح صناديق الخياس"
-assert AlertsApp([], {}, [fresh]).home_alerts() == []
-assert "لا توجد نسخة احتياطية" in AlertsApp([], {}, []).home_alerts()[0][1]
+assert AlertsApp({}, [fresh]).home_alerts() == []
+assert "لا توجد نسخة احتياطية" in AlertsApp({}, []).home_alerts()[0][1]
 ns["IS_ADMIN_BUILD"] = True
-assert AlertsApp([], {}, []).home_alerts() == [], "نسخة المدير لا تنبّه على نسخ جهاز العميل"
+assert AlertsApp({}, []).home_alerts() == [], "نسخة المدير لا تنبّه على نسخ جهاز العميل"
 ns["IS_ADMIN_BUILD"] = False
-print("✔ التنبيهات: المتأخر عند العمال وذهبه، الفترات غير المُقفلة، وعمر النسخة الاحتياطية — وكل تنبيه يفتح شاشته")
+print("✔ التنبيهات: الفترات غير المُقفلة وعمر النسخة الاحتياطية — وكل تنبيه يفتح شاشته")
 
 # ═══ الربط ═══
 std = body("create_standard_treeview")

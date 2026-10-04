@@ -137,7 +137,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.52.0"
+APP_VERSION = "1.53.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7566,7 +7566,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "شاشة الخسائر": "لكل مرحلة: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
         "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج",
         "ربح/خسارة الطقم": "خياسات كل طقم ومسترجعها وربحه أو خسارته",
-        "لوحة المؤشرات": "مؤشرات الإدارة: الخزينة والفاقد والمبيعات والطقوم المفتوحة عبر الفترات",
+        "لوحة المؤشرات": "مؤشرات الإدارة: الخزينة والفاقد والمبيعات والوارد عبر الفترات",
         "كشف حساب": "حركة أي حساب مع رصيد أول المدة المُرحَّل",
         "التقرير الشهري": "رصيد الخزينة لكل الفترات — كل فترة تبدأ بنهاية سابقتها",
         "أرشيف الفواتير": "كل الفواتير المرحّلة: معاينة وطباعة وتعديل",
@@ -8470,6 +8470,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def global_search(self, query):
         """[(النوع، القيمة، التفاصيل، الإجراء)] — الأقرب أولاً في كل نوع"""
         q = (query or "").strip()
+        if "|" in q:                       # مسح رمز QR تذكرة المبيعات: رقم التشغيل من أوله
+            q = self.scanned_set_number(q)
         if len(q) < 1:
             return []
         out = []
@@ -8631,14 +8633,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         newest = os.path.getmtime(files[0])
         return int(((now or time.time()) - newest) // 86400)
 
-    def home_alerts(self, today=None):
-        """[(المستوى، النص، الإجراء)] — المتأخر عند العمال، الفترات غير المُقفلة، وعمر النسخة الاحتياطية"""
+    def home_alerts(self):
+        """[(المستوى، النص، الإجراء)] — الفترات غير المُقفلة، وعمر النسخة الاحتياطية"""
         alerts = []
-        jobs = self.open_jobs(today=today)
-        late = [j for j in jobs if j["overdue"]]
-        if late:
-            alerts.append(("warn", f"{len(late):,} طقم متأخر عند العمال (أكثر من {self.overdue_days()} يوم) "
-                                   f"بذهب {sum(j['issued'] for j in late):,.2f} جم", self.open_open_jobs_report))
         unclosed = [(c, m) for c in self.WORKER_SECTIONS for m, _a in self.get_unclosed_periods(c)]
         if unclosed:
             alerts.append(("warn", f"{len(unclosed)} فترة سابقة لم يُقفل خياسها (" +
@@ -8847,9 +8844,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         quick.pack(fill="x", padx=30, pady=(0, 8))
         for text, cmd, style, tip in (
                 ("🧭 لوحة المؤشرات", lambda: self.navigate_to_screen("لوحة المؤشرات"), "primary",
-                 "مؤشرات الإدارة ورسومها: الخزينة، نسبة الفاقد، المبيعات والوارد، الصناديق، الطقوم المفتوحة"),
-                ("🧾 الطقوم المفتوحة", self.open_open_jobs_report, "secondary",
-                 "ما صُرف ولم يُستلم منه شيء، بعمره بالأيام، والذهب عند كل عامل الآن"),
+                 "مؤشرات الإدارة ورسومها: الخزينة، نسبة الفاقد، المبيعات والوارد، الصناديق"),
                 ("🩺 فحص سلامة الحسابات", self.open_integrity_check_window, "secondary",
                  "يطابق الخزينة والصناديق والكشوف والمبيعات والقيود في كل فترة — قراءة فقط"),
                 ("⌨️ الاختصارات", self.open_shortcuts_help, "secondary", "كل اختصارات لوحة المفاتيح (F1)")):
@@ -12136,12 +12131,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_close_khayas = ctk.CTkButton(header_bar, text="🔒 إقفال الخياس", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=130, height=36, command=lambda: self.close_khayas_box(self.current_view_cat))
         btn_close_khayas.pack(side="left", padx=5, pady=6)
-
-        # الطقوم المفتوحة والذهب عند العمال (مع التأخير بالأيام)
-        btn_jobs = ctk.CTkButton(header_bar, text="🧾 الطقوم المفتوحة", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                                 width=140, height=36, command=self.open_open_jobs_report, **BUTTON_STYLES["secondary"])
-        btn_jobs.pack(side="left", padx=5, pady=6)
-        HoverTip(btn_jobs, "ما صُرف ولم يُستلم منه شيء، بعمره بالأيام، والذهب عند كل عامل الآن")
 
         # أداء العمال عبر الفترات: نسبة الفاقد إلى الإنتاج بالألف واتجاهها
         btn_perf = ctk.CTkButton(header_bar, text="📊 أداء العمال", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
@@ -17268,6 +17257,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """رقم التشغيل بصيغة واحدة للمقارنة: بلا فراغات زائدة وبأرقام لاتينية."""
         return " ".join(str(text or "").translate(cls._SET_DIGITS).split())
 
+    @classmethod
+    def scanned_set_number(cls, text):
+        """رقم التشغيل من نص المسح: الباركود يحمل الرقم وحده، ورمز QR تذكرة المبيعات يحمل
+        «رقم التشغيل: … | الوزن المقيد: …» فيؤخذ الرقم من أوله — ولو ضاعت الحروف العربية
+        في قارئ يكتب بلوحة مفاتيح إنجليزية يبقى الرقم بعد النقطتين (أو آخر كلمة قبل |)."""
+        text = str(text or "")
+        if "|" in text:
+            head = text.split("|", 1)[0]
+            text = head.rsplit(":", 1)[-1] if ":" in head else (head.split() or [""])[-1]
+        return cls.normalize_set_number(text)
+
     def get_assembler_khayas_for_set(self, set_number, month=None):
         """قيمة عمود (مسموح/٨) لرقم تشغيل معيّن، من قسم **المركبين** حصراً.
 
@@ -18899,8 +18899,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def sale_ticket_data(self, groups):
         """بيانات تذكرة لكل رقم تشغيل في فاتورة مبيعات — من بيانات الفاتورة نفسها
-        (get_invoice_group_data) والصافي بمعادلته الواحدة (sale_net_weight)، ومعها العامل الذي
-        صنع الطقم إن كان رقمه مسجّلاً في مراحل التصنيع. السطر بلا رقم تشغيل لا تذكرة له."""
+        (get_invoice_group_data). السطر بلا رقم تشغيل لا تذكرة له."""
         out = []
         for set_number, date_str, name in groups:
             sn = self.normalize_set_number(set_number)
@@ -18915,27 +18914,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             except (TypeError, ValueError):
                 stones_after = 0.0
             gold, gems, stones, diamond = d["gold"], d["gems"], d["stones"], d["diamond"]
-            net = sale_net_weight({"فصوص": gems, "أحجار بعد الخصم": stones_after, "خياس": d["khayas"],
-                                   "خياس البوليش": d["khayas_polish"], "خياس المركب": d["khayas_assembler"]})
-            maker = self.job_ticket_info(sn) if hasattr(self, "job_ticket_info") else None
-            if maker and maker.get("section") not in self.WORKER_SECTIONS:
-                maker = None
+            bound = round(gold + gems + stones_after + diamond, 2)
             out.append({
-                "set_number": sn, "invoice": manual or "", "customer": name, "date": str(date_str)[:10],
-                "row": d.get("row_number") or "", "gold": round(gold, 2), "gems": round(gems, 2),
-                "stones": round(stones, 2), "stones_after": round(stones_after, 2), "diamond": round(diamond, 2),
-                "khayas": round(d["khayas"], 2), "khayas_polish": round(d["khayas_polish"], 2),
-                "khayas_assembler": round(d["khayas_assembler"], 2),
-                "standing": round(gold + gems + stones + diamond, 2),
-                "bound": round(gold + gems + stones_after + diamond, 2), "net": net,
-                "maker": f"{maker['worker']} ({self.get_display_label(maker['section'])})" if maker else "",
+                "set_number": sn, "invoice": manual or "", "date": str(date_str)[:10],
+                "gold": round(gold, 2), "gems": round(gems, 2), "stones": round(stones, 2),
+                "stones_after": round(stones_after, 2), "diamond": round(diamond, 2),
+                "standing": round(gold + gems + stones + diamond, 2), "bound": bound,
+                "qr": self.sale_ticket_qr(sn, bound),
             })
         return out
 
+    @staticmethod
+    def sale_ticket_qr(set_number, bound):
+        """نص رمز QR التذكرة: أي تطبيق مسح (جوال أو جهاز) يعرض رقم التشغيل ووزنه المقيد
+        مباشرة بلا إنترنت؛ والبرنامج يأخذ منه رقم التشغيل وحده (scanned_set_number)."""
+        return f"رقم التشغيل: {set_number} | الوزن المقيد: {bound:.2f} جم"
+
     def draw_sale_tickets(self, c, tickets):
         """صفحات A4 بثماني تذاكر (٢×٤) بحدود قصّ منقّطة. كل تذكرة: رقم التشغيل بخط كبير،
-        باركود Code128 ورمز QR بالرقم وحده (يُمسح في أي خانة رقم تشغيل أو Ctrl+B)، الفاتورة
-        والعميل والتاريخ والصانع، وجدول أوزان البيع كما في الفاتورة."""
+        باركود Code128 بالرقم وحده (يُمسح في أي خانة رقم تشغيل أو Ctrl+B)، ورمز QR برقم التشغيل
+        والوزن المقيد، والفاتورة والتاريخ، وأوزان البيع: الذهب، الفصوص، الأحجار، بعد الخصم،
+        الماس، الوزن القائم، والوزن المقيد."""
         from reportlab.graphics.barcode import code128, qr
         from reportlab.graphics.shapes import Drawing
         from reportlab.graphics import renderPDF
@@ -18951,7 +18950,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
             {"right": c.drawRightString, "left": c.drawString, "center": c.drawCentredString}[align](x, y, s)
 
-        def pair(x, y, label, value, size=7.5):
+        def pair(x, y, label, value, size=9):
             """العنوان بالعربية ثم قيمته يساره كما هي (لا تنقلب التواريخ والأرقام داخل الجملة)"""
             c.setFont(_ARABIC_FONT_NAME, size)
             lab = ar(label + ": ")
@@ -18981,41 +18980,42 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             c.setLineWidth(0.6)
             c.line(left, top - 4.8 * mm, right, top - 4.8 * mm)
 
-            # رمز QR يساراً، والرقم والباركود يمينه
-            qs = 21 * mm
-            widget = qr.QrCodeWidget(t["set_number"])
+            # رمز QR يساراً (رقم التشغيل + الوزن المقيد)، والرقم والباركود يمينه
+            qs = 24 * mm
+            widget = qr.QrCodeWidget(t["qr"])
             bx0, by0, bx1, by1 = widget.getBounds()
             dq = Drawing(qs, qs, transform=[qs / (bx1 - bx0), 0, 0, qs / (by1 - by0), 0, 0])
             dq.add(widget)
-            renderPDF.draw(dq, c, left - 1 * mm, top - 6 * mm - qs)
-            text(right, top - 11 * mm, f"رقم التشغيل: {t['set_number']}", 13, True)
+            renderPDF.draw(dq, c, left - 1.5 * mm, top - 5.5 * mm - qs)
+            text(right, top - 11.5 * mm, f"رقم التشغيل: {t['set_number']}", 14, True)
             code = t["set_number"]
-            bw = max(0.55, min(1.2, 52 * mm / max(1, 11 * len(code) + 35)))
-            bar = code128.Code128(code, barHeight=9 * mm, barWidth=bw, quiet=False)
-            bar.drawOn(c, right - bar.width, top - 22.5 * mm)
-            pair(right, top - 26.5 * mm, "الفاتورة", t["invoice"] or "—")
-            pair(right - 30 * mm, top - 26.5 * mm, "التاريخ", t["date"])
-            pair(right, top - 30.5 * mm, "العميل", t["customer"])
-            if t["maker"]:
-                pair(right - 30 * mm, top - 30.5 * mm, "الصانع", t["maker"])
+            bw = max(0.55, min(1.2, 50 * mm / max(1, 11 * len(code) + 35)))
+            bar = code128.Code128(code, barHeight=10 * mm, barWidth=bw, quiet=False)
+            bar.drawOn(c, right - bar.width, top - 24 * mm)
+            pair(right, top - 29 * mm, "الفاتورة", t["invoice"] or "—")
+            pair(right - 30 * mm, top - 29 * mm, "التاريخ", t["date"])
 
-            # جدول الأوزان: صفّان × ٦ خانات (العنوان صغير والقيمة عريضة)
-            cells = [("الذهب", t["gold"]), ("الفصوص", t["gems"]), ("الأحجار", t["stones"]),
-                     ("بعد الخصم", t["stones_after"]), ("الماس", t["diamond"]), ("الوزن القائم", t["standing"]),
-                     ("خياس التلميع", t["khayas"]), ("البوليش", t["khayas_polish"]), ("المركب", t["khayas_assembler"]),
-                     ("الوزن المقيد", t["bound"]), ("صافي الطقم", t["net"]), ("الصف", t["row"] or "—")]
-            gw = (right - left) / 6
-            gh = 9.5 * mm
-            gy = y0 + p
+            # الأوزان: الصف الأول أربع خانات، والثاني الماس والقائم ثم المقيد عريضاً
+            rows = ([("الذهب", t["gold"], 1), ("الفصوص", t["gems"], 1), ("الأحجار", t["stones"], 1),
+                     ("بعد الخصم", t["stones_after"], 1)],
+                    [("الماس", t["diamond"], 1), ("الوزن القائم", t["standing"], 1), ("الوزن المقيد", t["bound"], 2)])
+            gw = (right - left) / 4
+            gh = 11 * mm
             c.setLineWidth(0.4)
-            for i, (label, value) in enumerate(cells):
-                r_i, c_i = i // 6, i % 6
-                cx1 = right - c_i * gw
-                cy0 = gy + (1 - r_i) * gh
-                c.rect(cx1 - gw, cy0, gw, gh)
-                text(cx1 - gw / 2, cy0 + gh - 3.4 * mm, label, 6.2, False, "center")
-                val = f"{value:.2f}" if isinstance(value, float) else str(value)
-                text(cx1 - gw / 2, cy0 + 1.6 * mm, val, 8.2, True, "center")
+            for r_i, cells in enumerate(rows):
+                cy0 = y0 + p + (1 - r_i) * gh
+                cx1 = right
+                for label, value, span in cells:
+                    w = gw * span
+                    strong = label == "الوزن المقيد"
+                    if strong:
+                        c.setFillColorRGB(0.92, 0.94, 0.97)
+                        c.rect(cx1 - w, cy0, w, gh, fill=1, stroke=0)
+                        c.setFillColorRGB(0, 0, 0)
+                    c.rect(cx1 - w, cy0, w, gh)
+                    text(cx1 - w / 2, cy0 + gh - 3.8 * mm, label, 7.5, strong, "center")
+                    text(cx1 - w / 2, cy0 + 1.9 * mm, f"{value:.2f}", 11.5 if strong else 10, True, "center")
+                    cx1 -= w
         c.showPage()
 
     def print_sale_tickets(self, groups):
@@ -19234,7 +19234,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if set_no is None:
             dlg = ctk.CTkInputDialog(title="تتبّع رقم التشغيل", text="امسح باركود التذكرة أو اكتب رقم التشغيل:")
             set_no = dlg.get_input()
-        key = self.normalize_set_number(set_no)
+        key = self.scanned_set_number(set_no)
         if not key:
             return None
         moves = self.set_number_trace(key)
@@ -19322,7 +19322,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if set_ent is None:
             return
         typed = set_ent.get()
-        clean = self.normalize_set_number(typed)
+        clean = self.scanned_set_number(typed)
         if clean != typed:
             set_ent.delete(0, "end")
             set_ent.insert(0, clean)
@@ -19495,196 +19495,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return win
 
     # =========================================================================
-    # --- الطقوم المفتوحة والذهب عند العمال: ما صُرف ولم يُستلم منه شيء، وعمره ---
-    # =========================================================================
-    JOB_ISSUE_TYPES = ("صرف ذهب", "الليز")
-    JOB_RECEIPT_TYPES = ("قبض ذهب", "المفنش ٨ بالالف", "المفنش ٤ بالالف", "البوليش", "السلك الراجع")
-    DEFAULT_OVERDUE_DAYS = 7
-    OVERDUE_CHOICES = (3, 5, 7, 10, 14, 21, 30)
-
-    def overdue_days(self):
-        try:
-            days = int(load_ui_prefs().get("overdue_days", self.DEFAULT_OVERDUE_DAYS))
-        except (TypeError, ValueError):
-            days = self.DEFAULT_OVERDUE_DAYS
-        return days if days > 0 else self.DEFAULT_OVERDUE_DAYS
-
-    def worker_jobs(self):
-        """أعمال المصنّعين والمركّبين من حركاتهم النشطة:
-          • رقم التشغيل عملٌ واحد عند العامل نفسه **عبر الفترات** (يُصرف في شهر ويُستلم في التالي)؛
-            وحركات الصف بلا رقم تأخذ رقم صفّها.
-          • الصف بلا رقم تشغيل عملٌ في فترته، وما لا صف له عملٌ واحد «بدون ترقيم» للعامل في الفترة.
-        لكل عمل: المصروف (صرف + ليز) والمستلم (قبض، المفنش، البوليش، السلك الراجع) وتاريخ أول صرف."""
-        by_name = self.invoices_by_name()
-        jobs = {}
-        for sec in self.WORKER_SECTIONS:
-            for name in self.categories.get(sec, []):
-                invs = sorted((i for i in by_name.get(name, ()) if i.get("settled_status") == "ACTIVE"),
-                              key=lambda i: (str(i.get("التاريخ", "")), i.get("رقم الفاتورة", 0)))
-                row_set = {}
-                for inv in invs:
-                    row = (inv.get("row_number") or "").strip()
-                    sn = self.normalize_set_number(inv.get("set_number"))
-                    if row and sn:
-                        row_set.setdefault((self.inv_period(inv), row), sn)
-                for inv in invs:
-                    t = inv.get("النوع")
-                    if t not in self.JOB_ISSUE_TYPES and t not in self.JOB_RECEIPT_TYPES:
-                        continue
-                    period = self.inv_period(inv)
-                    row = (inv.get("row_number") or "").strip()
-                    sn = self.normalize_set_number(inv.get("set_number")) or row_set.get((period, row), "")
-                    key = ("SET", name, sn) if sn else ("ROW", name, period, row)
-                    job = jobs.setdefault(key, {"name": name, "section": sec, "set_number": sn, "row": row,
-                                                "period": period, "issued": 0.0, "received": 0.0,
-                                                "first_issue": "", "ids": []})
-                    w = inv.get("الوزن", 0.0) or 0.0
-                    job["ids"].append(inv.get("رقم الفاتورة"))
-                    if t in self.JOB_ISSUE_TYPES:
-                        job["issued"] = round(job["issued"] + w, 2)
-                        if t == "صرف ذهب" and not job["first_issue"]:
-                            job["first_issue"] = str(inv.get("التاريخ", ""))
-                            job["period"], job["row"] = period, row or job["row"]
-                    else:
-                        job["received"] = round(job["received"] + w, 2)
-        return jobs
-
-    def open_jobs(self, today=None, overdue_days=None):
-        """الأعمال المفتوحة: صُرف لها ذهب ولم يُستلم منها شيء بعد — الأقدم أولاً، بعمرها بالأيام"""
-        today = today or datetime.date.today()
-        limit = overdue_days or self.overdue_days()
-        out = []
-        for job in self.worker_jobs().values():
-            if job["issued"] <= 0.005 or job["received"] > 0.005 or not job["first_issue"]:
-                continue
-            try:
-                issued_on = datetime.datetime.strptime(job["first_issue"][:10], "%Y-%m-%d").date()
-                age = max(0, (today - issued_on).days)
-            except ValueError:
-                age = None
-            out.append(dict(job, age=age, overdue=age is not None and age >= limit))
-        out.sort(key=lambda j: (-(j["age"] if j["age"] is not None else -1), j["name"]))
-        return out
-
-    def gold_at_workers(self, jobs=None, month=None):
-        """لكل عامل: الذهب عنده الآن (ذهب/باقي في دفتره للفترة) وأعماله المفتوحة وأقدمها"""
-        jobs = self.open_jobs() if jobs is None else jobs
-        month = month or self.current_display_month
-        rows = []
-        for sec in self.WORKER_SECTIONS:
-            for name in self.categories.get(sec, []):
-                mine = [j for j in jobs if j["name"] == name]
-                held = round(self.calculate_single_ledger(name, sec, target_month=month)["ذهب/باقي"], 2)
-                if not mine and abs(held) < 0.005:
-                    continue
-                ages = [j["age"] for j in mine if j["age"] is not None]
-                rows.append({"name": name, "section": sec, "held": held, "open": len(mine),
-                             "open_gold": round(sum(j["issued"] for j in mine), 2),
-                             "oldest": max(ages) if ages else None,
-                             "overdue": sum(1 for j in mine if j["overdue"])})
-        rows.sort(key=lambda r: (-r["overdue"], -(r["oldest"] or 0), -r["held"]))
-        return rows
-
-    def open_open_jobs_report(self):
-        """نافذة «الطقوم المفتوحة والذهب عند العمال» — للمتابعة اليومية وضبط الذهب خارج الخزينة"""
-        win = ctk.CTkToplevel(self)
-        win.title("الطقوم المفتوحة والذهب عند العمال")
-        win.geometry("1150x700")
-        win.transient(self)
-        win.focus_force()
-        ctk.CTkLabel(win, text="🧾 الطقوم المفتوحة والذهب عند العمال", font=("Cairo", 19, "bold"),
-                     text_color=UI_TITLE).pack(pady=(14, 2))
-        ctk.CTkLabel(win, text="المفتوح: صُرف له ذهب ولم يُستلم منه شيء بعد · رقم التشغيل يُتابَع عبر الفترات · "
-                               "الذهب عند العامل = ذهب/باقي في دفتره للفترة المعروضة",
-                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
-        bar = ctk.CTkFrame(win, fg_color="transparent")
-        bar.pack(pady=2)
-        summary = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"))
-        summary.pack(pady=(2, 4))
-        btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack(side="bottom", pady=(4, 12))
-        top = ttk.Frame(win)
-        top.pack(fill="x", padx=18, pady=(2, 6))
-        bottom = ttk.Frame(win)
-        bottom.pack(fill="both", expand=True, padx=18, pady=(2, 6))
-        state = {"jobs": []}
-
-        def build(*_a):
-            for f in (top, bottom):
-                for w in f.winfo_children():
-                    w.destroy()
-            limit = self.overdue_days()
-            jobs = self.open_jobs(overdue_days=limit)
-            workers = self.gold_at_workers(jobs)
-            state["jobs"] = jobs
-            wcols = ("العامل", "القسم", "الذهب عنده الآن", "طقوم مفتوحة", "ذهبها", "أقدمها (يوم)", "متأخرة")
-            wt = self.create_standard_treeview(top, wcols, height=6)
-            for c in wcols:
-                wt.column(c, width=170 if c == "العامل" else 120, anchor="center")
-            wt.tag_configure("late", foreground=UI["danger"])
-            for r in workers:
-                wt.insert("", "end", values=(r["name"], self.get_display_label(r["section"]), f"{r['held']:.2f}",
-                                             r["open"], f"{r['open_gold']:.2f}",
-                                             "—" if r["oldest"] is None else r["oldest"], r["overdue"]),
-                          tags=("late",) if r["overdue"] else ())
-            jcols = ("رقم التشغيل", "العامل", "القسم", "الصف", "الفترة", "تاريخ الصرف", "العمر (يوم)",
-                     "الذهب المصروف", "الحالة")
-            jt = self.create_standard_treeview(bottom, jcols, height=12)
-            for c in jcols:
-                jt.column(c, width=150 if c in ("العامل", "تاريخ الصرف") else 105, anchor="center")
-            jt.tag_configure("late", foreground=UI["danger"])
-            for i, j in enumerate(jobs):
-                jt.insert("", "end", iid=str(i), values=(
-                    j["set_number"] or "—", j["name"], self.get_display_label(j["section"]), j["row"] or "—",
-                    j["period"], j["first_issue"][:10], "—" if j["age"] is None else j["age"],
-                    f"{j['issued']:.2f}", "⚠️ متأخر" if j["overdue"] else "مفتوح"),
-                    tags=("late",) if j["overdue"] else ())
-
-            def trace(_e=None):
-                sel = jt.selection()
-                if sel and state["jobs"][int(sel[0])]["set_number"]:
-                    self.open_set_number_trace(state["jobs"][int(sel[0])]["set_number"])
-            jt.bind("<Double-1>", trace)
-            late = sum(1 for j in jobs if j["overdue"])
-            held = round(sum(r["held"] for r in workers), 2)
-            summary.configure(
-                text=(f"{len(jobs)} طقم مفتوح بذهب {sum(j['issued'] for j in jobs):.2f} جم — "
-                      f"{late} متأخر (أكثر من {limit} يوم) — الذهب عند العمال الآن {held:.2f} جم"),
-                text_color=UI["danger"] if late else (UI["title"], "#C9D6E8"))
-
-        ctk.CTkLabel(bar, text="يُعدّ متأخراً بعد:", font=("Cairo", 13, "bold")).pack(side="right", padx=6)
-        days_menu = ctk.CTkOptionMenu(bar, values=[f"{d} يوم" for d in self.OVERDUE_CHOICES], width=110,
-                                      font=("Cairo", 13),
-                                      command=lambda v: (save_ui_pref("overdue_days", int(v.split()[0])), build()))
-        days_menu.set(f"{self.overdue_days()} يوم")
-        days_menu.pack(side="right", padx=6)
-
-        def print_report():
-            jobs = state["jobs"]
-            cols = ("رقم التشغيل", "العامل", "الصف", "الفترة", "تاريخ الصرف", "العمر (يوم)", "الذهب المصروف", "الحالة")
-            rows = [(j["set_number"] or "—", j["name"], j["row"] or "—", j["period"], j["first_issue"][:10],
-                     "—" if j["age"] is None else str(j["age"]), f"{j['issued']:.2f}",
-                     "متأخر" if j["overdue"] else "مفتوح") for j in jobs]
-            self.print_generic_table_screen("🧾 الطقوم المفتوحة", cols, [0.9, 1.3, 0.6, 0.8, 1.0, 0.8, 0.9, 0.7],
-                                            rows, "open_jobs", subtitle=summary.cget("text"))
-
-        ctk.CTkButton(btns, text="🖨️ طباعة", width=140, height=40, font=("Cairo", 14, "bold"),
-                      command=print_report, **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="🔄 تحديث", width=120, height=40, font=("Cairo", 14, "bold"),
-                      command=build, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="إغلاق", width=110, height=40, font=("Cairo", 14, "bold"),
-                      command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-        build()
-        return win
-
-    # =========================================================================
     # --- لوحة المؤشرات: الأرقام التي تتابعها الإدارة، ورسومها عبر الفترات ---
     # =========================================================================
     DASH_SPANS = {"آخر ٦ فترات": 6, "آخر ١٢ فترة": 12, "كل الفترات": None}
 
-    def dashboard_data(self, n_periods=12, today=None):
+    def dashboard_data(self, n_periods=12):
         """أرقام اللوحة من المصادر نفسها التي تبني الشاشات: دفتر الخزينة ومكوّنات الفترة،
-        ودفاتر العمال (نسبة الفاقد)، وشاشة الخسائر (الفاقد الحالي)، والطقوم المفتوحة"""
+        ودفاتر العمال (نسبة الفاقد)، وشاشة الخسائر (الفاقد الحالي)"""
         ledger = self.get_treasury_ledger()
         periods = [r["period"] for r in ledger]
         if n_periods:
@@ -19695,7 +19512,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ratios = {}
         for sec in self.WORKER_SECTIONS:
             ratios[sec] = [self.worker_performance_rows(sec, [p])[1]["ratio"] for p in periods]
-        jobs = self.open_jobs(today=today)
         boxes = []
         for cat in self.get_khayas_box_categories():
             cur = self.get_box_loss_summary(cat, month=month)["current"]
@@ -19722,8 +19538,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "khayas": round(-(cur_comp["boxes"] + cur_comp["workers"] + cur_comp["closed"]), 2),
                 "prev_sales": round(-prev_comp["sales"], 2) if prev_comp else None,
                 "prev_treasury": closing.get(prev[-1]) if prev else None,
-                "open_jobs": len(jobs), "overdue_jobs": sum(1 for j in jobs if j["overdue"]),
-                "open_gold": round(sum(j["issued"] for j in jobs), 2),
                 "ratio": {sec: self.worker_performance_rows(sec, [month])[1]["ratio"]
                           for sec in self.WORKER_SECTIONS},
             },
@@ -19746,8 +19560,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.dash_span.pack(side="right", padx=4, pady=8)
         ctk.CTkButton(bar, text="🔄 تحديث", width=100, height=32, font=("Cairo", 13, "bold"),
                       command=self.refresh_dashboard, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-        ctk.CTkButton(bar, text="🧾 الطقوم المفتوحة", width=140, height=32, font=("Cairo", 13, "bold"),
-                      command=self.open_open_jobs_report, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         ctk.CTkButton(bar, text="🩺 فحص السلامة", width=130, height=32, font=("Cairo", 13, "bold"),
                       command=self.open_integrity_check_window, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         self.lbl_dash_note = ctk.CTkLabel(bar, text="", font=("Cairo", 12), text_color=UI["muted"])
@@ -19760,7 +19572,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.dash_tiles = {}
         specs = (("treasury", "رصيد الخزينة"), ("total", "الرصيد الحالي (الذهب كله)"),
                  ("khayas", "خياس الفترة"), ("ratio", "نسبة الفاقد إلى الإنتاج"),
-                 ("sales", "مبيعات الفترة"), ("jobs", "الطقوم المفتوحة"))
+                 ("sales", "مبيعات الفترة"))
         for i, (key, caption) in enumerate(specs):
             card = ctk.CTkFrame(tiles, corner_radius=14, border_width=1, fg_color=(UI["surface"], "#171C23"),
                                 border_color=(UI["line"], "#2A313B"))
@@ -19774,10 +19586,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             value.pack(fill="x", padx=14)
             sub = ctk.CTkLabel(card, text="", font=("Cairo", 11), anchor="e", text_color=(UI["muted"], "#9AA4B2"))
             sub.pack(fill="x", padx=14, pady=(0, 10))
-            if key == "jobs":
-                for w in (card, value, sub):
-                    w.bind("<Button-1>", lambda e: self.open_open_jobs_report())
-                    w.configure(cursor="hand2")
             self.dash_tiles[key] = (value, sub)
 
         grid = ctk.CTkFrame(body, fg_color="transparent")
@@ -19849,10 +19657,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tiles["ratio"][1].configure(text="الفاقد ÷ الإنتاج × ١٠٠٠ — الفترة المعروضة")
         tiles["sales"][0].configure(text=f"{en(k['sales'])} جم")
         tiles["sales"][1].configure(text=delta(k["sales"], k["prev_sales"]) or f"الوارد {en(k['inbound'])} جم")
-        tiles["jobs"][0].configure(text=f"{k['open_jobs']:,} طقم",
-                                   text_color=(UI["danger"], "#F4A3A8") if k["overdue_jobs"] else (UI["ink"], "#F2F4F7"))
-        tiles["jobs"][1].configure(text=(f"⚠️ {k['overdue_jobs']} متأخر · " if k["overdue_jobs"] else "")
-                                   + f"ذهبها {en(k['open_gold'])} جم")
         P = data["periods"]
         self.dash_charts["treasury"].set_data(P, [("رصيد الخزينة", data["treasury"])])
         self.dash_charts["ratio"].set_data(P, [(self.get_display_label(sec), data["ratios"][sec])

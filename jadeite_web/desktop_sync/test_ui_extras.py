@@ -32,7 +32,7 @@ def body(name):
 
 
 ns = {"datetime": datetime, "sys": sys, "IS_ADMIN_BUILD": False}
-MEMBERS = ["_SET_DIGITS", "normalize_set_number", "TRACE_STATUSES", "JOURNAL_TYPES", "SALE_TYPES",
+MEMBERS = ["_SET_DIGITS", "normalize_set_number", "scanned_set_number", "TRACE_STATUSES", "JOURNAL_TYPES", "SALE_TYPES",
            "SEARCH_LIMIT", "global_search", "open_account_statement_for", "table_title", "print_tree",
            "sale_invoice_groups", "_SHORTCUT_DIGITS", "_on_ctrl_number_key"]
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
@@ -82,6 +82,7 @@ r[0][3]()
 assert a.calls[-1] == ("trace", "88001")
 assert [v for k, v, _d, _x in a.global_search("٨٨٠٠١") if k == "رقم تشغيل"] == ["88001", "188001"]
 assert not any(v == "88009" for _k, v, _d, _x in a.global_search("8800")), "المحذوف لا يظهر"
+assert a.global_search("رقم التشغيل: 88001 | الوزن المقيد: 40.25 جم")[0][:2] == ("رقم تشغيل", "88001"), "مسح QR التذكرة"
 assert not any(v == "88077" for _k, v, _d, _x in a.global_search("880")), "رقم القيد لا يظهر"
 print("✔ رقم التشغيل يُبحث بأي صيغة أرقام (أو بمسح باركوده)، نتيجة واحدة لكل رقم والمطابق تماماً أولاً، "
       "والقيود والمحذوف لا تظهر — والنتيجة تفتح تتبّع الرقم")
@@ -175,9 +176,9 @@ assert A.table_title(FakeTree([], top_title="أداء العمال")) == "أدا
 assert A.table_title(FakeTree([], top_title="x", explicit="كشف سالم")) == "كشف سالم"
 assert A.print_tree(FakeTree([])) is None and A.calls[-1][:2] == ("toast", "warn") and not A.printed
 rows = [["سالم", "2026-09-01", "12.50"], ["الإجمالي", "", "12.50"]]
-assert A.print_tree(FakeTree(rows, top_title="الطقوم المفتوحة")) == "الطقوم المفتوحة"
+assert A.print_tree(FakeTree(rows, top_title="أداء العمال")) == "أداء العمال"
 title, heads, ratios, prow, key, sub = A.printed[-1]
-assert title == "📋 الطقوم المفتوحة" and heads == ("الاسم", "التاريخ", "الوزن") and ratios == [1.4, 1.4, 1.0]
+assert title == "📋 أداء العمال" and heads == ("الاسم", "التاريخ", "الوزن") and ratios == [1.4, 1.4, 1.0]
 assert prow == [tuple(r) for r in rows] and key == "table_print" and sub.startswith("2 صف — ")
 assert "self.print_tree(tree)" in body("show_table_menu") and "طباعة الجدول (PDF)" in body("show_table_menu")
 print("✔ أي جدول يُطبع PDF من الزر الأيمن بالقالب الموحّد (كما يظهر بترتيبه والإجمالي آخراً)، "

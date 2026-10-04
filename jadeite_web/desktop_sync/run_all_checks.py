@@ -75,7 +75,6 @@ CHECKS = [
     ("القيمة بالريال",          [PY, "test_gold_value.py", TARGET]),
     ("النسخة السحابية المضغوطة", [PY, "test_backup_payload.py", TARGET]),
     ("الميزان الإلكتروني",      [PY, "test_scale_reader.py", TARGET]),
-    ("الطقوم المفتوحة",         [PY, "test_open_jobs.py", TARGET]),
     ("لوحة المؤشرات",           [PY, "test_dashboard.py", TARGET]),
     ("أدوات الجداول والتنبيهات", [PY, "test_ui_tools.py", TARGET]),
     ("تذاكر طقوم المبيعات",     [PY, "test_sale_tickets.py", TARGET]),
