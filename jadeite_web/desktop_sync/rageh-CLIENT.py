@@ -137,7 +137,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.51.0"
+APP_VERSION = "1.52.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1207,11 +1207,45 @@ def _register_arabic_font():
         _ARABIC_FONT_BOLD_NAME = _ARABIC_FONT_NAME
 
 
+# رموز الواجهة (📋 🖨️ ⬆ …) لا يحويها خط PDF غالباً فتظهر مربعات فارغة: تُحذف أو تُستبدل بما يرسمه الخط
+_PDF_SYMBOL_RANGES = ((0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF), (0xFE00, 0xFE0F),
+                      (0x200D, 0x200D), (0x20E3, 0x20E3))
+_PDF_SYMBOL_SWAP = {"⬆": "↑", "⬇": "↓", "⬅": "←", "➡": "→", "✔": "✓"}
+_PDF_GLYPHS = {}
+
+
+def _pdf_font_has(ch):
+    cmap = _PDF_GLYPHS.get(_ARABIC_FONT_NAME)
+    if cmap is None:
+        try:
+            cmap = set(pdfmetrics.getFont(_ARABIC_FONT_NAME).face.charToGlyph)
+        except Exception:          # خط PDF القياسي (بلا ملف خط): لا رموز
+            cmap = set()
+        _PDF_GLYPHS[_ARABIC_FONT_NAME] = cmap
+    return ord(ch) in cmap
+
+
+def pdf_text(text):
+    """النص كما يُرسم في PDF: الرمز الذي لا يرسمه الخط يُستبدل بمقابله (⬆ ← ↑) أو يُحذف بدل المربع الفارغ"""
+    out, changed = [], False
+    for ch in text:
+        cp = ord(ch)
+        if cp >= 0x200D and any(a <= cp <= b for a, b in _PDF_SYMBOL_RANGES) and not _pdf_font_has(ch):
+            swap = _PDF_SYMBOL_SWAP.get(ch)
+            if swap and _pdf_font_has(swap):
+                out.append(swap)
+            changed = True
+            continue
+        out.append(ch)
+    return re.sub(r" {2,}", " ", "".join(out)).strip() if changed else text
+
+
 def ar(text):
     """يهيئ نصاً عربياً للعرض الصحيح داخل PDF (تشكيل الحروف المتصلة واتجاه الكتابة من اليمين لليسار)"""
     text = "" if text is None else str(text)
     if not text:
         return ""
+    text = pdf_text(text)
     if ARABIC_SHAPING_AVAILABLE:
         try:
             reshaped = arabic_reshaper.reshape(text)
@@ -6911,6 +6945,32 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
         return path
 
+    def table_title(self, tree):
+        """عنوان الجدول للطباعة: عنوان نافذته، أو اسم الشاشة المعروضة في النافذة الرئيسية"""
+        explicit = getattr(tree, "_print_title", None)
+        if explicit:
+            return explicit
+        try:
+            top = tree.winfo_toplevel()
+            if top is not self:
+                return top.title() or "جدول"
+        except Exception:
+            pass
+        return getattr(getattr(self, "tabview", None), "current_screen", None) or "جدول"
+
+    def print_tree(self, tree):
+        """أي جدول PDF بقالب الطباعة الموحّد للنظام (كما يظهر: الترتيب نفسه والإجمالي آخراً)"""
+        heads, rows = self.tree_rows(tree)
+        if not rows:
+            self.toast("الجدول فارغ", "warn", parent=tree)
+            return None
+        ratios = [1.4 if any(k in h for k in ("الاسم", "البيان", "التاريخ", "العامل", "الحساب")) else 1.0
+                  for h in heads]
+        title = self.table_title(tree)
+        self.print_generic_table_screen(f"📋 {title}", tuple(heads), ratios, [tuple(r) for r in rows], "table_print",
+                                        subtitle=f"{len(rows)} صف — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        return title
+
     def find_in_tree(self, tree, text=None):
         """يحدّد كل صف يحتوي النص ويعرض أولها"""
         if text is None:
@@ -6947,6 +7007,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         menu.add_command(label="📋 نسخ الصفوف المحددة   Ctrl+C", command=lambda: self.copy_tree_rows(tree, True))
         menu.add_command(label="📋 نسخ الجدول كاملاً", command=lambda: self.copy_tree_rows(tree, False))
         menu.add_command(label="📤 تصدير إلى Excel", command=lambda: self.export_tree_csv(tree))
+        menu.add_command(label="🖨️ طباعة الجدول (PDF)", command=lambda: self.print_tree(tree))
         menu.add_separator()
         menu.add_command(label="🔍 بحث في الجدول…", command=lambda: self.find_in_tree(tree))
         try:
@@ -7901,6 +7962,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.btn_theme = ctk.CTkButton(top_frame, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=36, corner_radius=10, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
         self.btn_theme.pack(side="right", padx=8, pady=6)
 
+        btn_search_all = ctk.CTkButton(
+            top_frame, text="🔍 بحث", width=86, height=36, corner_radius=10,
+            font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent",
+            border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
+            hover_color=(UI["surface_alt"], "#232A33"), command=self.open_global_search)
+        btn_search_all.pack(side="right", padx=4, pady=6)
+        HoverTip(btn_search_all, "بحث شامل (Ctrl+F): حساب، رقم تشغيل، فاتورة مبيعات، رقم حركة")
+
         # تراجع عام عن آخر حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
         if not IS_ADMIN_BUILD:
             btn_global_undo = ctk.CTkButton(
@@ -8084,6 +8153,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if (getattr(event, "keysym", "") in ("b", "B")
                 or (sys.platform.startswith("win") and getattr(event, "keycode", 0) == 66)):
             self.open_set_number_trace()         # Ctrl+B: امسح باركود التذكرة لتتبّع رقمها
+            return "break"
+        if (getattr(event, "keysym", "") in ("f", "F")
+                or (sys.platform.startswith("win") and getattr(event, "keycode", 0) == 70)):
+            self.open_global_search()            # Ctrl+F: بحث شامل
             return "break"
         idx = self._SHORTCUT_DIGITS.get(getattr(event, "char", "") or "")
         if idx is None:
@@ -8391,6 +8464,124 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tick()
         return win
 
+    # ═══ البحث الشامل (Ctrl+F): اسم حساب، رقم تشغيل، رقم فاتورة مبيعات، أو رقم حركة — ثم فتح ما وُجد ═══
+    SEARCH_LIMIT = 60
+
+    def global_search(self, query):
+        """[(النوع، القيمة، التفاصيل، الإجراء)] — الأقرب أولاً في كل نوع"""
+        q = (query or "").strip()
+        if len(q) < 1:
+            return []
+        out = []
+        qn = self.normalize_set_number(q)
+        # ١) الحسابات والأسماء
+        for name in self.get_account_statement_options():
+            if q in name:
+                out.append(("حساب", name, "فتح كشف الحساب", lambda n=name: self.open_account_statement_for(n)))
+        # ٢) أرقام التشغيل (بأي صيغة أرقام) — بلا القيود (JE-n)
+        seen_sets, seen_sales = set(), set()
+        for inv in self.invoices.values():
+            if inv.get("settled_status") not in self.TRACE_STATUSES or inv.get("النوع") in self.JOURNAL_TYPES:
+                continue
+            sn = self.normalize_set_number(inv.get("set_number"))
+            if sn and qn and qn in sn and sn not in seen_sets:
+                seen_sets.add(sn)
+                out.append(("رقم تشغيل", sn, f"{inv.get('الاسم', '')} — {self.inv_period(inv)}",
+                            lambda x=sn: self.open_set_number_trace(x)))
+            manual = (inv.get("رقم الفاتورة اليدوي") or "").strip()
+            if manual and q in manual and inv.get("النوع") in self.SALE_TYPES:
+                key = (manual, inv.get("التاريخ"), inv.get("الاسم"))
+                if key not in seen_sales:
+                    seen_sales.add(key)
+                    out.append(("فاتورة مبيعات", manual, f"{inv.get('الاسم', '')} — {str(inv.get('التاريخ', ''))[:10]}",
+                                lambda k=key: self.preview_invoice_groups(self.sale_invoice_groups(k))))
+        # ٣) رقم حركة بعينه
+        if q.isdigit() and int(q) in self.invoices:
+            inv = self.invoices[int(q)]
+            out.append(("حركة", q, f"{inv.get('الاسم', '')} — {inv.get('النوع', '')} — {float(inv.get('الوزن') or 0):.2f}",
+                        lambda i=int(q): self.open_edit_invoice_ui(i)))
+        # المطابق تماماً أولاً؛ وعند التساوي رقم التشغيل (مسح باركود التذكرة ثم Enter يفتح تتبّعه)
+        rank = {"رقم تشغيل": 0, "فاتورة مبيعات": 1, "حركة": 2, "حساب": 3}
+        out.sort(key=lambda r: (r[1] not in (q, qn), rank.get(r[0], 9), len(str(r[1])), str(r[1])))
+        return out[:self.SEARCH_LIMIT]
+
+    def open_account_statement_for(self, name):
+        self.navigate_to_screen("كشف حساب")
+        if hasattr(self, "kh_account_name"):
+            self.kh_account_name.set(name)
+            self.refresh_account_statement()
+
+    def open_global_search(self, initial=""):
+        win = getattr(self, "_search_win", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            win.focus_force()
+            return win
+        win = ctk.CTkToplevel(self)
+        self._search_win = win
+        win.title("بحث شامل")
+        win.geometry("760x520")
+        win.transient(self)
+        ctk.CTkLabel(win, text="🔍 بحث شامل", font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(win, text="اسم حساب أو عامل أو مورد · رقم تشغيل (أو امسح باركوده) · رقم فاتورة مبيعات · رقم حركة",
+                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        entry = ctk.CTkEntry(win, font=("Cairo", 16), height=42, justify="right", placeholder_text="اكتب للبحث…")
+        entry.pack(fill="x", padx=18, pady=4)
+        status = ctk.CTkLabel(win, text="", font=("Cairo", 12), text_color=UI["muted"])
+        status.pack()
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=18, pady=(4, 6))
+        cols = ("النوع", "القيمة", "التفاصيل")
+        tree = self.create_standard_treeview(frame, cols, height=12)
+        for c, w in zip(cols, (130, 200, 360)):
+            tree.column(c, width=w, anchor="center")
+        state = {"rows": [], "job": None}
+
+        def run():
+            state["job"] = None
+            rows = self.global_search(entry.get())
+            state["rows"] = rows
+            for i in tree.get_children():
+                tree.delete(i)
+            for n, (kind, value, detail, _a) in enumerate(rows):
+                tree.insert("", "end", iid=str(n), values=(kind, value, detail))
+            if rows:
+                tree.selection_set("0")
+            status.configure(text=(f"{len(rows)} نتيجة — Enter أو النقر المزدوج يفتح المحدد" if rows
+                                   else ("لا نتائج" if entry.get().strip() else "")))
+
+        def schedule(_e=None):
+            if state["job"] is not None:
+                win.after_cancel(state["job"])
+            state["job"] = win.after(220, run)
+
+        def activate(_e=None):
+            sel = tree.selection()
+            if state["job"] is not None:            # Enter مباشرة بعد المسح/الكتابة
+                win.after_cancel(state["job"])
+                run()
+                sel = tree.selection()
+            if sel and state["rows"]:
+                action = state["rows"][int(sel[0])][3]
+                win.destroy()
+                action()
+            return "break"
+
+        entry.bind("<KeyRelease>", lambda e: None if e.keysym in ("Return", "Down", "Up") else schedule())
+        entry.bind("<Return>", activate)
+        entry.bind("<Down>", lambda e: (tree.focus_set(), tree.focus(tree.selection()[0] if tree.selection() else ""), "break")[2])
+        tree.bind("<Double-1>", activate)
+        tree.bind("<Return>", activate)
+        win.bind("<Escape>", lambda e: win.destroy())
+        if initial:
+            entry.insert(0, initial)
+            run()
+        entry.focus_set()
+        win.after(120, entry.focus_force)
+        win._run_search, win._activate = run, activate       # للاختبار
+        win._entry, win._tree = entry, tree
+        return win
+
     SHORTCUTS = (
         ("Ctrl + 1 … 6", "فتح الشاشات الرئيسية بترتيب الشريط الجانبي"),
         ("Esc", "العودة للقائمة الرئيسية"),
@@ -8398,8 +8589,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ("F2", "كتابة وزن الميزان الإلكتروني المستقر في الخانة"),
         ("Ctrl + Z", "التراجع عن آخر حذف أو إقفال"),
         ("Ctrl + B", "تتبّع رقم تشغيل (امسح باركود التذكرة)"),
+        ("Ctrl + F", "بحث شامل: حساب، رقم تشغيل، فاتورة مبيعات، رقم حركة"),
         ("Ctrl + C", "نسخ الصفوف المحددة من أي جدول"),
-        ("زر الفأرة الأيمن على جدول", "نسخ، تصدير إلى Excel، بحث، ترتيب"),
+        ("زر الفأرة الأيمن على جدول", "نسخ، تصدير إلى Excel، طباعة PDF، بحث، ترتيب"),
         ("النقر على عنوان عمود", "ترتيب الجدول به (نقرة ثانية تعكس الترتيب)"),
         ("F1", "هذه القائمة"),
     )
@@ -16373,6 +16565,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkButton(head, text="🖨️ معاينة وطباعة", font=("Cairo", 14, "bold"), width=155, height=34,
                       fg_color="#1f77b4", hover_color="#144d75", command=self.preview_selected_sale_invoice).pack(side="left", padx=5)
+        btn_tickets = ctk.CTkButton(head, text="🏷️ تذاكر الطقوم", font=("Cairo", 14, "bold"), width=150, height=34,
+                                    command=self.print_selected_sale_tickets, **BUTTON_STYLES["secondary"])
+        btn_tickets.pack(side="left", padx=5)
+        HoverTip(btn_tickets, "تذكرة لكل رقم تشغيل في الفاتورة المحددة: باركود وQR وبيانات بيعه — جاهزة للمسح")
+        self.var_tickets_with_invoice = ctk.BooleanVar(value=self.sale_tickets_with_invoice())
+        chk = ctk.CTkCheckBox(head, text="إرفاق التذاكر بالفاتورة", font=("Cairo", 12, "bold"),
+                              variable=self.var_tickets_with_invoice,
+                              command=lambda: save_ui_pref("sale_tickets_with_invoice",
+                                                           bool(self.var_tickets_with_invoice.get())))
+        chk.pack(side="left", padx=8)
+        HoverTip(chk, "عند الترحيل والطباعة تُضاف صفحة تذاكر (تذكرة لكل رقم تشغيل) بعد صفحات الفاتورة")
         ctk.CTkButton(head, text="حذف الفاتورة 🗑️", font=("Cairo", 14, "bold"), width=155, height=34,
                       fg_color="#8b0000", hover_color="#a52a2a", command=self.delete_selected_sale_invoice).pack(side="left", padx=5)
         ctk.CTkButton(head, text="تعديل الفاتورة ✏️", font=("Cairo", 14, "bold"), width=155, height=34,
@@ -16622,13 +16825,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not recs:
             messagebox.showwarning("تنبيه", "لم يتم العثور على حركات هذه الفاتورة.")
             return
-        manual_no, date_str, name = key
+        self.preview_invoice_groups(self.sale_invoice_groups(key, recs))
+
+    def sale_invoice_groups(self, key, recs=None):
+        """مجموعات فاتورة مبيعات للطباعة: (رقم التشغيل، التاريخ، الاسم) لكل سطر بترتيب إدخاله"""
+        _manual_no, date_str, name = key
+        recs = self.get_sale_invoice_records(key) if recs is None else recs
         sets = []
         for r in sorted(recs, key=lambda x: x.get("رقم الفاتورة", 0)):
-            s = r.get("set_number", "") or ""
-            if s not in [g[0] for g in sets]:
-                sets.append((s, date_str, name))
-        self.preview_invoice_groups(sets)
+            sn = r.get("set_number", "") or ""
+            if sn not in [g[0] for g in sets]:
+                sets.append((sn, date_str, name))
+        return sets
+
+    def print_selected_sale_tickets(self):
+        """تذاكر أرقام التشغيل وحدها لفاتورة محددة في «العمليات» (للطباعة على ورق الملصقات)"""
+        key = self.get_selected_sale_invoice_key("طباعة تذاكر")
+        if not key:
+            return None
+        return self.print_sale_tickets(self.sale_invoice_groups(key))
 
     def delete_selected_sale_invoice(self):
         """حذف فاتورة مبيعات مرحّلة بالكامل (كل سطورها وخياسها) مع إعادة حساب الخزينة وكل الحسابات"""
@@ -17865,7 +18080,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.update_suspended_count()
 
         # نسأل المستخدم قبل فتح معاينة الطباعة (بدل فتحها تلقائياً بدون تأكيد)
-        if messagebox.askyesno("معاينة الطباعة", "تم ترحيل الفاتورة بنجاح.\nهل تريد معاينة الطباعة؟"):
+        with_tickets = self.sale_tickets_with_invoice() and any(
+            self.normalize_set_number(g[0]) for g in committed_groups)
+        if messagebox.askyesno("معاينة الطباعة", "تم ترحيل الفاتورة بنجاح.\nهل تريد معاينة الطباعة؟"
+                               + ("\n(تُرفق صفحة تذاكر: تذكرة لكل رقم تشغيل جاهزة للمسح)" if with_tickets else "")):
             self.preview_invoice_groups(committed_groups)
 
     # =====================================================================
@@ -18665,8 +18883,156 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             data = self.get_invoice_group_data(set_number, date_str, name)
             self.draw_invoice_page(c, data)
             c.showPage()
+        # قالب التذاكر: تذكرة لكل رقم تشغيل بعد صفحات الفاتورة (جاهزة للقص والمسح)
+        if self.sale_tickets_with_invoice():
+            tickets = self.sale_ticket_data(groups)
+            if tickets:
+                self.draw_sale_tickets(c, tickets)
         c.save()
         return True
+
+    # ═══ تذاكر أرقام التشغيل في المبيعات: تذكرة لكل طقم مباع ببيانات بيعه، جاهزة للمسح ═══
+    TICKETS_PER_ROW, TICKET_ROWS = 2, 4
+
+    def sale_tickets_with_invoice(self):
+        return bool(load_ui_prefs().get("sale_tickets_with_invoice", True))
+
+    def sale_ticket_data(self, groups):
+        """بيانات تذكرة لكل رقم تشغيل في فاتورة مبيعات — من بيانات الفاتورة نفسها
+        (get_invoice_group_data) والصافي بمعادلته الواحدة (sale_net_weight)، ومعها العامل الذي
+        صنع الطقم إن كان رقمه مسجّلاً في مراحل التصنيع. السطر بلا رقم تشغيل لا تذكرة له."""
+        out = []
+        for set_number, date_str, name in groups:
+            sn = self.normalize_set_number(set_number)
+            if not sn:
+                continue
+            d = self.get_invoice_group_data(set_number, date_str, name)
+            manual = next((inv.get("رقم الفاتورة اليدوي") for inv in self.invoices.values()
+                           if inv.get("set_number") == set_number and inv.get("التاريخ") == date_str
+                           and inv.get("الاسم") == name and inv.get("رقم الفاتورة اليدوي")), "")
+            try:
+                stones_after = float(d.get("stones_discount") or 0.0)
+            except (TypeError, ValueError):
+                stones_after = 0.0
+            gold, gems, stones, diamond = d["gold"], d["gems"], d["stones"], d["diamond"]
+            net = sale_net_weight({"فصوص": gems, "أحجار بعد الخصم": stones_after, "خياس": d["khayas"],
+                                   "خياس البوليش": d["khayas_polish"], "خياس المركب": d["khayas_assembler"]})
+            maker = self.job_ticket_info(sn) if hasattr(self, "job_ticket_info") else None
+            if maker and maker.get("section") not in self.WORKER_SECTIONS:
+                maker = None
+            out.append({
+                "set_number": sn, "invoice": manual or "", "customer": name, "date": str(date_str)[:10],
+                "row": d.get("row_number") or "", "gold": round(gold, 2), "gems": round(gems, 2),
+                "stones": round(stones, 2), "stones_after": round(stones_after, 2), "diamond": round(diamond, 2),
+                "khayas": round(d["khayas"], 2), "khayas_polish": round(d["khayas_polish"], 2),
+                "khayas_assembler": round(d["khayas_assembler"], 2),
+                "standing": round(gold + gems + stones + diamond, 2),
+                "bound": round(gold + gems + stones_after + diamond, 2), "net": net,
+                "maker": f"{maker['worker']} ({self.get_display_label(maker['section'])})" if maker else "",
+            })
+        return out
+
+    def draw_sale_tickets(self, c, tickets):
+        """صفحات A4 بثماني تذاكر (٢×٤) بحدود قصّ منقّطة. كل تذكرة: رقم التشغيل بخط كبير،
+        باركود Code128 ورمز QR بالرقم وحده (يُمسح في أي خانة رقم تشغيل أو Ctrl+B)، الفاتورة
+        والعميل والتاريخ والصانع، وجدول أوزان البيع كما في الفاتورة."""
+        from reportlab.graphics.barcode import code128, qr
+        from reportlab.graphics.shapes import Drawing
+        from reportlab.graphics import renderPDF
+        PW, PH = A4
+        TW, TH = 96 * mm, 68 * mm
+        mx = (PW - self.TICKETS_PER_ROW * TW) / 2
+        my = (PH - self.TICKET_ROWS * TH) / 2
+        per_page = self.TICKETS_PER_ROW * self.TICKET_ROWS
+
+        def text(x, y, s, size=8, bold=False, align="right"):
+            c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
+            s = str(s)
+            s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
+            {"right": c.drawRightString, "left": c.drawString, "center": c.drawCentredString}[align](x, y, s)
+
+        def pair(x, y, label, value, size=7.5):
+            """العنوان بالعربية ثم قيمته يساره كما هي (لا تنقلب التواريخ والأرقام داخل الجملة)"""
+            c.setFont(_ARABIC_FONT_NAME, size)
+            lab = ar(label + ": ")
+            c.drawRightString(x, y, lab)
+            value = str(value)
+            c.setFont(_ARABIC_FONT_BOLD_NAME, size)
+            c.drawRightString(x - c.stringWidth(lab, _ARABIC_FONT_NAME, size), y,
+                              ar(value) if re.search("[\u0600-\u06FF]", value) else value)
+
+        for n, t in enumerate(tickets):
+            slot = n % per_page
+            if n and slot == 0:
+                c.showPage()
+            col, row = slot % self.TICKETS_PER_ROW, slot // self.TICKETS_PER_ROW
+            x0 = PW - mx - (col + 1) * TW          # من اليمين لليسار
+            y0 = PH - my - (row + 1) * TH
+            c.setDash(3, 2)
+            c.setLineWidth(0.5)
+            c.setStrokeColorRGB(0.55, 0.6, 0.66)
+            c.rect(x0, y0, TW, TH)
+            c.setDash()
+            c.setStrokeColorRGB(0, 0, 0)
+            p = 3 * mm
+            right, left, top = x0 + TW - p, x0 + p, y0 + TH - p
+            text(right, top - 3 * mm, "مصنع جاديت للتصنيع", 8.5, True)
+            text(left, top - 3 * mm, "تذكرة طقم — مبيعات", 8.5, True, "left")
+            c.setLineWidth(0.6)
+            c.line(left, top - 4.8 * mm, right, top - 4.8 * mm)
+
+            # رمز QR يساراً، والرقم والباركود يمينه
+            qs = 21 * mm
+            widget = qr.QrCodeWidget(t["set_number"])
+            bx0, by0, bx1, by1 = widget.getBounds()
+            dq = Drawing(qs, qs, transform=[qs / (bx1 - bx0), 0, 0, qs / (by1 - by0), 0, 0])
+            dq.add(widget)
+            renderPDF.draw(dq, c, left - 1 * mm, top - 6 * mm - qs)
+            text(right, top - 11 * mm, f"رقم التشغيل: {t['set_number']}", 13, True)
+            code = t["set_number"]
+            bw = max(0.55, min(1.2, 52 * mm / max(1, 11 * len(code) + 35)))
+            bar = code128.Code128(code, barHeight=9 * mm, barWidth=bw, quiet=False)
+            bar.drawOn(c, right - bar.width, top - 22.5 * mm)
+            pair(right, top - 26.5 * mm, "الفاتورة", t["invoice"] or "—")
+            pair(right - 30 * mm, top - 26.5 * mm, "التاريخ", t["date"])
+            pair(right, top - 30.5 * mm, "العميل", t["customer"])
+            if t["maker"]:
+                pair(right - 30 * mm, top - 30.5 * mm, "الصانع", t["maker"])
+
+            # جدول الأوزان: صفّان × ٦ خانات (العنوان صغير والقيمة عريضة)
+            cells = [("الذهب", t["gold"]), ("الفصوص", t["gems"]), ("الأحجار", t["stones"]),
+                     ("بعد الخصم", t["stones_after"]), ("الماس", t["diamond"]), ("الوزن القائم", t["standing"]),
+                     ("خياس التلميع", t["khayas"]), ("البوليش", t["khayas_polish"]), ("المركب", t["khayas_assembler"]),
+                     ("الوزن المقيد", t["bound"]), ("صافي الطقم", t["net"]), ("الصف", t["row"] or "—")]
+            gw = (right - left) / 6
+            gh = 9.5 * mm
+            gy = y0 + p
+            c.setLineWidth(0.4)
+            for i, (label, value) in enumerate(cells):
+                r_i, c_i = i // 6, i % 6
+                cx1 = right - c_i * gw
+                cy0 = gy + (1 - r_i) * gh
+                c.rect(cx1 - gw, cy0, gw, gh)
+                text(cx1 - gw / 2, cy0 + gh - 3.4 * mm, label, 6.2, False, "center")
+                val = f"{value:.2f}" if isinstance(value, float) else str(value)
+                text(cx1 - gw / 2, cy0 + 1.6 * mm, val, 8.2, True, "center")
+        c.showPage()
+
+    def print_sale_tickets(self, groups):
+        """ملف PDF بتذاكر أرقام التشغيل وحدها، يُفتح للمعاينة والطباعة"""
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً.")
+            return None
+        tickets = self.sale_ticket_data(groups)
+        if not tickets:
+            self.toast("لا توجد أرقام تشغيل في هذه الفاتورة لطباعة تذاكرها", "warn")
+            return None
+        out_path = os.path.join(INVOICES_DIR, f"sale_tickets_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        c = pdf_canvas.Canvas(out_path, pagesize=A4)
+        self.draw_sale_tickets(c, tickets)
+        c.save()
+        self._open_file(out_path)
+        return out_path
 
     def preview_invoice_groups(self, groups):
         """يولّد PDF للفواتير المحدّدة (صفحة لكل سطر) ويفتحه للمعاينة بعارض PDF الافتراضي"""
@@ -18761,6 +19127,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if id(inv) not in seen and inv.get("settled_status") in self.TRACE_STATUSES
                     and (inv.get("الاسم"), self.inv_period(inv), (inv.get("row_number") or "").strip()) in rows]
         return sorted(direct + same_row, key=lambda i: (str(i.get("التاريخ", "")), i.get("رقم الفاتورة", 0)))
+
+    def set_sale_move(self, moves):
+        """آخر حركة بيع (ذهب/فصوص/ماس) في رحلة رقم التشغيل، أو None إن لم يُبع"""
+        sales = [m for m in moves if m.get("النوع") in self.SALE_TYPES]
+        return sales[-1] if sales else None
 
     def trace_section(self, inv):
         """القسم الذي تظهر فيه الحركة (لعمود «القسم» في التتبّع)"""
@@ -18905,6 +19276,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 f"{m.get('الوزن', 0.0) or 0.0:.2f}", self.inv_period(m), m.get("البيان") or ""))
         ctk.CTkButton(btns, text="🏷️ طباعة تذكرة التشغيل", width=200, height=40, font=("Cairo", 14, "bold"),
                       command=lambda: self.print_job_ticket(key), **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
+        # مُسح الطقم بعد بيعه: فاتورة بيعه وتذكرة البيع مباشرة من هنا
+        sale = self.set_sale_move(moves)
+        if sale is not None:
+            sale_key = (sale.get("رقم الفاتورة اليدوي") or "", sale.get("التاريخ"), sale.get("الاسم"))
+            ctk.CTkButton(btns, text="🧾 فاتورة البيع", width=150, height=40, font=("Cairo", 14, "bold"),
+                          command=lambda: self.preview_invoice_groups(self.sale_invoice_groups(sale_key)),
+                          **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
+            ctk.CTkButton(btns, text="🏷️ تذكرة البيع", width=140, height=40, font=("Cairo", 14, "bold"),
+                          command=lambda: self.print_sale_tickets(
+                              [(sale.get("set_number") or "", sale.get("التاريخ"), sale.get("الاسم"))]),
+                          **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=("Cairo", 14, "bold"),
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         return win
@@ -19002,7 +19384,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         الصف الذي نسبته أعلى من متوسط القسم يظهر بلون التنبيه."""
         win = ctk.CTkToplevel(self)
         win.title("أداء العمال")
-        win.geometry("1150x640")
+        win.geometry("1220x800")
         win.transient(self)
         win.focus_force()
         ctk.CTkLabel(win, text="📊 أداء العمال — نسبة الفاقد إلى الإنتاج (بالألف)", font=("Cairo", 19, "bold"),
@@ -19019,9 +19401,38 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         summary.pack(pady=(2, 4))
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(side="bottom", pady=(4, 12))
+        # اتجاه العامل المحدد مقابل متوسط قسمه عبر الفترات
+        trend_box = ctk.CTkFrame(win, corner_radius=12, border_width=1, fg_color=(UI["surface"], "#171C23"),
+                                 border_color=(UI["line"], "#2A313B"))
+        trend_box.pack(side="bottom", fill="x", padx=18, pady=(2, 4))
+        trend_head = ctk.CTkFrame(trend_box, fg_color="transparent")
+        trend_head.pack(fill="x", padx=12, pady=(6, 0))
+        trend_title = ctk.CTkLabel(trend_head, text="حدّد عاملاً لرؤية اتجاهه مقابل متوسط القسم",
+                                   font=("Cairo", 13, "bold"), text_color=UI_TITLE)
+        trend_title.pack(side="right")
+        for si, name in enumerate(("العامل", "متوسط القسم")):
+            item = ctk.CTkFrame(trend_head, fg_color="transparent")      # العلامة ملاصقة لاسمها، وبين البندين فراغ
+            item.pack(side="left", padx=(0, 18))
+            ctk.CTkLabel(item, text=name, font=("Cairo", 12),
+                         text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(0, 5))
+            ctk.CTkFrame(item, width=16, height=4, corner_radius=2,
+                         fg_color=(CHART_SERIES["light"][si], CHART_SERIES["dark"][si])).pack(side="left")
+        trend_chart = MiniChart(trend_box, kind="line", unit="‰", decimals=2, height=170)
+        trend_chart.pack(fill="x", padx=10, pady=(0, 6))
         frame = ttk.Frame(win)
         frame.pack(fill="both", expand=True, padx=18, pady=6)
-        state = {"tree": None, "cols": (), "rows": [], "title": ""}
+        state = {"tree": None, "cols": (), "rows": [], "title": "", "data": [], "periods": [], "avg": []}
+
+        def show_trend(_e=None):
+            tree = state["tree"]
+            sel = tree.selection() if tree is not None else ()
+            if not sel or not sel[0].startswith("w"):
+                return
+            r = state["data"][int(sel[0][1:])]
+            P = state["periods"]
+            trend_chart.set_data(P, [(r["name"], [(r["cells"].get(p) or (0, 0, None))[2] for p in P]),
+                                     ("متوسط القسم", state["avg"])])
+            trend_title.configure(text=f"اتجاه {r['name']} مقابل متوسط القسم (بالألف)")
 
         def build():
             sec = section_var.get()
@@ -19040,6 +19451,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tree.tag_configure("warn", foreground=UI["danger"])
             avg = total["ratio"]
             table = []
+            state["data"], state["periods"] = rows, periods
+            state["avg"] = [self.worker_performance_rows(sec, [p])[1]["ratio"] for p in periods]
             for r in rows:
                 vals = [r["name"]]
                 for p in periods:
@@ -19048,12 +19461,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 vals += [f"{r['production']:.2f}", f"{r['loss']:.2f}",
                          f"{r['ratio']:.2f}" if r["ratio"] is not None else "—", r["trend"]]
                 warn = avg is not None and r["ratio"] is not None and r["ratio"] > avg + self.TREND_STEP
-                tree.insert("", "end", values=vals, tags=("warn",) if warn else ())
+                tree.insert("", "end", iid=f"w{len(table)}", values=vals, tags=("warn",) if warn else ())
                 table.append(tuple(vals))
             summary.configure(text=(
                 f"{self.get_display_label(sec)}: {len(rows)} عامل — الإنتاج {total['production']:.2f} جم — "
                 f"الفاقد {total['loss']:.2f} جم — متوسط القسم "
                 + (f"{avg:.2f} ‰" if avg is not None else "—")))
+            tree.bind("<<TreeviewSelect>>", show_trend)
+            if table:
+                tree.selection_set("w0")
+                show_trend()
             state.update(tree=tree, cols=cols, rows=table,
                          title=f"📊 أداء العمال — {self.get_display_label(sec)} ({periods[0] if periods else ''} … "
                                f"{periods[-1] if periods else ''})")
@@ -19380,11 +19797,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ctk.CTkLabel(head, text=title, font=("Cairo", 14, "bold"), text_color=UI_TITLE).pack(side="right")
             if legend:
                 for si, name in enumerate(legend):
-                    key_box = ctk.CTkFrame(head, width=14, height=4, corner_radius=2,
-                                           fg_color=(CHART_SERIES["light"][si], CHART_SERIES["dark"][si]))
-                    ctk.CTkLabel(head, text=self.get_display_label(name) if name in self.WORKER_SECTIONS else name,
-                                 font=("Cairo", 12), text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(8, 3))
-                    key_box.pack(side="left")
+                    item = ctk.CTkFrame(head, fg_color="transparent")    # العلامة ملاصقة لاسمها، وبين البندين فراغ
+                    item.pack(side="left", padx=(0, 16))
+                    ctk.CTkLabel(item, text=self.get_display_label(name) if name in self.WORKER_SECTIONS else name,
+                                 font=("Cairo", 12), text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(0, 5))
+                    ctk.CTkFrame(item, width=16, height=4, corner_radius=2,
+                                 fg_color=(CHART_SERIES["light"][si], CHART_SERIES["dark"][si])).pack(side="left")
             chart = MiniChart(card, kind=kind, unit=unit, decimals=2, height=230)
             chart.pack(fill="both", expand=True, padx=10, pady=(0, 4))
             ctk.CTkButton(card, text="📋 الأرقام", width=90, height=26, font=("Cairo", 11, "bold"),

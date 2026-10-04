@@ -78,6 +78,8 @@ CHECKS = [
     ("الطقوم المفتوحة",         [PY, "test_open_jobs.py", TARGET]),
     ("لوحة المؤشرات",           [PY, "test_dashboard.py", TARGET]),
     ("أدوات الجداول والتنبيهات", [PY, "test_ui_tools.py", TARGET]),
+    ("تذاكر طقوم المبيعات",     [PY, "test_sale_tickets.py", TARGET]),
+    ("البحث الشامل والطباعة",   [PY, "test_ui_extras.py", TARGET]),
 ]
 
 failed = []

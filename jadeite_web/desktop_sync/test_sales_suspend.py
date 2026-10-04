@@ -61,6 +61,8 @@ METHODS = [
     "normalize_set_number", "show_assembler_source",
     # تاريخ الترحيل بصيغة واحدة (والأرقام الهندية تُحوَّل)
     "read_entry_date",
+    # تذاكر أرقام التشغيل مع الفاتورة (الدفعة ١٧)
+    "sale_tickets_with_invoice",
 ]
 ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
@@ -155,7 +157,7 @@ ns = {"messagebox": FakeBox, "datetime": datetime, "sqlite3": sqlite3, "json": j
       "KHAYAS_MARK_NET": module_value("KHAYAS_MARK_NET"), "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH"),
       "KHAYAS_MARK_ASSEMBLER": module_value("KHAYAS_MARK_ASSEMBLER"),
       "KHAYAS_MARK_FINAL": module_value("KHAYAS_MARK_FINAL"), "IS_ADMIN_BUILD": False,
-      "log_cloud_error": lambda *a, **k: errors.append(a)}
+      "log_cloud_error": lambda *a, **k: errors.append(a), "load_ui_prefs": lambda: {}}
 exec(module_func("sale_net_weight"), ns)
 body = "\n".join(textwrap.indent(attr_src(a), "    ") for a in ATTRS)
 body += "\n" + "\n".join(textwrap.indent(method_src(m), "    ") for m in METHODS)
