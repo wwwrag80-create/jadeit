@@ -31,7 +31,7 @@ def body(name):
     return ast.get_source_segment(src, node(name))
 
 
-MEMBERS = ["_SET_DIGITS", "normalize_set_number", "scanned_set_number", "JOURNAL_TYPES", "SALE_TYPES", "WORKER_SECTIONS",
+MEMBERS = ["_SET_DIGITS", "_SCANNED_WEIGHT", "normalize_set_number", "scanned_set_number", "JOURNAL_TYPES", "SALE_TYPES", "WORKER_SECTIONS",
            "TRACE_STATUSES", "set_number_trace", "trace_section", "job_ticket_info", "find_row_by_set_number",
            "row_set_numbers", "on_stage_set_number_entered", "stage_selected_set_number"]
 ns = {"re": re}
@@ -103,6 +103,10 @@ print("✔ صف الرقم ورفض تكراره يوحّدان الأرقام: 
 a.current_op_cat = "المصنعين"
 a.combo_op_name = Combo("سالم")
 a.current_win_entries = {"رقم التشغيل": Entry("٧٧٠٠١"), "رقم الصف": Entry("")}
+a.on_stage_set_number_entered()
+assert a.current_win_entries["رقم التشغيل"].get() == "77001" and a.current_win_entries["رقم الصف"].get() == "3"
+# مسح الباركود الخطي لتذكرة المبيعات (الرقم ثم الوزن المقيد) في الخانة: يبقى رقم التشغيل وحده
+a.current_win_entries = {"رقم التشغيل": Entry("77001 40.25"), "رقم الصف": Entry("")}
 a.on_stage_set_number_entered()
 assert a.current_win_entries["رقم التشغيل"].get() == "77001" and a.current_win_entries["رقم الصف"].get() == "3"
 # مسح رمز QR تذكرة المبيعات في الخانة: يبقى رقم التشغيل وحده

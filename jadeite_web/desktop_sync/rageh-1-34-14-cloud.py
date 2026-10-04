@@ -91,10 +91,10 @@ SUPABASE_SECRET_KEY = _load_admin_secret_key()
 
 # ================= وحدات المزامنة السحابية =================
 try:
-    from gold_price import GoldPriceWatcher, gram_price
+    from gold_price import GoldPriceWatcher
     GOLD_PRICE_AVAILABLE = True
 except Exception:
-    GoldPriceWatcher = gram_price = None
+    GoldPriceWatcher = None
     GOLD_PRICE_AVAILABLE = False
 
 # الميزان الإلكتروني (منفذ تسلسلي): اختياري — بدون الوحدة أو pyserial تُعطَّل الميزة وحدها
@@ -137,7 +137,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.53.0"
+APP_VERSION = "1.54.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -3877,11 +3877,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return self._intro_finish(then)
         page = UI["canvas"] if ctk.get_appearance_mode() == "Light" else "#10141A"
         amp = 11 * s
-        # الحقول الأربعة في الرئيسية تبدأ من الصفر وتُعدّ بعد الانكشاف
+        # أرقام الرئيسية تبدأ من الصفر وتُعدّ بعد الانكشاف
         labels = getattr(self, "home_stat_labels", None) or {}
         for key, lbl in labels.items():
             try:
-                lbl.configure(text="0" if key == "count" else f"{en(0)} جم")
+                lbl.configure(text=f"{en(0)} جم")
             except Exception:
                 pass
         band = cv.create_polygon(0, 0, 1, 1, 2, 2, fill=page, outline="", smooth=True)
@@ -3936,10 +3936,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         e = 1 - (1 - p) ** 3
         try:
             for key, val in raw.items():
-                if key == "count":
-                    labels[key].configure(text=f"{int(round(val * e)):,}")
-                else:
-                    labels[key].configure(text=f"{en(val * e)} جم")
+                labels[key].configure(text=f"{en(val * e)} جم")
         except Exception:
             return
         if p < 1.0:
@@ -8204,70 +8201,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                           text_color="#F5A35C")
             return
 
-        # قيمة الخزينة والرصيد الحالي بالريال من سعر جرام عيار التقييم (يُختار هنا ويُحفظ للجهاز)
-        names = {f"عيار {self.KARAT_LATIN[k]}": k for k in self.VALUE_KARATS}
-        karat_menu = ctk.CTkOptionMenu(
-            self.gold_bar, values=list(names), width=96, height=26, font=("Cairo", 12, "bold"),
-            fg_color="#22304A", button_color="#2D3E5E", button_hover_color="#3A4A66", text_color="#E9C75C",
-            command=lambda label: self.set_value_karat(names[label]))
-        karat_menu.set(f"عيار {self.KARAT_LATIN[self.value_karat()]}")
-        karat_menu.pack(side="left", padx=(0, 4))
-        HoverTip(karat_menu, "عيار تقييم الأرصدة بالريال (يُحفظ لهذا الجهاز)")
-        self.lbl_gold_value = ctk.CTkLabel(self.gold_bar, text="", font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
-                                           text_color="#E9C75C")
-        self.lbl_gold_value.pack(side="left", padx=(4, 8))
-        self.refresh_gold_value_label()
-
         try:
             self.gold_watcher = GoldPriceWatcher(on_update=self._on_gold_price)
             self.gold_watcher.start()
         except Exception as e:
             log_cloud_error("تعذّر تشغيل مراقب سعر الذهب", e)
-
-    # ═══ قيمة الأرصدة بالريال: الجرامات × سعر جرام عيار التقييم (معادلة شريط السعر نفسها) ═══
-    VALUE_KARATS = ("٢٤", "٢٢", "٢١", "١٨")
-    KARAT_LATIN = {"٢٤": "24", "٢٢": "22", "٢١": "21", "١٨": "18"}
-    DEFAULT_VALUE_KARAT = "١٨"         # عيار ٧٥٠ — العيار المرجعي للمصنع (المرجع ٧٥٠)
-
-    def value_karat(self):
-        if getattr(self, "_value_karat", None) is None:
-            k = load_ui_prefs().get("gold_value_karat", self.DEFAULT_VALUE_KARAT)
-            self._value_karat = k if k in self.VALUE_KARATS else self.DEFAULT_VALUE_KARAT
-        return self._value_karat
-
-    def set_value_karat(self, karat):
-        if karat in self.VALUE_KARATS:
-            self._value_karat = karat
-            save_ui_pref("gold_value_karat", karat)
-            self.refresh_gold_value_label()
-
-    def gram_value_sar(self):
-        """سعر جرام عيار التقييم بالريال من آخر سعر معروف للأونصة، أو None بلا سعر"""
-        watcher = getattr(self, "gold_watcher", None)
-        ounce = getattr(watcher, "ounce_price", None) if watcher is not None else None
-        if not ounce or gram_price is None:
-            return None
-        return gram_price(ounce, self.value_karat()) or None
-
-    def sar_value(self, grams):
-        """قيمة وزن ذهب بالريال (None بلا سعر — لا نعرض قيمة مخترعة)"""
-        price = self.gram_value_sar()
-        return None if price is None else round((grams or 0.0) * price, 2)
-
-    def refresh_gold_value_label(self):
-        lbl = getattr(self, "lbl_gold_value", None)
-        if lbl is None:
-            return
-        treasury = self.sar_value(getattr(self, "current_treasury_balance", 0.0))
-        if treasury is None:
-            text = "💰 القيمة بالريال: بانتظار سعر الذهب"
-        else:
-            total = self.sar_value(getattr(self, "current_total_gold", 0.0))
-            text = f"💰 الخزينة ≈ {en(treasury, 0)} ر.س   ·   الرصيد ≈ {en(total, 0)} ر.س"
-        try:
-            lbl.configure(text=text)
-        except Exception:
-            pass
 
     # ═══ إشعار عابر (toast): رسالة نجاح/تنبيه قصيرة لا توقف العمل ولا تحتاج «موافق» ═══
     TOAST_COLORS = {"info": ("#1E3A5F", "#FFFFFF"), "success": ("#1F6E4A", "#FFFFFF"),
@@ -8470,8 +8408,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def global_search(self, query):
         """[(النوع، القيمة، التفاصيل، الإجراء)] — الأقرب أولاً في كل نوع"""
         q = (query or "").strip()
-        if "|" in q:                       # مسح رمز QR تذكرة المبيعات: رقم التشغيل من أوله
-            q = self.scanned_set_number(q)
+        if "|" in q or self._SCANNED_WEIGHT.match(q.rsplit(" ", 1)[-1] if " " in q else ""):
+            q = self.scanned_set_number(q)  # مسح تذكرة المبيعات (QR أو الباركود بالوزن): رقم التشغيل وحده
         if len(q) < 1:
             return []
         out = []
@@ -8683,7 +8621,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.lbl_gold_price.configure(
                     text=self.gold_watcher.display_text(),
                     text_color="#F5F1E3" if snapshot.get("ounce") else "#F5A35C")
-                self.refresh_gold_value_label()
             except Exception:
                 pass
         try:
@@ -8835,7 +8772,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
 
-        # ═══ ملخص الفترة المعروضة: أربع بطاقات هادئة أسفل الشعار ═══
+        # ═══ ملخص الفترة المعروضة: لوحة المؤشرات وثلاث بطاقات هادئة أسفل الشعار ═══
         stats_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         stats_row.pack(fill="x", padx=24, pady=(4, 8))
 
@@ -8843,8 +8780,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         quick = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         quick.pack(fill="x", padx=30, pady=(0, 8))
         for text, cmd, style, tip in (
-                ("🧭 لوحة المؤشرات", lambda: self.navigate_to_screen("لوحة المؤشرات"), "primary",
-                 "مؤشرات الإدارة ورسومها: الخزينة، نسبة الفاقد، المبيعات والوارد، الصناديق"),
                 ("🩺 فحص سلامة الحسابات", self.open_integrity_check_window, "secondary",
                  "يطابق الخزينة والصناديق والكشوف والمبيعات والقيود في كل فترة — قراءة فقط"),
                 ("⌨️ الاختصارات", self.open_shortcuts_help, "secondary", "كل اختصارات لوحة المفاتيح (F1)")):
@@ -8859,8 +8794,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.home_stat_labels = {}
         # أيقونات البطاقات الأربع على خلفية واحدة هادئة (كانت أربعة ألوان)
         tint = (UI["primary_soft"], "#1B2B45")
+        self.build_home_dashboard_card(stats_row, tint)
         for key, icon, caption in (
-                ("count", "🧮", "حركات الفترة"),
                 ("khayas", "⚖️", "الخياس"),
                 ("inbound", "📥", "الوارد"),
                 ("sales", "🧾", "المبيعات / الصادر")):
@@ -8901,6 +8836,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.home_order = self.load_home_order()
         self.render_home_buttons()
 
+    def build_home_dashboard_card(self, parent, tint):
+        """بطاقة «لوحة المؤشرات» أول بطاقات الرئيسية (مكان «حركات الفترة»): النقر في أي موضع منها يفتح اللوحة"""
+        card = ctk.CTkFrame(parent, corner_radius=14, border_width=1,
+                            fg_color=(UI["surface"], "#171C23"), border_color=(UI["primary"], "#3987E5"))
+        card.pack(side="right", fill="x", expand=True, padx=6)
+        icon = ctk.CTkLabel(card, text="🧭", font=("Segoe UI Emoji", 20), width=44, height=44,
+                            corner_radius=12, fg_color=tint)
+        icon.pack(side="right", padx=(10, 12), pady=12)
+        texts = ctk.CTkFrame(card, fg_color="transparent")
+        texts.pack(side="right", pady=8)
+        cap = ctk.CTkLabel(texts, text="لوحة المؤشرات", font=("Cairo", 12), height=18, anchor="e",
+                           text_color=(UI["muted"], "#9AA4B2"))
+        cap.pack(anchor="e")
+        val = ctk.CTkLabel(texts, text="عرض المؤشرات ←", height=30, anchor="e",
+                           font=ctk.CTkFont(family="Cairo", size=20, weight="bold"),
+                           text_color=(UI["primary"], "#9CC0F5"))
+        val.pack(anchor="e")
+        open_dash = lambda _e=None: self.navigate_to_screen("لوحة المؤشرات")
+        for w in (card, icon, texts, cap, val):
+            w.bind("<Button-1>", open_dash)
+            # إطار أعرض عند المرور (الدخول لأي جزء من البطاقة يعيده بعد خروج الإطار إلى داخلها)
+            w.bind("<Enter>", lambda _e: card.configure(border_width=2))
+            w.bind("<Leave>", lambda _e: card.configure(border_width=1))
+            try:
+                w.configure(cursor="hand2")
+            except Exception:
+                pass
+        HoverTip(card, "مؤشرات الإدارة ورسومها: الخزينة، نسبة الفاقد، المبيعات والوارد، الصناديق")
+        self.home_dashboard_card = card
+        return card
+
     _AR_DAYS = ("الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد")
     _AR_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو",
                   "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
@@ -8921,15 +8887,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         try:
             month = self.current_display_month
             comp = self.treasury_period_components(month)
-            count = sum(1 for inv in self.period_invoices(month)
-                        if inv.get("settled_status") in COUNTED_STATUSES)
             self._home_stat_raw = {"sales": -comp['sales'], "inbound": comp['inbound'],
-                                   "khayas": -(comp['boxes'] + comp['workers'] + comp['closed']),
-                                   "count": count}
+                                   "khayas": -(comp['boxes'] + comp['workers'] + comp['closed'])}
             labels["sales"].configure(text=f"{en(-comp['sales'])} جم")
             labels["inbound"].configure(text=f"{en(comp['inbound'])} جم")
             labels["khayas"].configure(text=f"{en(-(comp['boxes'] + comp['workers'] + comp['closed']))} جم")
-            labels["count"].configure(text=f"{count:,}")
             if hasattr(self, "lbl_home_hint") and not getattr(self, "home_arrange_mode", False):
                 self.lbl_home_hint.configure(text=self.home_greeting_text())
         except Exception as e:
@@ -12514,7 +12476,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.current_total_gold = self.get_total_gold_balance()
         if hasattr(self, 'lbl_total_gold'):
             self.lbl_total_gold.configure(text=f"الرصيد الحالي: {en(self.current_total_gold)} جم")
-        self.refresh_gold_value_label()
         self.refresh_screen_info_bar()
 
         if hasattr(self, 'lbl_gems_stones_balance'):
@@ -13202,17 +13163,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=18, pady=6)
 
-        priced = self.gram_value_sar() is not None
         for label, value in parts:
             if abs(value) < 0.005:
                 continue      # لا نزحم القائمة بأصفار
             row = ctk.CTkFrame(body, fg_color="transparent")
             row.pack(fill="x", pady=3)
             ctk.CTkLabel(row, text=label, font=("Cairo", 13, "bold"), anchor="e").pack(side="right")
-            value_text = f"{value:.2f} جم"
-            if priced:
-                value_text += f"  ≈ {en(self.sar_value(value), 0)} ر.س"
-            ctk.CTkLabel(row, text=value_text, font=("Cairo", 13),
+            ctk.CTkLabel(row, text=f"{value:.2f} جم", font=("Cairo", 13),
                          text_color="#d4af37" if value >= 0 else "#e74c3c").pack(side="left")
 
         sep = ctk.CTkFrame(win, height=2, fg_color="#d4af37")
@@ -13220,10 +13177,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(win, text=f"الإجمالي: {total:.2f} جم", font=("Cairo", 17, "bold"),
                      text_color="#2ecc71").pack(pady=(0, 2))
-        if priced:
-            ctk.CTkLabel(win, text=f"القيمة ≈ {en(self.sar_value(total), 0)} ر.س  (عيار "
-                                   f"{self.KARAT_LATIN[self.value_karat()]} × {en(self.gram_value_sar())} ر.س للجرام)",
-                         font=("Cairo", 12, "bold"), text_color=UI["muted"]).pack(pady=(0, 6))
         ctk.CTkLabel(
             win,
             text="ملاحظة: الخياس المُقفل لا يظهر هنا لأنه رُحّل لحساب الخسائر\nوأصبح فاقداً فعلياً لا ذهباً نملكه.",
@@ -16558,13 +16511,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                     command=self.print_selected_sale_tickets, **BUTTON_STYLES["secondary"])
         btn_tickets.pack(side="left", padx=5)
         HoverTip(btn_tickets, "تذكرة لكل رقم تشغيل في الفاتورة المحددة: باركود وQR وبيانات بيعه — جاهزة للمسح")
-        self.var_tickets_with_invoice = ctk.BooleanVar(value=self.sale_tickets_with_invoice())
-        chk = ctk.CTkCheckBox(head, text="إرفاق التذاكر بالفاتورة", font=("Cairo", 12, "bold"),
-                              variable=self.var_tickets_with_invoice,
-                              command=lambda: save_ui_pref("sale_tickets_with_invoice",
-                                                           bool(self.var_tickets_with_invoice.get())))
-        chk.pack(side="left", padx=8)
-        HoverTip(chk, "عند الترحيل والطباعة تُضاف صفحة تذاكر (تذكرة لكل رقم تشغيل) بعد صفحات الفاتورة")
         ctk.CTkButton(head, text="حذف الفاتورة 🗑️", font=("Cairo", 14, "bold"), width=155, height=34,
                       fg_color="#8b0000", hover_color="#a52a2a", command=self.delete_selected_sale_invoice).pack(side="left", padx=5)
         ctk.CTkButton(head, text="تعديل الفاتورة ✏️", font=("Cairo", 14, "bold"), width=155, height=34,
@@ -16572,6 +16518,39 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # يقارن خياس المركب المسجّل في كل الفواتير المرحّلة بكشف المركبين الآن
         ctk.CTkButton(head, text="🔍 تدقيق خياس المركب", font=("Cairo", 14, "bold"), width=185, height=34,
                       fg_color="#555555", hover_color="#333333", command=self.open_assembler_khayas_audit).pack(side="left", padx=5)
+
+        # إعداد تذاكر الطقوم لهذا الجهاز: إرفاقها بالفاتورة، ومحتوى الباركود الخطي (لبرنامج المسح الآخر)
+        trow = ctk.CTkFrame(parent, fg_color="transparent")
+        trow.pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkLabel(trow, text="🏷️ التذاكر:", font=("Cairo", 13, "bold"),
+                     text_color=(UI["title"], "#C9D6E8")).pack(side="right", padx=(10, 6))
+        self.var_tickets_with_invoice = ctk.BooleanVar(value=self.sale_tickets_with_invoice())
+        chk = ctk.CTkCheckBox(trow, text="إرفاق التذاكر بالفاتورة", font=("Cairo", 12, "bold"),
+                              variable=self.var_tickets_with_invoice,
+                              command=lambda: save_ui_pref("sale_tickets_with_invoice",
+                                                           bool(self.var_tickets_with_invoice.get())))
+        chk.pack(side="right", padx=8)
+        HoverTip(chk, "عند الترحيل والطباعة تُضاف صفحة تذاكر (تذكرة لكل رقم تشغيل) بعد صفحات الفاتورة")
+        ctk.CTkLabel(trow, text="الباركود الخطي:", font=("Cairo", 12, "bold")).pack(side="right", padx=(16, 4))
+        modes = {label: key for key, label in self.SALE_BARCODE_MODES.items()}
+        example = ctk.CTkLabel(trow, text="", font=("Cairo", 12), text_color=UI["muted"])
+
+        def show_example(key):
+            sample = self.sale_ticket_barcode("88001", 40.25, key).replace(chr(9), " ⇥ ")
+            example.configure(text=f"عند المسح يُكتب: {sample}")
+
+        def pick(label):
+            save_ui_pref("sale_barcode_mode", modes[label])
+            show_example(modes[label])
+
+        mode_menu = ctk.CTkOptionMenu(trow, values=list(modes), command=pick, width=250, font=("Cairo", 12))
+        mode_menu.set(self.SALE_BARCODE_MODES[self.sale_barcode_mode()])
+        mode_menu.pack(side="right", padx=4)
+        HoverTip(mode_menu, "ما يكتبه القارئ الخطي عند مسح باركود التذكرة في أي برنامج:\n"
+                            "خانة واحدة: رقم التشغيل ثم مسافة ثم الوزن المقيد\n"
+                            "خانتان: رقم التشغيل ثم Tab (ينتقل للخانة التالية) ثم الوزن المقيد")
+        example.pack(side="right", padx=8)
+        show_example(self.sale_barcode_mode())
 
         self.sales_ops_table_frame = ttk.Frame(parent)
         self.sales_ops_table_frame.pack(fill="both", expand=True, padx=20, pady=(4, 4))
@@ -17257,15 +17236,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """رقم التشغيل بصيغة واحدة للمقارنة: بلا فراغات زائدة وبأرقام لاتينية."""
         return " ".join(str(text or "").translate(cls._SET_DIGITS).split())
 
+    _SCANNED_WEIGHT = re.compile(r"^-?\d+\.\d{2}$")      # الوزن المقيد في الباركود: رقمان عشريان
+
     @classmethod
     def scanned_set_number(cls, text):
-        """رقم التشغيل من نص المسح: الباركود يحمل الرقم وحده، ورمز QR تذكرة المبيعات يحمل
-        «رقم التشغيل: … | الوزن المقيد: …» فيؤخذ الرقم من أوله — ولو ضاعت الحروف العربية
-        في قارئ يكتب بلوحة مفاتيح إنجليزية يبقى الرقم بعد النقطتين (أو آخر كلمة قبل |)."""
+        """رقم التشغيل من نص المسح:
+          • باركود تذكرة التشغيل: الرقم وحده.
+          • الباركود الخطي لتذكرة المبيعات: «الرقم الوزن» أو «الرقم⇥الوزن» — يُحذف الوزن المقيد.
+          • رمز QR تذكرة المبيعات: «رقم التشغيل: … | الوزن المقيد: …» فيؤخذ الرقم من أوله — ولو ضاعت
+            الحروف العربية في قارئ يكتب بلوحة مفاتيح إنجليزية يبقى الرقم بعد النقطتين (أو آخر كلمة قبل |)."""
         text = str(text or "")
         if "|" in text:
             head = text.split("|", 1)[0]
             text = head.rsplit(":", 1)[-1] if ":" in head else (head.split() or [""])[-1]
+        elif "\t" in text:                  # الباركود الخطي بخانتين: الرقم ثم Tab ثم الوزن
+            text = text.split("\t", 1)[0]
+        else:                                # الباركود الخطي بخانة واحدة: «الرقم الوزن»
+            parts = cls.normalize_set_number(text).rsplit(" ", 1)
+            if len(parts) == 2 and cls._SCANNED_WEIGHT.match(parts[1]):
+                text = parts[0]
         return cls.normalize_set_number(text)
 
     def get_assembler_khayas_for_set(self, set_number, month=None):
@@ -18920,9 +18909,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "gold": round(gold, 2), "gems": round(gems, 2), "stones": round(stones, 2),
                 "stones_after": round(stones_after, 2), "diamond": round(diamond, 2),
                 "standing": round(gold + gems + stones + diamond, 2), "bound": bound,
-                "qr": self.sale_ticket_qr(sn, bound),
+                "qr": self.sale_ticket_qr(sn, bound), "barcode": self.sale_ticket_barcode(sn, bound),
             })
         return out
+
+    # محتوى الباركود الخطي في تذكرة المبيعات (يُختار لهذا الجهاز من «العمليات»):
+    #   one    → «88001 40.25»   رقم التشغيل والوزن المقيد في خانة واحدة بمسافة بينهما
+    #   tab    → «88001⇥40.25»   خانتان: القارئ يكتب الرقم ثم Tab ينقل للخانة التالية ثم الوزن
+    #   number → «88001»         رقم التشغيل وحده
+    SALE_BARCODE_MODES = {"one": "الرقم والوزن في خانة واحدة", "tab": "الرقم ثم الوزن في خانتين (Tab)",
+                          "number": "رقم التشغيل وحده"}
+    DEFAULT_SALE_BARCODE_MODE = "one"
+
+    def sale_barcode_mode(self):
+        mode = load_ui_prefs().get("sale_barcode_mode", self.DEFAULT_SALE_BARCODE_MODE)
+        return mode if mode in self.SALE_BARCODE_MODES else self.DEFAULT_SALE_BARCODE_MODE
+
+    def sale_ticket_barcode(self, set_number, bound, mode=None):
+        """نص الباركود الخطي (Code128): أي قارئ خطي يكتبه في البرنامج الآخر كما هو عند المسح"""
+        mode = mode or self.sale_barcode_mode()
+        if mode == "number":
+            return set_number
+        return f"{set_number}{chr(9) if mode == 'tab' else ' '}{bound:.2f}"
 
     @staticmethod
     def sale_ticket_qr(set_number, bound):
@@ -18932,8 +18940,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def draw_sale_tickets(self, c, tickets):
         """صفحات A4 بثماني تذاكر (٢×٤) بحدود قصّ منقّطة. كل تذكرة: رقم التشغيل بخط كبير،
-        باركود Code128 بالرقم وحده (يُمسح في أي خانة رقم تشغيل أو Ctrl+B)، ورمز QR برقم التشغيل
-        والوزن المقيد، والفاتورة والتاريخ، وأوزان البيع: الذهب، الفصوص، الأحجار، بعد الخصم،
+        باركود Code128 برقم التشغيل ووزنه المقيد (أو بالرقم وحده — حسب اختيار الجهاز)، ورمز QR
+        برقم التشغيل والوزن المقيد، والفاتورة والتاريخ، وأوزان البيع: الذهب، الفصوص، الأحجار، بعد الخصم،
         الماس، الوزن القائم، والوزن المقيد."""
         from reportlab.graphics.barcode import code128, qr
         from reportlab.graphics.shapes import Drawing
@@ -18988,9 +18996,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             dq.add(widget)
             renderPDF.draw(dq, c, left - 1.5 * mm, top - 5.5 * mm - qs)
             text(right, top - 11.5 * mm, f"رقم التشغيل: {t['set_number']}", 14, True)
-            code = t["set_number"]
-            bw = max(0.55, min(1.2, 50 * mm / max(1, 11 * len(code) + 35)))
-            bar = code128.Code128(code, barHeight=10 * mm, barWidth=bw, quiet=False)
+            code = t.get("barcode") or t["set_number"]
+            bar = code128.Code128(code, barHeight=10 * mm, barWidth=1.0, quiet=False)
+            room = right - left - 26 * mm               # المساحة يمين رمز QR
+            if bar.width > room:                        # يُضغط ليتسع دون أن يرقّ عن حدّ القراءة
+                bar = code128.Code128(code, barHeight=10 * mm, barWidth=max(0.6, room / bar.width), quiet=False)
             bar.drawOn(c, right - bar.width, top - 24 * mm)
             pair(right, top - 29 * mm, "الفاتورة", t["invoice"] or "—")
             pair(right - 30 * mm, top - 29 * mm, "التاريخ", t["date"])
@@ -19632,10 +19642,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self._dash_data = data
         k = data["kpi"]
 
-        def sar(grams):
-            v = self.sar_value(grams) if hasattr(self, "sar_value") else None
-            return f"≈ {en(v, 0)} ر.س" if v is not None else ""
-
         def delta(cur, prev):
             if prev is None:
                 return ""
@@ -19644,10 +19650,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return f"{arrow} {en(abs(d))} عن الفترة السابقة"
 
         tiles["treasury"][0].configure(text=f"{en(k['treasury'])} جم")
-        tiles["treasury"][1].configure(text="  ·  ".join(x for x in (sar(k["treasury"]),
-                                                                    delta(k["treasury"], k["prev_treasury"])) if x))
+        tiles["treasury"][1].configure(text=delta(k["treasury"], k["prev_treasury"]))
         tiles["total"][0].configure(text=f"{en(k['total'])} جم")
-        tiles["total"][1].configure(text=sar(k["total"]) or "الخزينة + ما في الصناديق")
+        tiles["total"][1].configure(text="الخزينة + ما في الصناديق")
         tiles["khayas"][0].configure(text=f"{en(k['khayas'])} جم")
         tiles["khayas"][1].configure(text=f"فترة {data['month']} — كل الصناديق والعمال")
         rs = k["ratio"]

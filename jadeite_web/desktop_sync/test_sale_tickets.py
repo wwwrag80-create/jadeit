@@ -5,8 +5,9 @@
   • تذكرة لكل رقم تشغيل في الفاتورة بترتيب سطورها، والسطر بلا رقم تشغيل لا تذكرة له.
   • محتواها فقط: باركود وQR ورقم التشغيل كبيراً، الفاتورة والتاريخ، والأوزان: الذهب، الفصوص،
     الأحجار، بعد الخصم، الماس، الوزن القائم (بالأحجار الخام)، والوزن المقيد (بعد الخصم).
-  • رمز QR يحمل رقم التشغيل والوزن المقيد (يقرؤه أي تطبيق مسح بلا إنترنت)، والباركود الرقم وحده؛
-    والبرنامج يأخذ رقم التشغيل من نص QR أياً كانت لغة لوحة مفاتيح القارئ.
+  • رمز QR يحمل رقم التشغيل والوزن المقيد (يقرؤه أي تطبيق مسح بلا إنترنت)، والباركود الخطي يحملهما
+    أيضاً (الدفعة ١٩) بخانة واحدة «88001 40.25» أو بخانتين «88001⇥40.25» أو الرقم وحده — يُختار للجهاز؛
+    والبرنامج يأخذ رقم التشغيل وحده من أي صيغة منها أياً كانت لغة لوحة مفاتيح القارئ.
   • عند الترحيل والطباعة تُرفق صفحة التذاكر بالفاتورة (خيار يُحفظ للجهاز)، وزر يطبعها وحدها،
     ونافذة تتبّع الرقم (المسح) تفتح فاتورة البيع وتذكرته.
 """
@@ -35,8 +36,10 @@ def body(name):
 
 PREFS = {}
 ns = {"re": re, "load_ui_prefs": lambda: dict(PREFS)}
-MEMBERS = ["_SET_DIGITS", "normalize_set_number", "scanned_set_number", "SALE_TYPES", "sale_tickets_with_invoice",
-           "sale_ticket_data", "sale_ticket_qr", "set_sale_move", "sale_invoice_groups"]
+MEMBERS = ["_SET_DIGITS", "_SCANNED_WEIGHT", "normalize_set_number", "scanned_set_number", "SALE_TYPES",
+           "sale_tickets_with_invoice", "sale_ticket_data", "sale_ticket_qr", "SALE_BARCODE_MODES",
+           "DEFAULT_SALE_BARCODE_MODE", "sale_barcode_mode", "sale_ticket_barcode", "set_sale_move",
+           "sale_invoice_groups"]
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
 
 DATE, CUST = "2026-09-20 10:00:00", "زبون"
@@ -71,7 +74,7 @@ t = app.sale_ticket_data(groups)
 assert [x["set_number"] for x in t] == ["88001", "88002"], "السطر بلا رقم لا تذكرة له، والأرقام الهندية توحَّد"
 a, b = t
 assert set(a) == {"set_number", "invoice", "date", "gold", "gems", "stones", "stones_after", "diamond",
-                  "standing", "bound", "qr"}, "محتوى التذكرة كما طلبه المستخدم فقط"
+                  "standing", "bound", "qr", "barcode"}, "محتوى التذكرة كما طلبه المستخدم فقط"
 assert a["invoice"] == "S-7001" and a["date"] == "2026-09-20"
 assert (a["gold"], a["gems"], a["stones"], a["stones_after"], a["diamond"]) == (35.25, 2.5, 3.0, 2.1, 0.4)
 assert a["standing"] == round(35.25 + 2.5 + 3.0 + 0.4, 2) == 41.15
@@ -81,7 +84,22 @@ print("✔ تذكرة لكل رقم تشغيل بترتيب السطور (وال
       "والذهب والفصوص والأحجار وبعد الخصم والماس، والقائم 41.15 والمقيد 40.25")
 
 assert a["qr"] == "رقم التشغيل: 88001 | الوزن المقيد: 40.25 جم" and b["qr"].endswith("| الوزن المقيد: 20.00 جم")
+# الباركود الخطي: الرقم والوزن المقيد (خانة واحدة افتراضياً)، أو خانتان بـ Tab، أو الرقم وحده
+assert a["barcode"] == "88001 40.25" and b["barcode"] == "88002 20.00", "افتراضياً: خانة واحدة"
+PREFS["sale_barcode_mode"] = "tab"
+assert app.sale_ticket_data(groups)[0]["barcode"] == "88001\t40.25"
+PREFS["sale_barcode_mode"] = "number"
+assert app.sale_ticket_data(groups)[0]["barcode"] == "88001"
+PREFS["sale_barcode_mode"] = "عبث"
+assert app.sale_barcode_mode() == "one" and app.sale_ticket_data(groups)[0]["barcode"] == "88001 40.25"
+PREFS.clear()
+assert app.sale_ticket_barcode("A-7", 0.5, "one") == "A-7 0.50"
+print("✔ الباركود الخطي يحمل رقم التشغيل ووزنه المقيد: «88001 40.25» في خانة واحدة، أو «88001⇥40.25» "
+      "(Tab ينقل القارئ للخانة التالية)، أو الرقم وحده — يُختار ويُحفظ لهذا الجهاز")
+
 S = ns["Base"].scanned_set_number
+assert S("88001 40.25") == "88001" and S("88001\t40.25") == "88001" and S("٨٨٠٠١ ٤٠.٢٥") == "88001"
+assert S("A-7 0.50") == "A-7" and S("A 12") == "A 12" and S("88001 40.2") == "88001 40.2", "لا يُحذف إلا وزن بخانتين عشريتين"
 assert S(a["qr"]) == "88001" and S("٨٨٠٠١") == "88001" and S(" 88001 ") == "88001"
 assert S(": 88001 | : 40.25 ") == "88001", "قارئ بلوحة إنجليزية أسقط الحروف العربية"
 assert S("vrl hgja.dg 88001 | hg,.k 40.25") == "88001", "قارئ حوّل الحروف العربية لاتينية بلا نقطتين"
@@ -105,7 +123,7 @@ assert "if self.sale_tickets_with_invoice():" in gen and "self.draw_sale_tickets
 assert gen.index("self.draw_invoice_page(c, data)") < gen.index("self.draw_sale_tickets(c, tickets)")
 draw = body("draw_sale_tickets")
 assert "code128.Code128(code" in draw and 'qr.QrCodeWidget(t["qr"])' in draw and "c.setDash(3, 2)" in draw
-assert 'code = t["set_number"]' in draw, "الباركود الطولي بالرقم وحده (لخانات رقم التشغيل)"
+assert 'code = t.get("barcode") or t["set_number"]' in draw and "max(0.6, room / bar.width)" in draw
 for label in ("الذهب", "الفصوص", "الأحجار", "بعد الخصم", "الماس", "الوزن القائم", "الوزن المقيد", "الفاتورة", "التاريخ"):
     assert f'"{label}"' in draw, label
 for gone in ("صافي الطقم", "خياس التلميع", "البوليش", "المركب", "العميل", "الصانع", '"الصف"'):
@@ -116,6 +134,7 @@ assert "TICKETS_PER_ROW, TICKET_ROWS = 2, 4" in src
 assert "self.draw_sale_tickets(c, tickets)" in body("print_sale_tickets")
 assert "command=self.print_selected_sale_tickets" in body("build_sales_ops_ui")
 assert 'save_ui_pref("sale_tickets_with_invoice"' in body("build_sales_ops_ui")
+assert 'save_ui_pref("sale_barcode_mode", modes[label])' in body("build_sales_ops_ui")
 assert "تذكرة لكل رقم تشغيل" in body("commit_sale_invoice")
 tr = body("open_set_number_trace")
 assert "self.set_sale_move(moves)" in tr and "فاتورة البيع" in tr and "self.print_sale_tickets(" in tr

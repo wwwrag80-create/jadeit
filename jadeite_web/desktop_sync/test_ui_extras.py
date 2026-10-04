@@ -31,8 +31,8 @@ def body(name):
     return ast.get_source_segment(src, node(name))
 
 
-ns = {"datetime": datetime, "sys": sys, "IS_ADMIN_BUILD": False}
-MEMBERS = ["_SET_DIGITS", "normalize_set_number", "scanned_set_number", "TRACE_STATUSES", "JOURNAL_TYPES", "SALE_TYPES",
+ns = {"datetime": datetime, "sys": sys, "re": __import__("re"), "IS_ADMIN_BUILD": False}
+MEMBERS = ["_SET_DIGITS", "_SCANNED_WEIGHT", "normalize_set_number", "scanned_set_number", "TRACE_STATUSES", "JOURNAL_TYPES", "SALE_TYPES",
            "SEARCH_LIMIT", "global_search", "open_account_statement_for", "table_title", "print_tree",
            "sale_invoice_groups", "_SHORTCUT_DIGITS", "_on_ctrl_number_key"]
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
@@ -83,6 +83,8 @@ assert a.calls[-1] == ("trace", "88001")
 assert [v for k, v, _d, _x in a.global_search("٨٨٠٠١") if k == "رقم تشغيل"] == ["88001", "188001"]
 assert not any(v == "88009" for _k, v, _d, _x in a.global_search("8800")), "المحذوف لا يظهر"
 assert a.global_search("رقم التشغيل: 88001 | الوزن المقيد: 40.25 جم")[0][:2] == ("رقم تشغيل", "88001"), "مسح QR التذكرة"
+assert a.global_search("88001 40.25")[0][:2] == ("رقم تشغيل", "88001"), "مسح الباركود الخطي بالوزن"
+assert [v for k, v, _d, _x in a.global_search("سالم الصغير")][:1] == ["سالم الصغير"], "الأسماء بمسافة لا تُقصّ"
 assert not any(v == "88077" for _k, v, _d, _x in a.global_search("880")), "رقم القيد لا يظهر"
 print("✔ رقم التشغيل يُبحث بأي صيغة أرقام (أو بمسح باركوده)، نتيجة واحدة لكل رقم والمطابق تماماً أولاً، "
       "والقيود والمحذوف لا تظهر — والنتيجة تفتح تتبّع الرقم")

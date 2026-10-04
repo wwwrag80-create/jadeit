@@ -101,7 +101,13 @@ assert '"لوحة المؤشرات": "مؤشرات الإدارة' in src
 build = body("build_dashboard_tab")
 assert build.count("MiniChart(") == 1 and '"hbars"' in build and '"bars"' in build and '"line"' in build
 assert "self.show_dashboard_table(k, t)" in build and "open_jobs" not in build and "الطقوم المفتوحة" not in build
-assert "navigate_to_screen(\"لوحة المؤشرات\")" in body("build_home_screen")
+# الدفعة ١٩: بطاقة «لوحة المؤشرات» مكان «حركات الفترة» في الرئيسية (النقر عليها يفتح اللوحة)
+home = body("build_home_screen")
+assert "self.build_home_dashboard_card(stats_row, tint)" in home and "حركات الفترة" not in home
+assert "🧭 لوحة المؤشرات" not in home, "لا زر مكرر في صف الإجراءات"
+card = body("build_home_dashboard_card")
+assert 'self.navigate_to_screen("لوحة المؤشرات")' in card and 'w.bind("<Button-1>", open_dash)' in card
+assert '"count"' not in body("refresh_home_stats") and '"count"' not in body("_home_count_up")
 mc = module_src("MiniChart")
 assert "width=2" in mc and "min(24.0" in mc and 'tags="hover"' in mc and "لا توجد بيانات بعد" in mc
 print("✔ شاشة «لوحة المؤشرات» مسجّلة (الشريط، البناء الكسول، التحديث، الرئيسية)، بأربعة رسوم ولوحة قيم عند المرور "
@@ -112,5 +118,9 @@ for gone in ("open_open_jobs_report", "worker_jobs", "open_jobs", "gold_at_worke
              "JOB_ISSUE_TYPES", "الطقوم المفتوحة", "طقم متأخر"):
     assert gone not in src, gone
 print("✔ ميزة الطقوم المفتوحة والمتأخرة أُزيلت كاملة: النافذة، تنبيه الرئيسية، الأزرار، وبطاقة اللوحة")
+# لا ريال سعودي في البرنامج (الدفعة ١٩): لا تُعرض الأوزان بما يعادلها بالريال في أي مكان
+for gone in ("ر.س", "ريال", "sar_value", "gram_value_sar", "value_karat", "lbl_gold_value", "gram_price"):
+    assert gone not in src, gone
+print("✔ لا ريال في البرنامج: الشريط السفلي وتفصيل الرصيد ولوحة المؤشرات بالجرام وحده")
 
 print("\n✅ لوحة المؤشرات سليمة")
