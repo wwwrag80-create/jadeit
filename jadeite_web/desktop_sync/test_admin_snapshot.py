@@ -40,13 +40,14 @@ TMP = tempfile.mkdtemp(prefix="admin_snapshot_")
 errors = []
 ns = {"os": os, "sys": sys, "sqlite3": sqlite3, "shutil": shutil, "base64": base64, "datetime": datetime,
       "contextlib": contextlib, "threading": __import__("threading"), "hashlib": __import__("hashlib"),
+      "gc": __import__("gc"),
       "time": __import__("time"), "zlib": __import__("zlib"), "lzma": __import__("lzma"),
       "APP_VERSION": "9.9.9", "IS_ADMIN_BUILD": True, "SUPABASE_AVAILABLE": True,
       "SUPABASE_URL": "https://x", "SUPABASE_SECRET_KEY": "", "CURRENT_SYNC_TOKEN": None,
       "log_cloud_error": lambda *a, **k: errors.append(a)}
 for name in ("MIRROR_META_TIME", "MIRROR_META_VERSION", "MIRROR_META_SOURCE",
              "BACKUP_MAGIC", "BACKUP_MAGIC_XZ", "SQLITE_HEADER", "decode_backup_payload",
-             "_remove_db_files", "DIGEST_SKIP_TABLES", "db_content_digest", "snapshot_db_bytes", "is_sqlite_db_healthy", "reset_local_cache",
+             "_remove_db_files", "replace_db_file", "DIGEST_SKIP_TABLES", "db_content_digest", "snapshot_db_bytes", "is_sqlite_db_healthy", "reset_local_cache",
              "rpc_missing", "cloud_error_kind", "BACKUP_DOWNLOAD_PROBLEMS", "_backup_download_attempts",
              "cloud_download_backup_checked", "cloud_download_backup", "cloud_backup_stamp", "load_client_mirror",
              "mark_mirror_source", "admin_secret_dir", "_load_admin_secret_key", "save_admin_secret_key",

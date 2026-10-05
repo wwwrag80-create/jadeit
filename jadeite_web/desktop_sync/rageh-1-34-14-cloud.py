@@ -6,6 +6,7 @@ import base64
 import datetime
 import calendar
 import contextlib
+import gc
 import sqlite3
 import subprocess
 import tkinter as tk
@@ -127,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.60.0"
+APP_VERSION = "1.61.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -268,6 +269,38 @@ BACKUPS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Backups"))
 INVOICES_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Invoices"))
 EXPORTS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Exports"))       # تصدير الجداول إلى Excel
 LOGS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Logs"))
+
+# نسخة المدير: قواعد العملاء المنزّلة (مرآة) ونسخها الاحتياطية في مجلد مستقل. كانت في Data نفسه
+# باسم قاعدة العميل، فإن كان برنامج العميل على الجهاز نفسه: يُرفض استبدالها «Access is denied»
+# وبرنامج العميل مفتوح، وإلا استبدلها المدير بنسخة السحابة (أو حذفها إن تعذّر التنزيل) —
+# ونسخ المدير الاحتياطية تزاحم نسخ العميل في مجلده. الآن لا يلمس المدير ملفات العميل إطلاقاً.
+ADMIN_MIRROR_DIR = os.path.join(APP_DATA_DIR, "AdminMirror")
+
+
+def client_db_path(client_id):
+    """قاعدة الحساب على هذا الجهاز: نسخة العميل في Data كما كانت دائماً، ونسخة المدير في AdminMirror"""
+    folder = _make_dir(ADMIN_MIRROR_DIR) if IS_ADMIN_BUILD else DATA_DIR
+    return os.path.join(folder, f"client_data_{client_id}.db")
+
+
+def client_backup_dir(client_id):
+    """مجلد النسخ الاحتياطية للحساب: Backups للعميل كما كان، وAdminMirror/Backups للمدير"""
+    base = os.path.join(ADMIN_MIRROR_DIR, "Backups") if IS_ADMIN_BUILD else BACKUPS_DIR
+    return _make_dir(os.path.join(base, str(client_id) if client_id else "local"))
+
+
+def replace_db_file(src, dst, attempts=6):
+    """os.replace مع إعادة المحاولة: ويندوز يرفض الاستبدال (WinError 5/32) ما دام الملف مفتوحاً —
+    من اتصال قاعدة لم يُغلق بعد في هذه الجلسة، أو من مضاد الفيروسات لحظة إنشاء الملف"""
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            gc.collect()                 # اتصالات SQLite المتروكة تُغلق مع جمع المهملات
+            time.sleep(0.25 * (attempt + 1))
 
 # (أُلغي ملف الجلسة نهائياً — لا يُخزَّن أي سر على القرص)
 
@@ -1088,7 +1121,13 @@ def load_client_mirror(client_id, db_path):
         return False, "النسخة المنزّلة من السحابة غير سليمة"
     mark_mirror_source(tmp)
     reset_local_cache(db_path)
-    os.replace(tmp, db_path)
+    try:
+        replace_db_file(tmp, db_path)
+    except PermissionError as e:
+        log_cloud_error("تعذّر وضع نسخة العميل مكان النسخة السابقة", e)
+        _remove_db_files(tmp)
+        return False, ("ملف نسخة العميل على هذا الجهاز مستخدم الآن (نافذة أخرى لحساب العميل نفسه مفتوحة؟).\n"
+                       "أغلقها ثم أعد المحاولة.")
     return True, None
 
 
@@ -3678,11 +3717,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # قاعدة البيانات والنسخ الاحتياطية داخل المجلد المنظّم على القرص المحلي
         old_generic_path = os.path.join(DATA_DIR, "gold_workshop.db")
-        self.db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db") if client_id else old_generic_path
-        self.backup_dir = _make_dir(os.path.join(BACKUPS_DIR, str(client_id) if client_id else "local"))
+        # نسخة العميل: Data وBackups كما كانا دائماً؛ نسخة المدير: AdminMirror (لا تلمس ملفات العميل)
+        self.db_path = client_db_path(client_id) if client_id else old_generic_path
+        self.backup_dir = client_backup_dir(client_id)
 
         # ترحيل أي قاعدة بيانات قديمة كانت بجوار البرنامج إلى المجلد الجديد (مرة واحدة، بدون فقدان بيانات)
-        if client_id:
+        if client_id and not IS_ADMIN_BUILD:
             migrate_legacy_file(f"client_data_{client_id}.db", self.db_path)
         migrate_legacy_file("gold_workshop.db", old_generic_path)
 
@@ -4428,7 +4468,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             month = self.current_display_month
             mark_mirror_source(tmp_path)
             reset_local_cache(self.db_path)
-            os.replace(tmp_path, self.db_path)
+            replace_db_file(tmp_path, self.db_path)
             self.init_database()
             self.load_data_from_db()
             # الفترة التي يتصفّحها المدير تبقى كما هي
@@ -22878,7 +22918,7 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
             # كما رفعها جهازه (ولا تحتاج رمز مزامنة لذلك)
             if IS_ADMIN_BUILD:
                 try:
-                    db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
+                    db_path = client_db_path(client_id)
                     win = SyncDownWindow(self, db_path, None, client_id, business_name,
                                          on_progress=self._outro_progress)
                     self.wait_window(win)
@@ -23256,7 +23296,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         # رفعها جهازه (مرآة حرفية)، والاحتياط سجل الحركات السحابي. مفتاح الخدمة
         # يعمل حتى بدون رمز مزامنة صريح.
         try:
-            db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
+            db_path = client_db_path(client_id)
             prep = ctk.CTkToplevel(self)
             prep.withdraw()
             win = SyncDownWindow(prep, db_path, None, client_id, business_name)

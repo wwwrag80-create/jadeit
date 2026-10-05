@@ -36,8 +36,12 @@ def method(cls_name, name):
 for line in ('APP_FOLDER_NAME = "JadeiteERP"',
              'DATA_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Data"))',
              'BACKUPS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Backups"))',
-             'self.db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db") if client_id else old_generic_path',
-             'self.backup_dir = _make_dir(os.path.join(BACKUPS_DIR, str(client_id) if client_id else "local"))',
+             'self.db_path = client_db_path(client_id) if client_id else old_generic_path',
+             'self.backup_dir = client_backup_dir(client_id)',
+             'folder = _make_dir(ADMIN_MIRROR_DIR) if IS_ADMIN_BUILD else DATA_DIR',
+             'return os.path.join(folder, f"client_data_{client_id}.db")',
+             'base = os.path.join(ADMIN_MIRROR_DIR, "Backups") if IS_ADMIN_BUILD else BACKUPS_DIR',
+             'return _make_dir(os.path.join(base, str(client_id) if client_id else "local"))',
              'backup_path = os.path.join(self.backup_dir, f"gold_backup_{timestamp}.db")'):
     assert line in src, f"تغيّر مسار على جهاز العميل: {line}"
 print("✔ مجلد البيانات ومجلد النسخ وأسماء الملفات على جهاز العميل كما هي تماماً")
