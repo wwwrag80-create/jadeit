@@ -44,7 +44,7 @@ ns = {"os": os, "sys": sys, "sqlite3": sqlite3, "shutil": shutil, "base64": base
       "APP_VERSION": "9.9.9", "IS_ADMIN_BUILD": True, "SUPABASE_AVAILABLE": True,
       "SUPABASE_URL": "https://x", "SUPABASE_SECRET_KEY": "",
       "log_cloud_error": lambda *a, **k: errors.append(a)}
-for name in ("MIRROR_META_TIME", "MIRROR_META_VERSION", "MIRROR_META_SOURCE", "ADMIN_LEDGER_FALLBACK_NOTE",
+for name in ("MIRROR_META_TIME", "MIRROR_META_VERSION", "MIRROR_META_SOURCE",
              "BACKUP_MAGIC", "BACKUP_MAGIC_XZ", "SQLITE_HEADER", "decode_backup_payload",
              "_remove_db_files", "DIGEST_SKIP_TABLES", "db_content_digest", "snapshot_db_bytes", "is_sqlite_db_healthy", "reset_local_cache",
              "_backup_readers", "cloud_download_backup", "cloud_backup_stamp", "load_client_mirror",
@@ -191,42 +191,32 @@ keep = os.path.join(TMP, "keep.db")
 shutil.copy(snap_path, keep)
 ok, why = ns["load_client_mirror"]("C2", keep)
 assert not ok and "لا توجد نسخة كاملة" in why and count(keep) == 60
-print("✔ بلا نسخة كاملة من العميل: يُرجع السبب ولا يمسّ شيئاً (والاحتياط يقرّر)")
+print("✔ بلا نسخة كاملة من العميل: يُرجع السبب ولا يمسّ شيئاً")
 ns["get_supabase_public_client"] = lambda: pub
 
-# ═══ ٣) نافذة التجهيز: النسخة الكاملة أولاً، والاحتياط بلا بقايا ═══
+# ═══ ٣) نافذة التجهيز: النسخة الكاملة وحدها (أُزيل الويب وسجل حركاته — الدفعة ٢١) ═══
 work_ns = dict(ns)
 reset_calls = []
-work_ns.update({"SYNC_AVAILABLE": True, "reset_local_cache": lambda p: reset_calls.append(p),
-                "install_sync_schema": lambda p: None, "CloudSync": None,
-                "sync_down": lambda *a, **k: reset_calls.append("sync_down")})
+work_ns.update({"reset_local_cache": lambda p: reset_calls.append(p)})
 exec(method_src("_work", SYNCWIN), work_ns)
 
 
-def run_work(mirror_ok, api, key=""):
+def run_work(mirror_ok):
     reset_calls.clear()
-    work_ns["SUPABASE_SECRET_KEY"] = key
     work_ns["load_client_mirror"] = lambda cid, p: (True, None) if mirror_ok else (False, "لا نسخة")
-
-    class Up:
-        def __init__(self, **k): pass
-        def pending_count(self): return 0
-    work_ns["CloudSync"] = Up
-    s = types.SimpleNamespace(db_path="db", api=api, tenant_id="C1", cloud_only=True, ok=False, error=None,
+    s = types.SimpleNamespace(db_path="db", api=None, tenant_id="C1", cloud_only=True, ok=False, error=None,
                               mode=None, mirror_error=None,
                               _progress=lambda *a: None, _ui=lambda fn: None, destroy=lambda: None)
     work_ns["_work"](s)
     return s
 
 
-s = run_work(True, None)
+s = run_work(True)
 assert s.ok and s.mode == "mirror" and reset_calls == []
-s = run_work(False, None)
-assert not s.ok and s.error == "لا نسخة" and reset_calls == ["db"]
-s = run_work(False, types.SimpleNamespace(sync_token="tok"))
-assert s.ok and s.mode == "ledger" and reset_calls == ["db", "sync_down"]
-print("✔ التجهيز: النسخة الكاملة أولاً (بلا رمز مزامنة)؛ وإن غابت فسجل الحركات من قاعدة نظيفة مع تنبيه")
-print("✔ وبلا نسخة ولا رمز: لا تُعرض بقايا جلسة سابقة كأنها بيانات العميل")
+s = run_work(False)
+assert not s.ok and s.error == "لا نسخة" and s.mode is None and reset_calls == ["db"]
+print("✔ التجهيز: النسخة الكاملة للعميل وحدها (بلا رمز مزامنة)؛ وإن غابت: السبب واضح ولا احتياط من الويب")
+print("✔ وبلا نسخة: لا تُعرض بقايا جلسة سابقة كأنها بيانات العميل")
 
 # ═══ ٤) التحديث الحي داخل جلسة المدير ═══
 M = {}
@@ -333,7 +323,7 @@ print("✔ المفتاح يُختبر قبل حفظه، ويُحفظ على ج�
 adm_src = method_src("refresh_clients", next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AdminPanel"))
 assert "cloud_list_clients_checked()" in adm_src and "self.show_admin_key_card(error)" in adm_src
 login = method_src("try_login", next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "LoginWindow"))
-assert "if IS_ADMIN_BUILD:" in login and "ADMIN_LEDGER_FALLBACK_NOTE" in login
+assert "if IS_ADMIN_BUILD:" in login and "SyncDownWindow(self, db_path, None, client_id" in login
 assert "self.start_admin_mirror_watch()" in method_src("__init__")
 assert "raw, digest = snapshot_db_bytes(db_path, slim=True, with_digest=True)" in module_src("cloud_upload_backup")
 print("✔ الدخول بحساب العميل في نسخة المدير يفتح النسخة الكاملة أيضاً (لا يشترط رمز مزامنة)")

@@ -5,10 +5,11 @@
 | الجزء | المكان |
 |---|---|
 | **تقرير المراجعة الشاملة والإصلاحات** — ابدأ منه | [`jadeite_web/REVIEW_AR.md`](jadeite_web/REVIEW_AR.md) |
-| لوحة الويب (Flutter Web + PWA) | [`jadeite_web/lib/`](jadeite_web/lib/) — الدليل: [`README.md`](jadeite_web/README.md) |
+| الدليل: البنية والتثبيت والفحوص | [`jadeite_web/README.md`](jadeite_web/README.md) |
+| برنامج سطح المكتب — نسختا العميل والمدير (Python) | [`jadeite_web/desktop_sync/`](jadeite_web/desktop_sync/) |
 | قاعدة البيانات (Supabase) | [`jadeite_web/supabase/`](jadeite_web/supabase/) — شغّل `INSTALL_ALL.sql` |
-| برنامج سطح المكتب ومزامنته (Python) | [`jadeite_web/desktop_sync/`](jadeite_web/desktop_sync/) |
-| أداة ترحيل البيانات القديمة | [`jadeite_web/migration/`](jadeite_web/migration/) |
+
+> تطبيق الويب أُزيل (الدفعة ٢١): السحابة تحمل لكل عميل نسخته الكاملة فقط، وبرنامج المدير يقرؤها.
 
 الفحوص الآلية تعمل مع كل دفعة على GitHub: [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 

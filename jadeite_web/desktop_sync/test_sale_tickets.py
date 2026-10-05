@@ -37,6 +37,7 @@ def body(name):
 PREFS = {}
 ns = {"re": re, "load_ui_prefs": lambda: dict(PREFS)}
 MEMBERS = ["_SET_DIGITS", "_SCANNED_WEIGHT", "normalize_set_number", "scanned_set_number", "SALE_TYPES",
+           "set_voucher_values",
            "sale_tickets_with_invoice", "sale_ticket_data", "sale_ticket_qr", "SALE_BARCODE_MODES",
            "DEFAULT_SALE_BARCODE_MODE", "sale_barcode_mode", "sale_ticket_barcode", "set_sale_move",
            "sale_invoice_groups"]
@@ -120,7 +121,25 @@ print("✔ مجموعات الفاتورة للطباعة بترتيب سطور�
 
 gen = body("generate_invoice_pdf")
 assert "if self.sale_tickets_with_invoice():" in gen and "self.draw_sale_tickets(c, tickets)" in gen
-assert gen.index("self.draw_invoice_page(c, data)") < gen.index("self.draw_sale_tickets(c, tickets)")
+# الترتيب (الدفعة ٢١): التذاكر أولاً، ثم فاتورة المبيعات، ثم سندات أرقام التشغيل بالقالب الورقي
+assert (gen.index("self.draw_sale_tickets(c, tickets)") < gen.index("self.draw_sales_summary_pages(")
+        < gen.index("self.draw_set_voucher_page(c, data)"))
+assert "draw_invoice_page" not in src, "القالب القديم أُزيل"
+
+# سند رقم التشغيل: «الوزن النهائي» وحده يُعبّأ — القائم، الفصوص، الأحجار، الماس، والذهب
+vals = ns["Base"].set_voucher_values(None, {"gold": 35.25, "gems": 2.5, "stones": 3.0, "diamond": 0.4,
+                                            "stones_discount": "2.10", "khayas": 0.3})
+assert vals == [("الوزن النهائي", 41.15), ("ناقص فصوص", 2.5), ("ناقص احجار", 3.0), ("ناقص الماس", 0.4),
+                ("الوزن الصافي", 35.25)], vals
+voucher = body("draw_set_voucher_page")
+assert 'for label, value in self.set_voucher_values(data):' in voucher
+assert voucher.count('f"{value:.2f}"') == 1, "لا قيمة أخرى تُعبّأ في السند"
+assert 'str(data.get("set_number") or "")' in voucher, "رقم التشغيل في خانة NO"
+for label in ("مصنع جاديت", "التصنيع", "البوليش", "التركيب", "التلميع النهائي", "الوزن النهائي", "السلسال",
+              "الوزن الأجمالي:", "رقم الموديل:", "اسم المركب:", "الوزن المقيد", "توقيع مدير الانتاج"):
+    assert f'"{label}"' in voucher, label
+print("✔ ملف الترحيل: التذاكر ثم فاتورة المبيعات ثم سند لكل رقم تشغيل بقالب المصنع الورقي، "
+      "ولا يُعبّأ منه إلا رقم التشغيل و«الوزن النهائي» (القائم 41.15، الفصوص، الأحجار، الماس، الذهب 35.25)")
 draw = body("draw_sale_tickets")
 assert "code128.Code128(code" in draw and 'qr.QrCodeWidget(t["qr"])' in draw and "c.setDash(3, 2)" in draw
 assert 'code = t.get("barcode") or t["set_number"]' in draw and "max(0.6, room / bar.width)" in draw
@@ -138,7 +157,7 @@ assert 'save_ui_pref("sale_barcode_mode", modes[label])' in body("build_sales_op
 assert "تذكرة لكل رقم تشغيل" in body("commit_sale_invoice")
 tr = body("open_set_number_trace")
 assert "self.set_sale_move(moves)" in tr and "فاتورة البيع" in tr and "self.print_sale_tickets(" in tr
-print("✔ الترحيل والطباعة يرفقان صفحة التذاكر بعد الفاتورة (٨ تذاكر في الصفحة بحدود قصّ)، ومسح QR التذكرة "
+print("✔ الترحيل والطباعة يرفقان صفحة التذاكر أول الملف (٨ تذاكر في الصفحة بحدود قصّ)، ومسح QR التذكرة "
       "في التتبّع والبحث وخانة رقم التشغيل يأخذ الرقم وحده، "
       "وزر «تذاكر الطقوم» في العمليات، والمسح يفتح فاتورة البيع وتذكرته")
 

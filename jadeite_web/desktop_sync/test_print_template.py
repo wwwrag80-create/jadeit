@@ -1,64 +1,62 @@
 # -*- coding: utf-8 -*-
-"""اختبار قالب الطباعة: جدول الوزن النهائي ورقم التشغيل"""
+"""اختبار قالب الطباعة: سند رقم التشغيل بقالب المصنع الورقي (الدفعة ٢١) —
+لا يُعبّأ منه إلا رقم التشغيل (NO) وجدول «الوزن النهائي»"""
 import ast, io, re
 
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
-tpl = None
-for m in cls.body:
-    if isinstance(m, ast.FunctionDef):
-        b = ast.get_source_segment(src, m)
-        if "materials_fill" in b:
-            tpl = b
-            break
-assert tpl, "لم يُعثر على دالة القالب"
 
-# ═══ ١) ترتيب صفوف جدول الوزن النهائي ═══
-# نقصر البحث على كتلة materials_fill وحدها (هناك جداول أخرى بنفس الشكل)
-block = tpl[tpl.index("materials_fill = {"):tpl.index("draw_mini_table(M, row3_top")]
-order = re.findall(r'^\s*(\d+): \{0: ', block, re.M)
-labels = re.findall(r'^\s*\d+: \{0: f?"([^"]+)"', block, re.M)
-top5 = [(i, labels[i]) for i in range(5)]
-expected = [(0, "الوزن النهائي"), (1, "ناقص فصوص"), (2, "ناقص احجار"),
-            (3, "ناقص الماس"), (4, "الوزن الصافي")]
-assert top5 == expected, top5
-print("✔ ترتيب الجدول مطابق للنموذج الورقي من الأعلى للأسفل:")
-for _i, lbl in top5:
-    print(f"   • {lbl}")
 
-# ═══ ٢) ربط كل صف بخانته ═══
-pairs = {
-    "الوزن الصافي": "gold",
-    "ناقص الماس": "diamond",
-    "ناقص احجار": "stones",
-    "ناقص فصوص": "gems",
-}
-for label, var in pairs.items():
-    m = re.search(r'\{0: "' + re.escape(label) + r'", 1: f"\{(\w+):', block)
-    assert m and m.group(1) == var, (label, m.group(1) if m else None)
-    print(f"✔ {label:14} ← خانة {var}")
+def method(name):
+    fn = next((m for m in cls.body if isinstance(m, ast.FunctionDef) and m.name == name), None)
+    assert fn is not None, f"{name} مفقودة"
+    return fn
 
-# ═══ ٣) الوزن النهائي = مجموع الأربعة ═══
-assert "final_weight = round(gold + diamond + stones + gems, 2)" in tpl
-assert re.search(r'\{0: "الوزن النهائي", 1: f"\{final_weight:', block)
-print("✔ الوزن النهائي = الذهب + الماس + الأحجار + الفصوص")
 
-gold, diamond, stones, gems = 100.0, 3.0, 20.0, 5.0
-assert round(gold + diamond + stones + gems, 2) == 128.0
-print(f"   مثال: {gold} + {diamond} + {stones} + {gems} = 128.00")
+tpl = ast.get_source_segment(src, method("draw_set_voucher_page"))
+values_fn = method("set_voucher_values")
 
-# ═══ ٤) رقم التشغيل في خانة NO أعلى الصفحة ═══
-i_no = tpl.find('set_no_txt = str(data.get("set_number")')
-i_tbl = tpl.find("materials_fill")
-assert i_no != -1 and i_no < i_tbl, "رقم التشغيل غير مرسوم في الرأس"
-assert 'txt(M + 16 * mm' in tpl and "set_no_txt" in tpl
-print("✔ رقم التشغيل يُطبع في الخانة البيضاء أعلى الصفحة (NO)")
-assert "fit_font_size(set_no_txt" in tpl
-print("✔ وحجم خطه يتقلّص تلقائياً لو طال الرقم فلا يخرج عن خانته")
+# ═══ ١) القيم الخمس بترتيب النموذج الورقي من الأعلى للأسفل ═══
+ns = {}
+exec(compile(ast.Module(body=[values_fn], type_ignores=[]), "set_voucher_values", "exec"), ns)
+gold, gems, stones, diamond = 100.0, 5.0, 20.0, 3.0
+rows = ns["set_voucher_values"](None, {"gold": gold, "gems": gems, "stones": stones, "diamond": diamond,
+                                       "khayas": 9.0, "stones_discount": "18"})
+expected = [("الوزن النهائي", 128.0), ("ناقص فصوص", 5.0), ("ناقص احجار", 20.0),
+            ("ناقص الماس", 3.0), ("الوزن الصافي", 100.0)]
+assert rows == expected, rows
+print("✔ جدول الوزن النهائي بترتيب النموذج الورقي:")
+for label, value in rows:
+    print(f"   • {label:14} = {value:.2f}")
+print("✔ الوزن النهائي = الوزن القائم (ذهب + فصوص + أحجار + ماس) — لا خياس ولا خصم أحجار")
 
-# ═══ ٥) عدد الصفوف يطابق الخريطة ═══
-n_rows = int(re.search(r'"الوزن النهائي", materials_cols, (\d+), row_h', tpl).group(1))
-assert n_rows == len(order), (n_rows, len(order))
-print(f"✔ عدد صفوف الجدول ({n_rows}) مطابق لعدد البنود المعرّفة")
+empty = ns["set_voucher_values"](None, {"gold": None})
+assert [v for _l, v in empty] == [0.0] * 5, empty
+print("✔ القيم الناقصة تُطبع 0.00 بلا خطأ")
 
-print("\n✅ قالب الطباعة مطابق للنموذج المرفق")
+# ═══ ٢) لا يُعبّأ غير رقم التشغيل وجدول الوزن النهائي ═══
+reads = re.findall(r'data\.get\("(\w+)"', tpl)
+assert reads == ["set_number"], reads
+assert tpl.count("self.set_voucher_values(data)") == 1
+print("✔ القالب لا يقرأ من بيانات الطقم إلا رقم التشغيل، وقيمه الخمس من set_voucher_values وحدها")
+
+assert 'cell(290, 172, 460, 218, str(data.get("set_number")' in tpl
+print("✔ رقم التشغيل في الخانة البيضاء بجوار NO أعلى السند")
+
+assert 'f"{value:.2f}"' in tpl and "fit_font_size(label" in tpl
+print("✔ كل قيمة بخانتين عشريتين، وكل نص يتقلّص داخل خانته فلا يخرج عنها")
+
+# ═══ ٣) أقسام النموذج الورقي كلها مرسومة (فارغة للتعبئة اليدوية) ═══
+for part in ("مصنع جاديت", "NO:", ":DATE", ":NAME", "رقم الموديل:", "اسم العميل:", "النوع:", "اسم المركب:",
+             '"التصنيع"', '"البوليش"', '"التركيب"', '"التلميع النهائي"', '"0.08%"', '"0.04%"', '"خياس"',
+             '"السلسال"', '"الوزن الأجمالي:"', '"الوزن النهائي"', '"الاجمالي"', '"الأجمالي"',
+             '"الوزن المقيد"', "range(18)", "توقيع المدير", "توقيع المحاسب", "توقيع مدير الانتاج"):
+    assert part in tpl, part
+print("✔ كل أقسام النموذج الورقي مرسومة: التصنيع، البوليش، التركيب، التلميع النهائي، جدول القطع ١–١٨، "
+      "الإجماليات، التوقيعات")
+
+# ═══ ٤) مقاس الصفحة: صورة النموذج ١٤٥٠ بكسل = عرض A4 ═══
+assert "VOUCHER_PX_W = 1450.0" in src and "k = PW / self.VOUCHER_PX_W" in tpl
+print("✔ إحداثيات القالب من صورة النموذج نفسها مُحجّمة إلى صفحة A4")
+
+print("\n✅ قالب سند رقم التشغيل مطابق للنموذج الورقي المرفق")

@@ -5,10 +5,21 @@
 """
 import ast, io, os, sqlite3, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cloud_sync import install_sync_schema
 
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 tree = ast.parse(src)
+
+# التحديث (الدفعة ٢١) يحذف بقايا مزامنة الويب من قاعدة العميل — الدالة نفسها من البرنامج
+_ns = {}
+for _name in ("WEB_SYNC_TABLES", "drop_web_sync_artifacts"):
+    _node = next(n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == _name)
+                 or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == _name))
+    exec(ast.get_source_segment(src, _node), _ns)
+
+
+def apply_update(path):
+    with sqlite3.connect(path) as c:
+        return _ns["drop_web_sync_artifacts"](c.cursor())
 
 # ---------- ١) لا تغيير في مخطط قاعدة البيانات ----------
 init_db = ast.get_source_segment(src, next(
@@ -72,6 +83,19 @@ OLD = [
     (7, "2026-07-15 11:00:00", "عميل", "مبيعات ذهب", 40.0, 0, 0, "مبيعات", "ACTIVE", 0, "T-1", "1", "5001"),
 ]
 con.executemany("INSERT INTO invoices VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", OLD)
+# بقايا المزامنة صفاً صفاً من النسخ السابقة (صندوق صادر ومحفّزاته)
+con.executescript("""
+CREATE TABLE sync_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT, ref_id TEXT, action TEXT, queued_at TEXT);
+CREATE INDEX idx_outbox_entity ON sync_outbox(entity, ref_id);
+CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT);
+CREATE TRIGGER trg_inv_sync_ins AFTER INSERT ON invoices BEGIN
+    INSERT INTO sync_outbox(entity, ref_id, action, queued_at) VALUES('invoice', NEW.invoice_id, 'upsert', 'x'); END;
+CREATE TRIGGER trg_inv_sync_upd AFTER UPDATE ON invoices BEGIN
+    INSERT INTO sync_outbox(entity, ref_id, action, queued_at) VALUES('invoice', NEW.invoice_id, 'upsert', 'x'); END;
+CREATE TRIGGER trg_name_sync_ins AFTER INSERT ON names BEGIN
+    INSERT INTO sync_outbox(entity, ref_id, action, queued_at) VALUES('name', NEW.name, 'upsert', 'x'); END;
+INSERT INTO sync_outbox(entity, ref_id, action, queued_at) VALUES('invoice', '1', 'upsert', 'x');
+""")
 con.execute("INSERT INTO settings VALUES('invoice_counter','7')")
 con.commit()
 
@@ -83,8 +107,8 @@ before = {
 }
 con.close()
 
-# التحديث يُشغّل install_sync_schema على قاعدة العميل
-install_sync_schema(db)
+# التحديث يحذف بقايا مزامنة الويب من قاعدة العميل
+assert apply_update(db) == 3
 
 con = sqlite3.connect(db)
 after = {
@@ -106,14 +130,17 @@ print("✔ تفاصيل الحركات القديمة محفوظة حرفياً 
 assert con.execute("SELECT trees_count, settled_status FROM invoices WHERE invoice_id=6").fetchone() == (0.0, "ACTIVE")
 print("✔ خياس الطقوم القديم يبقى ACTIVE بعلامة 0.0 → يُقرأ كخياس تلميع نهائي ويخصم من الخزينة كما كان")
 
-# بنية المزامنة أُضيفت بلا مساس بالبيانات
+# بقايا مزامنة الويب حُذفت بلا مساس بالبيانات
 tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-assert {"invoices", "names", "settings", "sync_outbox", "sync_state"} <= tables
-print("✔ جداول المزامنة أُضيفت بجانب جداول العميل بلا تعديل عليها")
+assert {"invoices", "names", "settings"} <= tables and not tables & {"sync_outbox", "sync_state"}
+assert con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0] == 0
+con.execute("UPDATE invoices SET note = 'تعديل' WHERE invoice_id = 2")      # لا محفّز يكتب في صندوق محذوف
+con.rollback()
+print("✔ بقايا مزامنة الويب (صندوق الصادر ومحفّزاته) حُذفت، وجداول العميل كما هي")
 con.close()
 
 # ---------- ٥) إعادة تشغيل التحديث لا تُكرّر شيئاً ----------
-install_sync_schema(db)
+assert apply_update(db) == 0
 con = sqlite3.connect(db)
 assert con.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == before["count"]
 con.close()

@@ -337,11 +337,10 @@ assert "threading.Thread" in module_src("touch_client_login_async")
 print("✔ تسجيل وقت الدخول للمدير في الخلفية")
 admin_wait = login[login.index("if IS_ADMIN_BUILD:"):login.index("if not self._wait_outro()")]
 assert "SyncDownWindow(" in admin_wait and login.count("SyncDownWindow(") == 1
-print("✔ نسخة العميل لا تنتظر الرفع عند الدخول — محرك المزامنة يرفع في الخلفية فور الفتح")
+print("✔ نسخة العميل لا تنتظر الرفع عند الدخول — نسختها الكاملة تُرفع في الخلفية فور الفتح")
 print("✔ ونسخة المدير وحدها تنتظر: تنزّل نسخة العميل الكاملة (بلا شرط رمز مزامنة)")
-assert "install_sync_schema(self.db_path)" in io.open("cloud_sync.py", encoding="utf-8").read()
-assert "self.cloud_sync.start()" in seg("start_cloud_sync_engine")
-print("✔ ومحرك المزامنة يُجهّز بنية التتبّع بنفسه قبل أول رفع")
+assert "self.run_cloud_sync_cycle(" in seg("auto_cloud_backup_trigger")
+print("✔ والرفع في الخلفية بدورة السحابة الخفيفة (لا محرك ويب)")
 assert "cloud_verify_client_login" not in login[login.index("if kind == \"sub_admin\""):]
 assert "CURRENT_SYNC_TOKEN = None" in login
 print("✔ دخول المدير المساعد لا يرث رمز مزامنة من الفحص المتزامن")

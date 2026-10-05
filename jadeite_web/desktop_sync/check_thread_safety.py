@@ -14,7 +14,7 @@ src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 tree = ast.parse(src)
 cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
 
-for name in ("_on_sync_status", "_on_remote_change", "_on_gold_price"):
+for name in ("_on_gold_price",):
     fn = next((m for m in cls.body if isinstance(m, ast.FunctionDef) and m.name == name), None)
     if fn is None:
         problems.append(f"{name} مفقودة"); continue
@@ -40,18 +40,15 @@ if sw:
     else:
         checks.append("SyncDownWindow._ui: محميّة لو أُغلقت النافذة")
 
-# ---------- ٣) محرك المزامنة نفسه ----------
-sync = io.open("cloud_sync.py", encoding="utf-8").read()
-if "daemon=True" not in sync:
-    problems.append("خيط المزامنة ليس daemon — سيمنع إغلاق البرنامج")
+# ---------- ٣) رفع النسخة الكاملة في الخلفية (لا محرك ويب بعد الدفعة ٢١) ----------
+cycle = next((ast.get_source_segment(src, m) for n in ast.walk(tree) if isinstance(n, ast.ClassDef)
+              for m in n.body if isinstance(m, ast.FunctionDef) and m.name == "run_cloud_sync_cycle"), "")
+if "daemon=True" not in cycle:
+    problems.append("خيط رفع السحابة ليس daemon — سيمنع إغلاق البرنامج")
+elif "self.after(0," not in cycle:
+    problems.append("خيط رفع السحابة يحدّث الواجهة مباشرة")
 else:
-    checks.append("خيط المزامنة daemon: لا يمنع إغلاق البرنامج")
-
-for widget_call in ("ctk.CTk", "tkinter", "messagebox."):
-    if widget_call in sync:
-        problems.append(f"محرك المزامنة يستدعي واجهة مباشرة: {widget_call}")
-if not any(w in sync for w in ("ctk.CTk", "tkinter", "messagebox.")):
-    checks.append("محرك المزامنة لا يلمس الواجهة إطلاقاً")
+    checks.append("رفع السحابة في خيط daemon ويحدّث الواجهة عبر after")
 
 gpx = io.open("gold_price.py", encoding="utf-8").read()
 if any(w in gpx for w in ("ctk.", "tkinter", "messagebox.")):
@@ -73,12 +70,6 @@ if tick is None or "self.after(" not in ast.get_source_segment(src, tick):
     problems.append("مؤشر الميزان لا يُحدَّث عبر after من خيط الواجهة")
 else:
     checks.append("مؤشر الميزان يُحدَّث من خيط الواجهة بـ after (القارئ لا يلمسها)")
-
-sd = io.open("sync_down.py", encoding="utf-8").read()
-if any(w in sd for w in ("ctk.", "tkinter", "messagebox.")):
-    problems.append("sync_down يلمس الواجهة مباشرة")
-else:
-    checks.append("sync_down لا يلمس الواجهة إطلاقاً")
 
 for c in checks:
     print("✔", c)

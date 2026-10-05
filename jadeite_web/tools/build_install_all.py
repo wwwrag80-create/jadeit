@@ -7,8 +7,8 @@
     python3 tools/build_install_all.py          # يعيد توليد الملف
     python3 tools/build_install_all.py --check  # يفشل إن كان الملف غير محدَّث (لـ CI)
 
-لا يُضمَّن 00_repair_auth.sql و 01_create_admin.sql لأنهما يُشغَّلان منفصلَين
-(الأول عند عطل المصادقة فقط، والثاني بعد إنشاء مستخدم المدير).
+لا يُضمَّن 00_repair_auth.sql و 01_create_admin.sql و 19_remove_web.sql لأنها تُشغَّل منفصلة
+(الأول عند عطل المصادقة فقط، والثاني بعد إنشاء مستخدم المدير، والثالث مرة واحدة لإزالة الويب).
 """
 import io
 import os
@@ -20,7 +20,9 @@ SQL_DIR = os.path.join(ROOT, "supabase")
 TARGET = os.path.join(SQL_DIR, "INSTALL_ALL.sql")
 
 # ملفات تُشغَّل منفصلة ولا تدخل في التثبيت الموحّد
-EXCLUDED = {"00_repair_auth.sql", "01_create_admin.sql"}
+EXCLUDED = {"00_repair_auth.sql", "01_create_admin.sql",
+            # إزالة الويب (الدفعة ٢١): يحذف حركات الويب ويمنع رفعها — يُشغَّل وحده مرة واحدة
+            "19_remove_web.sql"}
 
 HEADER = """-- ============================================================================
 --  جاديت ERP — ملف التثبيت الكامل (شغّله مرة واحدة)

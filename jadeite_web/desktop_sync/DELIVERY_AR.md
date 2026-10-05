@@ -6,16 +6,18 @@
 |---|---|
 | **`rageh-CLIENT.py`** | **للعملاء** — بلا مفتاح سري وبلا لوحة مدير |
 | `rageh-1-34-14-cloud.py` | لك أنت — يتضمن لوحة المدير |
-| `cloud_sync.py` + `sync_down.py` + `supabase_api.py` | مطلوبة مع أي منهما |
+| `gold_price.py` + `scale_reader.py` | مطلوبة مع أي منهما |
+
+> منذ الدفعة ٢١ أُزيلت `cloud_sync.py` و`sync_down.py` و`supabase_api.py` (الويب وحركاته).
+> أوامر البناء في الأقسام التاريخية أدناه تذكرها كما كانت وقتها — استخدم الأمر التالي.
 
 ## البناء للعميل
 
 ```
 pyinstaller --onefile --noconsole ^
-  --add-data "cloud_sync.py;." ^
-  --add-data "sync_down.py;." ^
-  --add-data "supabase_api.py;." ^
-  rageh-CLIENT.py
+  --add-data "gold_price.py;." --add-data "scale_reader.py;." ^
+  --add-data "jadeite.ico;." --add-data "jadeite_logo.png;." ^
+  --collect-data customtkinter --icon "jadeite.ico" rageh-CLIENT.py
 ```
 
 > **لا تبنِ `rageh-1-34-14-cloud.py` للعملاء.** ملف exe قابل للفكّ، والمفتاح
@@ -43,9 +45,8 @@ python3 final_audit.py rageh-CLIENT.py
 ## اختبارات ما قبل التسليم
 
 ```bash
-python3 final_audit.py rageh-CLIENT.py   # فحص شامل للنسخة
-python3 test_restore.py                  # استعادة بيانات العميل
-python3 test_total_balance.py            # صحة الرصيد الحالي محاسبياً
+python3 run_all_checks.py rageh-CLIENT.py   # كل الفحوص على نسخة العميل
+python3 run_all_checks.py                   # وعلى نسخة المدير
 ```
 
 كلها تمر حالياً.

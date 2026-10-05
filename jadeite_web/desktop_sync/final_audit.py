@@ -67,11 +67,13 @@ for m in app.body:
 if "device_session" in src:
     errors.append("ما زالت هناك إشارة لملف الجلسة device_session")
 
-# ---------- ٦) وحدات المزامنة مستوردة بأمان ----------
-if "SYNC_AVAILABLE" not in src:
-    errors.append("وحدات المزامنة غير مربوطة")
-if "except Exception as _sync_err" not in src:
-    warnings.append("استيراد المزامنة قد لا يكون محمياً")
+# ---------- ٦) لا بقايا لمزامنة الويب (أُزيلت في الدفعة ٢١) ----------
+for gone in ("SYNC_AVAILABLE", "import cloud_sync", "from cloud_sync", "import sync_down", "from sync_down",
+             "import supabase_api", "from supabase_api", "import login_screen", "from login_screen"):
+    if gone in src:
+        errors.append(f"ما زالت هناك إشارة لمزامنة الويب: {gone}")
+if "def drop_web_sync_artifacts" not in src:
+    errors.append("لا تُحذف بقايا مزامنة الويب من قاعدة العميل القديمة")
 
 # ---------- ٧) التاريخ ----------
 load_fn = next(m for m in app.body if isinstance(m, ast.FunctionDef) and m.name == "load_data_from_db")

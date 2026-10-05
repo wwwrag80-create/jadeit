@@ -28,34 +28,29 @@ i_admin = work.find("# نسخة المدير", i_guard)
 assert i_admin != -1, "لم يُعثر على بداية قسم نسخة المدير"
 seg_guard = work[i_guard:i_admin]
 assert "return" in seg_guard
-print("✔ نسخة العميل: ترفع بياناتها ثم تعود فوراً — لا تصل إلى السحب إطلاقاً")
+print("✔ نسخة العميل: تجهّز بياناتها ثم تعود فوراً — لا تصل إلى أي تنزيل إطلاقاً")
 
-assert "uploader.flush" in seg_guard
-print("✔ ومع ذلك ترفع حركاتها للسحابة كالمعتاد (المدير يراها)")
+assert "drop_web_sync_artifacts" in seg_guard and "uploader" not in work and "sync_down" not in work
+print("✔ ولا ترفع الحركات صفاً صفاً (أُزيل الويب): تحذف بقاياه من قاعدتها فقط، ونسختها الكاملة تُرفع في الخلفية")
 
 assert "reset_local_cache" in work
 i_reset = work.find("reset_local_cache")
 assert i_guard < i_reset, "مسح القاعدة قد يقع في نسخة العميل!"
 print("✔ مسح القاعدة المحلية محصور في نسخة المدير وحدها")
 
-# ═══ ٢) العميل لا يستقبل تغييرات السحابة ═══
-remote = seg(cls, "_on_remote_change")
-assert "if not IS_ADMIN_BUILD:" in remote and "return" in remote
-print("✔ تعديلات المدير لا تنزل لجهاز العميل")
-
-# ═══ ٢-ب) محرك المزامنة نفسه لا يسحب إلا لو فُعّل صراحةً ═══
-# (كان يسحب كل ١٥ ثانية ويكتب في قاعدة العميل رغم القاعدة أعلاه)
-cs_src = io.open("cloud_sync.py", encoding="utf-8").read()
-assert "pull_enabled=False" in cs_src, "السحب يجب أن يكون معطّلاً افتراضياً في CloudSync"
-assert "if self.pull_enabled and" in cs_src, "حلقة المحرك تسحب بلا شرط"
-assert "pull_enabled=True" not in src, "برنامج العميل فعّل السحب من السحابة!"
-print("✔ محرك المزامنة لا يسحب من السحابة افتراضياً — ولا يفعّله البرنامج")
+# ═══ ٢) لا مزامنة ويب إطلاقاً (الدفعة ٢١): لا محرك رفع ولا سحب ولا احتياط من سجل الحركات ═══
+for gone in ("CloudSync", "install_sync_schema", "sync_down(", "start_cloud_sync_engine", "_on_remote_change",
+             "ADMIN_LEDGER_FALLBACK_NOTE", '"ledger"', "_RpcBridge"):
+    assert gone not in src, gone
+assert not __import__("os").path.exists("cloud_sync.py") and not __import__("os").path.exists("sync_down.py")
+print("✔ مزامنة الويب أُزيلت: لا محرك رفع ولا سحب، والمدير يقرأ النسخة الكاملة وحدها")
 
 # ═══ ٣) المدير لا يرفع شيئاً ═══
-engine = seg(cls, "start_cloud_sync_engine")
-i_admin = engine.find("if IS_ADMIN_BUILD:")
-assert i_admin != -1 and "return" in engine[i_admin:i_admin + 200]
-print("✔ نسخة المدير لا تُشغّل محرك الرفع — بياناتها لا تصعد للسحابة أبداً")
+upload = ast.get_source_segment(src, next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                                          and n.name == "cloud_upload_backup"))
+i_admin = upload.find("if IS_ADMIN_BUILD:")
+assert i_admin != -1 and "return False" in upload[i_admin:i_admin + 120]
+print("✔ نسخة المدير لا ترفع شيئاً — بياناتها لا تصعد للسحابة أبداً")
 
 # ═══ ٤) شاشة الاستعادة ═══
 for fn in ("open_backup_restore_window", "restore_from_backup", "describe_backup",

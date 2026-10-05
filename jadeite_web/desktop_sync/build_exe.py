@@ -39,7 +39,7 @@ TARGETS = {
 }
 
 # وحدات يستوردها البرنامج من مجلده — تُضمَّن داخل exe
-LOCAL_MODULES = ("cloud_sync", "sync_down", "supabase_api", "gold_price", "scale_reader")
+LOCAL_MODULES = ("gold_price", "scale_reader")
 # ملفات يقرؤها البرنامج وقت التشغيل عبر resource_path
 DATA_FILES = ("jadeite.ico", "jadeite_logo.png")
 # مجلدات تُضمَّن كما هي (خط Cairo العربي للواجهة)

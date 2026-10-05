@@ -1,4 +1,4 @@
-# فحص آلي لكل دفعة: تطبيق الويب + قاعدة البيانات + برنامج سطح المكتب
+# فحص آلي لكل دفعة: قاعدة البيانات + برنامج سطح المكتب (أُزيل الويب — الدفعة ٢١)
 name: CI
 
 on:
@@ -9,26 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  web:
-    name: تطبيق الويب (Flutter)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: jadeite_web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.27.1'
-          channel: stable
-          cache: true
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
-      - run: python3 tools/check_project.py
-      - name: البناء (يتأكد أن الخطوط والأصول موجودة)
-        run: flutter build web --release
-
   database:
     name: قاعدة البيانات (PostgreSQL 16)
     runs-on: ubuntu-latest
@@ -58,7 +38,7 @@ jobs:
         run: bash supabase/tests/run_sql_tests.sh
 
   desktop:
-    name: برنامج سطح المكتب + أداة الترحيل (Python)
+    name: برنامج سطح المكتب (Python)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -71,9 +51,7 @@ jobs:
       - run: pip install pillow pyflakes
       - name: أخطاء صامتة (متغيّرات غير معرّفة، كود لا يُنفَّذ)
         run: >-
-          python -m pyflakes desktop_sync/cloud_sync.py desktop_sync/sync_down.py
-          desktop_sync/supabase_api.py desktop_sync/login_screen.py
-          desktop_sync/gold_price.py migration/migrate_sqlite_to_supabase.py
+          python -m pyflakes desktop_sync/gold_price.py desktop_sync/scale_reader.py
       - name: نسخة العميل مطابقة لمصدرها (مولَّدة آلياً بلا مفتاح سري)
         working-directory: jadeite_web/desktop_sync
         run: |
@@ -85,6 +63,3 @@ jobs:
       - name: فحوص نسخة العميل
         working-directory: jadeite_web/desktop_sync
         run: python run_all_checks.py rageh-CLIENT.py
-      - name: أداة الترحيل
-        working-directory: jadeite_web/migration
-        run: python test_migration.py

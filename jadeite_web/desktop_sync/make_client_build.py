@@ -68,5 +68,4 @@ print("✔ لوحة المدير معطّلة في نسخة العميل")
 print("✔ نوع النسخة: عميل — تستعيد بياناتها المحلية ثم ترفعها")
 print("\nللبناء الكامل (فحوص + exe): build_client.bat — أو: python build_exe.py client")
 print(f"\nأو يدوياً:\n  pyinstaller --onefile --noconsole ^\n"
-      f"    --add-data \"cloud_sync.py;.\" --add-data \"sync_down.py;.\" ^\n"
-      f"    --add-data \"supabase_api.py;.\" ^\n    --add-data \"gold_price.py;.\" --add-data \"scale_reader.py;.\" --add-data \"jadeite.ico;.\" --add-data \"jadeite_logo.png;.\" ^\n    --collect-data customtkinter --icon \"jadeite.ico\" {OUT}")
+      f"    --add-data \"gold_price.py;.\" --add-data \"scale_reader.py;.\" --add-data \"jadeite.ico;.\" --add-data \"jadeite_logo.png;.\" ^\n    --collect-data customtkinter --icon \"jadeite.ico\" {OUT}")

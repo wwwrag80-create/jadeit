@@ -106,39 +106,28 @@ except Exception:
     scale_reader = None
     SCALE_MODULE_AVAILABLE = False
 
-try:
-    from cloud_sync import CloudSync, install_sync_schema
-    from sync_down import sync_down
-    SYNC_AVAILABLE = True
-except Exception as _sync_err:      # noqa: F841
-    # غياب وحدات المزامنة لا يمنع البرنامج من العمل محلياً
-    CloudSync = None
-    install_sync_schema = None
-    sync_down = None
-    SYNC_AVAILABLE = False
+# الويب أُزيل (الدفعة ٢١): لا رفع للحركات صفاً صفاً ولا سحب منها. السحابة تحمل لكل عميل
+# نسخته الكاملة فقط (يرفعها برنامجه، ويفتحها برنامج المدير مرآةً حرفية).
+# بقايا المزامنة القديمة في قاعدة الجهاز (محفّزات صندوق الصادر وجداوله) تُحذف عند فتحها
+WEB_SYNC_TABLES = ("sync_outbox", "sync_state")
 
 
-class _RpcBridge:
-    """يمرّر استدعاءات المزامنة لعميل Supabase الموجود أصلاً في البرنامج،
-    ويحقن رمز المزامنة المحفوظ في الذاكرة (بدون أي ملف على القرص)."""
-
-    def __init__(self, sb_client, sync_token=None):
-        self._sb = sb_client
-        self.sync_token = sync_token
-
-    def rpc(self, name, payload=None):
-        params = dict(payload or {})
-        if "p_token" in params and params["p_token"] is None:
-            params["p_token"] = self.sync_token
-        res = self._sb.rpc(name, params).execute()
-        return res.data
+def drop_web_sync_artifacts(cursor):
+    """يحذف من قاعدة الجهاز محفّزات المزامنة صفاً صفاً وجداولها — آمن لإعادة التشغيل"""
+    triggers = [r[0] for r in cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_%_sync_%'").fetchall()]
+    for name in triggers:
+        cursor.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+    for table in WEB_SYNC_TABLES:
+        cursor.execute(f'DROP TABLE IF EXISTS "{table}"')
+    return len(triggers)
 
 
 ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.55.0"
+APP_VERSION = "1.56.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1023,12 +1012,6 @@ def cloud_backup_stamp(client_id):
         return "" if authoritative else None
     return None
 
-
-ADMIN_LEDGER_FALLBACK_NOTE = (
-    "لم تصل من جهاز العميل نسخة كاملة من بياناته بعد، فعُرضت من سجل الحركات السحابي — "
-    "وقد تختلف عمّا عنده.\n\n"
-    "تصل النسخة الكاملة تلقائياً خلال ثوانٍ من فتح العميل لبرنامجه (بعد تحديثه)، "
-    "وعندها يظهر هنا كل شيء كما عنده بالضبط.")
 
 
 def load_client_mirror(client_id, db_path):
@@ -4411,11 +4394,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def on_app_closing(self):
         try:
-            if getattr(self, 'cloud_sync', None):
-                self.cloud_sync.stop()
-        except Exception:
-            pass
-        try:
             if getattr(self, 'gold_watcher', None):
                 self.gold_watcher.stop()
         except Exception:
@@ -4959,20 +4937,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 log_cloud_error("ترحيل السطور المعلوماتية",
                                 Exception(f"حُوّل {_memo_fixed} سطراً إلى MEMO"))
 
-            # الحركات القديمة: الفترة = شهر تاريخها (نفس السلوك السابق حرفياً).
-            # يُكتم صندوق الصادر أثناء الترحيل: هذا UPDATE على كل الحركات،
-            # ولولا الكتم لأطلق المحفّزات فأعاد رفع القاعدة كاملة للسحابة.
-            try:
-                cursor.execute("INSERT INTO sync_state(key, value) VALUES('suppress_outbox','1') "
-                               "ON CONFLICT(key) DO UPDATE SET value='1'")
-            except Exception:
-                pass
+            # بقايا مزامنة الويب (أُزيل) تُحذف قبل أي تعديل جماعي، فلا تتراكم في صندوق صادر
+            drop_web_sync_artifacts(cursor)
+            # الحركات القديمة: الفترة = شهر تاريخها (نفس السلوك السابق حرفياً)
             cursor.execute("UPDATE invoices SET period = substr(date_time, 1, 7) "
                            "WHERE period IS NULL OR period = ''")
-            try:
-                cursor.execute("UPDATE sync_state SET value='0' WHERE key='suppress_outbox'")
-            except Exception:
-                pass
                     
             cursor.execute("PRAGMA table_info(monthly_archive)")
             arch_cols = [col[1] for col in cursor.fetchall()]
@@ -8207,7 +8176,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.update_period_warning()
         self.watch_system_month()
         self.refresh_live_date_fields()
-        self.start_cloud_sync_engine()
 
     # أرقام الصف العلوي للوحة المفاتيح: الإنجليزية والعربية الهندية معاً (أي تخطيط)
     _SHORTCUT_DIGITS = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5,
@@ -8702,62 +8670,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     text_color="#F5F1E3" if snapshot.get("ounce") else "#F5A35C")
             except Exception:
                 pass
-        try:
-            self.after(0, apply)
-        except Exception:
-            pass
-
-    def start_cloud_sync_engine(self):
-        # نسخة المدير مرآة للقراءة: لا تُشغّل محرك الرفع إطلاقاً، فلا يمكن
-        # لبياناتها المؤقتة أن تصعد للسحابة وتطمس بيانات العميل
-        if IS_ADMIN_BUILD:
-            return
-        """يشغّل محرك الرفع الخلفي. فشله لا يؤثر على عمل البرنامج محلياً إطلاقاً."""
-        self.cloud_sync = None
-        if not (SYNC_AVAILABLE and self.client_id and CURRENT_SYNC_TOKEN):
-            return
-        try:
-            api = _RpcBridge(self.supabase or get_supabase_public_client(), CURRENT_SYNC_TOKEN)
-            self.cloud_sync = CloudSync(
-                db_path=self.db_path,
-                api=api,
-                tenant_id=self.client_id,
-                app_version=APP_VERSION,
-                on_status=self._on_sync_status,
-                on_remote_change=self._on_remote_change,
-            )
-            self.cloud_sync.start()
-        except Exception as e:
-            log_cloud_error("تعذّر تشغيل محرك المزامنة", e)
-
-    def _on_sync_status(self, text):
-        """تُستدعى من الخيط الخلفي — نمرّرها لخيط الواجهة عبر after"""
-        try:
-            self.after(0, lambda: self.lbl_cloud_sync.configure(text=text))
-        except Exception:
-            pass
-
-    def _on_remote_change(self, count):
-        # نسخة العميل لا تستقبل أي تغيير من السحابة: بياناتها مصدر الحقيقة
-        if not IS_ADMIN_BUILD:
-            return
-        """وصلت تعديلات من لوحة الإدارة على الويب: نعيد تحميل البيانات ونحدّث الشاشات.
-
-        تُستدعى من الخيط الخلفي، فكل العمل يمر عبر after حتى لا يُسقط Tkinter.
-        """
-        def apply():
-            try:
-                self.load_data_from_db()
-                self.update_period_selector()
-                self.recalculate_all()
-                if hasattr(self, 'lbl_cloud_sync'):
-                    self.lbl_cloud_sync.configure(
-                        text=f"🔄 وصل {count} تحديث من الإدارة")
-                    self.after(6000, lambda: self.lbl_cloud_sync.configure(
-                        text=self.cloud_sync.status_text() if self.cloud_sync else ""))
-            except Exception as e:
-                log_cloud_error("تعذّر تطبيق تحديثات الإدارة", e)
-
         try:
             self.after(0, apply)
         except Exception:
@@ -12582,8 +12494,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.mark_all_screens_dirty()
         self.refresh_visible_screen()
 
-        if getattr(self, 'cloud_sync', None):
-            self.cloud_sync.sync_now()
 
     def sync_all_archives(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -16609,7 +16519,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                               command=lambda: save_ui_pref("sale_tickets_with_invoice",
                                                            bool(self.var_tickets_with_invoice.get())))
         chk.pack(side="right", padx=8)
-        HoverTip(chk, "عند الترحيل والطباعة تُضاف صفحة تذاكر (تذكرة لكل رقم تشغيل) بعد صفحات الفاتورة")
+        HoverTip(chk, "عند الترحيل والطباعة تكون صفحة التذاكر (تذكرة لكل رقم تشغيل) أول الملف، قبل الفاتورة وسندات التشغيل")
         ctk.CTkLabel(trow, text="الباركود الخطي:", font=("Cairo", 12, "bold")).pack(side="right", padx=(16, 4))
         modes = {label: key for key, label in self.SALE_BARCODE_MODES.items()}
         example = ctk.CTkLabel(trow, text="", font=("Cairo", 12), text_color=UI["muted"])
@@ -18558,198 +18468,135 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 seen[sn] = inv_no
         return [sn for sn, _ in sorted(seen.items(), key=lambda kv: kv[1])]
 
-    def draw_invoice_page(self, c, data):
-        """يرسم صفحة فاتورة واحدة مطابقة لقالب المصنع (شعار + بيانات العميل + جداول الأوزان)"""
-        PW, PH = A4
-        M = 8 * mm
+    # ═══ سند رقم التشغيل: قالب المصنع الورقي نفسه (صورته ١٤٥٠×٢٠٤٨ = صفحة A4) ═══
+    VOUCHER_PX_W = 1450.0
 
-        gold = data.get("gold", 0.0)
-        gems = data.get("gems", 0.0)
-        stones = data.get("stones", 0.0)
-        diamond = data.get("diamond", 0.0)
-        weight_with_gems = round(gold + gems, 2)
-        weight_standing = round(gold + gems + stones + diamond, 2)
-        try:
-            stones_discount_num = float(data.get("stones_discount") or 0)
-        except ValueError:
-            stones_discount_num = 0.0
-        weight_bound = round(gold + gems + stones_discount_num + diamond, 2)
+    def set_voucher_values(self, data):
+        """قيم «الوزن النهائي» في سند رقم التشغيل — كما في النموذج الورقي:
+        الوزن النهائي = الوزن القائم، ناقص فصوص = الفصوص، ناقص احجار = الأحجار،
+        ناقص الماس = الماس، الوزن الصافي = الذهب"""
+        gold, gems = data.get("gold", 0.0) or 0.0, data.get("gems", 0.0) or 0.0
+        stones, diamond = data.get("stones", 0.0) or 0.0, data.get("diamond", 0.0) or 0.0
+        return [("الوزن النهائي", round(gold + gems + stones + diamond, 2)), ("ناقص فصوص", round(gems, 2)),
+                ("ناقص احجار", round(stones, 2)), ("ناقص الماس", round(diamond, 2)),
+                ("الوزن الصافي", round(gold, 2))]
 
-        def txt(x, y, s, size=9, bold=False, align="right"):
-            c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
-            s = ar(s)
-            if align == "right":
-                c.drawRightString(x, y, s)
-            elif align == "left":
-                c.drawString(x, y, s)
-            else:
-                c.drawCentredString(x, y, s)
-
-        def rect(x, y, w, h, fill=None, stroke=1):
-            if fill:
-                c.setFillColor(fill)
-                c.rect(x, y - h, w, h, fill=1, stroke=stroke)
-                c.setFillColorRGB(0, 0, 0)
-            else:
-                c.rect(x, y - h, w, h, fill=0, stroke=stroke)
-
-        # ====== الرأس: الاسم الإنجليزي (يسار) - الشعار (وسط) - الاسم العربي (يمين) ======
-        y = PH - M
-        txt(M, y - 6, "Jadeite Factory", size=13, bold=True, align="left")
-        txt(M, y - 14, "Saudi Arabia, Riyadh", size=9, align="left")
-        txt(M, y - 21, "Industrial City", size=9, align="left")
-        txt(M, y - 28, "C.R: 1010851840", size=9, align="left")
-
-        txt(PW - M, y - 6, "مصنع جاديت للتصنيع", size=13, bold=True, align="right")
-        txt(PW - M, y - 14, "المملكة العربية السعودية", size=9, align="right")
-        txt(PW - M, y - 21, "الرياض - صناعية الموسى", size=9, align="right")
-        txt(PW - M, y - 28, "سجل تجاري: 1010851840", size=9, align="right")
-
-        logo_bottom = y - 28  # قيمة احتياطية إن تعذّر تحميل الشعار (أسفل آخر سطر بيانات الشركة)
-        try:
-            logo_bytes = base64.b64decode(APP_LOGO_B64)
-            logo_img = ImageReader(io.BytesIO(logo_bytes))
-            lw, lh = 55 * mm, 12 * mm
-            logo_top = y - 6
-            logo_bottom = logo_top - lh
-            c.drawImage(logo_img, (PW - lw) / 2, logo_bottom, width=lw, height=lh, mask='auto', preserveAspectRatio=True)
-        except Exception:
-            pass
-
-        y = min(y - 28, logo_bottom) - 8 * mm  # مسافة أمان واضحة أسفل أعمق عنصر بالرأس (الشعار أو نص الشركة)
-
-        # ====== رقم التشغيل (بدل NO. الأحمر) + بيانات العميل ======
-        rect(M, y, 32 * mm, 9 * mm)
-        set_no_txt = str(data.get("set_number") or "-")
-        set_no_size = fit_font_size(set_no_txt, 30 * mm, 13, bold=True)
-        txt(M + 16 * mm, y - 6 * mm, set_no_txt, size=set_no_size, bold=True, align="center")
-        txt(M + 32 * mm + 3, y - 6 * mm, "رقم التشغيل", size=10, bold=True, align="left")
-
-        info_max_w = PW - M - (M + 32 * mm + 3) - 5 * mm
-        name_line = f"اسم العميل: {data.get('name','')}"
-        name_size = fit_font_size(name_line, info_max_w, 11, min_size=8)
-        txt(PW - M, y - 3.5 * mm, name_line, size=name_size, align="right")
-        y -= 9 * mm
-        date_line = f"التاريخ: {data.get('date','')}"
-        date_size = fit_font_size(date_line, info_max_w, 11, min_size=8)
-        txt(PW - M, y - 3.5 * mm, date_line, size=date_size, align="right")
-        y -= 10 * mm
-
-        table_top = y - 4
-
-        # ====== شبكة الجداول (3 أعمدة رئيسية) - كل صف جداول بارتفاع موحّد لتفادي أي تراكب ======
-        col_w = (PW - 2 * M) / 3
-        header_color = (0.65, 0.80, 0.45)  # أخضر فاتح مطابق للقالب
-        subheader_color = (0.10, 0.20, 0.45)  # كحلي مطابق للقالب
-        ROW_H = 11 * mm
-        HEAD_H = 7 * mm
-        SUB_H = 6.5 * mm
-
-        def draw_mini_table(x, y0, w, title, sub_cols, n_rows, row_h=ROW_H, fill_map=None):
-            """يرسم جدولاً صغيراً: عنوان أخضر + رأس أعمدة كحلي + صفوف بيانات فارغة/معبأة، ويرجع (y_نهاية، ارتفاع_كلي)"""
-            from reportlab.lib.colors import Color
-            rect(x, y0, w, HEAD_H, fill=Color(*header_color))
-            title_size = fit_font_size(title, w - 3 * mm, 11, bold=True)
-            txt(x + w / 2, vcenter_baseline(y0, HEAD_H, title_size), title, size=title_size, bold=True, align="center")
-            n = len(sub_cols)
-            cw = w / n
-            cell_pad = 1.5 * mm
-            rect(x, y0 - HEAD_H, w, SUB_H, fill=Color(*subheader_color))
-            c.setFillColorRGB(1, 1, 1)
-            for i, lbl in enumerate(sub_cols):
-                lbl_size = fit_font_size(lbl, cw - 2 * cell_pad, 8.5, bold=True, min_size=5.5)
-                c.setFont(_ARABIC_FONT_BOLD_NAME, lbl_size)
-                c.drawCentredString(x + w - cw * i - cw / 2, vcenter_baseline(y0 - HEAD_H, SUB_H, lbl_size), ar(lbl))
-            c.setFillColorRGB(0, 0, 0)
-            yy = y0 - HEAD_H - SUB_H
-            for r in range(n_rows):
-                rect(x, yy, w, row_h)
-                for i in range(1, n):
-                    c.line(x + i * cw, yy - row_h, x + i * cw, yy)
-                if fill_map and r in fill_map:
-                    for col_idx, val in fill_map[r].items():
-                        cx = x + w - cw * col_idx - cw / 2
-                        val_size = fit_font_size(val, cw - 2 * cell_pad, 10, bold=True, min_size=6.5)
-                        txt(cx, vcenter_baseline(yy, row_h, val_size), val, size=val_size, bold=True, align="center")
-                yy -= row_h
-            total_h = HEAD_H + SUB_H + n_rows * row_h
-            return yy, total_h
-
-        GAP = 2.5 * mm
-        cols3 = ["النقاص", "الوزن بعد", "الوزن قبل"]
-
-        # صف 1: الأوزان | التركيب | التصنيع (فارغة، للتعبئة اليدوية لاحقاً) - صفان لكل جدول
-        y1, h1 = draw_mini_table(M, table_top, col_w, "الأوزان", cols3, 2)
-        draw_mini_table(M + col_w, table_top, col_w, "التركيب", cols3, 2)
-        draw_mini_table(M + 2 * col_w, table_top, col_w, "التصنيع", cols3, 2)
-        row2_top = table_top - h1 - GAP
-
-        # صف 2: الذهب الصافي (فارغة الآن - القيمة انتقلت لجدول تفاصيل الأوزان) | التركيب | البوليش - صفان لتوحيد الارتفاع
-        y2, h2 = draw_mini_table(M, row2_top, col_w, "الذهب الصافي", ["البيان", "الوزن"], 2)
-        draw_mini_table(M + col_w, row2_top, col_w, "التركيب", cols3, 2)
-        draw_mini_table(M + 2 * col_w, row2_top, col_w, "البوليش", cols3, 2)
-        row3_top = row2_top - h2 - GAP
-
-        # صف موحّد: جدول واحد يعرض الذهب/الفصوص/الأحجار/الأحجار بعد الخصم (مع توضيح النسبة)/الماس، بدل الجداول المتفرقة السابقة
-        try:
-            discount_pct_display = round((stones_discount_num / stones) * 100, 1) if stones > 0 else 0.0
-        except Exception:
-            discount_pct_display = 0.0
-        materials_cols = ["البيان", "القيمة"]
-        khayas_val = data.get("khayas", 0.0) or 0.0
-
-        # ══════════════════════════════════════════════════════════════════
-        #  جدول (الوزن النهائي) بترتيب النموذج الورقي المعتمد، من الأسفل لأعلى:
-        #      الوزن الصافي   = الذهب
-        #      ناقص الماس     = الماس
-        #      ناقص احجار     = الأحجار
-        #      ناقص فصوص      = الفصوص
-        #      الوزن النهائي  = مجموع الأربعة أعلاه
-        #
-        #  التسميات «ناقص …» كما في النموذج الورقي؛ والقيم تُجمع لا تُطرح،
-        #  لأن الوزن النهائي في النموذج هو الوزن الكلي قبل استبعاد الأصناف.
-        # ══════════════════════════════════════════════════════════════════
-        final_weight = round(gold + diamond + stones + gems, 2)
-        materials_fill = {
-            0: {0: "الوزن النهائي", 1: f"{final_weight:.2f}"},
-            1: {0: "ناقص فصوص", 1: f"{gems:.2f}"},
-            2: {0: "ناقص احجار", 1: f"{stones:.2f}"},
-            3: {0: "ناقص الماس", 1: f"{diamond:.2f}"},
-            4: {0: "الوزن الصافي", 1: f"{gold:.2f}"},
-            5: {0: f"الأحجار بعد الخصم ({discount_pct_display:g}%)", 1: f"{stones_discount_num:.2f}"},
-            6: {0: "خياس التلميع النهائي", 1: f"{khayas_val:.2f}"},
-            7: {0: "خياس البوليش", 1: f"{data.get('khayas_polish', 0.0):.2f}"},
-            8: {0: "خياس المركب", 1: f"{data.get('khayas_assembler', 0.0):.2f}"},
-            9: {0: "الصافي", 1: f"{data.get('net', 0.0):.2f}"},
-        }
-        y34, h34 = draw_mini_table(M, row3_top, col_w, "الوزن النهائي", materials_cols, 10, row_h=7 * mm, fill_map=materials_fill)
-        rect(M + col_w, row3_top, 2 * col_w, h34)
-        row5_top = row3_top - h34 - GAP
-
-        # صف 5: الإجمالي (محسوب تلقائياً) | تاريخ استلام الطلب + مساحة إضافية
-        total_cols = ["البيان", "الوزن"]
-        totals_fill = {
-            0: {0: "الوزن مع الفصوص", 1: f"{weight_with_gems:.2f}"},
-            1: {0: "الوزن القائم", 1: f"{weight_standing:.2f}"},
-            2: {0: "الوزن المقيد", 1: f"{weight_bound:.2f}"},
-        }
-        y5, h5 = draw_mini_table(M, row5_top, col_w, "الإجمالي", total_cols, 3, row_h=9 * mm, fill_map=totals_fill)
-
+    def draw_set_voucher_page(self, c, data):
+        """سند رقم التشغيل بقالب المصنع الورقي حرفياً (التصنيع، البوليش، التركيب، التلميع النهائي،
+        جدول القطع ١–١٨، الإجماليات، التوقيعات). لا يُعبّأ منه إلا رقم التشغيل في خانة NO
+        وجدول «الوزن النهائي»؛ وبقية الخانات فارغة للتعبئة اليدوية."""
         from reportlab.lib.colors import Color
-        recv_h = 8 * mm
-        rect(M + col_w, row5_top, 2 * col_w, recv_h, fill=Color(*header_color))
-        recv_size = fit_font_size("تاريخ استلام الطلب", 2 * col_w - 6 * mm, 11, bold=True)
-        txt(M + col_w + col_w, vcenter_baseline(row5_top, recv_h, recv_size), "تاريخ استلام الطلب", size=recv_size, bold=True, align="center")
-        rect(M + col_w, row5_top - recv_h, 2 * col_w, h5 - recv_h)
+        PW, PH = A4
+        k = PW / self.VOUCHER_PX_W
+        HEAD, LABEL = Color(0.80, 0.80, 0.80), Color(0.86, 0.86, 0.86)
 
-        # ====== التوقيعات ======
-        sig_y = 18 * mm
-        sig_w = (PW - 2 * M) / 3
-        for i, label in enumerate(["توقيع المدير", "توقيع المحاسب", "توقيع مسؤول الصالة"]):
-            cx = M + sig_w * i + sig_w / 2
-            c.line(M + sig_w * i + 10, sig_y, M + sig_w * (i + 1) - 10, sig_y)
-            sig_size = fit_font_size(label, sig_w - 20, 10, bold=True)
-            txt(cx, sig_y - 6, label, size=sig_size, bold=True, align="center")
+        def X(px):
+            return px * k
+
+        def Y(py):
+            return PH - py * k
+
+        def box(x0, y0, x1, y1, fill=None, lw=0.9):
+            c.setLineWidth(lw)
+            if fill is not None:
+                c.setFillColor(fill)
+            c.rect(X(x0), Y(y1), (x1 - x0) * k, (y1 - y0) * k, fill=1 if fill is not None else 0, stroke=1)
+            c.setFillColorRGB(0, 0, 0)
+
+        def text(px, py, s, size=11, bold=True, align="center"):
+            c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
+            s = str(s)
+            s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
+            base = Y(py) - size * 0.36
+            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](X(px), base, s)
+
+        def cell(x0, y0, x1, y1, label="", fill=None, size=11.5, align="center", bold=True):
+            box(x0, y0, x1, y1, fill)
+            if label != "":
+                px = {"center": (x0 + x1) / 2, "right": x1 - 14, "left": x0 + 14}[align]
+                fit = fit_font_size(label, (x1 - x0) * k - 8, size, bold=bold, min_size=7)   # النص داخل خانته دائماً
+                text(px, (y0 + y1) / 2, label, fit, bold, align)
+
+        # ── الرأس: مصنع جاديت + NO ──
+        box(193, 95, 1315, 248, HEAD, lw=1.2)
+        text(755, 148, "مصنع جاديت", 21)
+        text(212, 195, "NO:", 14, align="left")
+        cell(290, 172, 460, 218, str(data.get("set_number") or ""), Color(1, 1, 1), size=15)
+        # ── بيانات السند ──
+        for x0, x1, label, fill in ((193, 338, "/      /", None), (338, 437, ":DATE", LABEL), (437, 607, "", None),
+                                    (607, 755, ":NAME", LABEL), (755, 852, "", None),
+                                    (852, 998, "رقم الموديل:", LABEL), (998, 1170, "", None),
+                                    (1170, 1315, "اسم العميل:", LABEL)):
+            cell(x0, 248, x1, 295, label, fill, size=9)
+        for x0, x1, label, fill in ((778, 875, "", None), (875, 998, "النوع:", LABEL), (998, 1170, "", None),
+                                    (1170, 1315, "اسم المركب:", LABEL)):
+            cell(x0, 295, x1, 348, label, fill, size=9)
+
+        # ── العمود الأيسر: أقسام المراحل ──
+        three = ((558, 728), (387, 558), (240, 387))
+
+        def stage(top, title, heads):
+            cell(240, top, 728, top + 47, title, HEAD, size=12.5)
+            for (x0, x1), h in zip(three, heads):
+                cell(x0, top + 47, x1, top + 95, h, LABEL, size=11.5)
+                cell(x0, top + 95, x1, top + 143)
+            return top + 143
+
+        stage(297, "التصنيع", ("0.08%", "0.04%", "خياس"))
+        stage(465, "البوليش", ("قبل", "بعد", "خياس"))
+        y = stage(637, "التركيب", ("قبل", "بعد", "خياس"))
+        for label, value_fill in (("فصوص", None), ("احجار", None), ("الماس", None)):
+            cell(481, y, 728, y + 48, label, LABEL)
+            cell(240, y, 481, y + 48, "%" if label == "احجار" else "", value_fill, align="right")
+            y += 48
+        c.setLineWidth(1.4)
+        c.line(X(240), Y(y + 3), X(728), Y(y + 3))
+        y += 6
+        for label, value_fill in (("الوزن بعد", LABEL), ("السلسال", None), ("الوزن الأجمالي:", None)):
+            cell(481, y, 728, y + 48, label, LABEL)
+            cell(240, y, 481, y + 48, "", value_fill)
+            y += 48
+        stage(1135, "التلميع النهائي", ("قبل", "بعد", "خياس"))
+
+        # الوزن النهائي — الجدول الوحيد المعبّأ
+        cell(235, 1305, 724, 1355, "الوزن النهائي", HEAD, size=12.5)
+        y = 1355
+        for label, value in self.set_voucher_values(data):
+            cell(478, y, 724, y + 48, label, LABEL)
+            cell(235, y, 478, y + 48, f"{value:.2f}", None, size=12.5)
+            y += 48
+
+        # ── العمود الأيمن: جدول القطع ١–١٨ ──
+        cols = ((1265, 1313, ""), (1143, 1265, "العدد"), (1046, 1143, "المقاس"), (972, 1046, "النوع"),
+                (850, 972, "الوزن"), (778, 850, "البيان"))
+        for x0, x1, h in cols:
+            cell(x0, 348, x1, 397, h, LABEL, size=9)
+        row_h = (1283 - 397) / 18
+        for i in range(18):
+            y0 = 397 + i * row_h
+            for x0, x1, _h in cols:
+                cell(x0, y0, x1, y0 + row_h, str(i + 1) if x0 == 1265 else "", size=9.5)
+        cell(772, 1283, 1310, 1333, "الاجمالي", HEAD, size=12.5)
+        for x0, x1, label, fill in ((1188, 1310, "فصوص:", LABEL), (1040, 1188, "", None),
+                                    (918, 1040, "احجار:", LABEL), (772, 918, "", None)):
+            cell(x0, 1333, x1, 1383, label, fill, size=11.5)
+        cell(797, 1408, 1285, 1457, "الأجمالي", HEAD, size=12.5)
+        y = 1457
+        for label in ("الوزن الصافي", "فصوص", "الاحجار %", "الوزن المقيد"):
+            if label == "الاحجار %":
+                cell(1138, y, 1285, y + 48, label, LABEL)
+                cell(1040, y, 1138, y + 48, "", LABEL)
+            else:
+                cell(1040, y, 1285, y + 48, label, LABEL)
+            cell(797, y, 1040, y + 48)
+            y += 48
+
+        # ── التوقيعات ──
+        c.setLineWidth(0.9)
+        for x0, x1, label in ((992, 1212, "توقيع المدير"), (650, 870, "توقيع المحاسب"),
+                              (285, 505, "توقيع مدير الانتاج")):
+            c.line(X(x0), Y(1697), X(x1), Y(1697))
+            text((x0 + x1) / 2, 1722, label, 10.5)
 
     def draw_sales_summary_pages(self, c, rows_data, name, date_str):
         """يرسم صفحة (أو أكثر عند كثرة الأسطر) لفاتورة المبيعات الإجمالية: جدول مرقّم بكل الأسطر + صف الإجمالي، بنفس تصميم قالب فاتورة المبيعات (الأزرق)، قبل صفحات أرقام التشغيل التفصيلية"""
@@ -18933,12 +18780,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 break
 
     def generate_invoice_pdf(self, groups, output_path):
-        """ينشئ ملف PDF: صفحة فاتورة مبيعات إجمالية أولاً (إن كانت كل الأسطر بنفس التاريخ والاسم)، ثم صفحة مستقلة لكل رقم تشغيل، بنفس تصميم الفاتورة الثابت"""
+        """ملف الترحيل والطباعة بالترتيب: تذاكر أرقام التشغيل أولاً (إن كانت مفعّلة)، ثم فاتورة
+        المبيعات الإجمالية (إن كانت كل الأسطر بنفس التاريخ والاسم)، ثم سند لكل رقم تشغيل
+        بقالب المصنع الورقي"""
         if not REPORTLAB_AVAILABLE:
             messagebox.showerror("غير متاح", "ميزة طباعة الفواتير تحتاج تثبيت مكتبة reportlab أولاً:\npip install reportlab arabic-reshaper python-bidi")
             return False
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
 
+        # ١) تذاكر أرقام التشغيل (جاهزة للقص والمسح)
+        if self.sale_tickets_with_invoice():
+            tickets = self.sale_ticket_data(groups)
+            if tickets:
+                self.draw_sale_tickets(c, tickets)
+
+        # ٢) فاتورة المبيعات
         if groups:
             dates = set(g[1] for g in groups)
             names = set(g[2] for g in groups)
@@ -18947,15 +18803,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 rows_data = [self.get_invoice_group_data(sn, batch_date, batch_name) for sn, _, _ in groups]
                 self.draw_sales_summary_pages(c, rows_data, batch_name, batch_date)
 
+        # ٣) سندات أرقام التشغيل بالقالب الورقي
         for (set_number, date_str, name) in groups:
             data = self.get_invoice_group_data(set_number, date_str, name)
-            self.draw_invoice_page(c, data)
+            self.draw_set_voucher_page(c, data)
             c.showPage()
-        # قالب التذاكر: تذكرة لكل رقم تشغيل بعد صفحات الفاتورة (جاهزة للقص والمسح)
-        if self.sale_tickets_with_invoice():
-            tickets = self.sale_ticket_data(groups)
-            if tickets:
-                self.draw_sale_tickets(c, tickets)
         c.save()
         return True
 
@@ -21809,10 +21661,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.apply_edit_lock_to_button(btn_save_edit, win)
 
 class SyncDownWindow(ctk.CTkToplevel):
-    """شاشة تجهيز بيانات المصنع: ترفع ما لم يُرفع ثم تسحب نسخة السحابة.
+    """شاشة تجهيز بيانات المصنع عند الدخول.
 
-    الترتيب مقصود: الرفع قبل السحب دائماً — لو عمل العميل أسبوعاً بلا إنترنت
-    فحركاته المتراكمة تُرفع أولاً، وإلا طمستها نسخة السحابة الأقدم.
+    نسخة العميل: تحذف بقايا مزامنة الويب من قاعدة الجهاز فقط (لا رفع هنا — النسخة
+    الكاملة يرفعها البرنامج في الخلفية فور فتحه). نسخة المدير: تنزّل قاعدة العميل
+    كما رفعها جهازه (مرآة حرفية)، ولا مصدر غيرها بعد إزالة الويب (الدفعة ٢١).
     """
 
     def __init__(self, master, db_path, api, tenant_id, business_name, cloud_only=None, on_progress=None):
@@ -21829,8 +21682,7 @@ class SyncDownWindow(ctk.CTkToplevel):
         self.tenant_id = tenant_id
         self.ok = False
         self.error = None
-        # نسخة المدير: «mirror» = قاعدة العميل كما رفعها جهازه، «ledger» = إعادة بناء
-        # احتياطية من سجل الحركات السحابي (لم تصل نسخة كاملة بعد)
+        # نسخة المدير: «mirror» = قاعدة العميل كما رفعها جهازه (المصدر الوحيد)
         self.mode = None
         self.mirror_error = None
 
@@ -21880,33 +21732,31 @@ class SyncDownWindow(ctk.CTkToplevel):
     def _work(self):
         try:
             # ═══════════════════════════════════════════════════════════════
-            #  اتجاه المزامنة — قاعدة صارمة لا استثناء لها:
+            #  اتجاه البيانات — قاعدة صارمة لا استثناء لها:
             #
             #  نسخة العميل (IS_ADMIN_BUILD = False):
-            #      بياناتها المحلية هي مصدر الحقيقة. تُرفع للسحابة فقط،
-            #      ولا يُسحب إليها شيء إطلاقاً. سحب السحابة إليها كان يطمس
-            #      بياناته ببيانات جهاز المدير — وهي الحادثة التي وقعت.
+            #      بياناتها المحلية هي مصدر الحقيقة. نسختها الكاملة تُرفع للسحابة
+            #      في الخلفية، ولا يُسحب إليها شيء إطلاقاً.
             #
             #  نسخة المدير (IS_ADMIN_BUILD = True):
-            #      مرآة للقراءة فقط: تمسح نسختها المؤقتة وتسحب من السحابة،
-            #      ولا ترفع شيئاً أبداً.
+            #      مرآة للقراءة فقط: تنزّل نسخة العميل الكاملة ولا ترفع شيئاً أبداً.
             # ═══════════════════════════════════════════════════════════════
             if not IS_ADMIN_BUILD:
-                # لا قاعدة على الجهاز = لا شيء يُرفع. ولا نُنشئ ملفاً فارغاً هنا:
+                # لا قاعدة على الجهاز = لا شيء يُجهَّز. ولا نُنشئ ملفاً فارغاً هنا:
                 # وجوده كان يجعل البرنامج يظن أن البيانات موجودة، فلا يسترجعها
                 # من مجلد النسخ الاحتياطية على الجهاز، ثم يرفع القاعدة الفارغة.
-                if not os.path.exists(self.db_path):
-                    self.ok = True
-                    self._ui(self.destroy)
-                    return
-                self._progress("جارٍ رفع بياناتك للسحابة…", 0.15)
-                install_sync_schema(self.db_path)
-                uploader = CloudSync(db_path=self.db_path, api=self.api,
-                                     tenant_id=self.tenant_id, app_version=APP_VERSION)
-                pending = uploader.pending_count()
-                if pending > 0:
-                    uploader.flush(max_batches=500)
-                self._progress("تم رفع بياناتك ✔", 1.0)
+                if os.path.exists(self.db_path):
+                    self._progress("جارٍ تجهيز بياناتك…", 0.3)
+                    try:
+                        con = sqlite3.connect(self.db_path, timeout=30)
+                        try:
+                            with con:
+                                drop_web_sync_artifacts(con.cursor())
+                        finally:
+                            con.close()
+                    except Exception:
+                        pass    # تنظيف فقط — init_database يعيده عند فتح البرنامج
+                self._progress("بياناتك جاهزة ✔", 1.0)
                 self.error = None
                 self.ok = True
                 self._ui(self.destroy)
@@ -21914,50 +21764,19 @@ class SyncDownWindow(ctk.CTkToplevel):
 
             # نسخة المدير: قاعدة العميل نفسها كما رفعها جهازه (مرآة حرفية) —
             # الحركات والفترات وترتيب الأسماء وكل إعدادات الشاشات، رقماً برقم.
-            # إعادة البناء من سجل الحركات السحابي كانت تختلف عن جهاز العميل (حركات
-            # من الويب لا تصله، وما فقده باسترجاع نسخة قديمة يبقى في السحابة…)،
-            # فتبقى احتياطاً فقط إن لم تصل من العميل نسخة كاملة بعد.
             self._progress("جارٍ تنزيل بيانات العميل كما هي على جهازه…", 0.05)
             ok, why = load_client_mirror(self.tenant_id, self.db_path)
             if ok:
                 self.mode = "mirror"
                 self._progress("تم تنزيل نسخة العميل ✔", 1.0)
                 self.ok = True
-                self._ui(self.destroy)
-                return
-            self.mirror_error = why
-            if not SYNC_AVAILABLE or self.api is None or not (
-                    getattr(self.api, "sync_token", None) or SUPABASE_SECRET_KEY):
+            else:
+                self.mirror_error = why
                 reset_local_cache(self.db_path)     # لا نعرض بقايا جلسة سابقة كأنها بيانات العميل
                 self.error = why
-                self._ui(self.destroy)
-                return
-            self.mode = "ledger"
-
-            # الاحتياط: نبدأ من قاعدة نظيفة دائماً، فما يُعرض هو أحدث نسخة
-            # سحابية للعميل حصراً — لا بقايا من جلسة سابقة على هذا الجهاز
-            if self.cloud_only:
-                self._progress("جارٍ تجهيز نسخة سحابية نظيفة…", 0.03)
-                reset_local_cache(self.db_path)
-
-            install_sync_schema(self.db_path)
-
-            # (١) رفع ما لم يُرفع بعد — يُتخطّى في نسخة المدير لأن قاعدتها
-            # مُسحت للتو، فلا يوجد ما يُرفع، ورفع نسخة فارغة قد يطمس بيانات العميل
-            uploader = CloudSync(db_path=self.db_path, api=self.api,
-                                 tenant_id=self.tenant_id, app_version=APP_VERSION)
-            pending = 0 if self.cloud_only else uploader.pending_count()
-            if pending > 0:
-                self._progress(f"جارٍ رفع {pending} حركة لم تُرفع بعد…", 0.08)
-                uploader.flush(max_batches=300)
-
-            # (٢) سحب نسخة السحابة ودمجها محلياً
-            sync_down(self.db_path, self.api, self.tenant_id,
-                      on_progress=lambda t, r: self._progress(t, r))
-            self.ok = True
 
         except Exception as e:
-            # فشل التجهيز لا يمنع العمل: البيانات المحلية سليمة والمزامنة تعيد المحاولة
+            # فشل التجهيز لا يمنع العمل: البيانات المحلية سليمة
             self.error = str(e)
 
         self._ui(self.destroy)
@@ -22937,16 +22756,12 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
             if IS_ADMIN_BUILD:
                 try:
                     db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
-                    api = (_RpcBridge(get_supabase_public_client(), CURRENT_SYNC_TOKEN)
-                           if CURRENT_SYNC_TOKEN else None)
-                    win = SyncDownWindow(self, db_path, api, client_id, business_name,
+                    win = SyncDownWindow(self, db_path, None, client_id, business_name,
                                          on_progress=self._outro_progress)
                     self.wait_window(win)
                     if win.error:
                         messagebox.showwarning("تنبيه المزامنة",
                                                f"تعذّر تنزيل بيانات العميل من السحابة:\n{win.error}")
-                    elif win.mode == "ledger":
-                        messagebox.showwarning("تنبيه المزامنة", ADMIN_LEDGER_FALLBACK_NOTE)
                 except Exception as e:
                     log_cloud_error("تعذّر تجهيز البيانات من السحابة", e)
 
@@ -23319,18 +23134,15 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         # يعمل حتى بدون رمز مزامنة صريح.
         try:
             db_path = os.path.join(DATA_DIR, f"client_data_{client_id}.db")
-            api = _RpcBridge(sb_admin, CURRENT_SYNC_TOKEN) if sb_admin is not None else None
             prep = ctk.CTkToplevel(self)
             prep.withdraw()
-            win = SyncDownWindow(prep, db_path, api, client_id, business_name)
+            win = SyncDownWindow(prep, db_path, None, client_id, business_name)
             prep.wait_window(win)
             prep.destroy()
             if win.error:
                 messagebox.showwarning(
                     "تنبيه",
                     f"تعذّر تنزيل بيانات العميل من السحابة:\n{win.error}")
-            elif win.mode == "ledger":
-                messagebox.showwarning("تنبيه", ADMIN_LEDGER_FALLBACK_NOTE)
         except Exception as e:
             log_cloud_error("تعذّر تجهيز بيانات العميل للمدير", e)
 

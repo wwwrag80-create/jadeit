@@ -30,17 +30,11 @@ print("✔ آخر الصفوف مضمونة في العيّنة (صف الإجم
 assert "after_cancel" in fit and "t.after(200" in fit
 print("✔ تغيير حجم النافذة يُعيد الضبط مرة واحدة بعد الاستقرار — لا تجمّد")
 
-# ═══ ٣) منع تكرار المزامنة ═══
-cs = io.open("cloud_sync.py", encoding="utf-8").read()
-assert 'deduped[row["seq_no"]] = row' in cs
-print("✔ الحركات: تُزال التكرارات قبل الإرسال (الخطأ 21000)")
-assert '{(a["name"], a["category"]): a for a in added}' in cs
-print("✔ الحسابات: نفس المعالجة")
-
+# ═══ ٣) منع تكرار المزامنة (في السحابة؛ الرفع صفاً صفاً أُزيل مع الويب — الدفعة ٢١) ═══
 sql = io.open("../supabase/13_fix_admin_mirror.sql", encoding="utf-8").read()
 assert "with ordinality as t(x, ord)" in sql
 assert sql.count("select distinct on") == 2
-print("✔ والسحابة أيضاً تُزيل التكرار داخل الدفعة (حماية مزدوجة)")
+print("✔ السحابة تُزيل التكرار داخل الدفعة")
 
 # ═══ ٤) الشعار شفاف وأصغر ═══
 hb = seg("build_home_screen")
