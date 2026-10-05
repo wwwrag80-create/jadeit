@@ -28,8 +28,8 @@ errors = []
 ns = {"os": os, "base64": base64, "zlib": zlib, "lzma": lzma, "IS_ADMIN_BUILD": False, "CURRENT_SYNC_TOKEN": None,
       "log_cloud_error": lambda *a: errors.append(a)}
 for name in ("BACKUP_MAGIC", "BACKUP_MAGIC_XZ", "SQLITE_HEADER", "encode_backup_payload", "decode_backup_payload",
-             "rpc_missing", "_LAST_BACKUP_DIGEST", "BACKUP_UNCHANGED", "cloud_upload_backup", "_backup_readers",
-             "cloud_download_backup"):
+             "rpc_missing", "_LAST_BACKUP_DIGEST", "BACKUP_UNCHANGED", "cloud_upload_backup", "cloud_error_kind",
+             "_backup_download_attempts", "cloud_download_backup_checked", "cloud_download_backup"):
     exec(module_src(name), ns)
 
 TMP = tempfile.mkdtemp(prefix="backup_payload_")
@@ -128,6 +128,7 @@ print("✔ نسخة المدير لا ترفع شيئاً")
 
 # ═══ ٣) التنزيل (المدير): الصيغتان تُكتبان قاعدةً سليمة، والتالف لا يُكتب ═══
 ns["SUPABASE_SECRET_KEY"] = "sb_secret_x"
+ns["IS_ADMIN_BUILD"] = True
 for payload, label in ((enc, "المضغوطة"), (legacy, "القديمة")):
     admin = Client(payload=payload)
     ns["get_supabase_admin_client"] = lambda: admin

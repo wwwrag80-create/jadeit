@@ -107,7 +107,7 @@ files_before = sorted(os.listdir(backup_dir))
 db = os.path.join(data_dir, "client_data_A.db")
 make_db(db, 450)
 init = method("GoldSystemApp", "__init__")
-assert "if self.client_id and not os.path.exists(self.db_path):" in init
+assert "if self.client_id and not os.path.exists(self.db_path) and not IS_ADMIN_BUILD:" in init
 print("✔ إعادة التثبيت ومجلد البيانات باقٍ: القاعدة موجودة فتُفتح كما هي (لا نسخ ولا تنزيل)")
 
 # ═══ ٣) ملف القاعدة مفقود ← من أحدث نسخة سليمة على الجهاز ═══
@@ -129,12 +129,11 @@ assert not os.path.exists(fresh.db_path)
 print("✔ حساب جديد بلا نسخ على الجهاز: يبدأ جديداً — بلا تنزيل من السحابة")
 
 # ═══ ٤) نسخة العميل لا تنزّل من السحابة إطلاقاً ═══
-i_branch = init.index("if self.client_id and not os.path.exists(self.db_path):")
-branch = init[i_branch:i_branch + 900]
-assert branch.index("if not IS_ADMIN_BUILD:") < branch.index("self.restore_missing_db_from_local_backup()") \
-    < branch.index("cloud_download_backup(")
-assert "elif not cloud_download_backup(" in branch
-print("✔ عند الفتح: نسخة العميل تسترجع من جهازها، والتنزيل من السحابة لنسخة المدير وحدها")
+i_branch = init.index("if self.client_id and not os.path.exists(self.db_path) and not IS_ADMIN_BUILD:")
+branch = init[i_branch:i_branch + 300]
+assert "self.restore_missing_db_from_local_backup()" in branch and "cloud_download_backup(" not in init
+assert "تنبيه استرجاع البيانات" not in init
+print("✔ عند الفتح: نسخة العميل تسترجع من جهازها؛ ونسخة المدير نزّلت قبل الفتح — بلا تنزيل ثانٍ ولا تنبيه ثانٍ")
 
 # قاعدة تالفة بلا نسخ سليمة: لا تنزيل من السحابة في نسخة العميل
 for f in os.listdir(backup_dir):

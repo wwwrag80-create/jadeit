@@ -42,12 +42,13 @@ ns = {"os": os, "sys": sys, "sqlite3": sqlite3, "shutil": shutil, "base64": base
       "contextlib": contextlib, "threading": __import__("threading"), "hashlib": __import__("hashlib"),
       "time": __import__("time"), "zlib": __import__("zlib"), "lzma": __import__("lzma"),
       "APP_VERSION": "9.9.9", "IS_ADMIN_BUILD": True, "SUPABASE_AVAILABLE": True,
-      "SUPABASE_URL": "https://x", "SUPABASE_SECRET_KEY": "",
+      "SUPABASE_URL": "https://x", "SUPABASE_SECRET_KEY": "", "CURRENT_SYNC_TOKEN": None,
       "log_cloud_error": lambda *a, **k: errors.append(a)}
 for name in ("MIRROR_META_TIME", "MIRROR_META_VERSION", "MIRROR_META_SOURCE",
              "BACKUP_MAGIC", "BACKUP_MAGIC_XZ", "SQLITE_HEADER", "decode_backup_payload",
              "_remove_db_files", "DIGEST_SKIP_TABLES", "db_content_digest", "snapshot_db_bytes", "is_sqlite_db_healthy", "reset_local_cache",
-             "_backup_readers", "cloud_download_backup", "cloud_backup_stamp", "load_client_mirror",
+             "rpc_missing", "cloud_error_kind", "BACKUP_DOWNLOAD_PROBLEMS", "_backup_download_attempts",
+             "cloud_download_backup_checked", "cloud_download_backup", "cloud_backup_stamp", "load_client_mirror",
              "mark_mirror_source", "admin_secret_dir", "_load_admin_secret_key", "save_admin_secret_key",
              "cloud_list_clients", "cloud_list_clients_checked", "_SB_CLIENTS", "_SB_LOCK"):
     exec(module_src(name), ns)
@@ -190,8 +191,86 @@ ns["SUPABASE_SECRET_KEY"] = ""
 keep = os.path.join(TMP, "keep.db")
 shutil.copy(snap_path, keep)
 ok, why = ns["load_client_mirror"]("C2", keep)
-assert not ok and "لا توجد نسخة كاملة" in why and count(keep) == 60
+assert not ok and "لم يرفع برنامج العميل نسخته الكاملة" in why and count(keep) == 60
 print("✔ بلا نسخة كاملة من العميل: يُرجع السبب ولا يمسّ شيئاً")
+ns["get_supabase_public_client"] = lambda: pub
+
+# ═══ ٢-ب) دخول برنامج المدير باسم العميل (بلا مفتاح المدير): التنزيل برمز مزامنة العميل ═══
+class Err(Exception):
+    pass
+
+
+class RouteClient:
+    """سحابة وهمية: لكل دالة جوابها (بيانات، أو استثناء يُرفع)"""
+    def __init__(self, routes):
+        self.routes, self.calls = routes, []
+
+    def rpc(self, fn, args):
+        self.calls.append((fn, dict(args)))
+        out = self.routes.get(fn, Err("PGRST202 Could not find the function"))
+
+        class Q:
+            def execute(self_):
+                if isinstance(out, BaseException):
+                    raise out
+                return FakeRes(out)
+        return Q()
+
+    def table(self, _t):
+        raise Err("permission denied for table db_backups (42501)")
+
+
+ns["SUPABASE_SECRET_KEY"] = ""
+ns["CURRENT_SYNC_TOKEN"] = "tok-C1"
+rc = RouteClient({"download_backup_secure": [{"out_backup_data": payload}],
+                  "download_backup": Err("permission denied for function download_backup (42501)")})
+ns["get_supabase_public_client"] = lambda: rc
+ok, why = ns["load_client_mirror"]("C1", os.path.join(TMP, "token.db"))
+assert ok and why is None and count(os.path.join(TMP, "token.db")) == 60
+assert rc.calls == [("download_backup_secure", {"p_client_id": "C1", "p_sync_token": "tok-C1"})]
+print("✔ بلا مفتاح المدير: تنزيل نسخة العميل برمز مزامنته (دخوله باسمه وكلمة مروره) — 60 حركة")
+
+rc = RouteClient({"download_backup": Err("permission denied for function download_backup (42501)")})
+ns["get_supabase_public_client"] = lambda: rc
+errors.clear()
+ok, why = ns["load_client_mirror"]("C1", os.path.join(TMP, "denied.db"))
+assert not ok and "20_admin_download.sql" in why and errors
+assert [c[0] for c in rc.calls] == ["download_backup_secure", "download_backup"]
+print("✔ السحابة بلا دالة التنزيل بالرمز: السبب الحقيقي وما يُفعل (شغّل 20_admin_download.sql) — لا «لا نسخة»")
+
+rc = RouteClient({"download_backup_secure": [], "download_backup": [{"out_backup_data": payload}]})
+ns["get_supabase_public_client"] = lambda: rc
+ok, why = ns["load_client_mirror"]("C1", os.path.join(TMP, "none.db"))
+assert not ok and "لم يرفع برنامج العميل" in why and len(rc.calls) == 1
+print("✔ جواب مصرّح بلا نسخة: «لم يرفع برنامج العميل نسخته بعد» — افتحه على جهازه")
+
+rc = RouteClient({"download_backup_secure": ConnectionError("getaddrinfo failed"),
+                  "download_backup": TimeoutError("timed out")})
+ns["get_supabase_public_client"] = lambda: rc
+ok, why = ns["load_client_mirror"]("C1", os.path.join(TMP, "net.db"))
+assert not ok and "تعذّر الاتصال بالسحابة" in why
+print("✔ انقطاع الإنترنت: «تعذّر الاتصال بالسحابة» لا سبب آخر")
+
+rc = RouteClient({"download_backup_secure": [{"out_backup_data": base64.b64encode(b"garbage").decode()}]})
+ns["get_supabase_public_client"] = lambda: rc
+ok, why = ns["load_client_mirror"]("C1", os.path.join(TMP, "bad.db"))
+assert not ok and "غير صالحة" in why
+print("✔ نسخة تالفة: تُرفض بسببها ولا تُكتب")
+
+for answer, expected in (("2026-10-05 09:00:00+00", "2026-10-05 09:00:00+00"), ("", ""), (None, None)):
+    rc = RouteClient({"backup_stamp_secure": answer})
+    ns["get_supabase_public_client"] = lambda: rc
+    assert ns["cloud_backup_stamp"]("C1") == expected, (answer, ns["cloud_backup_stamp"]("C1"))
+    assert rc.calls[0] == ("backup_stamp_secure", {"p_client_id": "C1", "p_sync_token": "tok-C1"})
+print("✔ وقت آخر نسخة برمز العميل: التحديث التلقائي يعرض نسخته فور وصولها")
+
+ns["IS_ADMIN_BUILD"] = False
+rc = RouteClient({"download_backup_secure": [{"out_backup_data": payload}]})
+ns["get_supabase_public_client"] = lambda: rc
+assert ns["cloud_download_backup"]("C1", os.path.join(TMP, "client_build.db")) is False and not rc.calls
+ns["IS_ADMIN_BUILD"] = True
+print("✔ نسخة العميل لا تنزّل من السحابة أبداً (ولو حملت رمزها)")
+ns["CURRENT_SYNC_TOKEN"] = None
 ns["get_supabase_public_client"] = lambda: pub
 
 # ═══ ٣) نافذة التجهيز: النسخة الكاملة وحدها (أُزيل الويب وسجل حركاته — الدفعة ٢١) ═══

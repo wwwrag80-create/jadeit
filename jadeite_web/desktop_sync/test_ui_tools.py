@@ -5,7 +5,7 @@
   • كل جدول: النقر على العنوان يرتّب (الأرقام رقمياً ولو فيها فواصل أو «جم»، والنص أبجدياً)
     وصف الإجمالي يبقى آخراً؛ والجداول التي يُعدَّل اسم عمودها بالنقر تُرتَّب من القائمة.
   • زر الفأرة الأيمن: نسخ المحدد/الكل (يُلصق في Excel)، تصدير CSV بترميز تقرؤه Excel بالعربية، بحث.
-  • مركز التنبيهات: المتأخر عند العمال، الفترات غير المُقفلة، عمر النسخة الاحتياطية — وكل تنبيه يفتح شاشته.
+  • لوحة التنبيهات في الرئيسية أُزيلت بطلب المستخدم (الدفعة ٢٢).
   • F1 للاختصارات، وتلميحات للأزرار، وإشعار عابر بدل «موافق» للرسائل القصيرة.
 """
 import ast, csv, io, os, re, sys, tempfile, textwrap, time
@@ -33,8 +33,7 @@ def body(name):
 
 ns = {"re": re, "os": os, "time": time, "IS_ADMIN_BUILD": False}
 MEMBERS = ["_NUM_CLEAN", "SORT_ARROWS", "cell_number", "table_headers", "_on_tree_header_click", "sort_tree_by",
-           "tree_rows", "copy_tree_rows", "write_table_csv", "find_in_tree", "BACKUP_ALERT_DAYS",
-           "local_backup_age_days", "home_alerts", "WORKER_SECTIONS"]
+           "tree_rows", "copy_tree_rows", "write_table_csv", "find_in_tree", "WORKER_SECTIONS"]
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
 
 
@@ -159,40 +158,11 @@ assert hits == ["I2"] and t3.selection() == ("I2",)
 assert app.find_in_tree(t3, "غير موجود") == [] and app.toasts[-1][0] == "warn"
 print("✔ البحث يحدّد كل صف يحتوي النص ويعرض أولها")
 
-# ═══ مركز التنبيهات ═══
-class AlertsApp(ns["Base"]):
-    backup_dir = "x"
-    actions = []
-
-    def __init__(self, unclosed, backups):
-        self._unclosed, self._backups = unclosed, backups
-
-    def get_unclosed_periods(self, cat): return self._unclosed.get(cat, [])
-    def list_local_backups(self): return self._backups
-    def open_backup_manager(self): pass
-    def navigate_to_screen(self, n): AlertsApp.actions.append(n)
-
-
-tmp = tempfile.mkdtemp()
-fresh = os.path.join(tmp, "new.db")
-old = os.path.join(tmp, "old.db")
-open(fresh, "w").close()
-open(old, "w").close()
-os.utime(old, (time.time() - 5 * 86400, time.time() - 5 * 86400))
-a = AlertsApp({"المصنعين": [("2026-08", 5.0)], "المركبين": [("2026-08", 1.0), ("2026-07", 2.0)]}, [old])
-al = a.home_alerts()
-assert [x[0] for x in al] == ["warn", "info"], al
-assert "3 فترة سابقة" in al[0][1] and "2026-07، 2026-08" in al[0][1]
-assert "منذ 5 يوم" in al[1][1]
-assert not any("متأخر" in x[1] for x in al), "تنبيه الطقوم المتأخرة أُزيل"
-al[0][2]()
-assert AlertsApp.actions == ["صناديق الخياس"], "تنبيه الفترات يفتح صناديق الخياس"
-assert AlertsApp({}, [fresh]).home_alerts() == []
-assert "لا توجد نسخة احتياطية" in AlertsApp({}, []).home_alerts()[0][1]
-ns["IS_ADMIN_BUILD"] = True
-assert AlertsApp({}, []).home_alerts() == [], "نسخة المدير لا تنبّه على نسخ جهاز العميل"
-ns["IS_ADMIN_BUILD"] = False
-print("✔ التنبيهات: الفترات غير المُقفلة وعمر النسخة الاحتياطية — وكل تنبيه يفتح شاشته")
+# ═══ لوحة التنبيهات أُزيلت (الدفعة ٢٢) ═══
+for gone in ("home_alerts", "refresh_home_alerts", "home_alerts_frame", "BACKUP_ALERT_DAYS", "local_backup_age_days",
+             "🔔 التنبيهات"):
+    assert gone not in src, gone
+print("✔ لوحة التنبيهات أُزيلت من الرئيسية بطلب المستخدم")
 
 # ═══ الربط ═══
 std = body("create_standard_treeview")
@@ -205,14 +175,13 @@ assert 'self.bind_all("<F1>", lambda e: self.open_shortcuts_help(), add="+")' in
 keys = [k for k, _w in ast.literal_eval(ast.get_source_segment(src, node("SHORTCUTS")).split("=", 1)[1].strip())]
 for k in ("F1", "F2", "Ctrl + Z", "Ctrl + B", "Ctrl + C", "Esc"):
     assert k in keys, k
-assert "self.refresh_home_alerts()" in body("refresh_home_stats")
-assert "self.home_alerts_frame = " in body("build_home_screen") and "HoverTip(b, tip)" in body("build_home_screen")
+assert "HoverTip(b, tip)" in body("build_home_screen")
 hover = next(n for n in tree_ast.body if isinstance(n, ast.ClassDef) and n.name == "HoverTip")
 assert "wm_overrideredirect(True)" in ast.get_source_segment(src, hover)
 assert src.count("HoverTip(") >= 9
 assert "host.after(ms" in body("toast")
 assert 'EXPORTS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Exports"))' in src
 print("✔ كل الجداول (القياسية والمثبَّتة الإجمالي ونافذة العرض الكامل) فيها الأدوات، وF1 للاختصارات، "
-      "وتلميحات للأزرار، ومركز التنبيهات وإجراءات سريعة في الرئيسية")
+      "وتلميحات للأزرار، وإجراءات سريعة في الرئيسية")
 
 print("\n✅ أدوات الواجهة سليمة")

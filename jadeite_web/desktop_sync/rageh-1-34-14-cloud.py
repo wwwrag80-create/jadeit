@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.56.0"
+APP_VERSION = "1.57.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -960,36 +960,81 @@ def cloud_upload_backup(client_id, db_path, force=False):
         return False
 
 
-def _backup_readers():
-    """عملاء القراءة لنسخة العميل الكاملة: مفتاح المدير أولاً إن وُجد، ثم العام"""
-    readers = [get_supabase_admin_client()] if SUPABASE_SECRET_KEY else []
-    return [sb for sb in readers + [get_supabase_public_client()] if sb is not None]
+def cloud_error_kind(error):
+    """نوع فشل طلب سحابي: «network» انقطاع أو مهلة، «missing» الدالة غير مثبّتة،
+    «denied» السحابة ردّت برفض (صلاحية أو رمز)"""
+    names = {c.__name__ for c in type(error).__mro__}
+    if isinstance(error, OSError) or names & {"TransportError", "TimeoutException", "NetworkError",
+                                               "ConnectError", "ConnectTimeout", "ReadTimeout"}:
+        return "network"
+    if rpc_missing(error):
+        return "missing"
+    return "denied"
+
+
+# سبب تعذّر تنزيل نسخة العميل — نصّ يفهمه المدير ويعرف منه ماذا يفعل
+BACKUP_DOWNLOAD_PROBLEMS = {
+    "no_copy": "لم يرفع برنامج العميل نسخته الكاملة إلى السحابة بعد.\n"
+               "افتح برنامج العميل على جهازه وهو متصل بالإنترنت دقيقة واحدة — "
+               "وتظهر بياناته هنا تلقائياً فور وصولها.",
+    "denied": "السحابة لم تسمح لهذا الدخول بتنزيل نسخة العميل.\n"
+              "شغّل الملف supabase/20_admin_download.sql مرة واحدة في Supabase ← SQL Editor، "
+              "أو ادخل من لوحة المدير بمفتاح المدير.",
+    "network": "تعذّر الاتصال بالسحابة — تحقق من الإنترنت ثم أعد الدخول.",
+    "invalid": "وصلت نسخة العميل لكنها غير صالحة — حدّث برنامج المدير لآخر إصدار.",
+}
+
+
+def _backup_download_attempts(client_id):
+    """طرق تنزيل نسخة العميل بالترتيب: مفتاح المدير، ثم رمز مزامنة العميل (دخول برنامج
+    المدير باسم العميل وكلمة مروره — 20_admin_download.sql)، ثم الدالة القديمة بالمفتاح
+    العام (قواعد لم يُشغَّل فيها 17_backup_security.sql)"""
+    attempts = []
+    if SUPABASE_SECRET_KEY:
+        attempts.append((get_supabase_admin_client, "download_backup", {"p_client_id": client_id}))
+    if CURRENT_SYNC_TOKEN:
+        attempts.append((get_supabase_public_client, "download_backup_secure",
+                         {"p_client_id": client_id, "p_sync_token": CURRENT_SYNC_TOKEN}))
+    attempts.append((get_supabase_public_client, "download_backup", {"p_client_id": client_id}))
+    return attempts
+
+
+def cloud_download_backup_checked(client_id, target_db_path):
+    """(نسخة المدير) ينزّل آخر نسخة كاملة رفعها العميل ويكتبها محلياً.
+    يرجع (True, None) أو (False, السبب) — السبب مفتاح في BACKUP_DOWNLOAD_PROBLEMS.
+    نسخة العميل لا تنزّل من السحابة أبداً: بياناتها المحلية هي الحقيقة."""
+    if not IS_ADMIN_BUILD or not client_id:
+        return False, "no_copy"
+    problems = []
+    for getter, fn, args in _backup_download_attempts(client_id):
+        sb = getter()
+        if sb is None:
+            problems.append("network")
+            continue
+        try:
+            res = sb.rpc(fn, args).execute()
+        except Exception as e:
+            problems.append(cloud_error_kind(e))
+            log_cloud_error(f"تعذّر تنزيل نسخة العميل ({fn})", e)
+            continue
+        rows = res.data or []
+        data = rows[0].get("out_backup_data") if rows and isinstance(rows[0], dict) else None
+        if not data:
+            return False, "no_copy"        # طريق مصرّح أجاب: لا نسخة لهذا العميل بعد
+        try:
+            raw = decode_backup_payload(data)
+        except (ValueError, TypeError) as e:
+            log_cloud_error("النسخة المنزّلة من السحابة غير صالحة", e)
+            return False, "invalid"
+        with open(target_db_path, "wb") as f:
+            f.write(raw)
+        return True, None
+    return False, ("network" if problems and all(p == "network" for p in problems) else "denied")
 
 
 def cloud_download_backup(client_id, target_db_path):
     """ينزّل آخر نسخة كاملة رفعها العميل ويكتبها محلياً. يرجع True لو نجح"""
-    if not client_id:
-        return False
-    last_err = None
-    for sb in _backup_readers():
-        try:
-            res = sb.rpc("download_backup", {"p_client_id": client_id}).execute()
-        except Exception as e:
-            last_err = e
-            continue
-        if res.data and res.data[0].get("out_backup_data"):
-            try:
-                raw = decode_backup_payload(res.data[0]["out_backup_data"])
-            except (ValueError, TypeError) as e:
-                log_cloud_error("النسخة المنزّلة من السحابة غير صالحة", e)
-                return False
-            with open(target_db_path, "wb") as f:
-                f.write(raw)
-            return True
-        return False            # الطلب نجح ولا نسخة لهذا العميل
-    if last_err is not None:
-        log_cloud_error("تعذر تنزيل النسخة الاحتياطية من السحابة", last_err)
-    return False
+    return cloud_download_backup_checked(client_id, target_db_path)[0]
 
 
 def cloud_backup_stamp(client_id):
@@ -999,6 +1044,21 @@ def cloud_backup_stamp(client_id):
     جواب فارغ من المفتاح العام لا يعني «لا نسخة»: قد تحجب الصلاحيات الجدول عنه —
     فيُعدّ «غير معروف» ويُعتمد التنزيل الدوري (وإلا توقّف التحديث التلقائي)."""
     admin = get_supabase_admin_client() if SUPABASE_SECRET_KEY else None
+    if admin is None and CURRENT_SYNC_TOKEN:
+        # دخول برنامج المدير باسم العميل: وقت آخر نسخة برمز مزامنته (20_admin_download.sql)
+        sb = get_supabase_public_client()
+        try:
+            res = sb.rpc("backup_stamp_secure", {"p_client_id": client_id,
+                                                 "p_sync_token": CURRENT_SYNC_TOKEN}).execute() if sb else None
+            stamp = res.data if res is not None else None
+            if isinstance(stamp, list):
+                stamp = stamp[0] if stamp else None
+            if isinstance(stamp, dict):
+                stamp = next(iter(stamp.values()), None)
+            if isinstance(stamp, str):
+                return stamp
+        except Exception:
+            pass
     for sb, authoritative in ((admin, True), (get_supabase_public_client(), False)):
         if sb is None:
             continue
@@ -1019,9 +1079,10 @@ def load_client_mirror(client_id, db_path):
     جهازه حرفياً: كل حركة وفترة واسم وترتيب وإعداد. يرجع (True, None) أو (False, السبب)"""
     tmp = f"{db_path}.mirror_tmp"
     _remove_db_files(tmp)
-    if not cloud_download_backup(client_id, tmp):
+    ok, problem = cloud_download_backup_checked(client_id, tmp)
+    if not ok:
         _remove_db_files(tmp)
-        return False, "لا توجد نسخة كاملة مرفوعة من جهاز العميل بعد، أو تعذّر الاتصال بالسحابة"
+        return False, BACKUP_DOWNLOAD_PROBLEMS.get(problem, BACKUP_DOWNLOAD_PROBLEMS["denied"])
     if not is_sqlite_db_healthy(tmp):
         _remove_db_files(tmp)
         return False, "النسخة المنزّلة من السحابة غير سليمة"
@@ -3633,8 +3694,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.setup_treeview_styles()
 
         # ترحيل آمن: لو فيه قاعدة بيانات قديمة بالاسم العام القديم (من نسخة سابقة) ومفيش قاعدة جديدة بعد لهذا العميل تحديدًا،
-        # ننقلها بدل ما نفقدها أو نستبدلها بنسخة أقدم من السحابة
-        if client_id and not os.path.exists(self.db_path) and os.path.exists(old_generic_path):
+        # ننقلها بدل ما نفقدها أو نستبدلها بنسخة أقدم من السحابة. نسخة العميل وحدها: قاعدة
+        # المدير مرآة لجهاز العميل، وقاعدة قديمة على جهاز المدير ليست بيانات هذا العميل
+        if (client_id and not IS_ADMIN_BUILD and not os.path.exists(self.db_path)
+                and os.path.exists(old_generic_path)):
             try:
                 import shutil
                 shutil.copy2(old_generic_path, self.db_path)
@@ -3645,18 +3708,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         #   • نسخة العميل: تُسترجع من أحدث نسخة احتياطية سليمة في مجلد النسخ على
         #     جهازه نفسه (Backups). لا تسحب من السحابة أبداً — بياناتها المحلية
         #     هي مصدر الحقيقة، والسحابة تستقبل منها فقط (RECOVERY_AR.md).
-        #   • نسخة المدير (مرآة للقراءة): تنزّل آخر نسخة من السحابة كما كانت.
-        if self.client_id and not os.path.exists(self.db_path):
-            if not IS_ADMIN_BUILD:
-                self.restore_missing_db_from_local_backup()
-            elif not cloud_download_backup(self.client_id, self.db_path):
-                # تحذير صريح بدل البدء الصامت بقاعدة بيانات فارغة وكأن مفيش مشكلة
-                self.after(500, lambda: messagebox.showwarning(
-                    "تنبيه استرجاع البيانات",
-                    "لم يتم العثور على نسخة سابقة محفوظة على السحابة لهذا الحساب، أو تعذّر الاتصال بالإنترنت الآن.\n"
-                    "البرنامج سيبدأ بقاعدة بيانات جديدة فارغة.\n\n"
-                    "لو كنت تتوقع استرجاع بيانات سابقة، تأكد من الاتصال بالإنترنت وأعد فتح البرنامج، أو تواصل مع المدير."
-                ))
+        #   • نسخة المدير (مرآة للقراءة): نزّلت نسخة العميل قبل الفتح (SyncDownWindow)، وإن
+        #     تعذّرت أُبلغ المدير بسببها هناك مرة واحدة — والتحديث التلقائي يعرضها فور وصولها.
+        #     (كانت تُنزَّل هنا ثانيةً وتُظهر تنبيهاً ثانياً موجّهاً للعميل: «تواصل مع المدير»)
+        if self.client_id and not os.path.exists(self.db_path) and not IS_ADMIN_BUILD:
+            self.restore_missing_db_from_local_backup()
         
         # فحص سلامة قاعدة البيانات، ومحاولة إصلاحها تلقائياً من أحدث نسخة احتياطية سليمة أو من السحابة
         if os.path.exists(self.db_path) and not is_sqlite_db_healthy(self.db_path):
@@ -4271,7 +4327,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         at, version, is_snapshot = self.admin_mirror_info()
         if not is_snapshot:
-            text, color = "⚠️ عرض من سجل الحركات السحابي — قد يختلف عن جهاز العميل", "#e67e22"
+            text, color = "⏳ لم تصل نسخة العميل بعد — تظهر هنا تلقائياً فور وصولها", "#e67e22"
         elif not at:
             # نسخة كاملة من برنامج عميل أقدم من هذا التحديث (بلا ختم وقت وإصدار)
             text, color = "📥 نسخة العميل — ⚠️ برنامج العميل أقدم: حدّثه ليصل كل تعديل كاملاً", "#e67e22"
@@ -8608,57 +8664,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       **BUTTON_STYLES["secondary"]).pack(pady=(0, 14))
         return win
 
-    # ═══ مركز التنبيهات في الرئيسية: ما يحتاج متابعة الآن، وكل تنبيه يفتح شاشته ═══
-    BACKUP_ALERT_DAYS = 3
-
-    def local_backup_age_days(self, now=None):
-        files = self.list_local_backups() if hasattr(self, "backup_dir") else []
-        if not files:
-            return None
-        newest = os.path.getmtime(files[0])
-        return int(((now or time.time()) - newest) // 86400)
-
-    def home_alerts(self):
-        """[(المستوى، النص، الإجراء)] — الفترات غير المُقفلة، وعمر النسخة الاحتياطية"""
-        alerts = []
-        unclosed = [(c, m) for c in self.WORKER_SECTIONS for m, _a in self.get_unclosed_periods(c)]
-        if unclosed:
-            alerts.append(("warn", f"{len(unclosed)} فترة سابقة لم يُقفل خياسها (" +
-                           "، ".join(sorted({m for _c, m in unclosed})[:4]) + ")",
-                           lambda: self.navigate_to_screen("صناديق الخياس")))
-        if not IS_ADMIN_BUILD:
-            age = self.local_backup_age_days()
-            if age is None:
-                alerts.append(("info", "لا توجد نسخة احتياطية محلية بعد — احفظ نسخة الآن", self.open_backup_manager))
-            elif age >= self.BACKUP_ALERT_DAYS:
-                alerts.append(("info", f"آخر نسخة احتياطية محلية منذ {age} يوم", self.open_backup_manager))
-        return alerts
-
-    def refresh_home_alerts(self):
-        frame = getattr(self, "home_alerts_frame", None)
-        if frame is None:
-            return
-        try:
-            alerts = self.home_alerts()
-        except Exception as e:
-            log_cloud_error("تعذّر حساب التنبيهات", e)
-            return
-        for w in frame.winfo_children():
-            w.destroy()
-        head = ctk.CTkFrame(frame, fg_color="transparent")
-        head.pack(fill="x", padx=12, pady=(8, 2))
-        ctk.CTkLabel(head, text=f"🔔 التنبيهات ({len(alerts)})" if alerts else "🔔 التنبيهات",
-                     font=("Cairo", 14, "bold"), text_color=UI_TITLE).pack(side="right")
-        if not alerts:
-            ctk.CTkLabel(frame, text="✅ لا تنبيهات — كل شيء تحت السيطرة", font=("Cairo", 13),
-                         text_color=(UI["ink"], "#E6EDF3"), anchor="e").pack(fill="x", padx=16, pady=(0, 10))
-            return
-        for level, text, action in alerts[:4]:
-            ctk.CTkButton(frame, text=("⚠️  " if level == "warn" else "ℹ️  ") + text, anchor="e",
-                          height=32, font=("Cairo", 13, "bold"), command=action,
-                          **BUTTON_STYLES["danger" if level == "warn" else "secondary"]).pack(fill="x", padx=12, pady=3)
-        ctk.CTkFrame(frame, height=6, fg_color="transparent").pack()
-
     def _on_gold_price(self, snapshot):
         """يُستدعى من الخيط الخلفي — يمرّ عبر after حتى لا يُسقط Tkinter"""
         def apply():
@@ -8778,10 +8783,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                               font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), **BUTTON_STYLES[style])
             b.pack(side="right", padx=4, fill="x", expand=True)
             HoverTip(b, tip)
-        # مركز التنبيهات: ما يحتاج متابعة الآن (يُحدَّث مع ملخص الفترة)
-        self.home_alerts_frame = ctk.CTkFrame(self.home_frame, corner_radius=14, border_width=1,
-                                              fg_color=(UI["surface"], "#171C23"), border_color=(UI["line"], "#2A313B"))
-        self.home_alerts_frame.pack(fill="x", padx=30, pady=(0, 14))
         self.home_stat_labels = {}
         # أيقونات البطاقات الأربع على خلفية واحدة هادئة (كانت أربعة ألوان)
         tint = (UI["primary_soft"], "#1B2B45")
@@ -8887,7 +8888,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.lbl_home_hint.configure(text=self.home_greeting_text())
         except Exception as e:
             log_cloud_error("تعذّر تحديث ملخص الشاشة الرئيسية", e)
-        self.refresh_home_alerts()
 
     def render_home_buttons(self):
         """يعيد رسم أزرار الشاشات حسب الترتيب المحفوظ (٣ شاشات في كل عمود، من اليمين لليسار)"""
