@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.59.0"
+APP_VERSION = "1.60.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1792,7 +1792,7 @@ class MiniChart(tk.Canvas):
         name, vals = self.series[0]
         n = len(self.labels)
         try:
-            measure = tkfont.Font(family="Cairo", size=11).measure
+            measure = tkfont.Font(root=self, family="Cairo", size=11).measure
             label_w = max(measure(lab) for lab in self.labels) + 18
         except Exception:
             label_w = 150
@@ -5947,7 +5947,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if getattr(self, "_totals_style_ready", False):
             return
         try:
-            style = ttk.Style()
+            style = ttk.Style(self)      # نافذة البرنامج نفسها (قد لا تكون الجذر الافتراضي)
             d = getattr(self, "_design", None) or {}
             total_font = d.get("total_font", ("Cairo", 14, "bold"))
             # ارتفاعه من قياس خط الإجمالي نفسه (لا ٣٤ ثابتة تقصّ الخط على التكبير)
@@ -6428,7 +6428,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if total_rows:
                 try:
                     spec = tree.tag_configure("total_tag", "font")
-                    total_font = tkfont.Font(font=spec) if spec else None
+                    total_font = tkfont.Font(root=tree, font=spec) if spec else None
                 except Exception:
                     total_font = None
             # قياس النص بطيء (نصف ملّي ثانية للنص العربي): تُقاس **أطول** نصوص
@@ -6702,7 +6702,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self._design = dict(c, **m, mode=mode, body_font=body, head_font=head, total_font=total,
                                 row_height=row_h)
 
-            style = ttk.Style()
+            # نمط الجداول على نافذة البرنامج نفسها: بلا master يُطبَّق على «الجذر الافتراضي» —
+            # وهو لوحة المدير عند فتح حساب عميل منها، فكانت جداوله بالسمة الافتراضية القديمة
+            style = ttk.Style(self)
             try:
                 style.theme_use("clam")   # أكثر سمة تقبل التخصيص الكامل
             except Exception:
@@ -7888,7 +7890,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             try:
                 import tkinter.font as tkfont
                 for size in range(font_size, 12, -1):
-                    if tkfont.Font(family="Cairo", size=-size, weight="bold").measure(text) <= avail:
+                    if tkfont.Font(root=self, family="Cairo", size=-size, weight="bold").measure(text) <= avail:
                         return size
                 return 13
             except Exception:
@@ -14584,18 +14586,26 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(tab, text="📦 صناديق المصنع", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 6))
 
-        range_row = ctk.CTkFrame(tab, fg_color="transparent")
+        # اختيار الشهر: «الكل» ثم الأشهر المسجّلة — الشهر يعرض أرقامه وحده، و«الكل» كل الأشهر
+        range_row = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+                                 border_width=1, border_color=(UI["line"], "#2A313B"))
         range_row.pack(pady=(0, 10))
-        ctk.CTkLabel(range_row, text="من شهر:", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.factory_from_month = ctk.CTkEntry(range_row, placeholder_text="YYYY-MM", font=("Cairo", 13), justify="center", width=110, height=36)
-        self.factory_from_month.insert(0, self.current_display_month)
-        self.factory_from_month.pack(side="right", padx=5)
-        ctk.CTkLabel(range_row, text="إلى شهر:", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.factory_to_month = ctk.CTkEntry(range_row, placeholder_text="YYYY-MM", font=("Cairo", 13), justify="center", width=110, height=36)
-        self.factory_to_month.insert(0, self.current_display_month)
-        self.factory_to_month.pack(side="right", padx=5)
-        ctk.CTkButton(range_row, text="تصفية 🔍", font=("Cairo", 13, "bold"), fg_color="#1e8449", hover_color="#145a32", width=100, height=36, command=self.refresh_factory_boxes_table).pack(side="right", padx=8)
-        ctk.CTkButton(range_row, text="الشهر الحالي ↺", font=("Cairo", 13, "bold"), fg_color="#555555", hover_color="#333333", width=120, height=36, command=self.reset_factory_boxes_period).pack(side="right", padx=5)
+        ctk.CTkLabel(range_row, text="الشهر:", font=("Cairo", 13, "bold"),
+                     text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(12, 4), pady=8)
+        self.combo_factory_period = ctk.CTkComboBox(
+            range_row, values=self.factory_period_options(), font=("Cairo", 14), width=130, height=34,
+            justify="center", state="readonly", command=lambda _v: self.refresh_factory_boxes_table())
+        self.combo_factory_period.set(self.current_display_month)
+        self.combo_factory_period.pack(side="right", padx=4)
+        ctk.CTkButton(range_row, text="🔍 عرض", font=("Cairo", 13, "bold"), fg_color=UI["success"],
+                      hover_color=UI["success_hover"], width=80, height=34,
+                      command=self.refresh_factory_boxes_table).pack(side="right", padx=4)
+        ctk.CTkButton(range_row, text="الشهر الحالي ↺", font=("Cairo", 13, "bold"), fg_color=UI["neutral"],
+                      hover_color=UI["neutral_hover"], width=120, height=34,
+                      command=self.reset_factory_boxes_period).pack(side="right", padx=4)
+        self.lbl_factory_scope = ctk.CTkLabel(range_row, text="", font=("Cairo", 12),
+                                              text_color=(UI["muted"], "#9AA3AF"))
+        self.lbl_factory_scope.pack(side="right", padx=(10, 12))
 
         self.factory_cards_frame = ctk.CTkFrame(tab, fg_color="transparent")
         self.factory_cards_frame.pack(fill="x", padx=20, pady=10)
@@ -14636,9 +14646,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # لوحة الإنتاج: ثلاث بطاقات متجاورة (الإجمالي في المنتصف أبرز) ثم سطر النسب
         prod_panel = ctk.CTkFrame(tab, corner_radius=14, fg_color=UI["midnight_2"])
         prod_panel.pack(fill="x", padx=20, pady=(15, 10))
-        ctk.CTkLabel(prod_panel, text="ملخّص الإنتاج للفترة", anchor="e",
-                     font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
-                     text_color="#AEB9CC").pack(fill="x", padx=18, pady=(10, 2))
+        self.lbl_prod_title = ctk.CTkLabel(prod_panel, text="ملخّص الإنتاج للفترة", anchor="e",
+                                           font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                                           text_color="#AEB9CC")
+        self.lbl_prod_title.pack(fill="x", padx=18, pady=(10, 2))
         tiles = ctk.CTkFrame(prod_panel, fg_color="transparent")
         tiles.pack(fill="x", padx=12, pady=(0, 4))
         for col in range(3):
@@ -14667,98 +14678,112 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.refresh_factory_boxes_table()
 
+    def factory_period_options(self):
+        """خيارات شهر صناديق المصنع: «الكل» ثم الأشهر المسجّلة (الأحدث أولاً)"""
+        return [self.LOSSES_ALL] + self.get_recorded_periods()
+
+    def selected_factory_period(self):
+        """الشهر المختار في صناديق المصنع — أو «الكل» — وإلا الفترة المعروضة"""
+        month = self.current_display_month
+        if hasattr(self, "combo_factory_period"):
+            try:
+                month = self.combo_factory_period.get().strip() or month
+            except Exception:
+                pass
+        return month
+
+    def factory_period_label(self, month):
+        return "أرقام كل الأشهر" if month == self.LOSSES_ALL else f"أرقام شهر {month}"
+
+    def factory_boxes_totals(self, month=None):
+        """أرقام صناديق المصنع لشهر بعينه، أو لكل الأشهر (month = LOSSES_ALL) — المعادلات كما كانت:
+        المبيعات والوارد لكل مادة، ومبيعات الذهب المرافق للألماس والألماس، والإنتاج ونسبه"""
+        month = month or self.current_display_month
+        every = month == self.LOSSES_ALL
+        sums = dict.fromkeys(("وارد ذهب (عيار 18)", "مبيعات ذهب", "وارد فصوص وأحجار", "مبيعات فصوص وأحجار",
+                              "مبيعات ذهب مع الماس", "مبيعات الماس"), 0.0)
+        for inv in self.invoices.values():
+            if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"):
+                continue
+            if not every and self.inv_period(inv) != month:
+                continue
+            t = inv.get("النوع")
+            if t in sums:
+                sums[t] += inv.get("الوزن", 0.0) or 0.0
+        sales = {"ذهب": round(sums["مبيعات ذهب"], 2), "فصوص وأحجار": round(sums["مبيعات فصوص وأحجار"], 2)}
+        incoming = {"ذهب": round(sums["وارد ذهب (عيار 18)"], 2), "فصوص وأحجار": round(sums["وارد فصوص وأحجار"], 2)}
+        gold_linked, diamond = round(sums["مبيعات ذهب مع الماس"], 2), round(sums["مبيعات الماس"], 2)
+        prod_gold_stones = round(sales["ذهب"] + sales["فصوص وأحجار"], 2)
+        prod_gold_diamond = round(gold_linked + diamond, 2)
+        gold_sales = sales["ذهب"]
+        return {"sales": sales, "incoming": incoming, "gold_linked": gold_linked, "diamond": diamond,
+                "prod_gold_stones": prod_gold_stones, "prod_gold_diamond": prod_gold_diamond,
+                "prod_total": round(prod_gold_stones + prod_gold_diamond, 2),
+                "ratio_stones": round((sales["فصوص وأحجار"] / gold_sales) * 100, 2) if gold_sales else 0.0,
+                "ratio_diamond": round((diamond / gold_sales) * 100, 2) if gold_sales else 0.0}
+
     def reset_factory_boxes_period(self):
-        self.factory_from_month.delete(0, 'end')
-        self.factory_from_month.insert(0, self.current_display_month)
-        self.factory_to_month.delete(0, 'end')
-        self.factory_to_month.insert(0, self.current_display_month)
+        if hasattr(self, "combo_factory_period"):
+            self.combo_factory_period.set(self.current_display_month)
         self.refresh_factory_boxes_table()
 
     def open_factory_box_statement(self, box):
+        """كشف حساب المادة بالشهر المختار في الشاشة («الكل» = كل الأشهر)"""
         account_map = {"ذهب": "المبيعات", "الماس": "حساب الألماس", "فصوص وأحجار": "حساب فصوص وأحجار"}
         account_key = account_map.get(box)
         if not account_key:
             return
+        month = self.selected_factory_period()
+        span = "" if month == self.LOSSES_ALL else month
         self.navigate_to_screen("كشف حساب")
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.set(account_key)
+            for entry in (getattr(self, "kh_from_month", None), getattr(self, "kh_to_month", None)):
+                if entry is not None:
+                    entry.delete(0, 'end')
+                    if span:
+                        entry.insert(0, span)
             self.refresh_account_statement()
 
     def refresh_factory_boxes_table(self):
         if not hasattr(self, 'factory_card_widgets') or not self.factory_card_widgets:
             return
+        if hasattr(self, "combo_factory_period"):
+            try:
+                self.combo_factory_period.configure(values=self.factory_period_options())
+            except Exception:
+                pass
+        month = self.selected_factory_period()
+        tot = self.factory_boxes_totals(month)
+        scope = self.factory_period_label(month)
+        if hasattr(self, "lbl_factory_scope"):
+            self.lbl_factory_scope.configure(text=scope)
+        if hasattr(self, "lbl_prod_title"):
+            self.lbl_prod_title.configure(text=f"ملخّص الإنتاج — {scope}")
 
-        from_m = (self.factory_from_month.get().strip() if hasattr(self, 'factory_from_month') else "") or self.current_display_month
-        to_m = (self.factory_to_month.get().strip() if hasattr(self, 'factory_to_month') else "") or self.current_display_month
-
-        # ====== لوحتا الذهب وفصوص وأحجار: المبيعات والوارد كلاهما يُحسبان ضمن الفترة المحددة فقط ======
-        in_type_map = {"ذهب": "وارد ذهب (عيار 18)", "فصوص وأحجار": "وارد فصوص وأحجار"}
-        sale_type_map = {"ذهب": "مبيعات ذهب", "فصوص وأحجار": "مبيعات فصوص وأحجار"}
-
-        sales_totals = {}
-        for box in ["ذهب", "فصوص وأحجار"]:
-            in_type = in_type_map[box]
-            sale_type = sale_type_map[box]
-            tot_in_period = tot_sale_period = 0.0
-            for inv in self.invoices.values():
-                if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
-                dt_m = self.inv_period(inv)
-                if not (from_m <= dt_m <= to_m): continue
-                t = inv.get("النوع")
-                if t == in_type:
-                    tot_in_period += inv["الوزن"]
-                elif t == sale_type:
-                    tot_sale_period += inv["الوزن"]
-
-            sales_totals[box] = round(tot_sale_period, 2)
-
+        # لوحتا الذهب وفصوص وأحجار: المبيعات والوارد للشهر المختار (أو كل الأشهر)
+        for box in ("ذهب", "فصوص وأحجار"):
             widgets = self.factory_card_widgets.get(box)
             if widgets:
-                widgets["sales"].configure(text=f"المبيعات: {round(tot_sale_period, 2):.2f}")
-                widgets["incoming"].configure(text=f"الوارد: {round(tot_in_period, 2):.2f}")
+                widgets["sales"].configure(text=f"المبيعات: {tot['sales'][box]:.2f}")
+                widgets["incoming"].configure(text=f"الوارد: {tot['incoming'][box]:.2f}")
 
-        # ====== لوحة الألماس: مبيعات الذهب المرافق للألماس + إجمالي الألماس، ضمن نفس الفترة ======
-        tot_gold_linked = tot_diamond = 0.0
-        for inv in self.invoices.values():
-            if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
-            dt_m = self.inv_period(inv)
-            if not (from_m <= dt_m <= to_m): continue
-            t = inv.get("النوع")
-            if t == "مبيعات ذهب مع الماس":
-                tot_gold_linked += inv["الوزن"]
-            elif t == "مبيعات الماس":
-                tot_diamond += inv["الوزن"]
-
-        tot_gold_linked = round(tot_gold_linked, 2)
-        tot_diamond = round(tot_diamond, 2)
-        sales_totals["الماس"] = tot_diamond
-
+        # لوحة الألماس: مبيعات الذهب المرافق للألماس + إجمالي الألماس
         diamond_widgets = self.factory_card_widgets.get("الماس")
         if diamond_widgets:
-            diamond_widgets["gold_linked"].configure(text=f"مبيعات ذهب: {tot_gold_linked:.2f}")
-            diamond_widgets["diamond_total"].configure(text=f"الألماس: {tot_diamond:.2f}")
+            diamond_widgets["gold_linked"].configure(text=f"مبيعات ذهب: {tot['gold_linked']:.2f}")
+            diamond_widgets["diamond_total"].configure(text=f"الألماس: {tot['diamond']:.2f}")
 
-        # ====== الأشرطة البارزة (الإنتاج والنسب) تُحسب من رصيد المبيعات التراكمي ======
-        prod_gold_stones = round(sales_totals.get("ذهب", 0.0) + sales_totals.get("فصوص وأحجار", 0.0), 2)
-        prod_gold_diamond = round(tot_gold_linked + tot_diamond, 2)
-        prod_total = round(prod_gold_stones + prod_gold_diamond, 2)
-
+        # الإنتاج ونسبه
         if hasattr(self, 'lbl_prod_gold_stones'):
-            self.lbl_prod_gold_stones.configure(text=f"📊 إنتاج (الذهب + فصوص وأحجار): {prod_gold_stones:.2f}")
+            self.lbl_prod_gold_stones.configure(text=f"📊 إنتاج (الذهب + فصوص وأحجار): {tot['prod_gold_stones']:.2f}")
         if hasattr(self, 'lbl_prod_gold_diamond'):
-            self.lbl_prod_gold_diamond.configure(text=f"📊 إنتاج (الذهب + الألماس): {prod_gold_diamond:.2f}")
+            self.lbl_prod_gold_diamond.configure(text=f"📊 إنتاج (الذهب + الألماس): {tot['prod_gold_diamond']:.2f}")
         if hasattr(self, 'lbl_prod_total'):
-            self.lbl_prod_total.configure(text=f"🏆 إجمالي الإنتاج: {prod_total:.2f}")
-
-        gold_sales = sales_totals.get("ذهب", 0.0)
-        if gold_sales:
-            ratio_stones = round((sales_totals.get("فصوص وأحجار", 0.0) / gold_sales) * 100, 2)
-            ratio_diamond = round((tot_diamond / gold_sales) * 100, 2)
-        else:
-            ratio_stones = ratio_diamond = 0.0
-
+            self.lbl_prod_total.configure(text=f"🏆 إجمالي الإنتاج: {tot['prod_total']:.2f}")
         if hasattr(self, 'lbl_prod_ratios'):
-            self.lbl_prod_ratios.configure(text=f"⚖️ نسبة (الفصوص + الأحجار) / الذهب: {ratio_stones:.2f}%    |    نسبة الألماس / الذهب: {ratio_diamond:.2f}%")
+            self.lbl_prod_ratios.configure(text=f"⚖️ نسبة (الفصوص + الأحجار) / الذهب: {tot['ratio_stones']:.2f}%    |    "
+                                                f"نسبة الألماس / الذهب: {tot['ratio_diamond']:.2f}%")
 
     def print_factory_boxes_screen(self):
         """يولّد ويعرض/يطبع صفحة PDF بنفس شكل شاشة صناديق المصنع (لوحات المواد الثلاث + أشرطة الإنتاج والنسب)"""
@@ -14766,42 +14791,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً:\npip install reportlab arabic-reshaper python-bidi")
             return
 
-        from_m = (self.factory_from_month.get().strip() if hasattr(self, 'factory_from_month') else "") or self.current_display_month
-        to_m = (self.factory_to_month.get().strip() if hasattr(self, 'factory_to_month') else "") or self.current_display_month
-
-        in_type_map = {"ذهب": "وارد ذهب (عيار 18)", "فصوص وأحجار": "وارد فصوص وأحجار"}
-        sale_type_map = {"ذهب": "مبيعات ذهب", "فصوص وأحجار": "مبيعات فصوص وأحجار"}
-        sales_totals, incoming_totals = {}, {}
-        for box in ["ذهب", "فصوص وأحجار"]:
-            in_type = in_type_map[box]; sale_type = sale_type_map[box]
-            tot_in = tot_sale = 0.0
-            for inv in self.invoices.values():
-                if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
-                dt_m = self.inv_period(inv)
-                if not (from_m <= dt_m <= to_m): continue
-                t = inv.get("النوع")
-                if t == in_type: tot_in += inv["الوزن"]
-                elif t == sale_type: tot_sale += inv["الوزن"]
-            sales_totals[box] = round(tot_sale, 2)
-            incoming_totals[box] = round(tot_in, 2)
-
-        tot_gold_linked = tot_diamond = 0.0
-        for inv in self.invoices.values():
-            if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
-            dt_m = self.inv_period(inv)
-            if not (from_m <= dt_m <= to_m): continue
-            t = inv.get("النوع")
-            if t == "مبيعات ذهب مع الماس": tot_gold_linked += inv["الوزن"]
-            elif t == "مبيعات الماس": tot_diamond += inv["الوزن"]
-        tot_gold_linked, tot_diamond = round(tot_gold_linked, 2), round(tot_diamond, 2)
-        sales_totals["الماس"] = tot_diamond
-
-        prod_gold_stones = round(sales_totals.get("ذهب", 0.0) + sales_totals.get("فصوص وأحجار", 0.0), 2)
-        prod_gold_diamond = round(tot_gold_linked + tot_diamond, 2)
-        prod_total = round(prod_gold_stones + prod_gold_diamond, 2)
-        gold_sales = sales_totals.get("ذهب", 0.0)
-        ratio_stones = round((sales_totals.get("فصوص وأحجار", 0.0) / gold_sales) * 100, 2) if gold_sales else 0.0
-        ratio_diamond = round((tot_diamond / gold_sales) * 100, 2) if gold_sales else 0.0
+        # الشهر نفسه المعروض في الشاشة — أو «الكل»
+        month = self.selected_factory_period()
+        tot = self.factory_boxes_totals(month)
+        sales_totals, incoming_totals = dict(tot["sales"], الماس=tot["diamond"]), tot["incoming"]
+        tot_gold_linked, tot_diamond = tot["gold_linked"], tot["diamond"]
+        prod_gold_stones, prod_gold_diamond, prod_total = tot["prod_gold_stones"], tot["prod_gold_diamond"], tot["prod_total"]
+        ratio_stones, ratio_diamond = tot["ratio_stones"], tot["ratio_diamond"]
 
         out_dir = INVOICES_DIR
         out_path = os.path.join(out_dir, f"factory_boxes_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
@@ -14841,7 +14837,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         txt(c, PW / 2, y, "📦 صناديق المصنع", size=17, bold=True, align="center", color=gold_color)
         y -= 8 * mm
-        txt(c, PW / 2, y, f"الفترة: {from_m} إلى {to_m}", size=10, align="center")
+        txt(c, PW / 2, y, self.factory_period_label(month), size=10, align="center")
         y -= 8 * mm
 
         box_defs = [("ذهب", "🥇"), ("فصوص وأحجار", "🔷"), ("الماس", "💎")]
@@ -20654,9 +20650,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         c.save()
         self._open_file(out_path)
 
-    def losses_period_breakdown(self, cat):
-        """تفصيل فترات صندوق خياس (لطباعة شاشة الخسائر): [(الفترة، أقسامها الأربعة)] من الأقدم —
+    def losses_period_breakdown(self, cat, month=None):
+        """تفصيل فترات صندوق خياس (لطباعة شاشة الخسائر) بحسب الاختيار في الشاشة:
+        فترة بعينها ← سطرها وحده (بلا إجمالي)؛ «الكل» ← [(الفترة، أقسامها الأربعة)] من الأقدم —
         بلا الفترات الخالية — ثم الإجمالي = أرقام «الكل» (ومجموع الفترات يساويه)"""
+        if month and month != self.LOSSES_ALL:
+            return [(month, self.get_box_loss_summary(cat, month=month))], None
         rows = []
         for m in sorted(self.get_recorded_periods()):
             sm = self.get_box_loss_summary(cat, month=m)
@@ -20665,15 +20664,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return rows, self.get_box_loss_summary(cat, month=self.LOSSES_ALL)
 
     def _draw_losses_breakdown(self, c, y, box_defs, selected, txt, border_color):
-        """جداول تفصيل الفترات في طباعة شاشة الخسائر — صفحات جديدة عند الحاجة، والفترة المختارة
-        في الشاشة مميّزة في كل جدول"""
+        """جداول التفصيل في طباعة شاشة الخسائر بحسب الاختيار في الشاشة: الفترة المختارة وحدها،
+        أو كل الفترات وإجماليها مع «الكل» — صفحات جديدة عند الحاجة"""
         from reportlab.lib.colors import Color
         PW, PH = A4
         M = 10 * mm
         table_w = PW - 2 * M
         ratios = (1.45, 1.2, 1.4, 1.4, 1.1)             # من اليمين: الفترة (وعنوان الإجمالي)، الحالي، الفاقد، المسترجع، الصافي
         widths = [table_w * r / sum(ratios) for r in ratios]
-        head_fill, pick_fill, total_fill = Color(0.97, 0.92, 0.92), Color(1.0, 0.97, 0.88), Color(0.93, 0.93, 0.93)
+        head_fill, total_fill = Color(0.97, 0.92, 0.92), Color(0.93, 0.93, 0.93)
+        all_periods = selected == self.LOSSES_ALL
+        heading = "تفصيل الفترات لكل صندوق" if all_periods else "تفصيل الفترة المختارة لكل صندوق"
         row_h, head_h = 6.6 * mm, 7.4 * mm
 
         def new_page(title):
@@ -20709,11 +20710,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if y - (12 * mm + head_h + 2 * row_h) < M:
             y = new_page("شاشة الخسائر — تفصيل الفترات")
         else:
-            txt(c, PW / 2, y - 5 * mm, "تفصيل الفترات لكل صندوق", size=14, bold=True, align="center", color=border_color)
+            txt(c, PW / 2, y - 5 * mm, heading, size=14, bold=True, align="center", color=border_color)
             y -= 9 * mm
 
         for cat, disp in box_defs:
-            rows, total = self.losses_period_breakdown(cat)
+            rows, total = self.losses_period_breakdown(cat, selected)
             head = ["الفترة", "الفاقد الحالي", self.get_box_loss_account(cat), self.get_box_recovery_name(cat), "الصافي"]
             title = f"صندوق خياس {disp}"
             if y - (7 * mm + head_h + 2 * row_h) < M:
@@ -20729,9 +20730,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         color=border_color)
                     y = draw_row(y - 7 * mm, head, head_h, fill=head_fill)
                 values = [m] + [f"{sm[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
-                y = draw_row(y, values, row_h, fill=pick_fill if m == selected else None, bold=(m == selected))
-            values = ["الإجمالي (كل الفترات)"] + [f"{total[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
-            y = draw_row(y, values, row_h + 0.6 * mm, fill=total_fill, bold=True) - 5 * mm
+                y = draw_row(y, values, row_h, bold=not all_periods)
+            if total is not None:
+                values = ["الإجمالي (كل الفترات)"] + [f"{total[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
+                y = draw_row(y, values, row_h + 0.6 * mm, fill=total_fill, bold=True)
+            y -= 5 * mm
         c.showPage()
 
     # =========================================================================
@@ -23266,9 +23269,16 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         except Exception as e:
             log_cloud_error("تعذّر تجهيز بيانات العميل للمدير", e)
 
-        app = GoldSystemApp(client_id=client_id, client_name=business_name,
-                             supabase_client=sb_admin, is_admin_session=True)
-        app.mainloop()
+        # البرنامج يصبح «الجذر الافتراضي» طوال جلسته (كما في الدخول بحساب العميل): لوحة المدير
+        # نافذة Tk أولى، فكان كل ما يُنشأ بلا master — أنماط الجداول والخطوط والصور والرسائل —
+        # يذهب إليها وهي مخفية، فتظهر جداول العميل بالسمة الافتراضية القديمة بخط صغير
+        tk._default_root = None
+        try:
+            app = GoldSystemApp(client_id=client_id, client_name=business_name,
+                                 supabase_client=sb_admin, is_admin_session=True)
+            app.mainloop()
+        finally:
+            tk._default_root = self          # تعود اللوحة جذراً لنوافذها هي
 
         CURRENT_SYNC_TOKEN = None
         self.deiconify()

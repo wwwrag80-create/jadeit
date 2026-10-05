@@ -502,10 +502,16 @@ assert rows_e == [] and all(v == 0.0 for v in total_e.values())
 pr = seg("print_losses_screen")
 assert "self._draw_losses_breakdown(" in pr
 br = seg("_draw_losses_breakdown")
-assert "self.losses_period_breakdown(cat)" in br and '"الإجمالي (كل الفترات)"' in br and "new_page(" in br
-assert "m == selected" in br and '"لا حركات في أي فترة"' in br
-print("✔ الطباعة: لكل صندوق جدول بفتراته (الأقدم أولاً، بلا الفترات الخالية): الحالي والفاقد والمسترجع والصافي")
-print("  وإجماليه = «الكل» = مجموع الفترات (الكاستنج: 5 + 6 + 22 = 33)، والفترة المختارة مميّزة، وصفحات جديدة عند الحاجة")
+assert "self.losses_period_breakdown(cat, selected)" in br and '"الإجمالي (كل الفترات)"' in br and "new_page(" in br
+assert "if total is not None:" in br and '"لا حركات في أي فترة"' in br
+print("✔ الطباعة بـ«الكل»: لكل صندوق جدول بفتراته (الأقدم أولاً، بلا الفترات الخالية): الحالي والفاقد والمسترجع والصافي")
+print("  وإجماليه = «الكل» = مجموع الفترات (الكاستنج: 5 + 6 + 22 = 33)، وصفحات جديدة عند الحاجة")
+
+one, none_total = a.losses_period_breakdown(CAST, M8)
+assert none_total is None and [(m, (sm["current"], sm["loss"], sm["recovered"], sm["net"])) for m, sm in one] == [
+    (M8, (0.0, 6.0, 0.0, 6.0))], one
+assert a.losses_period_breakdown(CAST, a.LOSSES_ALL) == a.losses_period_breakdown(CAST)
+print("✔ الطباعة بفترة مختارة: جدول كل صندوق بتلك الفترة وحدها (فترة ٨: فاقد 6) — بلا الفترات الأخرى ولا إجمالي")
 
 # ═══ ٨) إلغاء «الإقفال التلقائي عند الوارد» في البيانات السابقة ═══
 def legacy(app, month, sarf, qabd, recovered, remainder):
