@@ -73,6 +73,7 @@ CHECKS = [
     ("تذكرة رقم التشغيل",      [PY, "test_job_ticket.py", TARGET]),
     ("أداء العمال",            [PY, "test_worker_performance.py", TARGET]),
     ("النسخة السحابية المضغوطة", [PY, "test_backup_payload.py", TARGET]),
+    ("السحابة الخفيفة",          [PY, "test_cloud_light.py", TARGET]),
     ("الميزان الإلكتروني",      [PY, "test_scale_reader.py", TARGET]),
     ("لوحة المؤشرات",           [PY, "test_dashboard.py", TARGET]),
     ("أدوات الجداول والتنبيهات", [PY, "test_ui_tools.py", TARGET]),

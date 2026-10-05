@@ -43,6 +43,7 @@ import math
 import random
 import time
 import zlib
+import lzma
 
 SUPABASE_URL = "https://ttpqksvtnhoulghgovob.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ymRG7rKUf-704V3j1bNwgg_b1IvlMlX"
@@ -137,7 +138,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.54.0"
+APP_VERSION = "1.55.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -816,56 +817,101 @@ def _remove_db_files(path):
             pass
 
 
-def snapshot_db_bytes(db_path):
+# جداول حالة المزامنة المحلية: تتغيّر وحدها كل دقيقة ولا تخص المدير، فلا تدخل في بصمة «هل تغيّرت البيانات؟»
+DIGEST_SKIP_TABLES = ("sync_state", "sync_outbox")
+
+
+def db_content_digest(con):
+    """بصمة محتوى القاعدة: كل الجداول وصفوفها بترتيب ثابت — تتغيّر فقط إن تغيّرت البيانات نفسها
+    (لا تتأثر بترتيب الصفحات ولا بعدّاد الكتابة في رأس الملف)"""
+    h = hashlib.sha256()
+    names = [r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    for name in names:
+        if name in DIGEST_SKIP_TABLES:
+            continue
+        h.update(f"\x00{name}\x00".encode("utf-8"))
+        try:
+            rows = con.execute(f'SELECT * FROM "{name}" ORDER BY rowid')
+        except sqlite3.OperationalError:        # جدول بلا rowid
+            rows = con.execute(f'SELECT * FROM "{name}" ORDER BY 1')
+        for row in rows:
+            h.update(repr(row).encode("utf-8"))
+    return h.hexdigest()
+
+
+def snapshot_db_bytes(db_path, slim=False, with_digest=False):
     """لقطة كاملة ومتّسقة لقاعدة العميل كما هي الآن، في ملف واحد (بايتات).
 
     قراءة ملف القاعدة مباشرة كانت تُفوّت آخر ما سُجّل: القاعدة تعمل بنظام WAL،
     فأحدث الحركات تبقى في الملف المجاور ‎-wal‎ حتى تُدمج — فتصل للسحابة نسخة
     ناقصة ويرى المدير أرقاماً غير أرقام العميل. النسخ عبر sqlite3.backup يجمع كل
     شيء في ملف واحد متّسق (قراءة واحدة لا تتخلّلها كتابة).
+
+    slim (نسخة السحابة): بلا فهارس وبلا صفحات فارغة — البيانات نفسها كاملة، والفهارس
+    (~٤٠٪ من حجم القاعدة) يعيد البرنامج بناءها وحده عند فتحها (init_database).
+    with_digest: يرجع (البايتات، بصمة المحتوى) — البصمة قبل إضافة وقت اللقطة.
     """
     # اسم مؤقت فريد: رفع دوري ورفع عند الإغلاق ورفع يدوي قد تتزامن
     tmp = f"{db_path}.snapshot-{threading.get_ident()}-{time.time_ns()}"
     _remove_db_files(tmp)
+    digest = None
     src = sqlite3.connect(db_path, timeout=30)
     try:
         dst = sqlite3.connect(tmp)
         try:
             src.backup(dst)
             dst.execute("PRAGMA journal_mode=DELETE")
+            if slim:
+                for (index_name,) in dst.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL").fetchall():
+                    dst.execute(f'DROP INDEX IF EXISTS "{index_name}"')
+                dst.commit()
+            if with_digest:
+                digest = db_content_digest(dst)
             dst.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
             dst.executemany("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [
                 (MIRROR_META_TIME, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")),
                 (MIRROR_META_VERSION, APP_VERSION)])
             dst.commit()
+            if slim:
+                dst.execute("VACUUM")          # يحذف الصفحات الفارغة التي تركتها الفهارس
         finally:
             dst.close()
     finally:
         src.close()
     try:
         with open(tmp, "rb") as f:
-            return f.read()
+            data = f.read()
+        return (data, digest) if with_digest else data
     finally:
         _remove_db_files(tmp)
 
 
 # النسخة الكاملة تُرفع مضغوطة (قاعدة SQLite تنضغط عدة أضعاف) وبعلامة في أولها تميّزها؛
-# والقراءة تقبل الصيغتين، فنسخ العملاء القديمة غير المضغوطة تُفتح كما هي.
-# ⚠️ حدّث نسخة المدير قبل العملاء (أو معهم): المدير القديم لا يعرف الصيغة المضغوطة.
+# والقراءة تقبل كل الصيغ، فنسخ العملاء الأقدم تُفتح كما هي:
+#   JADEX1 → ضغط xz (الدفعة ٢٠: أصغر ~٣٠٪ من zlib)   JADEZ1 → zlib (الدفعة ١٥)   بلا علامة → غير مضغوطة
+# ⚠️ حدّث نسخة المدير قبل العملاء (أو معهم): المدير القديم لا يعرف الصيغة الأحدث.
 BACKUP_MAGIC = b"JADEZ1\n"
+BACKUP_MAGIC_XZ = b"JADEX1\n"
 SQLITE_HEADER = b"SQLite format 3\x00"
 
 
 def encode_backup_payload(raw):
-    """بايتات قاعدة SQLite ← نص base64 للرفع: مضغوطة بـ zlib وفي أولها العلامة"""
-    return base64.b64encode(BACKUP_MAGIC + zlib.compress(raw, 6)).decode("ascii")
+    """بايتات قاعدة SQLite ← نص base64 للرفع: مضغوطة بـ xz وفي أولها العلامة"""
+    return base64.b64encode(BACKUP_MAGIC_XZ + lzma.compress(raw, preset=6)).decode("ascii")
 
 
 def decode_backup_payload(text):
-    """نص النسخة من السحابة ← بايتات قاعدة SQLite (مضغوطة أو قديمة غير مضغوطة).
+    """نص النسخة من السحابة ← بايتات قاعدة SQLite (xz أو zlib أو قديمة غير مضغوطة).
     يرمي ValueError لأي محتوى آخر، فلا يُكتب ملف تالف مكان القاعدة."""
     blob = base64.b64decode(text)
-    if blob.startswith(BACKUP_MAGIC):
+    if blob.startswith(BACKUP_MAGIC_XZ):
+        try:
+            blob = lzma.decompress(blob[len(BACKUP_MAGIC_XZ):])
+        except lzma.LZMAError as e:
+            raise ValueError(f"النسخة السحابية المضغوطة تالفة: {e}") from e
+    elif blob.startswith(BACKUP_MAGIC):
         try:
             blob = zlib.decompress(blob[len(BACKUP_MAGIC):])
         except zlib.error as e:
@@ -881,12 +927,19 @@ def rpc_missing(error):
     return "PGRST202" in text or "42883" in text or "Could not find the function" in text
 
 
-def cloud_upload_backup(client_id, db_path):
+# بصمة آخر نسخة وصلت السحابة لكل عميل (في هذه الجلسة): نسخة مطابقة لا تُرفع مرة أخرى
+_LAST_BACKUP_DIGEST = {}
+BACKUP_UNCHANGED = "unchanged"
+
+
+def cloud_upload_backup(client_id, db_path, force=False):
     """يرفع نسخة كاملة من قاعدة البيانات المحلية للسحابة — تعمل في الخلفية ولا تعطّل البرنامج عند فشلها.
 
-    هذه النسخة هي ما يفتحه المدير بالضبط (مرآة حرفية لجهاز العميل).
-    تُرفع مضغوطة، وبرمز مزامنة الجلسة عبر upload_backup_secure (لا يكتب فوق نسخة
-    عميل إلا جهازه)؛ وإن لم تُثبَّت تلك الدالة بعد (17_backup_security.sql) فبالدالة القديمة."""
+    هذه النسخة هي ما يفتحه المدير بالضبط (مرآة حرفية لجهاز العميل): البيانات كلها،
+    بلا الفهارس (يبنيها البرنامج عند فتحها) ومضغوطة بـ xz — أصغر ~٦٠٪ من قبل.
+    لا تُرفع إن لم يتغيّر محتواها منذ آخر رفع ناجح (يرجع BACKUP_UNCHANGED) إلا مع force.
+    الرفع برمز مزامنة الجلسة عبر upload_backup_secure (لا يكتب فوق نسخة عميل إلا جهازه)؛
+    وإن لم تُثبَّت تلك الدالة بعد (17_backup_security.sql) فبالدالة القديمة."""
     # نسخة المدير مرآة للقراءة: قاعدتها مبنية مما رفعه العميل، فرفعها كان يطمس
     # نسخة العميل الاحتياطية على السحابة بنسخة المدير (كل ١٠ دقائق أثناء التصفّح)
     if IS_ADMIN_BUILD:
@@ -895,18 +948,23 @@ def cloud_upload_backup(client_id, db_path):
     if sb is None or not client_id or not os.path.exists(db_path):
         return False
     try:
-        raw = snapshot_db_bytes(db_path)
+        raw, digest = snapshot_db_bytes(db_path, slim=True, with_digest=True)
+        if not force and digest and _LAST_BACKUP_DIGEST.get(client_id) == digest:
+            return BACKUP_UNCHANGED          # السحابة فيها النسخة نفسها: لا رفع ولا مساحة
         encoded = encode_backup_payload(raw)
         token = CURRENT_SYNC_TOKEN
+        sent = False
         if token:
             try:
                 sb.rpc("upload_backup_secure", {"p_client_id": client_id, "p_sync_token": token,
                                                 "p_backup_data": encoded}).execute()
-                return True
+                sent = True
             except Exception as e:
                 if not rpc_missing(e):
                     raise
-        sb.rpc("upload_backup", {"p_client_id": client_id, "p_backup_data": encoded}).execute()
+        if not sent:
+            sb.rpc("upload_backup", {"p_client_id": client_id, "p_backup_data": encoded}).execute()
+        _LAST_BACKUP_DIGEST[client_id] = digest
         return True
     except Exception as e:
         log_cloud_error("فشل رفع النسخة الاحتياطية للسحابة (سيُعاد المحاولة تلقائياً)", e)
@@ -4122,47 +4180,68 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self._name_idx, self._name_idx_sig = idx, sig
         return self._name_idx
 
+    # ═══ السحابة الخفيفة: الرفع عند التغيير فقط ═══
+    # يُفحص كل ١٠ ثوانٍ، لكن النسخة لا تُرفع إلا إن تغيّرت البيانات فعلاً (بصمة المحتوى)،
+    # ولا أكثر من مرة كل ٣٠ ثانية أثناء الإدخال المتتابع؛ ونسخة يومية احتياطية ولو بلا تغيير،
+    # وإعادة المحاولة تلقائياً بعد أي فشل. و«آخر ظهور» مرة في الدقيقة (لوحة المدير تعدّ
+    # العميل متصلاً إن ظهر خلال دقيقتين).
+    CLOUD_CHECK_MS = 10000
+    CLOUD_UPLOAD_MIN_GAP = 30
+    CLOUD_FORCED_EVERY = 24 * 3600
+    CLOUD_TOUCH_EVERY = 60
+
     def schedule_cloud_backup(self):
-        self.after(10000, self.auto_cloud_backup_trigger)   # دورة المزامنة كل ١٠ ثواني
+        self.after(self.CLOUD_CHECK_MS, self.auto_cloud_backup_trigger)
 
     def auto_cloud_backup_trigger(self):
-        """كل ١٠ ثواني: يرفع نسخة محدّثة للسحابة لو فيه أي تغيير، ويسجّل (آخر ظهور) للعميل دائماً.
-        ويرفع نسخة احتياطية دورية كل ١٠ دقائق حتى لو ما فيه تغيير، كضمان إضافي لسلامة النسخة السحابية."""
+        """كل ١٠ ثوانٍ: يقرّر هل يرفع النسخة (تغيّرت البيانات، أو حان الرفع اليومي) وهل يسجّل الظهور"""
         if not self.client_id:
             return
 
         now = datetime.datetime.now()
-        last_forced = getattr(self, '_last_forced_cloud_upload', None)
-        force_due = (last_forced is None) or ((now - last_forced).total_seconds() >= 600)
-        need_upload = getattr(self, '_backup_dirty', False) or force_due
+        def since(attr):
+            t = getattr(self, attr, None)
+            return None if t is None else (now - t).total_seconds()
+
+        forced_age, upload_age, touch_age = (since("_last_forced_cloud_upload"), since("_last_cloud_upload_try"),
+                                             since("_last_cloud_touch"))
+        force_due = forced_age is None or forced_age >= self.CLOUD_FORCED_EVERY
+        need_upload = force_due or (getattr(self, '_backup_dirty', False)
+                                    and (upload_age is None or upload_age >= self.CLOUD_UPLOAD_MIN_GAP))
+        touch_due = touch_age is None or touch_age >= self.CLOUD_TOUCH_EVERY
 
         if need_upload:
             self._backup_dirty = False
+            self._last_cloud_upload_try = now
             if force_due:
                 self._last_forced_cloud_upload = now
-            self.run_cloud_sync_cycle(upload=True)
-        else:
-            self.run_cloud_sync_cycle(upload=False)
+        if touch_due:
+            self._last_cloud_touch = now
+        if need_upload or touch_due:
+            self.run_cloud_sync_cycle(upload=need_upload, force=force_due, touch=touch_due)
 
         self.schedule_cloud_backup()
 
-    def run_cloud_sync_cycle(self, upload=True):
+    def run_cloud_sync_cycle(self, upload=True, force=False, touch=True):
         """دورة مزامنة واحدة في الخلفية: رفع النسخة (عند الحاجة) + تسجيل آخر ظهور، ثم تحديث المؤشر"""
         def _work():
             ok = True
             if upload:
-                ok = cloud_upload_backup(self.client_id, self.db_path)
-            cloud_touch_client_activity(self.client_id)
+                ok = cloud_upload_backup(self.client_id, self.db_path, force=force)
+            if touch:
+                cloud_touch_client_activity(self.client_id)
             self.after(0, lambda: self.update_cloud_sync_ui(ok, upload))
 
         threading.Thread(target=_work, daemon=True).start()
 
     def update_cloud_sync_ui(self, ok, uploaded):
         """مؤشر صغير أعلى الشاشة يوضح آخر رفع ناجح للسحابة"""
+        if uploaded and not ok:
+            self._backup_dirty = True       # فشل الرفع: يُعاد في الدورة التالية (بعد ٣٠ ثانية)
         if not hasattr(self, 'lbl_cloud_sync'):
             return
         if ok:
-            if uploaded:
+            if uploaded and ok != BACKUP_UNCHANGED:
                 self._last_cloud_sync_ok = datetime.datetime.now().strftime("%H:%M:%S")
             stamp = getattr(self, '_last_cloud_sync_ok', None)
             self.lbl_cloud_sync.configure(text=f"☁️ آخر رفع: {stamp}" if stamp else "☁️ المزامنة: جاهزة",
@@ -4638,7 +4717,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lbl_status.configure(text="⏳ جاري الرفع للسحابة...", text_color="#1f77b4")
 
             def _work():
-                ok = cloud_upload_backup(self.client_id, self.db_path)
+                ok = cloud_upload_backup(self.client_id, self.db_path, force=True)   # الرفع اليدوي يُرفع دائماً
                 self.after(0, lambda: lbl_status.configure(
                     text="✅ تم رفع نسخة محدّثة للسحابة" if ok else "⚠️ تعذّر الرفع — تأكد من الاتصال بالإنترنت",
                     text_color="#2ecc71" if ok else "#e74c3c"))
