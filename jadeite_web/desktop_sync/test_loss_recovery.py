@@ -56,6 +56,7 @@ METHODS = [
     "get_box_loss_summary", "get_current_unclosed_khayas", "get_box_khayas_cumulative", "get_recorded_periods",
     # شاشة الخسائر: الفترة المختارة أو «الكل»
     "losses_period_options", "selected_losses_period", "losses_close_period", "losses_statement_range",
+    "losses_period_breakdown",
     "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
@@ -486,6 +487,25 @@ assert "self.losses_close_period()" in seg("refresh_losses_cards")
 assert "لكل الفترات" not in seg("refresh_losses_cards")
 assert "self.selected_losses_period()" in seg("print_losses_screen")
 print("✔ البطاقة تذكر نطاقها («أرقام فترة …» أو «أرقام كل الفترات»)، والطباعة بالاختيار نفسه")
+
+# الطباعة: تفصيل الفترات لكل صندوق
+rows, total = a.losses_period_breakdown(CAST)
+assert [(m, (sm["current"], sm["loss"], sm["recovered"], sm["net"])) for m, sm in rows] == [
+    (M7, (0.0, 5.0, 0.0, 5.0)), (M8, (0.0, 6.0, 0.0, 6.0)), (M9, (0.0, 22.0, 8.0, 14.0))], rows
+assert (total["current"], total["loss"], total["recovered"], total["net"]) == (0.0, 33.0, 8.0, 25.0)
+for k in ("current", "loss", "recovered", "net"):
+    assert round(sum(sm[k] for _m, sm in rows), 2) == total[k], k
+rows_g, total_g = g.losses_period_breakdown(CAST)
+assert [m for m, _ in rows_g] == [M8, M9] and total_g["current"] == 8.0
+rows_e, total_e = a.losses_period_breakdown("التلميع")
+assert rows_e == [] and all(v == 0.0 for v in total_e.values())
+pr = seg("print_losses_screen")
+assert "self._draw_losses_breakdown(" in pr
+br = seg("_draw_losses_breakdown")
+assert "self.losses_period_breakdown(cat)" in br and '"الإجمالي (كل الفترات)"' in br and "new_page(" in br
+assert "m == selected" in br and '"لا حركات في أي فترة"' in br
+print("✔ الطباعة: لكل صندوق جدول بفتراته (الأقدم أولاً، بلا الفترات الخالية): الحالي والفاقد والمسترجع والصافي")
+print("  وإجماليه = «الكل» = مجموع الفترات (الكاستنج: 5 + 6 + 22 = 33)، والفترة المختارة مميّزة، وصفحات جديدة عند الحاجة")
 
 # ═══ ٨) إلغاء «الإقفال التلقائي عند الوارد» في البيانات السابقة ═══
 def legacy(app, month, sarf, qabd, recovered, remainder):

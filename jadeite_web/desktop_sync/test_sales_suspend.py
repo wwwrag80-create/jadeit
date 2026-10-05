@@ -345,8 +345,13 @@ print("✔ الجدول يُنشأ مع القاعدة، ويُصفَّر مع �
 
 # ═══ ٦) الواجهة: الزر بجانب الترحيل، والقسم بعد العمليات ═══
 build = seg("build_sales_tab")
-i_ops, i_susp = build.index('("العمليات", "📚 العمليات")'), build.index('("المعلقات", "⏸️ المعلقات")')
-assert i_ops < i_susp
+i_entry = build.index('("المبيعات", "🧾 إصدار مبيعات")')
+i_ops, i_susp = build.index('("العمليات", "📚 المبيعات الصادرة")'), build.index('("المعلقات", "⏸️ المعلقات")')
+assert i_entry < i_ops < i_susp
+assert '"🧾 المبيعات"' not in build and '"📚 العمليات"' not in build
+for gone in ("في قسم المبيعات", "جدول العمليات", "تنتقل إلى «العمليات»"):
+    assert gone not in src, gone
+print("✔ أقسام شاشة المبيعات: «إصدار مبيعات» ثم «المبيعات الصادرة» ثم «المعلقات» — والرسائل بالأسماء الجديدة")
 assert 'text="⏸️ تعليق الفاتورة"' in build and "command=self.suspend_sale_invoice" in build
 assert build.index("btn_commit.pack(side=\"right\"") < build.index("self.btn_suspend_sale.pack(side=\"right\"")
 assert 'head_label("البيان:")' in build and build.index('head_label("الاسم:")') < build.index('head_label("البيان:")')
@@ -356,7 +361,7 @@ rs = seg("refresh_suspended_sales_table")
 assert '"الاسم", "البيان", "الذهب"' in rs and '"إجمالي المعلقات"' in rs
 assert 'tree.bind("<Double-1>"' in rs and 'tree.bind("<Return>"' in rs
 assert 'self.fit_columns_to_content(tree, "sales_suspended"' in rs
-print("✔ زر «تعليق الفاتورة» بجانب «ترحيل واعتماد الفاتورة»؛ «المعلقات» بعد «العمليات» بالبيان والإجماليات؛ فتحٌ بنقرتين أو Enter")
+print("✔ زر «تعليق الفاتورة» بجانب «ترحيل واعتماد الفاتورة»؛ «المعلقات» بعد «المبيعات الصادرة» بالبيان والإجماليات؛ فتحٌ بنقرتين أو Enter")
 
 # ═══ ٧) Enter والأسهم في كل الخانات ═══
 d = new_app()

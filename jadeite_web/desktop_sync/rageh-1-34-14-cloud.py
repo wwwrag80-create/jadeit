@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.58.0"
+APP_VERSION = "1.59.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7660,7 +7660,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # وصف قصير يظهر تحت عنوان كل شاشة: ماذا تفعل هنا بجملة واحدة
     SCREEN_SUBTITLES = {
-        "المبيعات": "فواتير المبيعات والصادر: إدخال السطور ثم الترحيل",
+        "المبيعات": "إصدار مبيعات: إدخال السطور ثم الترحيل — والمبيعات الصادرة: الفواتير المرحّلة",
         "مراحل التصنيع": "صرف وقبض الكاستنج والمصنعين والمركبين والتلميع",
         "صناديق الخياس": "أرصدة العمال والخياس الفعلي لكل قسم وإقفاله",
         "الوارد": "استلام الذهب والفصوص والألماس من الموردين والمصنع",
@@ -16152,7 +16152,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_sales_tab(self):
         """شاشة المبيعات: ثابتة بكامل ارتفاعها — لا تمرير للشاشة، والتمرير للجدول وحده.
 
-        من الأعلى للأسفل: شريط التبويب (المبيعات/العمليات) مع أرصدة المواد،
+        من الأعلى للأسفل: شريط الأقسام (إصدار مبيعات/المبيعات الصادرة/المعلقات) مع أرصدة المواد،
         ثم بطاقة الفاتورة (التاريخ ورقمها والاسم، وتحتها خانات السطر وزر
         إضافته في صف واحد يتكيّف مع عرض الشاشة)، ثم شريط أدوات الجدول،
         ثم جدول السطور يأخذ كل المساحة المتبقية، وأسفله شريط الترحيل وحده.
@@ -16168,10 +16168,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         sub_bar.pack(fill="x", padx=16, pady=(8, 0))
 
         self.sales_subtab_buttons = {}
-        # «المعلقات» بعد العمليات: فواتير عُلّقت قبل ترحيلها، تُفتح لاستكمالها
-        for key, label in [("المبيعات", "🧾 المبيعات"), ("العمليات", "📚 العمليات"),
+        # الأقسام: «إصدار مبيعات» (إدخال الفاتورة)، و«المبيعات الصادرة» (الفواتير المرحّلة)،
+        # و«المعلقات» (فواتير عُلّقت قبل ترحيلها). المفاتيح الداخلية ثابتة: المبيعات/العمليات/المعلقات
+        for key, label in [("المبيعات", "🧾 إصدار مبيعات"), ("العمليات", "📚 المبيعات الصادرة"),
                            ("المعلقات", "⏸️ المعلقات")]:
-            b = ctk.CTkButton(sub_bar, text=label, font=("Cairo", 15, "bold"), width=140, height=38,
+            b = ctk.CTkButton(sub_bar, text=label, font=("Cairo", 15, "bold"), width=150, height=38,
                               command=lambda k=key: self.switch_sales_subtab(k))
             b.pack(side="right", padx=4)
             self.sales_subtab_buttons[key] = b
@@ -16218,7 +16219,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_name.pack(side="right", padx=4)
         self.bind_name_autocomplete(self.sale_name, self.get_supplier_name_values_no_mustarja)
 
-        # البيان بعد الاسم: يُحفظ مع الفاتورة ويظهر في «العمليات» و«المعلقات»
+        # البيان بعد الاسم: يُحفظ مع الفاتورة ويظهر في «المبيعات الصادرة» و«المعلقات»
         head_label("البيان:")
         self.sale_note = ctk.CTkEntry(head, font=("Cairo", 14), justify="right", height=34,
                                       placeholder_text="بيان الفاتورة...")
@@ -16414,7 +16415,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.update_suspended_count()
 
     def switch_sales_subtab(self, key):
-        """التنقل بين إدخال المبيعات، والفواتير المرحّلة (العمليات)، والمعلّقة (المعلقات)"""
+        """التنقل بين «إصدار مبيعات» (الإدخال)، و«المبيعات الصادرة» (الفواتير المرحّلة — المفتاح «العمليات»)،
+        و«المعلقات»"""
         self.current_sales_subtab = key
         self.style_segment_buttons(self.sales_subtab_buttons, key)
         self.sales_entry_frame.pack_forget()
@@ -16432,7 +16434,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.sales_entry_frame.pack(fill="both", expand=True)
 
     # =====================================================================
-    # ---------- تبويب (العمليات): كل فاتورة مبيعات مرحّلة في صف واحد ----------
+    # ---------- قسم «المبيعات الصادرة» (المفتاح «العمليات»): كل فاتورة مرحّلة في صف واحد ----------
     # =====================================================================
     SALE_TYPES = ("مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس")
     # بيان الفاتورة يُلحق ببيان كل حركة من حركاتها بعد دورها («مبيعات — بيانها»،
@@ -16806,7 +16808,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return sets
 
     def print_selected_sale_tickets(self):
-        """تذاكر أرقام التشغيل وحدها لفاتورة محددة في «العمليات» (للطباعة على ورق الملصقات)"""
+        """تذاكر أرقام التشغيل وحدها لفاتورة محددة في «المبيعات الصادرة» (للطباعة على ورق الملصقات)"""
         key = self.get_selected_sale_invoice_key("طباعة تذاكر")
         if not key:
             return None
@@ -17129,7 +17131,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 messagebox.showwarning("تنبيه", "الرجاء اختيار اسم من الموردين المسجلين.", parent=win)
                 return
             if not edit_rows:
-                messagebox.showwarning("تنبيه", "لا توجد سطور في الفاتورة.\nلحذف الفاتورة بالكامل استخدم زر (حذف الفاتورة) من جدول العمليات.", parent=win)
+                messagebox.showwarning("تنبيه", "لا توجد سطور في الفاتورة.\nلحذف الفاتورة بالكامل استخدم زر (حذف الفاتورة) من جدول «المبيعات الصادرة».", parent=win)
                 return
             if not messagebox.askyesno(
                     "تأكيد الحفظ",
@@ -18045,7 +18047,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # الترحيل يمر عبر الدالة الموحّدة نفسها المستخدمة في تعديل الفاتورة، لضمان تطابق المعالجة المحاسبية
         committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note)
 
-        # فاتورة كانت معلّقة ثم رُحّلت: أُثبتت في «العمليات» فتختفي من «المعلقات»
+        # فاتورة كانت معلّقة ثم رُحّلت: أُثبتت في «المبيعات الصادرة» فتختفي من «المعلقات»
         suspended_id = getattr(self, "current_suspended_id", None)
         if suspended_id:
             self.delete_suspended_sale(suspended_id)
@@ -18079,7 +18081,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     #
     #  التعليق لا يُنشئ أي حركة محاسبية: تُحفظ الفاتورة كما هي في الشاشة (رأسها،
     #  سطورها، وما كُتب في خانات السطر ولم يُضف) في جدول مستقل. «فتح» يعيدها إلى
-    #  قسم المبيعات كما كانت تماماً، وترحيلها يُثبتها في «العمليات» ويحذفها من هنا.
+    #  «إصدار مبيعات» كما كانت تماماً، وترحيلها يُثبتها في «المبيعات الصادرة» ويحذفها من هنا.
     # =====================================================================
     SUSPENDED_TABLE_SQL = """CREATE TABLE IF NOT EXISTS suspended_sales (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18160,7 +18162,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     @staticmethod
     def suspended_totals(rec):
-        """إجماليات فاتورة معلّقة من سطورها (كأعمدة «العمليات»)"""
+        """إجماليات فاتورة معلّقة من سطورها (كأعمدة «المبيعات الصادرة»)"""
         tot = dict.fromkeys(("ذهب", "فصوص", "أحجار بعد الخصم", "الماس", "خياس"), 0.0)
         for row in rec.get("rows", []):
             for k in tot:
@@ -18223,7 +18225,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.fill_sale_form({"date": self.sale_date.get().strip(), "name": "المصنع"})
 
     def set_current_suspended(self, rec_id, rec=None):
-        """الفاتورة المعلّقة المفتوحة الآن في قسم المبيعات (None: لا شيء)، مع تذكير ثابت بها"""
+        """الفاتورة المعلّقة المفتوحة الآن في «إصدار مبيعات» (None: لا شيء)، مع تذكير ثابت بها"""
         self.current_suspended_id = rec_id
         lbl = getattr(self, "lbl_suspended_open", None)
         if lbl is None:
@@ -18281,7 +18283,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return rec_id
 
     def open_suspended_sale(self, rec_id=None):
-        """يفتح فاتورة معلّقة في قسم المبيعات ببياناتها كلها لاستكمالها من حيث توقفت"""
+        """يفتح فاتورة معلّقة في «إصدار مبيعات» ببياناتها كلها لاستكمالها من حيث توقفت"""
         if rec_id is None:
             rec_id = self.get_selected_suspended_id("فتح")
         if not rec_id:
@@ -18297,7 +18299,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 # لا تضيع فاتورة الشاشة الحالية: تُعلَّق هي أولاً
                 if not messagebox.askyesno(
                         "فاتورة غير مرحّلة في الشاشة",
-                        f"في قسم المبيعات فاتورة فيها {len(current['rows'])} سطر لم تُرحَّل.\n\n"
+                        f"في «إصدار مبيعات» فاتورة فيها {len(current['rows'])} سطر لم تُرحَّل.\n\n"
                         "ستُعلَّق أولاً (تجدها في المعلقات)، ثم تُفتح الفاتورة المختارة.\nهل تريد المتابعة؟"):
                     return
                 self.suspend_sale_invoice(silent=True)
@@ -18358,8 +18360,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.lbl_suspended_totals = ctk.CTkLabel(parent, text="", font=("Cairo", 15, "bold"), text_color="#d4af37")
         self.lbl_suspended_totals.pack(fill="x", padx=20, pady=(0, 6))
-        ctk.CTkLabel(parent, text="اضغط مرتين على أي فاتورة (أو Enter) لفتحها في قسم المبيعات "
-                                  "واستكمالها من حيث توقفت — وعند ترحيلها تنتقل إلى «العمليات»",
+        ctk.CTkLabel(parent, text="اضغط مرتين على أي فاتورة (أو Enter) لفتحها في «إصدار مبيعات» "
+                                  "واستكمالها من حيث توقفت — وعند ترحيلها تنتقل إلى «المبيعات الصادرة»",
                      font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 8))
 
     def refresh_suspended_sales_table(self):
@@ -18406,7 +18408,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 text=(f"عدد الفواتير المعلّقة: {len(recs)}  |  الذهب: {grand['ذهب']:.2f}  |  "
                       f"الفصوص: {grand['فصوص']:.2f}  |  الأحجار بعد الخصم: {grand['أحجار بعد الخصم']:.2f}  |  "
                       f"الماس: {grand['الماس']:.2f}  |  الخياس: {grand['خياس']:.2f} جم") if recs
-                else "لا توجد فواتير معلّقة — «⏸️ تعليق الفاتورة» في قسم المبيعات يحفظها هنا")
+                else "لا توجد فواتير معلّقة — «⏸️ تعليق الفاتورة» في «إصدار مبيعات» يحفظها هنا")
         self.update_suspended_count()
 
     def refresh_sales_table(self):
@@ -18854,7 +18856,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             })
         return out
 
-    # محتوى الباركود الخطي في تذكرة المبيعات (يُختار لهذا الجهاز من «العمليات»):
+    # محتوى الباركود الخطي في تذكرة المبيعات (يُختار لهذا الجهاز من «المبيعات الصادرة»):
     #   one    → «88001 40.25»   رقم التشغيل والوزن المقيد في خانة واحدة بمسافة بينهما
     #   tab    → «88001⇥40.25»   خانتان: القارئ يكتب الرقم ثم Tab ينقل للخانة التالية ثم الوزن
     #   number → «88001»         رقم التشغيل وحده
@@ -19751,12 +19753,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                           f"الفاقد الحالي {box:.2f} + المُقفل {closed:.2f}")
             self.current_display_month = saved_month
 
-            # ٤) المبيعات: جدول العمليات = كشف «المبيعات» لكل فترة
+            # ٤) المبيعات: جدول «المبيعات الصادرة» = كشف «المبيعات» لكل فترة
             for p in periods:
                 ops = round(sum(g["ذهب"] + g["فصوص"] + g["أحجار بعد الخصم"] + g["الماس"]
                                 for g in self.get_sale_invoice_groups(p)), 2)
                 st = self.statement_balance("المبيعات", from_m=p, to_m=p, period_rows_only=True)
-                check("المبيعات", close(ops, st), f"{p}: جدول العمليات {ops:.2f} ≠ كشف «المبيعات» {st:.2f}")
+                check("المبيعات", close(ops, st), f"{p}: جدول «المبيعات الصادرة» {ops:.2f} ≠ كشف «المبيعات» {st:.2f}")
 
             # ٥) المواد: الرصيد = كشف حسابها
             for mat, acc in (("فصوص وأحجار", "حساب فصوص وأحجار"), ("الماس", "حساب الألماس")):
@@ -20646,9 +20648,91 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 txt(c, cx0 + card_w / 2, cy0 - (15 + 6 * k) * mm, f"{label}: {sm[key]:.2f}",
                     size=10, bold=(key == "net"), align="center")
 
-        c.showPage()
+        # ====== تفصيل الفترات لكل صندوق: جدول بكل فترة فيها حركة، والإجمالي = «الكل» ======
+        y -= -(-len(box_defs) // n_cols) * (card_h + gap) + 2 * mm
+        self._draw_losses_breakdown(c, y, box_defs, month, txt, border_color)
         c.save()
         self._open_file(out_path)
+
+    def losses_period_breakdown(self, cat):
+        """تفصيل فترات صندوق خياس (لطباعة شاشة الخسائر): [(الفترة، أقسامها الأربعة)] من الأقدم —
+        بلا الفترات الخالية — ثم الإجمالي = أرقام «الكل» (ومجموع الفترات يساويه)"""
+        rows = []
+        for m in sorted(self.get_recorded_periods()):
+            sm = self.get_box_loss_summary(cat, month=m)
+            if any(abs(v) >= 0.005 for v in sm.values()):
+                rows.append((m, sm))
+        return rows, self.get_box_loss_summary(cat, month=self.LOSSES_ALL)
+
+    def _draw_losses_breakdown(self, c, y, box_defs, selected, txt, border_color):
+        """جداول تفصيل الفترات في طباعة شاشة الخسائر — صفحات جديدة عند الحاجة، والفترة المختارة
+        في الشاشة مميّزة في كل جدول"""
+        from reportlab.lib.colors import Color
+        PW, PH = A4
+        M = 10 * mm
+        table_w = PW - 2 * M
+        ratios = (1.45, 1.2, 1.4, 1.4, 1.1)             # من اليمين: الفترة (وعنوان الإجمالي)، الحالي، الفاقد، المسترجع، الصافي
+        widths = [table_w * r / sum(ratios) for r in ratios]
+        head_fill, pick_fill, total_fill = Color(0.97, 0.92, 0.92), Color(1.0, 0.97, 0.88), Color(0.93, 0.93, 0.93)
+        row_h, head_h = 6.6 * mm, 7.4 * mm
+
+        def new_page(title):
+            c.showPage()
+            txt(c, PW / 2, PH - M - 6, title, size=12, bold=True, align="center", color=border_color)
+            return PH - M - 6 * mm
+
+        def cell_x(i):
+            right = PW - M - sum(widths[:i])
+            return right - widths[i], right
+
+        def draw_row(y_top, values, h, fill=None, bold=False):
+            c.setStrokeColor(border_color)
+            c.setLineWidth(0.6)
+            if fill is not None:
+                c.setFillColor(fill)
+                c.rect(M, y_top - h, table_w, h, fill=1, stroke=0)
+                c.setFillColorRGB(0, 0, 0)
+            c.rect(M, y_top - h, table_w, h, fill=0, stroke=1)
+            base = y_top - h / 2 - 3
+            for i, v in enumerate(values):
+                x0, x1 = cell_x(i)
+                if i:
+                    c.line(x1, y_top - h, x1, y_top)
+                if re.search("[\u0600-\u06FF]", v):
+                    size = fit_font_size(v, widths[i] - 6, 9.5, bold=bold or h == head_h, min_size=6.5)
+                    txt(c, (x0 + x1) / 2, base, v, size=size, bold=bold or h == head_h, align="center")
+                else:       # الفترة والأرقام كما هي (بلا قلب اتجاه)
+                    c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 9.5)
+                    c.drawCentredString((x0 + x1) / 2, base, v)
+            return y_top - h
+
+        if y - (12 * mm + head_h + 2 * row_h) < M:
+            y = new_page("شاشة الخسائر — تفصيل الفترات")
+        else:
+            txt(c, PW / 2, y - 5 * mm, "تفصيل الفترات لكل صندوق", size=14, bold=True, align="center", color=border_color)
+            y -= 9 * mm
+
+        for cat, disp in box_defs:
+            rows, total = self.losses_period_breakdown(cat)
+            head = ["الفترة", "الفاقد الحالي", self.get_box_loss_account(cat), self.get_box_recovery_name(cat), "الصافي"]
+            title = f"صندوق خياس {disp}"
+            if y - (7 * mm + head_h + 2 * row_h) < M:
+                y = new_page("شاشة الخسائر — تفصيل الفترات (تابع)")
+            txt(c, PW - M, y - 4.5 * mm, title, size=11.5, bold=True, align="right", color=border_color)
+            y = draw_row(y - 7 * mm, head, head_h, fill=head_fill)
+            if not rows:
+                y = draw_row(y, ["لا حركات في أي فترة", "", "", "", ""], row_h)
+            for m, sm in rows:
+                if y - 2 * row_h < M:
+                    y = new_page("شاشة الخسائر — تفصيل الفترات (تابع)")
+                    txt(c, PW - M, y - 4.5 * mm, f"{title} (تابع)", size=11.5, bold=True, align="right",
+                        color=border_color)
+                    y = draw_row(y - 7 * mm, head, head_h, fill=head_fill)
+                values = [m] + [f"{sm[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
+                y = draw_row(y, values, row_h, fill=pick_fill if m == selected else None, bold=(m == selected))
+            values = ["الإجمالي (كل الفترات)"] + [f"{total[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
+            y = draw_row(y, values, row_h + 0.6 * mm, fill=total_fill, bold=True) - 5 * mm
+        c.showPage()
 
     # =========================================================================
     # --- شجرة الحسابات: عرض هرمي لكل حسابات النظام مصنّفة، مع الانتقال المباشر لكشف حسابها ---
