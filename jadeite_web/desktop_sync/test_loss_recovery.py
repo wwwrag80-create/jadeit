@@ -53,7 +53,9 @@ METHODS = [
     "get_account_statement_options", "get_journal_entry_account_options",
     # الأرقام
     "journal_partner_index", "journal_partner", "get_box_loss_total", "get_box_recovered_total",
-    "get_box_loss_summary", "get_current_unclosed_khayas", "get_box_khayas_cumulative",
+    "get_box_loss_summary", "get_current_unclosed_khayas", "get_box_khayas_cumulative", "get_recorded_periods",
+    # شاشة الخسائر: الفترة المختارة أو «الكل»
+    "losses_period_options", "selected_losses_period", "losses_close_period", "losses_statement_range",
     "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
@@ -78,7 +80,7 @@ METHODS = [
 ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
          "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME",
-         "LASER_NAME", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS"]
+         "LASER_NAME", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL"]
 
 EXTRA = '''
 def check_edit_permission(self): return True
@@ -247,6 +249,13 @@ def inbound(app, month, weight, to_account, supplier="المصنع", voucher="V1
 
 
 def summary(app, cat, month=None):
+    """(الفاقد الحالي للفترة، ثم الفاقد والمسترجع والصافي لكل الفترات = «الكل» في شاشة الخسائر)"""
+    s, t = app.get_box_loss_summary(cat, month=month), app.get_box_loss_summary(cat, month=app.LOSSES_ALL)
+    return (s["current"], t["loss"], t["recovered"], t["net"])
+
+
+def period_summary(app, cat, month):
+    """البطاقة كما تظهر عند اختيار فترة (أو «الكل»): كل الأقسام الأربعة لها"""
     s = app.get_box_loss_summary(cat, month=month)
     return (s["current"], s["loss"], s["recovered"], s["net"])
 
@@ -438,6 +447,45 @@ assert any(r["البيان"] == "قبض مسترجع" and r["دائن"] == 8.0 f
 assert any(r["البيان"] == "مسترجع الأشجار" and r["دائن"] == 1.0 for r in rows)
 assert balance(rows, False) == 0.0          # فترة ٨ مقفلة بالكامل
 print("✔ كشف «الكاستنج» لفترة ٨ يعرض صرف المسترجع وقبضه ومسترجع الأشجار مع حركاته، ورصيده صفر بعد الإقفال")
+
+# ═══ ٧ب) شاشة الخسائر: فترة تختارها أو «الكل» ═══
+assert period_summary(a, CAST, M7) == (0.0, 5.0, 0.0, 5.0), period_summary(a, CAST, M7)
+assert period_summary(a, CAST, M8) == (0.0, 6.0, 0.0, 6.0), period_summary(a, CAST, M8)
+assert period_summary(a, CAST, M9) == (0.0, 22.0, 8.0, 14.0), period_summary(a, CAST, M9)
+print("✔ اختيار فترة: أقسام البطاقة الأربعة لها وحدها — فترة ٧: فاقد 5 | فترة ٨: فاقد 6 | "
+      "فترة ٩: فاقد 22 (إقفال 2 + افتتاحي 20) ومسترجع 8 وصافي 14")
+assert period_summary(a, CAST, a.LOSSES_ALL) == (0.0, 33.0, 8.0, 25.0), period_summary(a, CAST, a.LOSSES_ALL)
+by_period = [period_summary(a, CAST, m) for m in a.get_recorded_periods()]
+assert round(sum(x[1] for x in by_period), 2) == 33.0 and round(sum(x[2] for x in by_period), 2) == 8.0
+assert period_summary(a, CAST, a.LOSSES_ALL)[1] == a.get_box_loss_total(CAST) == balance(
+    a.get_account_ledger_rows(CAST_LOSS, "", ""), True)
+print("✔ «الكل»: فاقد 33 ومسترجع 8 وصافي 25 = مجموع الفترات = كشف «فاقد الكاستنج» كاملاً")
+
+g = new_app()
+cast_loss(g, M8, "1", sarf="100", qabd="94")
+cast_loss(g, M9, "1", sarf="50", qabd="48")
+g.current_display_month = M9
+assert period_summary(g, CAST, M8)[0] == 6.0 and period_summary(g, CAST, M9)[0] == 2.0
+assert period_summary(g, CAST, g.LOSSES_ALL) == (8.0, 0.0, 0.0, 0.0), period_summary(g, CAST, g.LOSSES_ALL)
+print("✔ «الكل» للفاقد الحالي = غير المُقفل في كل الفترات (6 من فترة ٨ + 2 من فترة ٩ = 8)")
+
+assert g.losses_period_options() == [g.LOSSES_ALL, M9, M8], g.losses_period_options()
+g.combo_losses_period, g.losses_from_month, g.losses_to_month = W(M8), W(""), W("")
+assert (g.selected_losses_period(), g.losses_close_period(), g.losses_statement_range()) == (M8, M8, (M8, M8))
+g.combo_losses_period = W(g.LOSSES_ALL)
+assert (g.selected_losses_period(), g.losses_close_period(), g.losses_statement_range()) == \
+    (g.LOSSES_ALL, M9, ("", ""))
+g.losses_from_month, g.losses_to_month = W("2026-07"), W("2026-08")
+assert g.losses_statement_range() == ("2026-07", "2026-08")
+print("✔ القائمة: «الكل» ثم الفترات (الأحدث أولاً)؛ الكشف من البطاقة بفترتها (و«الكل» كل الفترات، و«من/إلى» إن كُتبا)")
+print("✔ زر الإقفال يُقفل الفترة المعروضة في البطاقة؛ ومع «الكل» الفترة الحالية (لا إقفال لكل الفترات دفعة واحدة)")
+
+tab = seg("refresh_losses_tab")
+assert "self.losses_period_options()" in tab and "self.selected_losses_period()" in tab and '"scope"' in tab
+assert "self.losses_close_period()" in seg("refresh_losses_cards")
+assert "لكل الفترات" not in seg("refresh_losses_cards")
+assert "self.selected_losses_period()" in seg("print_losses_screen")
+print("✔ البطاقة تذكر نطاقها («أرقام فترة …» أو «أرقام كل الفترات»)، والطباعة بالاختيار نفسه")
 
 # ═══ ٨) إلغاء «الإقفال التلقائي عند الوارد» في البيانات السابقة ═══
 def legacy(app, month, sarf, qabd, recovered, remainder):

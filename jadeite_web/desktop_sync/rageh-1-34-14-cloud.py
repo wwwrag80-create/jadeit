@@ -127,7 +127,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.57.0"
+APP_VERSION = "1.58.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7664,7 +7664,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "مراحل التصنيع": "صرف وقبض الكاستنج والمصنعين والمركبين والتلميع",
         "صناديق الخياس": "أرصدة العمال والخياس الفعلي لكل قسم وإقفاله",
         "الوارد": "استلام الذهب والفصوص والألماس من الموردين والمصنع",
-        "شاشة الخسائر": "لكل مرحلة: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
+        "شاشة الخسائر": "لكل مرحلة، لفترة تختارها أو للكل: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
         "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج",
         "ربح/خسارة الطقم": "خياسات كل طقم ومسترجعها وربحه أو خسارته",
         "لوحة المؤشرات": "مؤشرات الإدارة: الخزينة والفاقد والمبيعات والوارد عبر الفترات",
@@ -12683,19 +12683,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 total -= w
         return round(total, 2)
 
-    def get_box_loss_summary(self, cat, month=None):
-        """أقسام لوحة الصندوق في شاشة الخسائر:
+    # اختيار «الكل» في شاشة الخسائر: أرقام كل الفترات
+    LOSSES_ALL = "الكل"
 
-            الفاقد الحالي — فاقد المرحلة غير المُقفل في الفترة المختارة
-            الفاقد        — رصيد حساب فاقد المرحلة (كل ما أُقفل في كل الفترات + الافتتاحي)
-            المسترجع      — رصيد حساب مسترجع المرحلة (كل الفترات + الافتتاحي)
+    def get_box_loss_summary(self, cat, month=None):
+        """أقسام لوحة الصندوق في شاشة الخسائر — للفترة المختارة (month)، أو لكل الفترات
+        (month = LOSSES_ALL)؛ بلا فترة: الفترة المعروضة:
+
+            الفاقد الحالي — فاقد المرحلة غير المُقفل (في كل فترة على حدة، ومجموعها في «الكل»)
+            الفاقد        — حساب فاقد المرحلة: ما أُقفل من فاقدها + قيوده (ومنها الافتتاحي)
+            المسترجع      — حساب مسترجع المرحلة: الوارد إليه + قيوده (ومنها الافتتاحي)
             الصافي        — الفاقد − المسترجع
         """
-        loss = self.get_box_loss_total(cat)
-        recovered = self.get_box_recovered_total(cat)
+        if month == self.LOSSES_ALL:
+            # كل فترة مستقلة بفاقدها الحالي، فمجموعها = غير المُقفل في كل الفترات
+            current = sum(self.get_current_unclosed_khayas(cat, month=m) for m in self.get_recorded_periods())
+            loss, recovered = self.get_box_loss_total(cat), self.get_box_recovered_total(cat)
+        else:
+            month = month or self.current_display_month
+            current = self.get_current_unclosed_khayas(cat, month=month)
+            loss, recovered = self.get_box_loss_total(cat, month=month), self.get_box_recovered_total(cat, month=month)
         # «+ 0.0» يحوّل الصفر السالب (بقايا الكسور بعد الإقفال) إلى صفر، فلا يظهر «-0.00»
-        return {"current": round(self.get_current_unclosed_khayas(cat, month=month), 2) + 0.0,
-                "loss": loss + 0.0, "recovered": recovered + 0.0, "net": round(loss - recovered, 2) + 0.0}
+        return {"current": round(current, 2) + 0.0, "loss": round(loss, 2) + 0.0,
+                "recovered": round(recovered, 2) + 0.0, "net": round(loss - recovered, 2) + 0.0}
 
     def ensure_default_khayas_boxes(self):
         """لا صناديق تُنشأ تلقائياً بعد الآن (أُلغي إنشاء قسم الصب).
@@ -20156,11 +20166,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ctk.CTkLabel(bar, text=text, font=("Cairo", 13, "bold"),
                          text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(10, 4), pady=10)
 
-        # شريط اختيار الفترة: يعرض الفترات المسجّلة فقط، وكل صندوق يُعرض
-        # بأرقام تلك الفترة وحدها
+        # شريط اختيار الفترة: «الكل» ثم الفترات المسجّلة — كل صندوق يُعرض بأرقام
+        # الفترة المختارة وحدها، أو بأرقام كل الفترات
         bar_label("الفترة:")
         self.combo_losses_period = ctk.CTkComboBox(
-            bar, values=self.get_recorded_periods(), font=("Cairo", 14),
+            bar, values=self.losses_period_options(), font=("Cairo", 14),
             width=130, height=34, justify="center", state="readonly",
             command=lambda _v: self.refresh_losses_tab())
         self.combo_losses_period.set(self.current_display_month)
@@ -20203,10 +20213,40 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.losses_from_month.delete(0, 'end')
         self.losses_to_month.delete(0, 'end')
 
-    def open_account_statement(self, account_key):
-        """يفتح شاشة كشف حساب على حساب معيّن (بنطاق الفترات المكتوب في شاشة الخسائر إن وُجد)"""
+    def losses_period_options(self):
+        """خيارات فترة شاشة الخسائر: «الكل» ثم الفترات المسجّلة (الأحدث أولاً)"""
+        return [self.LOSSES_ALL] + self.get_recorded_periods()
+
+    def selected_losses_period(self):
+        """الفترة المختارة في شاشة الخسائر — أو LOSSES_ALL لكل الفترات"""
+        month = self.current_display_month
+        if hasattr(self, "combo_losses_period"):
+            try:
+                month = self.combo_losses_period.get().strip() or month
+            except Exception:
+                pass
+        return month
+
+    def losses_close_period(self):
+        """الفترة التي يُقفلها زر «إقفال الخياس»: المعروضة في البطاقة؛ ومع «الكل» الفترة الحالية
+        (لا إقفال لكل الفترات دفعة واحدة — وتأكيد الإقفال يذكر الفترة)"""
+        month = self.selected_losses_period()
+        return self.current_display_month if month == self.LOSSES_ALL else month
+
+    def losses_statement_range(self):
+        """نطاق كشف الحساب من شاشة الخسائر: «من/إلى» إن كُتبا، وإلا الفترة المختارة
+        (فيطابق الكشف أرقام البطاقة)، و«الكل» = كل الفترات"""
         from_m = self.losses_from_month.get().strip() if hasattr(self, 'losses_from_month') else ""
         to_m = self.losses_to_month.get().strip() if hasattr(self, 'losses_to_month') else ""
+        if not from_m and not to_m:
+            month = self.selected_losses_period()
+            if month != self.LOSSES_ALL:
+                from_m = to_m = month
+        return from_m, to_m
+
+    def open_account_statement(self, account_key):
+        """يفتح شاشة كشف حساب على حساب معيّن (بنطاق شاشة الخسائر: «من/إلى» أو الفترة المختارة)"""
+        from_m, to_m = self.losses_statement_range()
         self.navigate_to_screen("كشف حساب")
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.set(account_key)
@@ -20220,8 +20260,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def open_box_statement(self, cat):
         box_account = self.get_box_account_name(cat)
-        from_m = self.losses_from_month.get().strip() if hasattr(self, 'losses_from_month') else ""
-        to_m = self.losses_to_month.get().strip() if hasattr(self, 'losses_to_month') else ""
+        from_m, to_m = self.losses_statement_range()
         self.navigate_to_screen("كشف حساب")
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.set(box_account)
@@ -20291,19 +20330,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lbl_loss = stat(0, 0, loss_account, calm_fg, calm_bg, account=loss_account)
             lbl_recovered = stat(1, 1, recovery_account, calm_fg, calm_bg, account=recovery_account)
             lbl_net = stat(1, 0, "الصافي (الفاقد − المسترجع)", calm_fg, calm_bg)
-            ctk.CTkLabel(card, text="الفاقد الحالي للفترة المختارة — والبقية لكل الفترات", font=("Cairo", 11),
-                         text_color=(UI["muted"], "#9AA3AF")).pack(pady=(2, 0))
+            lbl_scope = ctk.CTkLabel(card, text="", font=("Cairo", 11), text_color=(UI["muted"], "#9AA3AF"))
+            lbl_scope.pack(pady=(2, 0))
 
             btns_row = ctk.CTkFrame(card, fg_color="transparent")
             btns_row.pack(pady=(10, 14))
             ctk.CTkButton(btns_row, text="🔒 إقفال الخياس", font=("Cairo", 13, "bold"), fg_color=UI["danger"],
                           hover_color=UI["danger_hover"], width=140, height=36,
-                          command=lambda c=cat: self.close_khayas_box(c)).pack(side="right", padx=4)
+                          command=lambda c=cat: self.close_khayas_box(c, month=self.losses_close_period())
+                          ).pack(side="right", padx=4)
             ctk.CTkButton(btns_row, text="📋 كشف حساب", font=("Cairo", 13, "bold"), fg_color=UI["primary"],
                           hover_color=UI["primary_hover"], width=120, height=36,
                           command=lambda c=cat: self.open_box_statement(c)).pack(side="right", padx=4)
             self.losses_card_widgets[cat] = {"current": lbl_current, "loss": lbl_loss,
-                                             "recovered": lbl_recovered, "net": lbl_net}
+                                             "recovered": lbl_recovered, "net": lbl_net, "scope": lbl_scope}
 
     def get_unclosed_periods(self, cat):
         """الفترات **المنتهية** التي ما زال فيها خياس غير مُقفل لهذا القسم.
@@ -20361,22 +20401,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not hasattr(self, 'losses_card_widgets') or not self.losses_card_widgets:
             return
 
-        # الفترة المختارة من شريط البحث، وإلا الفترة المعروضة حالياً
-        month = self.current_display_month
+        # الفترة المختارة من شريط البحث («الكل» = كل الفترات)، وإلا الفترة المعروضة حالياً
         if hasattr(self, "combo_losses_period"):
             try:
-                self.combo_losses_period.configure(values=self.get_recorded_periods())
-                chosen = self.combo_losses_period.get().strip()
-                if chosen:
-                    month = chosen
+                self.combo_losses_period.configure(values=self.losses_period_options())
             except Exception:
                 pass
+        month = self.selected_losses_period()
+        scope = "أرقام كل الفترات" if month == self.LOSSES_ALL else f"أرقام فترة {month}"
 
         for cat, widgets in self.losses_card_widgets.items():
             summary = self.get_box_loss_summary(cat, month=month)
             # العنوان داخل كل قسم، والرقم وحده هنا (التفصيل في كشف حساب الصندوق)
             for key in ("current", "loss", "recovered", "net"):
                 widgets[key].configure(text=f"{summary[key]:.2f}")
+            if "scope" in widgets:
+                widgets["scope"].configure(text=scope)
 
     def _post_closing_entry(self, box_account_name, amount, bayan, full_dt, period=None, loss_account=None):
         """يسجّل قيد إقفال مزدوجاً (مدين الخسائر / دائن الصندوق أو العكس).
@@ -20572,17 +20612,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
         y = min(y - 13, logo_bottom) - 9 * mm
 
-        # الفترة نفسها المعروضة في الشاشة (شريط البحث)، وإلا الفترة الحالية
-        month = self.current_display_month
-        try:
-            if hasattr(self, "combo_losses_period"):
-                month = self.combo_losses_period.get().strip() or month
-        except Exception:
-            pass
+        # الفترة نفسها المعروضة في الشاشة (شريط البحث) — أو «الكل»
+        month = self.selected_losses_period()
+        scope = "أرقام كل الفترات" if month == self.LOSSES_ALL else f"أرقام فترة {month}"
 
         txt(c, PW / 2, y, "شاشة الخسائر - إقفال صناديق الخياس", size=17, bold=True, align="center", color=border_color)
         y -= 8 * mm
-        txt(c, PW / 2, y, f"الفاقد الحالي لفترة {month} — والبقية لكل الفترات  |  "
+        txt(c, PW / 2, y, f"{scope}  |  "
                           f"تاريخ الطباعة: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", size=10, align="center")
         y -= 8 * mm
 
