@@ -121,8 +121,8 @@ print("✔ مجموعات الفاتورة للطباعة بترتيب سطور�
 
 gen = body("generate_invoice_pdf")
 assert "if self.sale_tickets_with_invoice():" in gen and "self.draw_sale_tickets(c, tickets)" in gen
-# الترتيب (الدفعة ٢١): التذاكر أولاً، ثم فاتورة المبيعات، ثم سندات أرقام التشغيل بالقالب الورقي
-assert (gen.index("self.draw_sale_tickets(c, tickets)") < gen.index("self.draw_sales_summary_pages(")
+# الترتيب (الدفعة ٢٩): فاتورة المبيعات أولاً، ثم التذاكر، ثم سندات أرقام التشغيل بالقالب الورقي
+assert (gen.index("self.draw_sales_summary_pages(") < gen.index("self.draw_sale_tickets(c, tickets)")
         < gen.index("self.draw_set_voucher_page(c, data)"))
 assert "draw_invoice_page" not in src, "القالب القديم أُزيل"
 
@@ -140,7 +140,7 @@ for label in ("مصنع جاديت", "التصنيع", "البوليش", "الت
     assert f'"{label}"' in voucher, label
 # مرحلة «التلميع النهائي» في السند اسمها الآن «بوليش 2» — من اسم الصندوق نفسه
 assert 'stage(1135, self.get_display_label("خياس الطقوم")' in voucher and '"التلميع النهائي"' not in voucher
-print("✔ ملف الترحيل: التذاكر ثم فاتورة المبيعات ثم سند لكل رقم تشغيل بقالب المصنع الورقي، "
+print("✔ ملف الترحيل: فاتورة المبيعات ثم التذاكر ثم سند لكل رقم تشغيل بقالب المصنع الورقي، "
       "ولا يُعبّأ منه إلا رقم التشغيل و«الوزن النهائي» (القائم 41.15، الفصوص، الأحجار، الماس، الذهب 35.25)")
 draw = body("draw_sale_tickets")
 assert "code128.Code128(code" in draw and 'qr.QrCodeWidget(t["qr"])' in draw and "c.setDash(3, 2)" in draw

@@ -89,6 +89,7 @@ CHECKS = [
     ("لوحة المؤشرات",           [PY, "test_dashboard.py", TARGET]),
     ("أدوات الجداول والتنبيهات", [PY, "test_ui_tools.py", TARGET]),
     ("تذاكر طقوم المبيعات",     [PY, "test_sale_tickets.py", TARGET]),
+    ("قالب فاتورة المبيعات",    [PY, "test_sales_invoice_template.py", TARGET]),
     ("البحث الشامل والطباعة",   [PY, "test_ui_extras.py", TARGET]),
 ]
 

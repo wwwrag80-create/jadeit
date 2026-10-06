@@ -128,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.62.0"
+APP_VERSION = "1.63.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -18569,7 +18569,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "set_number": set_number, "date": date_str, "name": name,
             "gold": 0.0, "gems": 0.0, "stones": 0.0, "stones_discount": "",
             "diamond": 0.0, "khayas": 0.0, "khayas_polish": 0.0, "khayas_assembler": 0.0, "net": 0.0,
-            "row_number": "", "invoice_no": None, "voucher": ""
+            "row_number": "", "invoice_no": None, "voucher": "", "manual_no": ""
         }
         for inv in self.invoices.values():
             if inv.get("set_number") != set_number: continue
@@ -18604,7 +18604,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 data["row_number"] = inv.get("row_number")
             if data["invoice_no"] is None:
                 data["invoice_no"] = inv.get("رقم الفاتورة")
+            if not data["manual_no"] and inv.get("رقم الفاتورة اليدوي"):
+                data["manual_no"] = str(inv.get("رقم الفاتورة اليدوي")).strip()
         return data
+
+    @staticmethod
+    def sale_khayas_total(data):
+        """«الخياس» في فاتورة المبيعات لرقم تشغيل: خياس بوليش 1 (خياس البوليش) + خياس بوليش 2
+        + خياس المركب"""
+        return round(sum(float(data.get(k) or 0.0) for k in ("khayas_polish", "khayas", "khayas_assembler")), 2)
 
     def get_sale_batch_set_numbers(self, date_str, name):
         """يرجع كل أرقام التشغيل التي رُحّلت ضمن نفس دفعة المبيعات (نفس التاريخ والاسم)، بترتيب إدخالها الأصلي"""
@@ -18750,18 +18758,103 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             c.line(X(x0), Y(1697), X(x1), Y(1697))
             text((x0 + x1) / 2, 1722, label, 10.5)
 
+    # ═══ ترويسة المطبوعات: بيانات المصنع (كما في ورقة الترويسة المعتمدة) والشعار ═══
+    LETTERHEAD_AR = ("مصنع جاديت للتصنيع", "المملكة العربية السعودية", "الرياض - صناعية الموسى",
+                     "سجل تجاري: 1010851840")
+    LETTERHEAD_EN = ("Jadeite Factory", "Saudi Arabia, Riyadh", "Industrial City", "C.R: 1010851840")
+
+    def pdf_logo(self):
+        """الشعار للمطبوعات وحده (بلا نصوص): الشعار النقي المرفق، وإلا وسط صورة الترويسة المضمّنة.
+        يرجع (صورة، العرض ÷ الارتفاع) أو None — ويُحمَّل مرة واحدة"""
+        cache = self.__dict__.get("_pdf_logo_cache", False)
+        if cache is False:
+            img = None
+            try:
+                path = resource_path("jadeite_logo.png")
+                if os.path.exists(path):
+                    img = Image.open(path).convert("RGBA")
+                else:
+                    sheet = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64))).convert("RGBA")
+                    img = sheet.crop((410, 0, 590, sheet.height))      # الشعار في وسط الترويسة
+            except Exception:
+                img = None
+            cache = (ImageReader(img), img.width / img.height) if img else None
+            self.__dict__["_pdf_logo_cache"] = cache
+        return cache
+
+    def draw_pdf_letterhead(self, c, top, margin, navy, gold):
+        """ترويسة الصفحة: بيانات المصنع بالعربية يميناً وبالإنجليزية يساراً — كل سطر في مكانه بلا
+        تداخل — والشعار بحجم واضح في الوسط، ثم خطّان (كحلي وذهبي). يرجع ارتفاع أسفل الترويسة"""
+        from reportlab.lib.colors import Color
+        PW = A4[0]
+        gray = Color(0.30, 0.32, 0.38)
+        for side, lines in ((PW - margin, self.LETTERHEAD_AR), (margin, self.LETTERHEAD_EN)):
+            for k, line in enumerate(lines):
+                bold = k == 0
+                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 13.5 if bold else 9)
+                c.setFillColor(navy if bold else gray)
+                y = top - (5.5 * mm if bold else (6.5 + 5 * k) * mm + 1.5 * mm)
+                text = ar(line)
+                if side > PW / 2:
+                    c.drawRightString(side, y, text)
+                else:
+                    c.drawString(side, y, text)
+        c.setFillColorRGB(0, 0, 0)
+        logo = self.pdf_logo()
+        if logo:
+            lh = 25 * mm
+            lw = lh * logo[1]
+            c.drawImage(logo[0], (PW - lw) / 2, top - lh, width=lw, height=lh, mask="auto",
+                        preserveAspectRatio=True)
+        rule = top - 28 * mm
+        c.saveState()
+        c.setStrokeColor(navy); c.setLineWidth(1.4)
+        c.line(margin, rule, PW - margin, rule)
+        c.setStrokeColor(gold); c.setLineWidth(0.7)
+        c.line(margin, rule - 1.3 * mm, PW - margin, rule - 1.3 * mm)
+        c.restoreState()
+        return rule - 1.3 * mm
+
+    # أعمدة فاتورة المبيعات من اليمين؛ «الخياس» = بوليش 1 + بوليش 2 + المركب لرقم التشغيل
+    SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
+                          "الخياس", "الوزن القائم", "الوزن المقيد")
+
+    def sales_summary_rows(self, rows_data):
+        """قيم جدول فاتورة المبيعات (أرقام) لكل رقم تشغيل، وصف الإجمالي = مجموع كل عمود"""
+        rows = []
+        for data in rows_data:
+            gold, gems = data.get("gold", 0.0) or 0.0, data.get("gems", 0.0) or 0.0
+            stones, diamond = data.get("stones", 0.0) or 0.0, data.get("diamond", 0.0) or 0.0
+            try:
+                stones_disc = float(data.get("stones_discount") or 0)
+            except (TypeError, ValueError):
+                stones_disc = 0.0
+            rows.append({"set_number": str(data.get("set_number") or "-"),
+                         "الذهب": round(gold, 2), "الفصوص": round(gems, 2), "الأحجار": round(stones, 2),
+                         "الأحجار بعد الخصم": round(stones_disc, 2), "الماس": round(diamond, 2),
+                         "الخياس": self.sale_khayas_total(data),
+                         "الوزن القائم": round(gold + gems + stones + diamond, 2),
+                         "الوزن المقيد": round(gold + gems + stones_disc + diamond, 2)})
+        totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]}
+        return rows, totals
+
     def draw_sales_summary_pages(self, c, rows_data, name, date_str):
-        """يرسم صفحة (أو أكثر عند كثرة الأسطر) لفاتورة المبيعات الإجمالية: جدول مرقّم بكل الأسطر + صف الإجمالي، بنفس تصميم قالب فاتورة المبيعات (الأزرق)، قبل صفحات أرقام التشغيل التفصيلية"""
+        """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة (بيانات المصنع والشعار)، ثم «فاتورة
+        مبيعات» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول بكل الأطقم
+        وصف إجمالي لكل عمود، والتوقيعات — وصفحات تابعة عند كثرة الأطقم"""
         from reportlab.lib.colors import Color
         PW, PH = A4
-        M = 10 * mm
-        header_fill = Color(0.78, 0.80, 0.93)   # لافندر فاتح مطابق لقالب فاتورة المبيعات
-        border_color = Color(0.15, 0.15, 0.55)  # كحلي غامق للحدود والنصوص
+        M = 12 * mm
+        navy = Color(0.15, 0.15, 0.55)            # كحلي قالب فاتورة المبيعات
+        gold = Color(0.80, 0.64, 0.22)
+        header_fill = Color(0.78, 0.80, 0.93)     # لافندر قالب فاتورة المبيعات
+        zebra = Color(0.955, 0.958, 0.99)
+        soft = Color(0.93, 0.94, 0.98)
+        ink = Color(0.10, 0.10, 0.14)
 
         def txt(x, y, s, size=9, bold=False, align="right", color=None):
             c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
-            if color:
-                c.setFillColor(color)
+            c.setFillColor(color or ink)
             s = ar(s)
             if align == "right":
                 c.drawRightString(x, y, s)
@@ -18769,184 +18862,155 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 c.drawString(x, y, s)
             else:
                 c.drawCentredString(x, y, s)
-            if color:
-                c.setFillColorRGB(0, 0, 0)
+            c.setFillColorRGB(0, 0, 0)
 
-        def rect(x, y, w, h, fill=None, stroke_color=None):
+        def box(x, top, w, h, fill=None, stroke=navy, radius=0, width=0.8):
             c.saveState()
-            if stroke_color:
-                c.setStrokeColor(stroke_color)
-            if fill:
+            c.setStrokeColor(stroke); c.setLineWidth(width)
+            if fill is not None:
                 c.setFillColor(fill)
-                c.rect(x, y - h, w, h, fill=1, stroke=1)
+            if radius:
+                c.roundRect(x, top - h, w, h, radius, fill=1 if fill is not None else 0, stroke=1)
             else:
-                c.rect(x, y - h, w, h, fill=0, stroke=1)
+                c.rect(x, top - h, w, h, fill=1 if fill is not None else 0, stroke=1)
             c.restoreState()
 
-        # الأعمدة من اليمين لليسار: التسلسل، رقم التشغيل، الذهب، الفصوص، الأحجار، الأحجار بعد الخصم، الماس، الوزن القائم، الوزن المقيد
-        cols = ["#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس", "خياس", "الوزن القائم", "الوزن المقيد"]
-        col_ratios = [0.45, 0.95, 0.85, 0.85, 0.85, 1.05, 0.85, 0.8, 0.95, 0.95]
-        n_cols = len(cols)
+        rows, totals = self.sales_summary_rows(rows_data)
+        manual_nos = [str(d.get("manual_no") or "").strip() for d in rows_data]
+        invoice_no = next((m for m in manual_nos if m), "") or str(next(
+            (d.get("invoice_no") for d in rows_data if d.get("invoice_no")), "-"))
+        date_part = str(date_str or "")[:10]
+        time_part = str(date_str or "")[11:16]
+
+        cols = self.SALES_SUMMARY_COLS
+        ratios = (0.45, 1.0, 0.9, 0.85, 0.85, 1.05, 0.85, 0.85, 0.95, 0.95)
         table_w = PW - 2 * M
-        ratio_sum = sum(col_ratios)
-        col_ws = [table_w * r / ratio_sum for r in col_ratios]
-        col_x_starts = []
-        acc = 0.0
-        for w in col_ws:
-            col_x_starts.append(acc)
-            acc += w
+        col_ws = [table_w * r / sum(ratios) for r in ratios]
+        lefts = [PW - M - sum(col_ws[:i + 1]) for i in range(len(cols))]   # الحافة اليسرى لكل عمود
 
-        row_h = 8.5 * mm
-        header_h = 11 * mm
-        max_rows_per_page = 24
+        def cell_cx(i):
+            return lefts[i] + col_ws[i] / 2
 
-        total_rows = len(rows_data)
-        idx = 0
-        page_num = 1
-
-        while idx < total_rows or (idx == 0 and total_rows == 0):
-            y = PH - M
-
-            # رأس الصفحة: نفس شعار وبيانات الشركة المعتمدة بباقي صفحات الفاتورة
-            txt(M, y - 6, "Jadeite Factory", size=12, bold=True, align="left")
-            txt(M, y - 13, "Saudi Arabia, Riyadh", size=8, align="left")
-            txt(PW - M, y - 6, "مصنع جاديت للتصنيع", size=12, bold=True, align="right")
-            txt(PW - M, y - 13, "المملكة العربية السعودية", size=8, align="right")
-            logo_bottom = y - 13  # قيمة احتياطية إن تعذّر تحميل الشعار
-            try:
-                logo_bytes = base64.b64decode(APP_LOGO_B64)
-                logo_img = ImageReader(io.BytesIO(logo_bytes))
-                lw, lh = 45 * mm, 10 * mm
-                logo_top = y - 4
-                logo_bottom = logo_top - lh
-                c.drawImage(logo_img, (PW - lw) / 2, logo_bottom, width=lw, height=lh, mask='auto', preserveAspectRatio=True)
-            except Exception:
-                pass
-            y = min(y - 13, logo_bottom) - 9 * mm  # مسافة أمان واضحة أسفل أعمق عنصر بالرأس (الشعار أو نص الشركة)
-
-            txt(PW / 2, y, "فاتورة مبيعات", size=16, bold=True, align="center", color=border_color)
-            y -= 8 * mm
-            name_line = f"العميل: {name}"
-            name_size = fit_font_size(name_line, (PW - 2 * M) * 0.62, 11, bold=True, min_size=8)
-            txt(PW - M, y, name_line, size=name_size, bold=True, align="right")
-            txt(M, y, f"عدد الأسطر: {total_rows}", size=10, align="left")
-            y -= 6.5 * mm
-            txt(PW - M, y, f"التاريخ: {date_str}", size=11, align="right")
-            if page_num > 1:
-                txt(M, y, f"(تابع - صفحة {page_num})", size=10, align="left")
-            y -= 8 * mm
-
-            table_top = y
-            rect(M, table_top, table_w, header_h, fill=header_fill, stroke_color=border_color)
-            for i, lbl in enumerate(cols):
-                cx = M + table_w - col_x_starts[i] - col_ws[i] / 2
-                hdr_size = fit_font_size(lbl, col_ws[i] - 3 * mm, 10, bold=True, min_size=6.5)
-                txt(cx, vcenter_baseline(table_top, header_h, hdr_size), lbl, size=hdr_size, bold=True, align="center", color=border_color)
-                if i > 0:
-                    c.setStrokeColor(border_color)
-                    c.line(M + table_w - col_x_starts[i], table_top - header_h, M + table_w - col_x_starts[i], table_top)
-
-            y = table_top - header_h
-            page_rows = rows_data[idx: idx + max_rows_per_page]
-
-            for row_i, data in enumerate(page_rows):
-                rect(M, y, table_w, row_h, stroke_color=border_color)
-                for i in range(1, n_cols):
-                    c.setStrokeColor(border_color)
-                    c.line(M + table_w - col_x_starts[i], y - row_h, M + table_w - col_x_starts[i], y)
-                gold_v = data.get('gold', 0) or 0.0
-                gems_v = data.get('gems', 0) or 0.0
-                stones_v = data.get('stones', 0) or 0.0
-                diamond_v = data.get('diamond', 0) or 0.0
-                try:
-                    stones_disc_v = float(data.get("stones_discount") or 0)
-                except (ValueError, TypeError):
-                    stones_disc_v = 0.0
-                row_weight_standing = round(gold_v + gems_v + stones_v + diamond_v, 2)
-                row_weight_bound = round(gold_v + gems_v + stones_disc_v + diamond_v, 2)
-                khayas_v = data.get("khayas", 0) or 0.0
-                values = [
-                    str(idx + row_i + 1),
-                    str(data.get("set_number") or "-"),
-                    f"{gold_v:.2f}" if gold_v else "-",
-                    f"{gems_v:.2f}" if gems_v else "-",
-                    f"{stones_v:.2f}" if stones_v else "-",
-                    str(data.get("stones_discount") or "-"),
-                    f"{diamond_v:.2f}" if diamond_v else "-",
-                    f"{khayas_v:.2f}" if khayas_v else "-",
-                    f"{row_weight_standing:.2f}" if row_weight_standing else "-",
-                    f"{row_weight_bound:.2f}" if row_weight_bound else "-",
-                ]
-                for i, val in enumerate(values):
-                    cx = M + table_w - col_x_starts[i] - col_ws[i] / 2
-                    val_size = fit_font_size(val, col_ws[i] - 3 * mm, 9.5, min_size=6.5)
-                    txt(cx, vcenter_baseline(y, row_h, val_size), val, size=val_size, align="center")
-                y -= row_h
-
-            idx += len(page_rows)
-
-            # صف الإجمالي والتوقيعات تظهر فقط في آخر صفحة من الجدول
-            if idx >= total_rows:
-                tot_gold = sum(d.get("gold", 0.0) for d in rows_data)
-                tot_gems = sum(d.get("gems", 0.0) for d in rows_data)
-                tot_stones = sum(d.get("stones", 0.0) for d in rows_data)
-                tot_stones_discount = 0.0
-                for d in rows_data:
-                    try:
-                        tot_stones_discount += float(d.get("stones_discount") or 0)
-                    except ValueError:
-                        pass
-                tot_diamond = sum(d.get("diamond", 0.0) for d in rows_data)
-                tot_khayas = sum(d.get("khayas", 0.0) or 0.0 for d in rows_data)
-                tot_weight_standing = round(tot_gold + tot_gems + tot_stones + tot_diamond, 2)
-                tot_weight_bound = round(tot_gold + tot_gems + tot_stones_discount + tot_diamond, 2)
-
-                rect(M, y, table_w, row_h, fill=header_fill, stroke_color=border_color)
-                # "الإجمالي" تمتد على عمودي التسلسل ورقم التشغيل، والقيم تحت كل عمود مادة
-                total_lbl_w = col_ws[0] + col_ws[1]
-                total_lbl_size = fit_font_size("الإجمالي", total_lbl_w - 3 * mm, 11, bold=True)
-                txt(M + table_w - (col_x_starts[0] + col_ws[0] + col_ws[1]) / 2 - col_ws[0] / 2, vcenter_baseline(y, row_h, total_lbl_size), "الإجمالي", size=total_lbl_size, bold=True, align="center", color=border_color)
-                totals_by_col = {2: tot_gold, 3: tot_gems, 4: tot_stones, 5: tot_stones_discount, 6: tot_diamond,
-                                 7: tot_khayas, 8: tot_weight_standing, 9: tot_weight_bound}
-                for i, val in totals_by_col.items():
-                    cx = M + table_w - col_x_starts[i] - col_ws[i] / 2
-                    val_txt = f"{val:.2f}"
-                    tot_val_size = fit_font_size(val_txt, col_ws[i] - 3 * mm, 10.5, bold=True, min_size=7)
-                    txt(cx, vcenter_baseline(y, row_h, tot_val_size), val_txt, size=tot_val_size, bold=True, align="center", color=border_color)
-                for i in range(1, n_cols):
-                    c.setStrokeColor(border_color)
-                    c.line(M + table_w - col_x_starts[i], y - row_h, M + table_w - col_x_starts[i], y)
-                y -= row_h
-
-                sig_y = 20 * mm
-                sig_w = table_w / 3
-                for i, label in enumerate(["توقيع المدير", "توقيع المحاسب", "توقيع مسؤول الصالة"]):
-                    cx = M + sig_w * i + sig_w / 2
-                    c.line(M + sig_w * i + 10, sig_y, M + sig_w * (i + 1) - 10, sig_y)
-                    txt(cx, sig_y - 6, label, size=9, bold=True, align="center")
-
-            c.showPage()
-            page_num += 1
-
-            if total_rows == 0:
+        head_h, row_h, total_h = 11 * mm, 7.6 * mm, 9 * mm
+        sig_zone = 34 * mm          # التوقيعات وتذييل الصفحة الأخيرة
+        foot_zone = 14 * mm         # تذييل الصفحات التابعة
+        table_top = PH - M - 29.3 * mm - 36 * mm
+        cap_last = max(1, int((table_top - head_h - total_h - sig_zone) // row_h))
+        cap_full = max(1, int((table_top - head_h - foot_zone) // row_h))
+        pages, idx = [], 0
+        while True:
+            remaining = len(rows) - idx
+            if remaining <= cap_last:
+                pages.append((idx, len(rows)))
                 break
+            take = min(cap_full, remaining - 1)
+            pages.append((idx, idx + take))
+            idx += take
+        n_pages = len(pages)
+
+        for page_no, (first, last) in enumerate(pages, start=1):
+            is_last = page_no == n_pages
+            y = self.draw_pdf_letterhead(c, PH - M, M, navy, gold)
+
+            # ═══ العنوان بين رقم الفاتورة (يساراً) والتاريخ (يميناً) ═══
+            band_top, band_h, side_w = y - 4 * mm, 17 * mm, 52 * mm
+            box(M, band_top, side_w, band_h, fill=soft, radius=2.5 * mm, width=1.1)
+            txt(M + side_w / 2, band_top - 5.6 * mm, "رقم الفاتورة", size=9, color=navy, align="center")
+            no_size = fit_font_size(invoice_no, side_w - 6 * mm, 17, bold=True, min_size=9)
+            txt(M + side_w / 2, band_top - 13.2 * mm, invoice_no, size=no_size, bold=True, color=navy, align="center")
+            box(PW - M - side_w, band_top, side_w, band_h, fill=soft, radius=2.5 * mm, width=1.1)
+            txt(PW - M - side_w / 2, band_top - 5.6 * mm, "التاريخ", size=9, color=navy, align="center")
+            txt(PW - M - side_w / 2, band_top - 13.2 * mm, f"{date_part}  {time_part}".strip(), size=13,
+                bold=True, color=navy, align="center")
+            title = "فاتورة مبيعات" if page_no == 1 else "فاتورة مبيعات (تابع)"
+            txt(PW / 2, band_top - 9.2 * mm, title, size=20 if page_no == 1 else 16, bold=True,
+                color=navy, align="center")
+            c.saveState(); c.setStrokeColor(gold); c.setLineWidth(1.2)
+            c.line(PW / 2 - 20 * mm, band_top - 12.6 * mm, PW / 2 + 20 * mm, band_top - 12.6 * mm)
+            c.restoreState()
+
+            # ═══ العميل وعدد الأطقم ═══
+            info_top = band_top - band_h - 3 * mm
+            box(M, info_top, table_w, 9 * mm, fill=None, stroke=header_fill, radius=2 * mm, width=1)
+            label = "العميل: "
+            name_size = fit_font_size(f"{label}{name}", table_w * 0.66, 12, bold=True, min_size=8)
+            txt(PW - M - 4 * mm, info_top - 6 * mm, f"{label}{name}", size=name_size, bold=True)
+            txt(M + 4 * mm, info_top - 6 * mm, f"عدد الأطقم: {len(rows)}", size=11, bold=True, color=navy,
+                align="left")
+
+            # ═══ الجدول ═══
+            top = table_top
+            box(M, top, table_w, head_h, fill=header_fill)
+            for i, lbl in enumerate(cols):
+                size = fit_font_size(lbl, col_ws[i] - 2.5 * mm, 10, bold=True, min_size=6.5)
+                if size < 9 and " " in lbl:
+                    # العنوان الطويل على سطرين بخط مقروء بدل تصغيره («الأحجار» / «بعد الخصم»)
+                    line1, line2 = lbl.split(" ", 1)
+                    size = min(fit_font_size(part, col_ws[i] - 2.5 * mm, 10, bold=True, min_size=6.5)
+                               for part in (line1, line2))
+                    mid = top - head_h / 2
+                    txt(cell_cx(i), mid + 0.6 * mm, line1, size=size, bold=True, color=navy, align="center")
+                    txt(cell_cx(i), mid - size * 0.95 - 0.2 * mm, line2, size=size, bold=True, color=navy,
+                        align="center")
+                    continue
+                txt(cell_cx(i), vcenter_baseline(top, head_h, size), lbl, size=size, bold=True, color=navy,
+                    align="center")
+            y = top - head_h
+            for r_i, row in enumerate(rows[first:last]):
+                box(M, y, table_w, row_h, fill=zebra if r_i % 2 else None, width=0.5)
+                values = [str(first + r_i + 1), row["set_number"]] + [
+                    f"{row[k]:.2f}" if row[k] else "-" for k in cols[2:]]
+                for i, val in enumerate(values):
+                    bold = cols[i] in ("رقم التشغيل", "الخياس", "الوزن المقيد")
+                    size = fit_font_size(val, col_ws[i] - 2.5 * mm, 10, bold=bold, min_size=6.5)
+                    txt(cell_cx(i), vcenter_baseline(y, row_h, size), val, size=size, bold=bold, align="center")
+                y -= row_h
+
+            if is_last:
+                # آخر صف: إجمالي كل عمود («الإجمالي» على خانتي التسلسل ورقم التشغيل)
+                box(M, y, table_w, total_h, fill=header_fill, width=1)
+                span_w = col_ws[0] + col_ws[1]
+                size = fit_font_size("الإجمالي", span_w - 3 * mm, 12, bold=True)
+                txt(lefts[1] + span_w / 2, vcenter_baseline(y, total_h, size), "الإجمالي", size=size, bold=True,
+                    color=navy, align="center")
+                for i, k in enumerate(cols[2:], start=2):
+                    val = f"{totals[k]:.2f}"
+                    size = fit_font_size(val, col_ws[i] - 2.5 * mm, 11, bold=True, min_size=7)
+                    txt(cell_cx(i), vcenter_baseline(y, total_h, size), val, size=size, bold=True, color=navy,
+                        align="center")
+                y -= total_h
+
+            # الخطوط الرأسية بين الأعمدة (والإجمالي يجمع خانتي التسلسل ورقم التشغيل)
+            c.saveState(); c.setStrokeColor(navy); c.setLineWidth(0.5)
+            for i in range(1, len(cols)):
+                bottom = y if (i != 1 or not is_last) else y + total_h
+                c.line(lefts[i - 1], bottom, lefts[i - 1], top)
+            c.setLineWidth(1.1)
+            c.rect(M, y, table_w, top - y, fill=0, stroke=1)
+            c.restoreState()
+
+            if is_last:
+                sig_y = M + 16 * mm
+                sig_w = table_w / 3
+                for i, label in enumerate(("توقيع مسؤول الصالة", "توقيع المحاسب", "توقيع المدير")):
+                    x0 = PW - M - sig_w * (i + 1)
+                    c.saveState(); c.setStrokeColor(navy); c.setLineWidth(0.7)
+                    c.line(x0 + 8 * mm, sig_y, x0 + sig_w - 8 * mm, sig_y)
+                    c.restoreState()
+                    txt(x0 + sig_w / 2, sig_y - 5 * mm, label, size=9.5, bold=True, color=navy, align="center")
+            txt(PW / 2, M - 4 * mm, f"صفحة {page_no} من {n_pages}", size=8, color=Color(0.45, 0.45, 0.5),
+                align="center")
+            c.showPage()
 
     def generate_invoice_pdf(self, groups, output_path):
-        """ملف الترحيل والطباعة بالترتيب: تذاكر أرقام التشغيل أولاً (إن كانت مفعّلة)، ثم فاتورة
-        المبيعات الإجمالية (إن كانت كل الأسطر بنفس التاريخ والاسم)، ثم سند لكل رقم تشغيل
-        بقالب المصنع الورقي"""
+        """ملف الترحيل والطباعة بالترتيب: فاتورة المبيعات الإجمالية أولاً (إن كانت كل الأسطر بنفس
+        التاريخ والاسم)، ثم تذاكر أرقام التشغيل (إن كانت مفعّلة)، ثم سند لكل رقم تشغيل بقالب المصنع الورقي"""
         if not REPORTLAB_AVAILABLE:
             messagebox.showerror("غير متاح", "ميزة طباعة الفواتير تحتاج تثبيت مكتبة reportlab أولاً:\npip install reportlab arabic-reshaper python-bidi")
             return False
         c = pdf_canvas.Canvas(output_path, pagesize=A4)
 
-        # ١) تذاكر أرقام التشغيل (جاهزة للقص والمسح)
-        if self.sale_tickets_with_invoice():
-            tickets = self.sale_ticket_data(groups)
-            if tickets:
-                self.draw_sale_tickets(c, tickets)
-
-        # ٢) فاتورة المبيعات
+        # ١) فاتورة المبيعات — أول صفحة في الملف
         if groups:
             dates = set(g[1] for g in groups)
             names = set(g[2] for g in groups)
@@ -18954,6 +19018,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 batch_date, batch_name = groups[0][1], groups[0][2]
                 rows_data = [self.get_invoice_group_data(sn, batch_date, batch_name) for sn, _, _ in groups]
                 self.draw_sales_summary_pages(c, rows_data, batch_name, batch_date)
+
+        # ٢) تذاكر أرقام التشغيل (جاهزة للقص والمسح)
+        if self.sale_tickets_with_invoice():
+            tickets = self.sale_ticket_data(groups)
+            if tickets:
+                self.draw_sale_tickets(c, tickets)
 
         # ٣) سندات أرقام التشغيل بالقالب الورقي
         for (set_number, date_str, name) in groups:
