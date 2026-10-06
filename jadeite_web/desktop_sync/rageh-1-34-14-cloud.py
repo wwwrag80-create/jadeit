@@ -128,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.63.0"
+APP_VERSION = "1.64.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -16348,7 +16348,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head_label("رقم الفاتورة:")
         self.sale_invoice_num = ctk.CTkEntry(head, font=("Cairo", 14, "bold"), justify="center", width=110,
                                              height=34, placeholder_text="رقم الفاتورة")
-        self.sale_invoice_num.pack(side="right", padx=4)
+        self.sale_invoice_num.pack(side="right", padx=(4, 0))
+        # ترقيم تلقائي: يُختار رقم البداية مرة (ويُحفظ)، وكل فاتورة جديدة تأخذ الرقم التالي
+        ctk.CTkButton(head, text="🔢", width=34, height=34, font=("Cairo", 15), fg_color=UI["neutral"],
+                      hover_color=UI["neutral_hover"], command=self.open_sale_invoice_start_dialog
+                      ).pack(side="right", padx=(2, 4))
+        self.fill_next_sale_invoice_number()
 
         head_label("الاسم:")
         self.sale_name = ctk.CTkComboBox(head, values=self.get_supplier_name_values_no_mustarja(),
@@ -18196,6 +18201,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.pending_sale_rows = []
         self.sale_name.set("المصنع")
         self.sale_invoice_num.delete(0, 'end')
+        self.fill_next_sale_invoice_number()          # الفاتورة التالية برقمها التلقائي
         if note_widget is not None:
             note_widget.delete(0, 'end')
 
@@ -18361,8 +18367,128 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self._recompute_sale_totals()
 
     def clear_sale_form(self):
-        """فاتورة جديدة فارغة (التاريخ ونسبة الخصم يبقيان كما هما)"""
-        self.fill_sale_form({"date": self.sale_date.get().strip(), "name": "المصنع"})
+        """فاتورة جديدة فارغة (التاريخ ونسبة الخصم يبقيان كما هما) برقمها التلقائي التالي"""
+        self.fill_sale_form({"date": self.sale_date.get().strip(), "name": "المصنع",
+                             "manual_no": self.next_sale_invoice_number()})
+
+    # ═══ ترقيم فواتير المبيعات تلقائياً: رقم بداية يختاره المستخدم مرة ويُحفظ ═══
+    SALE_NO_START_KEY = "sale_invoice_start"
+
+    @staticmethod
+    def split_invoice_number(text):
+        """«F-0042» ← ("F-", 42, 4): البادئة، والرقم في آخره، وعدد خاناته — أو None إن لم ينتهِ برقم"""
+        m = re.match(r"^(.*?)(\d+)$", str(text or "").strip())
+        return (m.group(1), int(m.group(2)), len(m.group(2))) if m else None
+
+    def sale_invoice_start(self):
+        """رقم البداية المحفوظ ("" = لا ترقيم تلقائي)"""
+        try:
+            return (self.get_setting(self.SALE_NO_START_KEY, "") or "").strip()
+        except Exception:
+            return ""
+
+    def used_sale_invoice_numbers(self):
+        """أرقام فواتير المبيعات المستخدمة: المرحّلة والمعلّقة"""
+        used = {str(inv.get("رقم الفاتورة اليدوي") or "").strip() for inv in self.invoices.values()
+                if inv.get("النوع") in self.SALE_TYPES or inv.get("النوع") == "خياس طقوم"}
+        try:
+            used |= {str(r.get("manual_no") or "").strip() for r in self.list_suspended_sales()}
+        except Exception:
+            pass
+        used.discard("")
+        return used
+
+    def next_sale_invoice_number(self, start=None):
+        """رقم الفاتورة التالي من رقم البداية: بعد أكبر رقم مستخدم من السلسلة نفسها (البادئة نفسها ولا يقل
+        عن البداية)، فلا يتكرر رقم ولا يعود الترقيم للخلف. بلا رقم بداية: "" (الإدخال اليدوي كما كان)"""
+        parts = self.split_invoice_number(self.sale_invoice_start() if start is None else start)
+        if not parts:
+            return ""
+        prefix, first, width = parts
+        last = first - 1
+        for no in self.used_sale_invoice_numbers():
+            used = self.split_invoice_number(no)
+            if used and used[0] == prefix and used[1] >= first:
+                last = max(last, used[1])
+        return f"{prefix}{str(last + 1).zfill(width)}"
+
+    def fill_next_sale_invoice_number(self, force=False):
+        """يضع الرقم التالي في خانة رقم الفاتورة إن كانت فارغة (أو دائماً مع force)، ويرجعه"""
+        entry = getattr(self, "sale_invoice_num", None)
+        nxt = self.next_sale_invoice_number()
+        if entry is None or not nxt:
+            return ""
+        try:
+            if force or not entry.get().strip():
+                entry.delete(0, "end")
+                entry.insert(0, nxt)
+        except Exception:
+            return ""
+        return nxt
+
+    def suggest_sale_invoice_start(self):
+        """اقتراح رقم البداية أول مرة: بعد أكبر رقم فاتورة رقمي مستخدم، وإلا 1"""
+        nums = [int(n) for n in self.used_sale_invoice_numbers() if n.isdigit()]
+        return str(max(nums) + 1) if nums else "1"
+
+    def set_sale_invoice_start(self, value):
+        """يحفظ رقم البداية ("" يوقف الترقيم التلقائي). يرجع False إن لم ينتهِ برقم"""
+        value = str(value or "").strip()
+        if value and not self.split_invoice_number(value):
+            return False
+        self.set_setting(self.SALE_NO_START_KEY, value)
+        return True
+
+    def open_sale_invoice_start_dialog(self):
+        """نافذة «رقم البداية»: يُكتب مرة ويُحفظ، ثم تأخذ كل فاتورة جديدة الرقم التالي تلقائياً"""
+        win = ctk.CTkToplevel(self)
+        win.title("ترقيم فواتير المبيعات")
+        win.geometry("540x340")
+        win.transient(self)
+        win.grab_set()
+        win.focus_force()
+        ctk.CTkLabel(win, text="🔢 ترقيم فواتير المبيعات تلقائياً", font=("Cairo", 18, "bold"),
+                     text_color="#d4af37").pack(pady=(16, 4))
+        ctk.CTkLabel(win, text="اكتب الرقم الذي يبدأ منه الترقيم (مثل 1001 أو F-0001) واحفظه —\n"
+                               "ثم تأخذ كل فاتورة جديدة الرقم التالي تلقائياً، ولا يتكرر رقم مستخدم",
+                     font=("Cairo", 12), text_color="#8b8f95", justify="center", wraplength=500).pack(pady=(0, 12))
+        row = ctk.CTkFrame(win, fg_color="transparent")
+        row.pack(pady=4)
+        ctk.CTkLabel(row, text="يبدأ من:", font=("Cairo", 14, "bold")).pack(side="right", padx=6)
+        ent = ctk.CTkEntry(row, justify="center", font=("Cairo", 16, "bold"), width=170, height=38)
+        ent.insert(0, self.sale_invoice_start() or self.suggest_sale_invoice_start())
+        ent.pack(side="right", padx=6)
+        lbl_next = ctk.CTkLabel(win, text="", font=("Cairo", 13, "bold"), text_color=(UI["primary"], "#9CC0F5"))
+        lbl_next.pack(pady=(10, 4))
+
+        def preview(_e=None):
+            nxt = self.next_sale_invoice_number(ent.get())
+            lbl_next.configure(text=f"الفاتورة التالية: {nxt}" if nxt else "يجب أن ينتهي الرقم بأرقام (مثل 1001)")
+
+        def save():
+            if not self.set_sale_invoice_start(ent.get()):
+                messagebox.showwarning("رقم غير صالح", "رقم البداية يجب أن ينتهي بأرقام (مثل 1001 أو F-0001).",
+                                       parent=win)
+                return
+            if not getattr(self, "current_suspended_id", None):
+                self.fill_next_sale_invoice_number(force=True)
+            win.destroy()
+            self.toast(f"✅ الترقيم التلقائي: الفاتورة التالية {self.next_sale_invoice_number()}", "success")
+
+        def stop():
+            self.set_sale_invoice_start("")
+            win.destroy()
+            self.toast("أُوقف الترقيم التلقائي — يُكتب رقم الفاتورة يدوياً", "info")
+
+        ent.bind("<KeyRelease>", preview)
+        ent.bind("<Return>", lambda _e: save())
+        preview()
+        ctk.CTkButton(win, text="💾 حفظ", font=("Cairo", 15, "bold"), fg_color="#1e8449", hover_color="#145a32",
+                      width=170, height=40, command=save).pack(pady=(10, 6))
+        if self.sale_invoice_start():
+            ctk.CTkButton(win, text="إيقاف الترقيم التلقائي", font=("Cairo", 12), fg_color="#555555",
+                          hover_color="#333333", width=170, height=32, command=stop).pack()
+        ent.focus_set()
 
     def set_current_suspended(self, rec_id, rec=None):
         """الفاتورة المعلّقة المفتوحة الآن في «إصدار مبيعات» (None: لا شيء)، مع تذكير ثابت بها"""
@@ -18782,18 +18908,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.__dict__["_pdf_logo_cache"] = cache
         return cache
 
+    # ارتفاع الترويسة المضغوطة (حتى الخط الذهبي) — يُحسب منه مكان الجدول
+    LETTERHEAD_H = 22.2 * mm if REPORTLAB_AVAILABLE else 0
+
     def draw_pdf_letterhead(self, c, top, margin, navy, gold):
-        """ترويسة الصفحة: بيانات المصنع بالعربية يميناً وبالإنجليزية يساراً — كل سطر في مكانه بلا
-        تداخل — والشعار بحجم واضح في الوسط، ثم خطّان (كحلي وذهبي). يرجع ارتفاع أسفل الترويسة"""
+        """ترويسة الصفحة مضغوطة في أعلاها لتترك المساحة للجدول: بيانات المصنع بالعربية يميناً وبالإنجليزية
+        يساراً — كل سطر في مكانه بلا تداخل — والشعار في الوسط، ثم خطّان (كحلي وذهبي). يرجع أسفل الترويسة"""
         from reportlab.lib.colors import Color
         PW = A4[0]
         gray = Color(0.30, 0.32, 0.38)
         for side, lines in ((PW - margin, self.LETTERHEAD_AR), (margin, self.LETTERHEAD_EN)):
             for k, line in enumerate(lines):
                 bold = k == 0
-                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 13.5 if bold else 9)
+                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 12.5 if bold else 8.5)
                 c.setFillColor(navy if bold else gray)
-                y = top - (5.5 * mm if bold else (6.5 + 5 * k) * mm + 1.5 * mm)
+                y = top - (4.6 * mm if bold else (5.8 + 4.2 * k) * mm)
                 text = ar(line)
                 if side > PW / 2:
                     c.drawRightString(side, y, text)
@@ -18802,18 +18931,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         c.setFillColorRGB(0, 0, 0)
         logo = self.pdf_logo()
         if logo:
-            lh = 25 * mm
+            lh = 19 * mm
             lw = lh * logo[1]
             c.drawImage(logo[0], (PW - lw) / 2, top - lh, width=lw, height=lh, mask="auto",
                         preserveAspectRatio=True)
-        rule = top - 28 * mm
+        rule = top - 21 * mm
         c.saveState()
         c.setStrokeColor(navy); c.setLineWidth(1.4)
         c.line(margin, rule, PW - margin, rule)
         c.setStrokeColor(gold); c.setLineWidth(0.7)
-        c.line(margin, rule - 1.3 * mm, PW - margin, rule - 1.3 * mm)
+        c.line(margin, rule - 1.2 * mm, PW - margin, rule - 1.2 * mm)
         c.restoreState()
-        return rule - 1.3 * mm
+        return rule - 1.2 * mm
 
     # أعمدة فاتورة المبيعات من اليمين؛ «الخياس» = بوليش 1 + بوليش 2 + المركب لرقم التشغيل
     SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
@@ -18838,13 +18967,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]}
         return rows, totals
 
+    # صفحة A4 واحدة تتسع لهذا العدد على الأقل (مع الإجمالي والتوقيعات)، والجدول يُكمَّل حتى هذا العدد بصفوف فارغة
+    SALES_SUMMARY_MIN_ROWS = 28
+
+    def sales_summary_layout(self):
+        """مقاسات صفحة فاتورة المبيعات (مم من أسفل الورقة): الترويسة مرفوعة لأعلى، والجدول يأخذ الباقي.
+        cap_last = صفوف الصفحة الأخيرة (مع الإجمالي والتوقيعات)، cap_full = صفوف الصفحة التابعة"""
+        PH = A4[1]
+        L = {"side": 10 * mm, "top": 7 * mm, "head_h": 10 * mm, "row_h": 6.75 * mm, "total_h": 8 * mm,
+             "band_gap": 2.5 * mm, "band_h": 13 * mm, "info_gap": 2 * mm, "info_h": 7.5 * mm,
+             "table_gap": 2.5 * mm, "sig_zone": 25 * mm, "foot_zone": 10 * mm}
+        L["letter_top"] = PH - L["top"]
+        L["band_top"] = L["letter_top"] - self.LETTERHEAD_H - L["band_gap"]
+        L["info_top"] = L["band_top"] - L["band_h"] - L["info_gap"]
+        L["table_top"] = L["info_top"] - L["info_h"] - L["table_gap"]
+        body = L["table_top"] - L["head_h"]
+        L["cap_last"] = max(1, int((body - L["total_h"] - L["sig_zone"]) // L["row_h"]))
+        L["cap_full"] = max(1, int((body - L["foot_zone"]) // L["row_h"]))
+        return L
+
     def draw_sales_summary_pages(self, c, rows_data, name, date_str):
-        """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة (بيانات المصنع والشعار)، ثم «فاتورة
-        مبيعات» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول بكل الأطقم
-        وصف إجمالي لكل عمود، والتوقيعات — وصفحات تابعة عند كثرة الأطقم"""
+        """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة مرفوعة لأعلى (بيانات المصنع والشعار)،
+        ثم «فاتورة مبيعات» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول يملأ
+        الورقة — ٢٨ صفاً على الأقل في ورقة A4 واحدة بخط واضح، يُكمَّل بصفوف فارغة — وصف إجمالي لكل عمود،
+        والتوقيعات؛ وصفحات تابعة إن زادت الأطقم عن الورقة"""
         from reportlab.lib.colors import Color
         PW, PH = A4
-        M = 12 * mm
+        L = self.sales_summary_layout()
+        M = L["side"]
         navy = Color(0.15, 0.15, 0.55)            # كحلي قالب فاتورة المبيعات
         gold = Color(0.80, 0.64, 0.22)
         header_fill = Color(0.78, 0.80, 0.93)     # لافندر قالب فاتورة المبيعات
@@ -18891,12 +19041,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def cell_cx(i):
             return lefts[i] + col_ws[i] / 2
 
-        head_h, row_h, total_h = 11 * mm, 7.6 * mm, 9 * mm
-        sig_zone = 34 * mm          # التوقيعات وتذييل الصفحة الأخيرة
-        foot_zone = 14 * mm         # تذييل الصفحات التابعة
-        table_top = PH - M - 29.3 * mm - 36 * mm
-        cap_last = max(1, int((table_top - head_h - total_h - sig_zone) // row_h))
-        cap_full = max(1, int((table_top - head_h - foot_zone) // row_h))
+        head_h, row_h, total_h = L["head_h"], L["row_h"], L["total_h"]
+        table_top, cap_last, cap_full = L["table_top"], L["cap_last"], L["cap_full"]
+        min_rows = min(self.SALES_SUMMARY_MIN_ROWS, cap_last)
         pages, idx = [], 0
         while True:
             remaining = len(rows) - idx
@@ -18910,32 +19057,32 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         for page_no, (first, last) in enumerate(pages, start=1):
             is_last = page_no == n_pages
-            y = self.draw_pdf_letterhead(c, PH - M, M, navy, gold)
+            self.draw_pdf_letterhead(c, L["letter_top"], M, navy, gold)
 
             # ═══ العنوان بين رقم الفاتورة (يساراً) والتاريخ (يميناً) ═══
-            band_top, band_h, side_w = y - 4 * mm, 17 * mm, 52 * mm
+            band_top, band_h, side_w = L["band_top"], L["band_h"], 50 * mm
             box(M, band_top, side_w, band_h, fill=soft, radius=2.5 * mm, width=1.1)
-            txt(M + side_w / 2, band_top - 5.6 * mm, "رقم الفاتورة", size=9, color=navy, align="center")
-            no_size = fit_font_size(invoice_no, side_w - 6 * mm, 17, bold=True, min_size=9)
-            txt(M + side_w / 2, band_top - 13.2 * mm, invoice_no, size=no_size, bold=True, color=navy, align="center")
+            txt(M + side_w / 2, band_top - 4.4 * mm, "رقم الفاتورة", size=8.5, color=navy, align="center")
+            no_size = fit_font_size(invoice_no, side_w - 6 * mm, 15, bold=True, min_size=9)
+            txt(M + side_w / 2, band_top - 10.6 * mm, invoice_no, size=no_size, bold=True, color=navy, align="center")
             box(PW - M - side_w, band_top, side_w, band_h, fill=soft, radius=2.5 * mm, width=1.1)
-            txt(PW - M - side_w / 2, band_top - 5.6 * mm, "التاريخ", size=9, color=navy, align="center")
-            txt(PW - M - side_w / 2, band_top - 13.2 * mm, f"{date_part}  {time_part}".strip(), size=13,
+            txt(PW - M - side_w / 2, band_top - 4.4 * mm, "التاريخ", size=8.5, color=navy, align="center")
+            txt(PW - M - side_w / 2, band_top - 10.6 * mm, f"{date_part}  {time_part}".strip(), size=12.5,
                 bold=True, color=navy, align="center")
             title = "فاتورة مبيعات" if page_no == 1 else "فاتورة مبيعات (تابع)"
-            txt(PW / 2, band_top - 9.2 * mm, title, size=20 if page_no == 1 else 16, bold=True,
+            txt(PW / 2, band_top - 7.6 * mm, title, size=19 if page_no == 1 else 15, bold=True,
                 color=navy, align="center")
             c.saveState(); c.setStrokeColor(gold); c.setLineWidth(1.2)
-            c.line(PW / 2 - 20 * mm, band_top - 12.6 * mm, PW / 2 + 20 * mm, band_top - 12.6 * mm)
+            c.line(PW / 2 - 19 * mm, band_top - 10.4 * mm, PW / 2 + 19 * mm, band_top - 10.4 * mm)
             c.restoreState()
 
             # ═══ العميل وعدد الأطقم ═══
-            info_top = band_top - band_h - 3 * mm
-            box(M, info_top, table_w, 9 * mm, fill=None, stroke=header_fill, radius=2 * mm, width=1)
+            info_top = L["info_top"]
+            box(M, info_top, table_w, L["info_h"], fill=None, stroke=header_fill, radius=2 * mm, width=1)
             label = "العميل: "
-            name_size = fit_font_size(f"{label}{name}", table_w * 0.66, 12, bold=True, min_size=8)
-            txt(PW - M - 4 * mm, info_top - 6 * mm, f"{label}{name}", size=name_size, bold=True)
-            txt(M + 4 * mm, info_top - 6 * mm, f"عدد الأطقم: {len(rows)}", size=11, bold=True, color=navy,
+            name_size = fit_font_size(f"{label}{name}", table_w * 0.66, 11.5, bold=True, min_size=8)
+            txt(PW - M - 4 * mm, info_top - 5.2 * mm, f"{label}{name}", size=name_size, bold=True)
+            txt(M + 4 * mm, info_top - 5.2 * mm, f"عدد الأطقم: {len(rows)}", size=11, bold=True, color=navy,
                 align="left")
 
             # ═══ الجدول ═══
@@ -18956,14 +19103,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 txt(cell_cx(i), vcenter_baseline(top, head_h, size), lbl, size=size, bold=True, color=navy,
                     align="center")
             y = top - head_h
-            for r_i, row in enumerate(rows[first:last]):
+            page_rows = rows[first:last]
+            # الصفحة الأخيرة: الجدول يُكمَّل بصفوف فارغة حتى ٢٨ صفاً فيملأ الورقة كالدفتر الورقي
+            n_lines = max(len(page_rows), min_rows) if is_last else len(page_rows)
+            for r_i in range(n_lines):
                 box(M, y, table_w, row_h, fill=zebra if r_i % 2 else None, width=0.5)
-                values = [str(first + r_i + 1), row["set_number"]] + [
-                    f"{row[k]:.2f}" if row[k] else "-" for k in cols[2:]]
-                for i, val in enumerate(values):
-                    bold = cols[i] in ("رقم التشغيل", "الخياس", "الوزن المقيد")
-                    size = fit_font_size(val, col_ws[i] - 2.5 * mm, 10, bold=bold, min_size=6.5)
-                    txt(cell_cx(i), vcenter_baseline(y, row_h, size), val, size=size, bold=bold, align="center")
+                if r_i < len(page_rows):
+                    row = page_rows[r_i]
+                    values = [str(first + r_i + 1), row["set_number"]] + [
+                        f"{row[k]:.2f}" if row[k] else "-" for k in cols[2:]]
+                    for i, val in enumerate(values):
+                        bold = cols[i] in ("رقم التشغيل", "الخياس", "الوزن المقيد")
+                        size = fit_font_size(val, col_ws[i] - 2 * mm, 11, bold=bold, min_size=7)
+                        txt(cell_cx(i), vcenter_baseline(y, row_h, size), val, size=size, bold=bold, align="center")
                 y -= row_h
 
             if is_last:
@@ -18990,15 +19142,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             c.restoreState()
 
             if is_last:
-                sig_y = M + 16 * mm
+                sig_y = 17 * mm
                 sig_w = table_w / 3
                 for i, label in enumerate(("توقيع مسؤول الصالة", "توقيع المحاسب", "توقيع المدير")):
                     x0 = PW - M - sig_w * (i + 1)
                     c.saveState(); c.setStrokeColor(navy); c.setLineWidth(0.7)
                     c.line(x0 + 8 * mm, sig_y, x0 + sig_w - 8 * mm, sig_y)
                     c.restoreState()
-                    txt(x0 + sig_w / 2, sig_y - 5 * mm, label, size=9.5, bold=True, color=navy, align="center")
-            txt(PW / 2, M - 4 * mm, f"صفحة {page_no} من {n_pages}", size=8, color=Color(0.45, 0.45, 0.5),
+                    txt(x0 + sig_w / 2, sig_y - 4.6 * mm, label, size=9.5, bold=True, color=navy, align="center")
+            txt(PW / 2, 4.5 * mm, f"صفحة {page_no} من {n_pages}", size=8, color=Color(0.45, 0.45, 0.5),
                 align="center")
             c.showPage()
 

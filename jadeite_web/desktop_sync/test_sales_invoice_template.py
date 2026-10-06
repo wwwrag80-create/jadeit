@@ -33,9 +33,10 @@ def module_src(name):
 
 marks = {n.targets[0].id: n.value.value for n in tree.body
          if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "").startswith("KHAYAS_MARK_")}
-MEMBERS = ("SALES_SUMMARY_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "sale_khayas_total", "sales_summary_rows",
-           "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead", "draw_sales_summary_pages")
-ns = dict(marks)
+MEMBERS = ("SALES_SUMMARY_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
+           "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
+           "sales_summary_layout", "draw_sales_summary_pages")
+ns = dict(marks, REPORTLAB_AVAILABLE=False)
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 App = ns["App"]
 
@@ -94,6 +95,7 @@ assert '"رقم الفاتورة"' in page and 'd.get("manual_no")' in page and 
 assert "LETTERHEAD_AR" in head and "LETTERHEAD_EN" in head and "self.pdf_logo()" in head
 assert App.LETTERHEAD_AR[0] == "مصنع جاديت للتصنيع" and App.LETTERHEAD_EN[0] == "Jadeite Factory"
 assert 'resource_path("jadeite_logo.png")' in member("pdf_logo")
+assert App.SALES_SUMMARY_MIN_ROWS == 28 and "max(len(page_rows), min_rows) if is_last" in page
 print("✔ الترويسة: بيانات المصنع (عربي يميناً، إنجليزي يساراً) والشعار وحده في الوسط — لا صورة الترويسة مصغّرة؛ "
       "ورقم الفاتورة اليدوي في مربع يساراً")
 
@@ -134,10 +136,13 @@ if HAVE_RL:
         """يسجّل كل نص يُرسم وموضعه، وكل صورة"""
         def __init__(self, *a, **k):
             super().__init__(*a, **k)
-            self.items, self.images, self.page = [], [], 1
+            self.items, self.images, self.rects, self.page, self.size = [], [], [], 1, 0
 
         def _rec(self, x, y, s, align):
             self.items.append((self.page, round(x, 1), round(y, 1), s, align))
+            self.sizes.setdefault((self.page, s), self.size)
+
+        sizes = {}
 
         def drawString(self, x, y, s, *a, **k):
             self._rec(x, y, s, "left"); return super().drawString(x, y, s, *a, **k)
@@ -147,6 +152,12 @@ if HAVE_RL:
 
         def drawCentredString(self, x, y, s, *a, **k):
             self._rec(x, y, s, "center"); return super().drawCentredString(x, y, s, *a, **k)
+
+        def setFont(self, name, size, *a, **k):
+            self.size = size; return super().setFont(name, size, *a, **k)
+
+        def rect(self, x, y, w, h, *a, **k):
+            self.rects.append((self.page, round(h, 2))); return super().rect(x, y, w, h, *a, **k)
 
         def drawImage(self, img, x, y, width=None, height=None, **k):
             self.images.append((self.page, x, y, width, height)); return super().drawImage(img, x, y, width, height, **k)
@@ -178,12 +189,27 @@ if HAVE_RL:
         ys = sorted(y for pg, x, y, s, a in c.items if pg == 1 and a == align and s in {ar(t) for t in side_lines})
         assert len(ys) == 4 and all(b - a >= 4 * mm for a, b in zip(ys, ys[1:])), ys
     logo = [im for im in c.images if im[0] == 1]
-    assert logo and abs(logo[0][4] - 25 * mm) < 0.1 and abs(logo[0][1] + logo[0][3] / 2 - PW / 2) < 0.5
+    assert logo and abs(logo[0][4] - 19 * mm) < 0.1 and abs(logo[0][1] + logo[0][3] / 2 - PW / 2) < 0.5
+    assert PH - (logo[0][2] + logo[0][4]) <= 8 * mm, "الترويسة مرفوعة لأعلى الورقة"
+    print("✔ الرسم الفعلي: 30 طقماً في صفحتين (الأولى «فاتورة مبيعات» والثانية «تابع»)، رقم الفاتورة يساراً في كل صفحة، "
+          "صف الإجمالي (الخياس 14.10) والتوقيعات في الأخيرة وحدها، سطور الترويسة متباعدة، والشعار في الوسط")
+
+    # ═══ ورقة A4 واحدة تتسع لـ٢٨ صفاً على الأقل، بخط واضح، والجدول يُكمَّل حتى ٢٨ ═══
+    L = rapp.sales_summary_layout()
+    assert rapp.SALES_SUMMARY_MIN_ROWS == 28 and L["cap_last"] >= 28, L["cap_last"]
+    assert L["table_top"] >= 235 * mm, L["table_top"] / mm
+    full = Rec(io.BytesIO(), pagesize=A4)
+    rapp.draw_sales_summary_pages(full, [dict(d1, set_number=f"7700{i}") for i in range(1, L["cap_last"] + 1)], NAME, D)
+    full_texts = {(p, s) for p, _x, _y, s, _a in full.items}
+    assert full.page - 1 == 1 and (1, ar("الإجمالي")) in full_texts and (1, ar("توقيع المدير")) in full_texts
+    assert full.sizes[(1, "30.50")] >= 10.5 and full.sizes[(1, ar("الإجمالي"))] >= 10, full.sizes[(1, "30.50")]
     one = Rec(io.BytesIO(), pagesize=A4)
     rapp.draw_sales_summary_pages(one, [d1, d2], NAME, D)
     assert one.page - 1 == 1 and (1, ar("الإجمالي")) in {(p, s) for p, _x, _y, s, _a in one.items}
-    print("✔ الرسم الفعلي: 30 طقماً في صفحتين (الأولى «فاتورة مبيعات» والثانية «تابع»)، رقم الفاتورة يساراً في كل صفحة، "
-          "صف الإجمالي (الخياس 14.10) والتوقيعات في الأخيرة وحدها، سطور الترويسة متباعدة، والشعار ٢٥ مم في الوسط")
+    body_rows = sum(1 for pg, h in one.rects if pg == 1 and abs(h - round(L["row_h"], 2)) < 0.01)
+    assert body_rows == 28, body_rows
+    print(f"✔ ورقة A4 واحدة: حتى {L['cap_last']} طقماً مع الإجمالي والتوقيعات (٢٨ على الأقل)، بخط {full.sizes[(1, '30.50')]:g} "
+          "واضح، والترويسة مرفوعة؛ وفاتورة بطقمين يُكمَّل جدولها حتى ٢٨ صفاً فيملأ الورقة")
 else:
     print("… الرسم الفعلي يُجرَّب حيث تتوفّر reportlab (جهاز البناء) — هنا فحوص المنطق والمصدر وحدها")
 

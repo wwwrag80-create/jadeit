@@ -63,8 +63,11 @@ METHODS = [
     "read_entry_date",
     # تذاكر أرقام التشغيل مع الفاتورة (الدفعة ١٧)
     "sale_tickets_with_invoice",
+    # ترقيم الفواتير تلقائياً (الدفعة ٣٠): الفاتورة الجديدة بعد التعليق أو الترحيل تأخذ الرقم التالي
+    "split_invoice_number", "sale_invoice_start", "used_sale_invoice_numbers", "next_sale_invoice_number",
+    "fill_next_sale_invoice_number", "set_sale_invoice_start",
 ]
-ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
+ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SALE_NO_START_KEY", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 
 EXTRA = '''
@@ -81,6 +84,8 @@ def get_smart_default_date(self): return "2026-09-01"
 def get_supplier_name_values_no_mustarja(self): return ["المصنع", "مورد 1", "مورد 2"]
 def after(self, ms, fn=None): pass
 def remember_discount_pct(self): pass
+def get_setting(self, key, default=None): return getattr(self, "_settings", {}).get(key, default)
+def set_setting(self, key, value): self.__dict__.setdefault("_settings", {})[key] = str(value)
 '''
 
 msgs = []
@@ -152,7 +157,7 @@ class FakeTree:
 
 
 errors = []
-ns = {"messagebox": FakeBox, "datetime": datetime, "sqlite3": sqlite3, "json": json,
+ns = {"messagebox": FakeBox, "datetime": datetime, "sqlite3": sqlite3, "json": json, "re": __import__("re"),
       "MEMO_STATUS": module_value("MEMO_STATUS"), "SALE_READ_STATUSES": module_value("COUNTED_STATUSES") + (module_value("MEMO_STATUS"),),
       "KHAYAS_MARK_NET": module_value("KHAYAS_MARK_NET"), "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH"),
       "KHAYAS_MARK_ASSEMBLER": module_value("KHAYAS_MARK_ASSEMBLER"),
@@ -257,6 +262,13 @@ assert b.sale_date.v == "2026-09-20" and b.sale_discount_pct.v == "30%"
 assert b.current_suspended_id is None
 assert b.sales_subtab_buttons["المعلقات"].v == "⏸️ المعلقات (1)"
 print("✔ «تعليق الفاتورة»: لا حركة ولا أثر على أي رصيد، وتُفرَّغ الشاشة لفاتورة جديدة (التاريخ والنسبة كما هما)")
+
+# مع الترقيم التلقائي: المعلّقة تحجز رقمها، والفاتورة الجديدة تأخذ التالي
+n = new_app()
+assert n.set_sale_invoice_start("S-0600") and n.fill_next_sale_invoice_number() == "S-0600"
+n.pending_sale_rows = [row("7101", gold=3, n="1")]
+assert n.suspend_sale_invoice() and n.sale_invoice_num.v == "S-0601"
+print("✔ مع الترقيم التلقائي: المعلّقة تحجز رقمها (S-0600)، والفاتورة الجديدة في الشاشة S-0601")
 
 recs = b.list_suspended_sales()
 assert len(recs) == 1
