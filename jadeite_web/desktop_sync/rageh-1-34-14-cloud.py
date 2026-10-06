@@ -128,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.61.0"
+APP_VERSION = "1.61.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً

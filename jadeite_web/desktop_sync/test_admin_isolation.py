@@ -8,7 +8,7 @@
 السبب: البرنامجان على جهاز واحد ومرآة المدير كانت **ملف العميل نفسه** في Data — مفتوح في
 برنامج العميل فيُرفض استبداله، وإلا استبدله المدير بنسخة السحابة أو حذفه إن تعذّر التنزيل.
 """
-import ast, base64, io, lzma, os, sqlite3, sys, tempfile, textwrap, types, zlib
+import ast, base64, contextlib, io, lzma, os, sqlite3, sys, tempfile, textwrap, types, zlib
 
 TARGET = sys.argv[1] if len(sys.argv) > 1 else "rageh-1-34-14-cloud.py"
 src = io.open(TARGET, encoding="utf-8").read()
@@ -57,16 +57,24 @@ print("✔ نسخة المدير: AdminMirror\\client_data_<id>.db ونسخها 
 
 
 # ═══ ٢) سيناريو المستخدم: برنامج العميل على الجهاز نفسه وقاعدته في Data ═══
+# كل اتصال يُغلق صراحةً: على ويندوز لا يُحذف ملف قاعدة ولا يُستبدل ما دام مفتوحاً
+# («with sqlite3.connect» يحفظ فقط ولا يُغلق) — فكان هذا الفحص يفشل على ويندوز وحده فيوقف بناء exe
 def make_db(path, rows):
-    with sqlite3.connect(path) as con:
+    with contextlib.closing(sqlite3.connect(path)) as con:
         con.execute("CREATE TABLE IF NOT EXISTS invoices (id INTEGER PRIMARY KEY, name TEXT)")
         con.executemany("INSERT INTO invoices (name) VALUES (?)", [(f"r{i}",) for i in range(rows)])
         con.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        con.commit()
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
 
 
 client_db = os.path.join(ns["DATA_DIR"], "client_data_A1.db")
 make_db(client_db, 50)                                   # بيانات العميل الحقيقية على جهازه
-before = open(client_db, "rb").read()
+before = read_bytes(client_db)
 
 
 def download_ok(cid, target):
@@ -77,8 +85,8 @@ def download_ok(cid, target):
 ns["cloud_download_backup_checked"] = download_ok
 ok, why = ns["load_client_mirror"]("A1", ns["client_db_path"]("A1"))
 assert ok and why is None
-assert open(client_db, "rb").read() == before, "المدير غيّر قاعدة برنامج العميل!"
-with sqlite3.connect(admin_db) as con:
+assert read_bytes(client_db) == before, "المدير غيّر قاعدة برنامج العميل!"
+with contextlib.closing(sqlite3.connect(admin_db)) as con:
     assert con.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 40
 print("✔ المدير نزّل نسخة العميل في مجلده هو (40 حركة)، وقاعدة برنامج العميل (50) لم تُمسّ بايت واحد")
 
@@ -89,7 +97,7 @@ exec(method("SyncDownWindow", "_work"), work_ns)
 s = types.SimpleNamespace(db_path=ns["client_db_path"]("A1"), tenant_id="A1", ok=False, error=None, mode=None,
                           mirror_error=None, _progress=lambda *a: None, _ui=lambda fn: None, destroy=lambda: None)
 work_ns["_work"](s)
-assert s.error and not os.path.exists(admin_db) and open(client_db, "rb").read() == before
+assert s.error and not os.path.exists(admin_db) and read_bytes(client_db) == before
 print("✔ تعذّر التنزيل: تُمسح مرآة المدير وحدها — قاعدة برنامج العميل باقية كما هي")
 
 # ═══ ٣) الملف مفتوح لحظياً (ويندوز): إعادة المحاولة، ثم سبب واضح بلا «WinError» ═══

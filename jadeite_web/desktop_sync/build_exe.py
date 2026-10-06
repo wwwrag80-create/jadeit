@@ -33,6 +33,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# UTF-8 لهذا البرنامج ولكل ما يُشغّله: الرسائل عربية وفيها ✔، ونافذة الأوامر على ويندوز بترميز الجهاز
+# (cp1256) إن شُغّل البناء مباشرة بدل build_client.bat / build_admin.bat
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 TARGETS = {
     "client": {"source": "rageh-CLIENT.py", "name": "Jadeite-Client", "label": "نسخة العميل"},
     "admin": {"source": "rageh-1-34-14-cloud.py", "name": "Jadeite-Admin", "label": "نسخة المدير"},
@@ -171,11 +181,15 @@ def main():
     version = app_version(t["source"])
     name = f"{t['name']}-{version}"
     step(5, f"بناء {name}")
-    for path in (os.path.join("build", name), os.path.join("dist", name), f"{name}.spec"):
+    exe_path = os.path.join("dist", name + (".exe" if os.name == "nt" else ""))
+    for path in (os.path.join("build", name), os.path.join("dist", name), exe_path, f"{name}.spec"):
         if os.path.isdir(path):
             shutil.rmtree(path, ignore_errors=True)
         elif os.path.exists(path):
-            os.remove(path)
+            try:
+                os.remove(path)
+            except PermissionError:
+                fail(f"الملف {path} مفتوح الآن (البرنامج نفسه يعمل؟) — أغلقه ثم أعد البناء")
 
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
            "--console" if args.console else "--noconsole",

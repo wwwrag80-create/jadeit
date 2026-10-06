@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
 """فحص شامل قبل أي تسليم — شغّله بعد أي تعديل"""
-import subprocess, sys
+import os, subprocess, sys
 
 TARGET = sys.argv[1] if len(sys.argv) > 1 else "rageh-1-34-14-cloud.py"
 
 PY = sys.executable or "python3"
+
+# نصوص الفحوص عربية وفيها ✔: UTF-8 دائماً — على ويندوز يُقرأ المخرج بترميز الجهاز (cp1256) إن شُغّل
+# البناء من نافذة أوامر عادية بدل ملف .bat، فيفشل الفحص عند طباعة ✔ لا لعيب في البرنامج
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+ENV = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+# على لينكس وCI: أقفال ملفات ويندوز محاكاة (حذف ملف مفتوح أو استبداله يُرفض) — فما ينجح هنا ينجح
+# عند بناء exe على ويندوز أيضاً
+_WINLOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checks_support", "winlock")
+if os.name != "nt" and os.path.isdir("/proc/self/fd") and os.path.isdir(_WINLOCK):
+    ENV["PYTHONPATH"] = _WINLOCK + (os.pathsep + ENV["PYTHONPATH"] if ENV.get("PYTHONPATH") else "")
 
 CHECKS = [
     ("الصياغة",            [PY, "-c", f"import ast,io; ast.parse(io.open('{TARGET}',encoding='utf-8').read())"]),
@@ -80,7 +94,7 @@ CHECKS = [
 
 failed = []
 for name, cmd in CHECKS:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", env=ENV)
     ok = r.returncode == 0
     print(f"{'✔' if ok else '✘'} {name}")
     if not ok:
