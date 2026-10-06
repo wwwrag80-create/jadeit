@@ -73,8 +73,8 @@ print("  (قبل الإصلاح كانت تظهر ٢٠٢٦-٠٨ و٢٠٢٦-٠٩ 
 
 # ═══ ٥) شاشة الخسائر: بحث بالفترات ═══
 loss = seg("refresh_losses_tab")
-assert "combo_losses_period" in loss and "month=month" in loss
-print("\n✔ شاشة الخسائر: تعرض صناديق الفترة المختارة وحدها")
+assert "self.selected_losses_range()" in loss and "month=from_m, to_month=to_m" in loss
+print("\n✔ شاشة الخسائر: تعرض صناديق الفترات المختارة («من/إلى») وحدها")
 
 per = seg("get_recorded_periods")
 assert "self.inv_period(inv)" in per

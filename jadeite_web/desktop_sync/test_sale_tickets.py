@@ -135,9 +135,11 @@ voucher = body("draw_set_voucher_page")
 assert 'for label, value in self.set_voucher_values(data):' in voucher
 assert voucher.count('f"{value:.2f}"') == 1, "لا قيمة أخرى تُعبّأ في السند"
 assert 'str(data.get("set_number") or "")' in voucher, "رقم التشغيل في خانة NO"
-for label in ("مصنع جاديت", "التصنيع", "البوليش", "التركيب", "التلميع النهائي", "الوزن النهائي", "السلسال",
+for label in ("مصنع جاديت", "التصنيع", "البوليش", "التركيب", "الوزن النهائي", "السلسال",
               "الوزن الأجمالي:", "رقم الموديل:", "اسم المركب:", "الوزن المقيد", "توقيع مدير الانتاج"):
     assert f'"{label}"' in voucher, label
+# مرحلة «التلميع النهائي» في السند اسمها الآن «بوليش 2» — من اسم الصندوق نفسه
+assert 'stage(1135, self.get_display_label("خياس الطقوم")' in voucher and '"التلميع النهائي"' not in voucher
 print("✔ ملف الترحيل: التذاكر ثم فاتورة المبيعات ثم سند لكل رقم تشغيل بقالب المصنع الورقي، "
       "ولا يُعبّأ منه إلا رقم التشغيل و«الوزن النهائي» (القائم 41.15، الفصوص، الأحجار، الماس، الذهب 35.25)")
 draw = body("draw_sale_tickets")

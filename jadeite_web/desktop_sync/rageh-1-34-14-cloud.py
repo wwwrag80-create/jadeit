@@ -128,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.61.1"
+APP_VERSION = "1.62.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -167,10 +167,10 @@ COUNTED_STATUSES = ("ACTIVE", "SETTLED_INOUT")
 LEDGER_FIELD_BY_TYPE = {"صرف ذهب": "صرف", "قبض ذهب": "قبض", "الليز": "ليز", "البوليش": "بوليش",
                         "المفنش ٨ بالالف": "مفنش 8", "المفنش ٤ بالالف": "مفنش 4",
                         "السلك الراجع": "سلك راجع"}
-# علامات تمييز حركات خياس الطقوم داخل حقل trees_count (المستخدم كعلامة داخلية
-# في هذا النظام أصلاً): تفصل خياس التلميع النهائي عن خياس البوليش عن الصافي
+# علامات تمييز حركات «خياس طقوم» داخل حقل trees_count (المستخدم كعلامة داخلية
+# في هذا النظام أصلاً): تفصل خياس بوليش 2 عن خياس البوليش عن الصافي
 # دون إضافة عمود جديد لقاعدة البيانات — فتبقى نسخ العملاء القديمة متوافقة.
-KHAYAS_MARK_FINAL = 0.0    # خياس التلميع النهائي (القيمة التاريخية الافتراضية)
+KHAYAS_MARK_FINAL = 0.0    # خياس بوليش 2 (القيمة التاريخية الافتراضية)
 KHAYAS_MARK_POLISH = 7.0   # خياس البوليش
 KHAYAS_MARK_NET = 9.0      # صافي الطقم (سطر معلوماتي لا يؤثر على الخزينة)
 # عدد الصفوف التي تُقاس لتحديد عرض الأعمدة (لا تُقاس كل الصفوف: القياس
@@ -200,13 +200,13 @@ RAJI_PURITY = 750.0    # عيار المرجع لتحويل السلك الرا�
 
 def sale_net_weight(row):
     """صافي الطقم = (الفصوص + الأحجار بعد الخصم)
-                     − خياس التلميع النهائي − خياس البوليش − خياس المركب.
+                     − خياس بوليش 2 − خياس البوليش − خياس المركب.
 
     الفصوص والأحجار بعد الخصم قيمة تُجمع، والخياسات الثلاثة فاقد يُخصم منها.
     الذهب والأحجار الخام والماس خارج المعادلة عمداً حسب التعريف المعتمد.
 
     مصدر واحد للحساب يستخدمه: جدول السطور المعلّقة، قالب الطباعة، وصندوق
-    خياس الطقوم — فلا يختلف الرقم بين شاشة وأخرى مهما تغيّرت المعادلة لاحقاً.
+    بوليش 2 — فلا يختلف الرقم بين شاشة وأخرى مهما تغيّرت المعادلة لاحقاً.
     """
     def val(key):
         try:
@@ -5019,7 +5019,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             #
             #  تُحوَّل هنا إلى MEMO — الحالة التي ترفضها كل الفلاتر المحاسبية —
             #  فتختفي من الكشف ويعود الرصيد صحيحاً بأثر رجعي.
-            #  (خياس التلميع النهائي بعلامة 0.0 يبقى ACTIVE كما هو)
+            #  (خياس بوليش 2 بعلامة 0.0 يبقى ACTIVE كما هو)
             # ═══════════════════════════════════════════════════════════
             cursor.execute("""
                 UPDATE invoices
@@ -5085,6 +5085,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # خانات التاريخ بأول يوم من الشهر الماضي، فتُسجَّل حركات الشهر الجديد
         # في الشهر الخطأ. الاختيار اليدوي من قائمة الفترات يبقى متاحاً كما هو.
         self.current_display_month = datetime.datetime.now().strftime("%Y-%m")
+        # أولاً: الأسماء الجديدة لحسابات بوليش 2 — ما بعدها يتعرّف على الحسابات بأسمائها
+        self.migrate_polish2_names()
         self.neutralize_auto_recovery_closings()
         self.migrate_casting_returns()
         self.migrate_row_extras()
@@ -5226,6 +5228,54 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.mark_backup_dirty()
             except Exception as e:
                 log_cloud_error("تعذّر حفظ تصحيح حركات الليزر", e)
+        return len(changed)
+
+    # «خياس التلميع النهائي» صار «بوليش 2» (1.62.0): الأسماء القديمة المحفوظة في الحركات
+    POLISH2_OLD_ACCOUNTS = ("خياس الطقوم", "فاقد خياس التلميع النهائي", "مسترجع خياس الطقوم")
+    POLISH2_OLD_BAYAN = "خياس التلميع النهائي"
+
+    def migrate_polish2_names(self):
+        """ينقل حركات صندوق «خياس التلميع النهائي» إلى اسمه الجديد «بوليش 2».
+
+        الحركة تُربط بحسابها باسمه المحفوظ فيها، فتُنقل الأسماء الثلاثة كما هي:
+        «خياس الطقوم» ← «بوليش 2»، «فاقد خياس التلميع النهائي» ← «فاقد بوليش 2»،
+        «مسترجع خياس الطقوم» ← «مسترجع بوليش 2» — وإلا انفصلت الإقفالات والقيود والمسترجع
+        القديم عن الصندوق. وبيان خياس فواتير المبيعات («خياس التلميع النهائي — بيانها») يصير
+        «خياس بوليش 2 — بيانها». لا رقم يتغيّر: الأوزان والأنواع والفترات كما هي.
+        نسخة العميل تحفظ النقل في قاعدتها (فيُرفع للسحابة)، ونسخة المدير في الذاكرة.
+        """
+        cat = "خياس الطقوم"
+        try:
+            new_names = (self.get_box_account_name(cat), self.get_box_loss_account(cat),
+                         self.get_box_recovery_name(cat))
+        except Exception:
+            return 0
+        rename = {old: new for old, new in zip(self.POLISH2_OLD_ACCOUNTS, new_names) if old != new}
+        old_bayan, sep = self.POLISH2_OLD_BAYAN, self.SALE_NOTE_SEP
+        changed = []
+        for inv in self.invoices.values():
+            hit = False
+            if inv.get("الاسم") in rename:
+                inv["الاسم"] = rename[inv["الاسم"]]
+                hit = True
+            bayan = inv.get("البيان") or ""
+            if inv.get("النوع") == "خياس طقوم" and (bayan == old_bayan or bayan.startswith(old_bayan + sep)):
+                inv["البيان"] = self.POLISH2_SALE_BAYAN + bayan[len(old_bayan):]
+                hit = True
+            if hit:
+                changed.append(inv)
+        if not changed:
+            return 0
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
+        if not IS_ADMIN_BUILD and getattr(self, "db_path", None):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.executemany("UPDATE invoices SET name = ?, note = ? WHERE invoice_id = ?",
+                                     [(inv["الاسم"], inv.get("البيان", ""), inv["رقم الفاتورة"]) for inv in changed])
+                    conn.commit()
+                self.mark_backup_dirty()
+            except Exception as e:
+                log_cloud_error("تعذّر حفظ نقل حركات خياس التلميع النهائي إلى بوليش 2", e)
         return len(changed)
 
     def save_invoice_to_db(self, inv_id, inv_data):
@@ -6377,8 +6427,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # بنفسه لا يُختصر.
     COMPACT_HEADERS = {
         "رقم الفاتورة": "الفاتورة", "رقم التشغيل": "التشغيل", "رقم الصف": "الصف",
-        "الأحجار بعد الخصم": "بعد الخصم", "خياس التلميع النهائي": "التلميع",
-        "خياس التلميع": "التلميع", "خياس البوليش": "البوليش", "خياس المركب": "المركب",
+        "الأحجار بعد الخصم": "بعد الخصم", "خياس بوليش 2": "بوليش 2",
+        "خياس البوليش": "البوليش", "خياس المركب": "المركب",
         "الوزن القائم": "القائم", "الوزن المقيد": "المقيد", "عدد الأسطر": "الأسطر",
         "مسترجع الأشجار": "مسترجع", "عدد الأشجار": "الأشجار", "خياس كل شجرة": "لكل شجرة",
         "آخر تعديل": "التعديل",
@@ -7706,8 +7756,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "مراحل التصنيع": "صرف وقبض الكاستنج والمصنعين والمركبين والتلميع",
         "صناديق الخياس": "أرصدة العمال والخياس الفعلي لكل قسم وإقفاله",
         "الوارد": "استلام الذهب والفصوص والألماس من الموردين والمصنع",
-        "شاشة الخسائر": "لكل مرحلة، لفترة تختارها أو للكل: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
-        "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج",
+        "شاشة الخسائر": "لكل مرحلة، من فترة إلى فترة تختارهما أو للكل: الفاقد الحالي، وحسابا فاقدها ومسترجعها، والصافي — والإقفال لحساب فاقدها",
+        "صناديق المصنع": "المبيعات والوارد لكل مادة ونسب الإنتاج — من شهر إلى شهر تختارهما أو للكل",
         "ربح/خسارة الطقم": "خياسات كل طقم ومسترجعها وربحه أو خسارته",
         "لوحة المؤشرات": "مؤشرات الإدارة: الخزينة والفاقد والمبيعات والوارد عبر الفترات",
         "كشف حساب": "حركة أي حساب مع رصيد أول المدة المُرحَّل",
@@ -12190,7 +12240,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for cat in self.get_all_stage_categories():
             madin, daen = self.get_stage_totals_for_month(cat, self.current_display_month)
             section_val = round(madin - daen, 2)
-            tree.insert("", "end", values=(f"صافي خياس صندوق ({cat}) لهذا الشهر", cat, f"{section_val:.2f} جم"), tags=("section_tag",))
+            label = self.get_display_label(cat)
+            tree.insert("", "end", values=(f"صافي خياس صندوق ({label}) لهذا الشهر", label, f"{section_val:.2f} جم"), tags=("section_tag",))
             total_workshop += section_val
             
         tree.insert("", "end", values=("الإجمالي الكلي لخياس وفواقد الورشة (الأقسام الخمسة)", "-", f"{total_workshop:.2f} جم"), tags=("total_tag",))
@@ -12207,7 +12258,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ("المركبين", self.get_display_label("المركبين")),
             ("التلميع", f"✨ {self.get_display_label('التلميع')}"),
             ("التلميع/البف", f"🪄 {self.get_display_label('التلميع/البف')}"),
-            ("خياس الطقوم", "💍 خياس التلميع النهائي"),
+            ("خياس الطقوم", f"💍 {self.get_display_label('خياس الطقوم')}"),
         ]
         for stage_name in self.categories.get("أقسام_خياس_إضافية", []):
             cat_defs.append((stage_name, f"➕ {stage_name}"))
@@ -12572,8 +12623,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_stage_config(self, cat):
         """يرجع: نوع حركة المدين، نوع حركة القبض المباشر (أو None)، اسم المسترجع المرتبط بهذا الصندوق"""
         if cat == "خياس الطقوم":
-            # صندوق يُغذّى من خانة (الخياس) بشاشة المبيعات/الصادر، ويُعامل محاسبياً كباقي صناديق الخياس
-            return "خياس طقوم", "قبض خياس طقوم", "مسترجع خياس الطقوم"
+            # «بوليش 2»: يُغذّى من خانة (خياس بوليش 2) بشاشة المبيعات، ويُعامل محاسبياً كباقي صناديق الخياس
+            return "خياس طقوم", "قبض خياس طقوم", f"مسترجع {self.get_account_label('خياس الطقوم')}"
         if cat == "الكاستنج":
             return "صرف كاستنج", "قبض كاستنج", "مسترجع كاستنج"
         elif cat == "التلميع":
@@ -12584,7 +12635,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return f"صرف {cat}", f"قبض {cat}", f"مسترجع {cat}"
         return None, None, None
 
-    BOX_DISPLAY_OVERRIDES = {"خياس الطقوم": "خياس التلميع النهائي"}
+    # «خياس الطقوم» مفتاح داخلي ثابت (في الأرشيف وأنواع الحركات)؛ اسمه للمستخدم ولحساباته «بوليش 2»
+    # (كان «خياس التلميع النهائي» حتى 1.61 — حركاته القديمة تُرحَّل للاسم الجديد: migrate_polish2_names)
+    BOX_DISPLAY_OVERRIDES = {"خياس الطقوم": "بوليش 2"}
 
     # أسماء الحسابات ثابتة لا تتبع إعادة تسمية القسم: حركات «مسترجع البوليش» و«فاقد البوليش»
     # مسجّلة بها في الجهاز والسحابة، وتغييرها يفصل الحركات عن حساباتها
@@ -12605,7 +12658,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat in self.categories.get("أقسام_خياس_إضافية", []):
             return cat
         return {
-            "خياس الطقوم": "خياس الطقوم",
+            "خياس الطقوم": "بوليش 2",
             "الكاستنج": "الكاستنج",
             "المصنعين": "صندوق خياس المصنعين",
             "المركبين": "صندوق خياس المركبين",
@@ -12728,19 +12781,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # اختيار «الكل» في شاشة الخسائر: أرقام كل الفترات
     LOSSES_ALL = "الكل"
 
-    def get_box_loss_summary(self, cat, month=None):
-        """أقسام لوحة الصندوق في شاشة الخسائر — للفترة المختارة (month)، أو لكل الفترات
-        (month = LOSSES_ALL)؛ بلا فترة: الفترة المعروضة:
+    def get_box_loss_summary(self, cat, month=None, to_month=None):
+        """أقسام لوحة الصندوق في شاشة الخسائر — للفترة المختارة (month)، أو للفترات من month
+        إلى to_month، أو لكل الفترات (month = LOSSES_ALL)؛ بلا فترة: الفترة المعروضة:
 
-            الفاقد الحالي — فاقد المرحلة غير المُقفل (في كل فترة على حدة، ومجموعها في «الكل»)
+            الفاقد الحالي — فاقد المرحلة غير المُقفل (في كل فترة على حدة، ومجموعها في النطاق)
             الفاقد        — حساب فاقد المرحلة: ما أُقفل من فاقدها + قيوده (ومنها الافتتاحي)
             المسترجع      — حساب مسترجع المرحلة: الوارد إليه + قيوده (ومنها الافتتاحي)
             الصافي        — الفاقد − المسترجع
         """
+        ranged = bool(month and to_month and month != self.LOSSES_ALL and to_month != month)
+        if ranged and self.range_covers_all(month, to_month):
+            month, ranged = self.LOSSES_ALL, False          # النطاق كله = «الكل» بالضبط
         if month == self.LOSSES_ALL:
             # كل فترة مستقلة بفاقدها الحالي، فمجموعها = غير المُقفل في كل الفترات
             current = sum(self.get_current_unclosed_khayas(cat, month=m) for m in self.get_recorded_periods())
             loss, recovered = self.get_box_loss_total(cat), self.get_box_recovered_total(cat)
+        elif ranged:
+            # نطاق فترات: مجموع أرقام كل فترة فيه (كل فترة مستقلة بأرقامها)
+            months = self.periods_in_range(month, to_month)
+            current = sum(self.get_current_unclosed_khayas(cat, month=m) for m in months)
+            loss = sum(self.get_box_loss_total(cat, month=m) for m in months)
+            recovered = sum(self.get_box_recovered_total(cat, month=m) for m in months)
         else:
             month = month or self.current_display_month
             current = self.get_current_unclosed_khayas(cat, month=month)
@@ -12773,7 +12835,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     PROFIT_SECTION = "ربح/خسارة الطقم"
 
     # مفاتيح أنواع الخياس الثلاثة ونِسَب استرجاعها الافتراضية
-    RECOVERY_KEYS = (("تلميع", "خياس التلميع النهائي"),
+    RECOVERY_KEYS = (("تلميع", "خياس بوليش 2"),        # المفتاح «تلميع» ثابت: به تُحفظ النسبة
                      ("بوليش", "خياس البوليش"),
                      ("مركب", "خياس المركب"))
     RECOVERY_DEFAULT = 0.0   # الافتراضي صفر: لا استرجاع حتى يحدّده المستخدم بنفسه
@@ -12960,7 +13022,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.refresh_sets_profit_tab()
 
-    SETS_PROFIT_COLS = ("التاريخ", "عدد الأطقم", "خياس التلميع النهائي", "خياس البوليش",
+    SETS_PROFIT_COLS = ("التاريخ", "عدد الأطقم", "خياس بوليش 2", "خياس البوليش",
                         "خياس المركب", "إجمالي الخياس", "المسترجع", "صافي/خياس",
                         "فصوص/أحجار", "الربح", "خسارة")   # أسماء كاملة صريحة
 
@@ -13062,7 +13124,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showinfo("لا يوجد", f"لا توجد أطقم لعرضها في {title}.")
             return
 
-        cols = ("رقم التشغيل", "خياس التلميع النهائي", "خياس البوليش", "خياس المركب",
+        cols = ("رقم التشغيل", "خياس بوليش 2", "خياس البوليش", "خياس المركب",
                 "إجمالي الخياس", "المسترجع", "صافي/خياس", "فصوص/أحجار", "الربح", "خسارة")
         data, agg = [], {k: 0.0 for k in ("تلميع", "بوليش", "مركب", "إجمالي", "المسترجع",
                                           "صافي/خياس", "فصوص/أحجار", "الربح", "خسارة")}
@@ -13146,7 +13208,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if month is None:
             month = self.current_display_month
 
-        # خياس التلميع النهائي مصدره شاشة المبيعات/الصادر: نأخذ إجمالي عمود
+        # خياس بوليش 2 مصدره شاشة المبيعات/الصادر: نأخذ إجمالي عمود
         # (خياس) من صف الإجمالي هناك، ثم نخصم ما استُرجع من الصندوق وما أُقفل
         # منه — فيبقى الرقم مطابقاً لشاشة المبيعات ومحاسبياً سليماً معاً.
         if cat == "خياس الطقوم":
@@ -13566,7 +13628,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             value_label = "الصافي"
             picker = lambda r: r[1]
 
-        cols = ("رقم التشغيل", "خياس التلميع النهائي", "خياس البوليش",
+        cols = ("رقم التشغيل", "خياس بوليش 2", "خياس البوليش",
                 "خياس المركب", "إجمالي الخياس", value_label)
 
         data = []
@@ -13649,7 +13711,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cat == "خياس الطقوم":
             # هذا الصندوق يُغذّى من خانة الخياس بشاشة المبيعات، فتوضيح المسميات أدق للمستخدم
             self.tree.heading("مدين", text="الخياس")
-            # المسترجع ليس هنا: له حسابه («مسترجع خياس التلميع النهائي»)
+            # المسترجع ليس هنا: له حسابه («مسترجع بوليش 2»)
             self.tree.heading("دائن", text="القبض/الإقفال")
             self.tree.heading("الرصيد", text="الرصيد التراكمي")
 
@@ -13675,7 +13737,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         grand_net = grand_loss = 0.0
         for m in sorted(months):
             tot_madin, tot_daen = self.get_stage_totals_for_month(cat, m)
-            # خياس التلميع النهائي مصدره الوحيد: إجمالي عمود (خياس) في
+            # خياس بوليش 2 مصدره الوحيد: إجمالي عمود (خياس) في
             # شاشة المبيعات/الصادر ← قسم العمليات لنفس الفترة
             if cat == "خياس الطقوم":
                 tot_madin = self.get_sales_ops_khayas_total(m)
@@ -13722,10 +13784,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     text=f"الذهب عند {self.get_display_label(cat)}: "
                          f"{round(cur_madin - cur_daen, 2):.2f} جم")
         self.last_computed_actual_khayas = 0.0  # الإقفال الجماعي غير مطبق على هذا القسم
-        self.lbl_section_summary.configure(text=f"({cat}) لشهر ({self.current_display_month}): مدين {cur_madin:.2f} | دائن {cur_daen:.2f} | الرصيد التراكمي {running:.2f} جم")
+        self.lbl_section_summary.configure(text=f"({self.get_display_label(cat)}) لشهر ({self.current_display_month}): مدين {cur_madin:.2f} | دائن {cur_daen:.2f} | الرصيد التراكمي {running:.2f} جم")
 
     def show_final_polish_khayas_detail(self, month):
-        """كشف خياس التلميع النهائي: كل فاتورة من شاشة المبيعات بخياسها.
+        """كشف خياس بوليش 2: كل فاتورة من شاشة المبيعات بخياسها.
 
         المصدر هو نفس تجميع شاشة المبيعات/العمليات، فيطابق الكشفُ الجدولَ هناك
         فاتورةً بفاتورة، ويطابق مجموعُه عمودَ الخياس في الصندوق.
@@ -13751,7 +13813,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         totals = ("الإجمالي", "-", f"{len(groups)} فاتورة",
                   f"{tot_gold:.2f}", f"{tot_khayas:.2f}")
         self.open_fullscreen_table_view(
-            f"كشف خياس التلميع النهائي — {month}", cols, data, totals_values=totals)
+            f"كشف خياس {self.get_display_label('خياس الطقوم')} — {month}", cols, data, totals_values=totals)
 
     def _on_stage_monthly_click(self, event=None):
         """الضغط على عمود الصافي أو الخسارة يفتح كشفه التفصيلي،
@@ -13773,7 +13835,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.show_sets_net_detail(month, losses_only=(col_name == "الخسارة"))
                 return
 
-        # خياس التلميع النهائي: الكشف يعرض فواتير المبيعات بخياس كل منها
+        # بوليش 2: الكشف يعرض فواتير المبيعات بخياس كل منها
         if self.current_view_cat == "خياس الطقوم":
             sel = self.tree.selection()
             month = self.stage_month_rows_map.get(sel[0]) if sel else self.current_display_month
@@ -14626,20 +14688,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(tab, text="📦 صناديق المصنع", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 6))
 
-        # اختيار الشهر: «الكل» ثم الأشهر المسجّلة — الشهر يعرض أرقامه وحده، و«الكل» كل الأشهر
+        # «من شهر / إلى شهر»: قائمتان بالأشهر المسجّلة — اختيار لا كتابة، وأي اختيار يحدّث
+        # الأرقام فوراً؛ «الكل» = كل الأشهر
         range_row = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                                  border_width=1, border_color=(UI["line"], "#2A313B"))
         range_row.pack(pady=(0, 10))
-        ctk.CTkLabel(range_row, text="الشهر:", font=("Cairo", 13, "bold"),
-                     text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(12, 4), pady=8)
-        self.combo_factory_period = ctk.CTkComboBox(
-            range_row, values=self.factory_period_options(), font=("Cairo", 14), width=130, height=34,
-            justify="center", state="readonly", command=lambda _v: self.refresh_factory_boxes_table())
-        self.combo_factory_period.set(self.current_display_month)
-        self.combo_factory_period.pack(side="right", padx=4)
-        ctk.CTkButton(range_row, text="🔍 عرض", font=("Cairo", 13, "bold"), fg_color=UI["success"],
-                      hover_color=UI["success_hover"], width=80, height=34,
-                      command=self.refresh_factory_boxes_table).pack(side="right", padx=4)
+
+        def row_label(text):
+            ctk.CTkLabel(range_row, text=text, font=("Cairo", 13, "bold"),
+                         text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(12, 4), pady=8)
+
+        row_label("من شهر:")
+        self.combo_factory_from = self.make_month_combo(range_row, self.refresh_factory_boxes_table)
+        self.combo_factory_from.pack(side="right", padx=4)
+        row_label("إلى شهر:")
+        self.combo_factory_to = self.make_month_combo(range_row, self.refresh_factory_boxes_table)
+        self.combo_factory_to.pack(side="right", padx=4)
+        ctk.CTkButton(range_row, text="الكل", font=("Cairo", 13, "bold"), fg_color=UI["success"],
+                      hover_color=UI["success_hover"], width=64, height=34,
+                      command=self.factory_show_all).pack(side="right", padx=4)
         ctk.CTkButton(range_row, text="الشهر الحالي ↺", font=("Cairo", 13, "bold"), fg_color=UI["neutral"],
                       hover_color=UI["neutral_hover"], width=120, height=34,
                       command=self.reset_factory_boxes_period).pack(side="right", padx=4)
@@ -14719,33 +14786,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_factory_boxes_table()
 
     def factory_period_options(self):
-        """خيارات شهر صناديق المصنع: «الكل» ثم الأشهر المسجّلة (الأحدث أولاً)"""
-        return [self.LOSSES_ALL] + self.get_recorded_periods()
+        """أشهر قائمتي «من/إلى» في صناديق المصنع: الأشهر المسجّلة (الأحدث أولاً)"""
+        return self.get_recorded_periods()
 
-    def selected_factory_period(self):
-        """الشهر المختار في صناديق المصنع — أو «الكل» — وإلا الفترة المعروضة"""
-        month = self.current_display_month
-        if hasattr(self, "combo_factory_period"):
-            try:
-                month = self.combo_factory_period.get().strip() or month
-            except Exception:
-                pass
-        return month
+    def selected_factory_range(self):
+        """(من، إلى) المختاران في صناديق المصنع، مرتّبين — وبلا شاشة: الفترة المعروضة"""
+        return self.combo_range(getattr(self, "combo_factory_from", None), getattr(self, "combo_factory_to", None))
 
-    def factory_period_label(self, month):
-        return "أرقام كل الأشهر" if month == self.LOSSES_ALL else f"أرقام شهر {month}"
+    def factory_range_label(self, from_m, to_m):
+        return self.range_scope_label(from_m, to_m, one="شهر", many="الأشهر")
 
-    def factory_boxes_totals(self, month=None):
-        """أرقام صناديق المصنع لشهر بعينه، أو لكل الأشهر (month = LOSSES_ALL) — المعادلات كما كانت:
-        المبيعات والوارد لكل مادة، ومبيعات الذهب المرافق للألماس والألماس، والإنتاج ونسبه"""
+    def set_factory_range(self, from_m, to_m):
+        self.set_combo_range(getattr(self, "combo_factory_from", None), getattr(self, "combo_factory_to", None),
+                             from_m, to_m, self.factory_period_options())
+        self.refresh_factory_boxes_table()
+
+    def factory_show_all(self):
+        """زر «الكل»: من أقدم شهر إلى أحدثه"""
+        periods = self.get_recorded_periods()
+        self.set_factory_range(periods[-1], periods[0])
+
+    def factory_boxes_totals(self, month=None, to_month=None):
+        """أرقام صناديق المصنع لشهر بعينه، أو للأشهر من month إلى to_month، أو لكل الأشهر
+        (month = LOSSES_ALL، أو نطاق يشملها كلها) — المعادلات كما كانت: المبيعات والوارد لكل مادة،
+        ومبيعات الذهب المرافق للألماس والألماس، والإنتاج ونسبه"""
         month = month or self.current_display_month
         every = month == self.LOSSES_ALL
+        lo, hi = (month, month) if every else tuple(sorted((month, to_month or month)))
+        if not every and lo != hi and self.range_covers_all(lo, hi):
+            every = True
         sums = dict.fromkeys(("وارد ذهب (عيار 18)", "مبيعات ذهب", "وارد فصوص وأحجار", "مبيعات فصوص وأحجار",
                               "مبيعات ذهب مع الماس", "مبيعات الماس"), 0.0)
         for inv in self.invoices.values():
             if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"):
                 continue
-            if not every and self.inv_period(inv) != month:
+            if not every and not (lo <= self.inv_period(inv) <= hi):
                 continue
             t = inv.get("النوع")
             if t in sums:
@@ -14763,45 +14838,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "ratio_diamond": round((diamond / gold_sales) * 100, 2) if gold_sales else 0.0}
 
     def reset_factory_boxes_period(self):
-        if hasattr(self, "combo_factory_period"):
-            self.combo_factory_period.set(self.current_display_month)
-        self.refresh_factory_boxes_table()
+        self.set_factory_range(self.current_display_month, self.current_display_month)
 
     def open_factory_box_statement(self, box):
-        """كشف حساب المادة بالشهر المختار في الشاشة («الكل» = كل الأشهر)"""
+        """كشف حساب المادة بنطاق الشاشة «من/إلى» («الكل» = كل الأشهر بلا حدّ)"""
         account_map = {"ذهب": "المبيعات", "الماس": "حساب الألماس", "فصوص وأحجار": "حساب فصوص وأحجار"}
         account_key = account_map.get(box)
         if not account_key:
             return
-        month = self.selected_factory_period()
-        span = "" if month == self.LOSSES_ALL else month
+        from_m, to_m = self.selected_factory_range()
+        if from_m != to_m and self.range_covers_all(from_m, to_m):
+            from_m = to_m = ""
         self.navigate_to_screen("كشف حساب")
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.set(account_key)
-            for entry in (getattr(self, "kh_from_month", None), getattr(self, "kh_to_month", None)):
-                if entry is not None:
-                    entry.delete(0, 'end')
-                    if span:
-                        entry.insert(0, span)
+            self.set_statement_range(from_m, to_m)
             self.refresh_account_statement()
 
     def refresh_factory_boxes_table(self):
         if not hasattr(self, 'factory_card_widgets') or not self.factory_card_widgets:
             return
-        if hasattr(self, "combo_factory_period"):
-            try:
-                self.combo_factory_period.configure(values=self.factory_period_options())
-            except Exception:
-                pass
-        month = self.selected_factory_period()
-        tot = self.factory_boxes_totals(month)
-        scope = self.factory_period_label(month)
+        for combo in (getattr(self, "combo_factory_from", None), getattr(self, "combo_factory_to", None)):
+            if combo is not None:
+                try:
+                    combo.configure(values=self.factory_period_options())
+                except Exception:
+                    pass
+        from_m, to_m = self.selected_factory_range()
+        tot = self.factory_boxes_totals(from_m, to_m)
+        scope = self.factory_range_label(from_m, to_m)
         if hasattr(self, "lbl_factory_scope"):
             self.lbl_factory_scope.configure(text=scope)
         if hasattr(self, "lbl_prod_title"):
             self.lbl_prod_title.configure(text=f"ملخّص الإنتاج — {scope}")
 
-        # لوحتا الذهب وفصوص وأحجار: المبيعات والوارد للشهر المختار (أو كل الأشهر)
+        # لوحتا الذهب وفصوص وأحجار: المبيعات والوارد للأشهر المختارة (أو كل الأشهر)
         for box in ("ذهب", "فصوص وأحجار"):
             widgets = self.factory_card_widgets.get(box)
             if widgets:
@@ -14831,9 +14902,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً:\npip install reportlab arabic-reshaper python-bidi")
             return
 
-        # الشهر نفسه المعروض في الشاشة — أو «الكل»
-        month = self.selected_factory_period()
-        tot = self.factory_boxes_totals(month)
+        # النطاق نفسه المعروض في الشاشة («من/إلى»)
+        from_m, to_m = self.selected_factory_range()
+        tot = self.factory_boxes_totals(from_m, to_m)
         sales_totals, incoming_totals = dict(tot["sales"], الماس=tot["diamond"]), tot["incoming"]
         tot_gold_linked, tot_diamond = tot["gold_linked"], tot["diamond"]
         prod_gold_stones, prod_gold_diamond, prod_total = tot["prod_gold_stones"], tot["prod_gold_diamond"], tot["prod_total"]
@@ -14877,7 +14948,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         txt(c, PW / 2, y, "📦 صناديق المصنع", size=17, bold=True, align="center", color=gold_color)
         y -= 8 * mm
-        txt(c, PW / 2, y, self.factory_period_label(month), size=10, align="center")
+        txt(c, PW / 2, y, self.factory_range_label(from_m, to_m), size=10, align="center")
         y -= 8 * mm
 
         box_defs = [("ذهب", "🥇"), ("فصوص وأحجار", "🔷"), ("الماس", "💎")]
@@ -15181,13 +15252,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(top_row, text="📋 كشف حساب", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
 
-        self.kh_from_month = ctk.CTkEntry(top_row, placeholder_text="YYYY-MM", font=("Cairo", 15), justify="center", width=110, height=36)
-        self.kh_from_month.pack(side="right", padx=5)
+        # «من شهر / إلى شهر»: قائمتان (اختيار لا كتابة) — «الكل» = بلا حدّ، والاختيار يحدّث الكشف فوراً
         ctk.CTkLabel(top_row, text="من شهر:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-
-        self.kh_to_month = ctk.CTkEntry(top_row, placeholder_text="YYYY-MM", font=("Cairo", 15), justify="center", width=110, height=36)
-        self.kh_to_month.pack(side="right", padx=5)
+        self.kh_from_month = self.make_month_combo(top_row, self.refresh_account_statement,
+                                                   values=self.statement_month_options(), width=120,
+                                                   font_size=15, height=36)
+        self.kh_from_month.pack(side="right", padx=5)
         ctk.CTkLabel(top_row, text="إلى شهر:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.kh_to_month = self.make_month_combo(top_row, self.refresh_account_statement,
+                                                 values=self.statement_month_options(), width=120,
+                                                 font_size=15, height=36)
+        self.kh_to_month.pack(side="right", padx=5)
+        self.set_statement_range("", "")
 
         ctk.CTkLabel(top_row, text="الاسم:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
         self.kh_account_name = ctk.CTkComboBox(top_row, values=self.get_account_statement_options(), font=("Cairo", 15), width=230, height=36, justify="right")
@@ -15214,6 +15290,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_edit_row = ctk.CTkButton(btns_row, text="✏️ تعديل السطر المحدد", font=("Cairo", 14, "bold"), fg_color="#8b6d00", hover_color="#6b5400", height=42, command=self.edit_selected_account_statement_row)
         btn_edit_row.pack(side="right", padx=5)
 
+    def statement_month_options(self):
+        """خيارات «من/إلى» في كشف الحساب: «الكل» (بلا حدّ) ثم الفترات المسجّلة"""
+        return [self.LOSSES_ALL] + self.get_recorded_periods()
+
+    def statement_range(self):
+        """(من، إلى) في كشف الحساب — «الكل» = بلا حدّ ("")، و«من» بعد «إلى» يُقلبان"""
+        def value(name):
+            try:
+                v = (getattr(self, name).get() or "").strip() if hasattr(self, name) else ""
+            except Exception:
+                v = ""
+            return "" if v == self.LOSSES_ALL else v
+        from_m, to_m = value("kh_from_month"), value("kh_to_month")
+        if from_m and to_m and from_m > to_m:
+            from_m, to_m = to_m, from_m
+        return from_m, to_m
+
+    def set_statement_range(self, from_m, to_m):
+        """يضبط «من/إلى» في كشف الحساب (الفارغ = «الكل»)"""
+        self.set_combo_range(getattr(self, "kh_from_month", None), getattr(self, "kh_to_month", None),
+                             from_m or self.LOSSES_ALL, to_m or self.LOSSES_ALL, self.statement_month_options())
+
     def print_account_statement(self):
         """يولّد ويعرض/يطبع كشف الحساب الحالي (أي حساب مختار) بجدول مطابق للشاشة، مع دعم تعدد الصفحات"""
         if not REPORTLAB_AVAILABLE:
@@ -15223,8 +15321,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not account_key:
             messagebox.showwarning("تنبيه", "الرجاء اختيار حساب أولاً.")
             return
-        from_m = self.kh_from_month.get().strip()
-        to_m = self.kh_to_month.get().strip()
+        from_m, to_m = self.statement_range()
 
         rows = self.get_account_ledger_rows(account_key, from_m, to_m)
         use_madin_daen = self.is_debit_nature_account(account_key)
@@ -15396,12 +15493,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.configure(values=self.get_account_statement_options())
+        for combo in (getattr(self, "kh_from_month", None), getattr(self, "kh_to_month", None)):
+            if combo is not None:
+                try:
+                    combo.configure(values=self.statement_month_options())
+                except Exception:
+                    pass
 
         account_key = self.kh_account_name.get().strip() if hasattr(self, 'kh_account_name') else ""
         if not account_key:
             return
-        from_m = self.kh_from_month.get().strip()
-        to_m = self.kh_to_month.get().strip()
+        from_m, to_m = self.statement_range()
 
         cols = ("رقم الفاتورة", "التاريخ", "الاسم", "مدين", "دائن", "الرصيد", "البيان")
         self.account_statement_tree = self.create_standard_treeview(self.account_statement_table_frame, cols, height=16)
@@ -16267,7 +16369,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         fields_row.pack(fill="x", padx=10, pady=(4, 10))
         # الماس بعد الأحجار مباشرة
         labels = ["رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الماس", "الأحجار بعد الخصم",
-                  "خياس التلميع النهائي", "خياس البوليش", "خياس المركب"]
+                  "خياس بوليش 2", "خياس البوليش", "خياس المركب"]
         n_cols = len(labels) + 2          # + نسبة الخصم + زر الإضافة
         for c in range(n_cols):
             fields_row.grid_columnconfigure(c, weight=1, uniform="sale_fields")
@@ -16474,8 +16576,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # =====================================================================
     SALE_TYPES = ("مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس")
     # بيان الفاتورة يُلحق ببيان كل حركة من حركاتها بعد دورها («مبيعات — بيانها»،
-    # «خياس التلميع النهائي — بيانها»): يظهر في كشوف الحساب، ويُقرأ منه عند التعديل
+    # «خياس بوليش 2 — بيانها»): يظهر في كشوف الحساب، ويُقرأ منه عند التعديل
     SALE_NOTE_SEP = " — "
+    # بيان حركة خياس بوليش 2 من فاتورة المبيعات (كان «خياس التلميع النهائي» حتى 1.61)
+    POLISH2_SALE_BAYAN = "خياس بوليش 2"
 
     def sale_bayan(self, base, note):
         """بيان حركة من فاتورة مبيعات: دورها ثم بيان الفاتورة إن وُجد"""
@@ -16769,7 +16873,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     store(inv_data)
 
             # خياس البوليش: حالته MEMO فيُستثنى من الخزينة وكشفها ومن صندوق
-            # خياس التلميع النهائي، ويبقى محفوظاً للعرض وإعادة البناء والقالب.
+            # بوليش 2، ويبقى محفوظاً للعرض وإعادة البناء والقالب.
             if khayas_polish_v > 0:
                 self.invoice_counter += 1
                 polish_data = {
@@ -16806,14 +16910,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 }
                 store(net_data)
 
-            # خياس الطقم: لا يدخل ضمن أوزان الطقم المباعة، بل يُرحّل لصندوق (خياس الطقوم)
+            # خياس الطقم: لا يدخل ضمن أوزان الطقم المباعة، بل يُرحّل لصندوق بوليش 2
             if khayas_v > 0:
                 self.invoice_counter += 1
                 khayas_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
                     # البيان يطابق اسم الصندوق ليظهر واضحاً في كشف حساب الخزينة
                     "النوع": "خياس طقوم", "الوزن": khayas_v,
-                    "البيان": self.sale_bayan("خياس التلميع النهائي", note),
+                    "البيان": self.sale_bayan(self.POLISH2_SALE_BAYAN, note),
                     "settled_status": "ACTIVE", "trees_count": KHAYAS_MARK_FINAL, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -16942,7 +17046,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         entries = {}
         field_defs = [("رقم الصف", "row_number"), ("رقم التشغيل", "set_number"), ("الذهب", "ذهب"),
                       ("الفصوص", "فصوص"), ("الأحجار", "أحجار"), ("الماس", "الماس"),
-                      ("الأحجار بعد الخصم", "أحجار بعد الخصم"), ("خياس التلميع النهائي", "خياس"),
+                      ("الأحجار بعد الخصم", "أحجار بعد الخصم"), ("خياس بوليش 2", "خياس"),
                       ("خياس البوليش", "خياس البوليش"), ("خياس المركب", "خياس المركب")]
         n_fields = len(field_defs)
         for c in range(n_fields):
@@ -17012,7 +17116,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         table_frame.pack(fill="both", expand=True, padx=18, pady=(4, 4))
 
         cols = ("رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم",
-                "الماس", "خياس التلميع النهائي", "خياس البوليش", "الصافي")
+                "الماس", "خياس بوليش 2", "خياس البوليش", "الصافي")
         rows_tree = self.create_standard_treeview(table_frame, cols, height=9)
         rows_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
 
@@ -17172,7 +17276,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if not messagebox.askyesno(
                     "تأكيد الحفظ",
                     f"سيتم إعادة تسجيل الفاتورة بـ {len(edit_rows)} سطر/أسطر،\n"
-                    "وسيتم تحديث الخزينة وصندوق خياس الطقوم وكل الحسابات المرتبطة تلقائياً.\n\nهل تريد المتابعة؟", parent=win):
+                    "وسيتم تحديث الخزينة وصندوق بوليش 2 وكل الحسابات المرتبطة تلقائياً.\n\nهل تريد المتابعة؟", parent=win):
                 return
 
             # وقت الفاتورة يبقى كما هو ما دام اليوم لم يتغيّر، حتى لا يتغيّر ترتيبها المحاسبي بلا داعٍ
@@ -17729,12 +17833,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def refresh_pending_sales_table(self):
         if not hasattr(self, 'pending_sales_table_frame') or not self.pending_sales_table_frame:
             return
-        # أسماء مختصرة واضحة: العمود الأول (خياس) هو التلميع النهائي،
+        # أسماء مختصرة واضحة: العمود الأول خياس بوليش 2 (صندوقه)،
         # ثم (بوليش) ثم (مركب) — بدل تكرار كلمة خياس في ثلاثة عناوين.
         # لا عمود «الصافي» هنا: يُحسب عند الترحيل ويظهر في شاشة ربح/خسارة الطقم.
         act = self.SALE_ACTION_COL
         cols = (act, "رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الماس",
-                "الأحجار بعد الخصم", "خياس التلميع", "بوليش", "مركب", "الوزن القائم", "الوزن المقيد")
+                "الأحجار بعد الخصم", "خياس بوليش 2", "بوليش", "مركب", "الوزن القائم", "الوزن المقيد")
         self.pending_sales_tree, _t, reused = self.reuse_or_create_tree(
             self.pending_sales_table_frame, cols, height=16)
         tree = self.pending_sales_tree
@@ -17879,7 +17983,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # خانات نافذة التعديل بترتيب خانات الإدخال نفسها (من اليمين)
     SALE_EDIT_FIELDS = (("رقم التشغيل", "set_number"), ("الذهب", "ذهب"), ("الفصوص", "فصوص"),
                         ("الأحجار", "أحجار"), ("الماس", "الماس"), ("الأحجار بعد الخصم", "أحجار بعد الخصم"),
-                        ("خياس التلميع النهائي", "خياس"), ("خياس البوليش", "خياس البوليش"),
+                        ("خياس بوليش 2", "خياس"), ("خياس البوليش", "خياس البوليش"),
                         ("خياس المركب", "خياس المركب"))
 
     def edit_pending_sale_row(self):
@@ -18530,8 +18634,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ("الوزن الصافي", round(gold, 2))]
 
     def draw_set_voucher_page(self, c, data):
-        """سند رقم التشغيل بقالب المصنع الورقي حرفياً (التصنيع، البوليش، التركيب، التلميع النهائي،
-        جدول القطع ١–١٨، الإجماليات، التوقيعات). لا يُعبّأ منه إلا رقم التشغيل في خانة NO
+        """سند رقم التشغيل بقالب المصنع الورقي حرفياً (التصنيع، البوليش، التركيب، بوليش 2 —
+        «التلميع النهائي» سابقاً، جدول القطع ١–١٨، الإجماليات، التوقيعات). لا يُعبّأ منه إلا رقم التشغيل في خانة NO
         وجدول «الوزن النهائي»؛ وبقية الخانات فارغة للتعبئة اليدوية."""
         from reportlab.lib.colors import Color
         PW, PH = A4
@@ -18604,7 +18708,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cell(481, y, 728, y + 48, label, LABEL)
             cell(240, y, 481, y + 48, "", value_fill)
             y += 48
-        stage(1135, "التلميع النهائي", ("قبل", "بعد", "خياس"))
+        stage(1135, self.get_display_label("خياس الطقوم"), ("قبل", "بعد", "خياس"))
 
         # الوزن النهائي — الجدول الوحيد المعبّأ
         cell(235, 1305, 724, 1355, "الوزن النهائي", HEAD, size=12.5)
@@ -20195,7 +20299,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
 
-        # ====== شريط الأدوات: الفترة + نطاق كشف الحساب + الكشف والطباعة ======
+        # ====== شريط الأدوات: الفترات «من/إلى» + الكشف والطباعة ======
         bar = ctk.CTkFrame(outer, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                            border_width=1, border_color=(UI["line"], "#2A313B"))
         bar.pack(fill="x", padx=16, pady=(8, 6))
@@ -20204,31 +20308,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ctk.CTkLabel(bar, text=text, font=("Cairo", 13, "bold"),
                          text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(10, 4), pady=10)
 
-        # شريط اختيار الفترة: «الكل» ثم الفترات المسجّلة — كل صندوق يُعرض بأرقام
-        # الفترة المختارة وحدها، أو بأرقام كل الفترات
-        bar_label("الفترة:")
-        self.combo_losses_period = ctk.CTkComboBox(
-            bar, values=self.losses_period_options(), font=("Cairo", 14),
-            width=130, height=34, justify="center", state="readonly",
-            command=lambda _v: self.refresh_losses_tab())
-        self.combo_losses_period.set(self.current_display_month)
-        self.combo_losses_period.pack(side="right", padx=4)
-        ctk.CTkButton(bar, text="🔍 بحث", font=("Cairo", 13, "bold"),
-                      fg_color=UI["success"], hover_color=UI["success_hover"], width=80, height=34,
-                      command=self.refresh_losses_tab).pack(side="right", padx=4)
-
-        ctk.CTkFrame(bar, width=1, height=26, fg_color=(UI["line"], "#2A313B")).pack(side="right", padx=10)
-        bar_label("كشف الحساب من:")
-        self.losses_from_month = ctk.CTkEntry(bar, placeholder_text="YYYY-MM", font=("Cairo", 13),
-                                              justify="center", width=96, height=34)
-        self.losses_from_month.pack(side="right", padx=4)
+        # «من/إلى»: قائمتان بالفترات المسجّلة — اختيار لا كتابة، وأي اختيار يحدّث البطاقات
+        # فوراً. البطاقات وكشف الحساب والطباعة كلها بالنطاق نفسه؛ «الكل» = كل الفترات
+        bar_label("من:")
+        self.combo_losses_from = self.make_month_combo(bar, self.refresh_losses_tab)
+        self.combo_losses_from.pack(side="right", padx=4)
         bar_label("إلى:")
-        self.losses_to_month = ctk.CTkEntry(bar, placeholder_text="YYYY-MM", font=("Cairo", 13),
-                                            justify="center", width=96, height=34)
-        self.losses_to_month.pack(side="right", padx=4)
-        ctk.CTkButton(bar, text="↺ الكل", font=("Cairo", 13, "bold"), fg_color=UI["neutral"],
-                      hover_color=UI["neutral_hover"], width=70, height=34,
-                      command=self.clear_losses_period).pack(side="right", padx=4)
+        self.combo_losses_to = self.make_month_combo(bar, self.refresh_losses_tab)
+        self.combo_losses_to.pack(side="right", padx=4)
+        ctk.CTkButton(bar, text="الكل", font=("Cairo", 13, "bold"), fg_color=UI["success"],
+                      hover_color=UI["success_hover"], width=64, height=34,
+                      command=self.losses_show_all).pack(side="right", padx=4)
+        ctk.CTkButton(bar, text="الفترة الحالية ↺", font=("Cairo", 13, "bold"), fg_color=UI["neutral"],
+                      hover_color=UI["neutral_hover"], width=118, height=34,
+                      command=self.reset_losses_period).pack(side="right", padx=4)
 
         ctk.CTkButton(bar, text="🖨️ طباعة", font=("Cairo", 13, "bold"), fg_color=UI["navy"],
                       hover_color=UI["navy_hover"], width=100, height=34,
@@ -20247,53 +20340,50 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_losses_cards()
         self.refresh_losses_tab()
 
-    def clear_losses_period(self):
-        self.losses_from_month.delete(0, 'end')
-        self.losses_to_month.delete(0, 'end')
-
     def losses_period_options(self):
-        """خيارات فترة شاشة الخسائر: «الكل» ثم الفترات المسجّلة (الأحدث أولاً)"""
-        return [self.LOSSES_ALL] + self.get_recorded_periods()
+        """فترات قائمتي «من/إلى» في شاشة الخسائر: الفترات المسجّلة (الأحدث أولاً)"""
+        return self.get_recorded_periods()
 
-    def selected_losses_period(self):
-        """الفترة المختارة في شاشة الخسائر — أو LOSSES_ALL لكل الفترات"""
-        month = self.current_display_month
-        if hasattr(self, "combo_losses_period"):
-            try:
-                month = self.combo_losses_period.get().strip() or month
-            except Exception:
-                pass
-        return month
+    def selected_losses_range(self):
+        """(من، إلى) المختاران في شاشة الخسائر، مرتّبين — وبلا شاشة: الفترة المعروضة"""
+        return self.combo_range(getattr(self, "combo_losses_from", None), getattr(self, "combo_losses_to", None))
+
+    def set_losses_range(self, from_m, to_m):
+        self.set_combo_range(getattr(self, "combo_losses_from", None), getattr(self, "combo_losses_to", None),
+                             from_m, to_m, self.losses_period_options())
+        self.refresh_losses_tab()
+
+    def losses_show_all(self):
+        """زر «الكل»: من أقدم فترة إلى أحدثها"""
+        periods = self.get_recorded_periods()
+        self.set_losses_range(periods[-1], periods[0])
+
+    def reset_losses_period(self):
+        self.set_losses_range(self.current_display_month, self.current_display_month)
 
     def losses_close_period(self):
-        """الفترة التي يُقفلها زر «إقفال الخياس»: المعروضة في البطاقة؛ ومع «الكل» الفترة الحالية
-        (لا إقفال لكل الفترات دفعة واحدة — وتأكيد الإقفال يذكر الفترة)"""
-        month = self.selected_losses_period()
-        return self.current_display_month if month == self.LOSSES_ALL else month
+        """الفترة التي يُقفلها زر «إقفال الخياس»: الفترة المختارة؛ ومع نطاق آخر فترة فيه، ومع
+        «الكل» الفترة الحالية (لا إقفال لعدة فترات دفعة واحدة — وتأكيد الإقفال يذكر الفترة)"""
+        from_m, to_m = self.selected_losses_range()
+        if from_m == to_m:
+            return from_m
+        return self.current_display_month if self.range_covers_all(from_m, to_m) else to_m
 
     def losses_statement_range(self):
-        """نطاق كشف الحساب من شاشة الخسائر: «من/إلى» إن كُتبا، وإلا الفترة المختارة
-        (فيطابق الكشف أرقام البطاقة)، و«الكل» = كل الفترات"""
-        from_m = self.losses_from_month.get().strip() if hasattr(self, 'losses_from_month') else ""
-        to_m = self.losses_to_month.get().strip() if hasattr(self, 'losses_to_month') else ""
-        if not from_m and not to_m:
-            month = self.selected_losses_period()
-            if month != self.LOSSES_ALL:
-                from_m = to_m = month
+        """نطاق كشف الحساب من شاشة الخسائر = نطاقها نفسه (فيطابق الكشف أرقام البطاقة)،
+        و«الكل» = كل الفترات بلا حدّ"""
+        from_m, to_m = self.selected_losses_range()
+        if from_m != to_m and self.range_covers_all(from_m, to_m):
+            return "", ""
         return from_m, to_m
 
     def open_account_statement(self, account_key):
-        """يفتح شاشة كشف حساب على حساب معيّن (بنطاق شاشة الخسائر: «من/إلى» أو الفترة المختارة)"""
+        """يفتح شاشة كشف حساب على حساب معيّن بنطاق شاشة الخسائر («من/إلى»)"""
         from_m, to_m = self.losses_statement_range()
         self.navigate_to_screen("كشف حساب")
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.set(account_key)
-            if hasattr(self, 'kh_from_month'):
-                self.kh_from_month.delete(0, 'end')
-                if from_m: self.kh_from_month.insert(0, from_m)
-            if hasattr(self, 'kh_to_month'):
-                self.kh_to_month.delete(0, 'end')
-                if to_m: self.kh_to_month.insert(0, to_m)
+            self.set_statement_range(from_m, to_m)
             self.refresh_account_statement()
 
     def open_box_statement(self, cat):
@@ -20302,12 +20392,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.navigate_to_screen("كشف حساب")
         if hasattr(self, 'kh_account_name'):
             self.kh_account_name.set(box_account)
-            if hasattr(self, 'kh_from_month'):
-                self.kh_from_month.delete(0, 'end')
-                if from_m: self.kh_from_month.insert(0, from_m)
-            if hasattr(self, 'kh_to_month'):
-                self.kh_to_month.delete(0, 'end')
-                if to_m: self.kh_to_month.insert(0, to_m)
+            self.set_statement_range(from_m, to_m)
             self.refresh_account_statement()
 
     def refresh_losses_cards(self):
@@ -20435,21 +20520,75 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         periods.add(self.current_display_month)
         return sorted(periods, reverse=True)
 
+    # ══ «من/إلى» بالقوائم: شاشة الخسائر وصناديق المصنع وكشف الحساب ══
+    # الفترة تُختار من قائمة الفترات المسجّلة ولا تُكتب يدوياً (لا صيغة تُحفظ ولا خطأ كتابة)،
+    # وأي اختيار يحدّث الأرقام فوراً. «من» بعد «إلى» يُقلبان تلقائياً.
+
+    def make_month_combo(self, parent, on_change, values=None, width=118, font_size=14, height=34):
+        """قائمة اختيار فترة (للقراءة فقط) — تبدأ بالفترة المعروضة"""
+        combo = ctk.CTkComboBox(parent, values=self.get_recorded_periods() if values is None else values,
+                                font=("Cairo", font_size), width=width, height=height, justify="center",
+                                state="readonly", command=lambda _v: on_change())
+        combo.set(self.current_display_month)
+        return combo
+
+    def combo_range(self, combo_from, combo_to):
+        """(من، إلى) من قائمتيهما مرتّبين؛ القائمة الغائبة أو الفارغة = الفترة المعروضة"""
+        def value(combo):
+            try:
+                v = (combo.get() or "").strip() if combo is not None else ""
+            except Exception:
+                v = ""
+            return v if v and v != self.LOSSES_ALL else self.current_display_month
+        from_m, to_m = value(combo_from), value(combo_to)
+        return (from_m, to_m) if from_m <= to_m else (to_m, from_m)
+
+    def set_combo_range(self, combo_from, combo_to, from_m, to_m, values=None):
+        for combo, v in ((combo_from, from_m), (combo_to, to_m)):
+            if combo is None:
+                continue
+            try:
+                if values is not None:
+                    combo.configure(values=values)
+                combo.set(v)
+            except Exception:
+                pass
+
+    def periods_in_range(self, from_m, to_m):
+        """الفترات المسجّلة من «من» إلى «إلى» (شاملتين)، من الأقدم"""
+        lo, hi = sorted((from_m, to_m))
+        return [m for m in sorted(self.get_recorded_periods()) if lo <= m <= hi]
+
+    def range_covers_all(self, from_m, to_m):
+        """هل يشمل النطاق كل الفترات المسجّلة؟ (= «الكل»)"""
+        periods = self.get_recorded_periods()
+        lo, hi = sorted((from_m, to_m))
+        return bool(periods) and lo <= periods[-1] and hi >= periods[0]
+
+    def range_scope_label(self, from_m, to_m, one="فترة", many="الفترات"):
+        """وصف النطاق المعروض: فترة واحدة، أو من … إلى …، أو الكل"""
+        if from_m == to_m:
+            return f"أرقام {one} {from_m}"
+        if self.range_covers_all(from_m, to_m):
+            return f"أرقام كل {many} ({from_m} إلى {to_m})"
+        return f"أرقام {many} من {from_m} إلى {to_m}"
+
     def refresh_losses_tab(self):
         if not hasattr(self, 'losses_card_widgets') or not self.losses_card_widgets:
             return
 
-        # الفترة المختارة من شريط البحث («الكل» = كل الفترات)، وإلا الفترة المعروضة حالياً
-        if hasattr(self, "combo_losses_period"):
-            try:
-                self.combo_losses_period.configure(values=self.losses_period_options())
-            except Exception:
-                pass
-        month = self.selected_losses_period()
-        scope = "أرقام كل الفترات" if month == self.LOSSES_ALL else f"أرقام فترة {month}"
+        # النطاق المختار «من/إلى» (قائمتاه تُحدَّثان بالفترات المسجّلة الآن)، وإلا الفترة المعروضة
+        for combo in (getattr(self, "combo_losses_from", None), getattr(self, "combo_losses_to", None)):
+            if combo is not None:
+                try:
+                    combo.configure(values=self.losses_period_options())
+                except Exception:
+                    pass
+        from_m, to_m = self.selected_losses_range()
+        scope = self.range_scope_label(from_m, to_m)
 
         for cat, widgets in self.losses_card_widgets.items():
-            summary = self.get_box_loss_summary(cat, month=month)
+            summary = self.get_box_loss_summary(cat, month=from_m, to_month=to_m)
             # العنوان داخل كل قسم، والرقم وحده هنا (التفصيل في كشف حساب الصندوق)
             for key in ("current", "loss", "recovered", "net"):
                 widgets[key].configure(text=f"{summary[key]:.2f}")
@@ -20650,9 +20789,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
         y = min(y - 13, logo_bottom) - 9 * mm
 
-        # الفترة نفسها المعروضة في الشاشة (شريط البحث) — أو «الكل»
-        month = self.selected_losses_period()
-        scope = "أرقام كل الفترات" if month == self.LOSSES_ALL else f"أرقام فترة {month}"
+        # النطاق نفسه المعروض في الشاشة («من/إلى»)
+        from_m, to_m = self.selected_losses_range()
+        scope = self.range_scope_label(from_m, to_m)
 
         txt(c, PW / 2, y, "شاشة الخسائر - إقفال صناديق الخياس", size=17, bold=True, align="center", color=border_color)
         y -= 8 * mm
@@ -20678,34 +20817,40 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             txt(c, cx0 + card_w / 2, cy0 - 8 * mm, title,
                 size=12 if len(title) <= 22 else 10 if len(title) <= 26 else 8.5,
                 bold=True, align="center", color=border_color)
-            sm = self.get_box_loss_summary(cat, month=month)
+            sm = self.get_box_loss_summary(cat, month=from_m, to_month=to_m)
             for k, (label, key) in enumerate((("الفاقد الحالي", "current"), (self.get_box_loss_account(cat), "loss"),
                                               (self.get_box_recovery_name(cat), "recovered"), ("الصافي", "net"))):
                 txt(c, cx0 + card_w / 2, cy0 - (15 + 6 * k) * mm, f"{label}: {sm[key]:.2f}",
                     size=10, bold=(key == "net"), align="center")
 
-        # ====== تفصيل الفترات لكل صندوق: جدول بكل فترة فيها حركة، والإجمالي = «الكل» ======
+        # ====== تفصيل الفترات لكل صندوق: كل فترة في النطاق فيها حركة، والإجمالي = أرقام البطاقة ======
         y -= -(-len(box_defs) // n_cols) * (card_h + gap) + 2 * mm
-        self._draw_losses_breakdown(c, y, box_defs, month, txt, border_color)
+        self._draw_losses_breakdown(c, y, box_defs, (from_m, to_m), txt, border_color)
         c.save()
         self._open_file(out_path)
 
-    def losses_period_breakdown(self, cat, month=None):
-        """تفصيل فترات صندوق خياس (لطباعة شاشة الخسائر) بحسب الاختيار في الشاشة:
-        فترة بعينها ← سطرها وحده (بلا إجمالي)؛ «الكل» ← [(الفترة، أقسامها الأربعة)] من الأقدم —
-        بلا الفترات الخالية — ثم الإجمالي = أرقام «الكل» (ومجموع الفترات يساويه)"""
-        if month and month != self.LOSSES_ALL:
+    def losses_period_breakdown(self, cat, month=None, to_month=None):
+        """تفصيل فترات صندوق خياس (لطباعة شاشة الخسائر) بحسب النطاق المختار في الشاشة:
+        فترة واحدة ← سطرها وحده (بلا إجمالي)؛ من … إلى … (أو «الكل» LOSSES_ALL) ← [(الفترة، أقسامها
+        الأربعة)] لكل فترة في النطاق من الأقدم — بلا الفترات الخالية — ثم الإجمالي = أرقام النطاق
+        (ومجموع الفترات يساويه)"""
+        if month and month != self.LOSSES_ALL and (not to_month or to_month == month):
             return [(month, self.get_box_loss_summary(cat, month=month))], None
+        if month and month != self.LOSSES_ALL:
+            months, total = (self.periods_in_range(month, to_month),
+                             self.get_box_loss_summary(cat, month=month, to_month=to_month))
+        else:
+            months, total = sorted(self.get_recorded_periods()), self.get_box_loss_summary(cat, month=self.LOSSES_ALL)
         rows = []
-        for m in sorted(self.get_recorded_periods()):
+        for m in months:
             sm = self.get_box_loss_summary(cat, month=m)
             if any(abs(v) >= 0.005 for v in sm.values()):
                 rows.append((m, sm))
-        return rows, self.get_box_loss_summary(cat, month=self.LOSSES_ALL)
+        return rows, total
 
     def _draw_losses_breakdown(self, c, y, box_defs, selected, txt, border_color):
-        """جداول التفصيل في طباعة شاشة الخسائر بحسب الاختيار في الشاشة: الفترة المختارة وحدها،
-        أو كل الفترات وإجماليها مع «الكل» — صفحات جديدة عند الحاجة"""
+        """جداول التفصيل في طباعة شاشة الخسائر بحسب النطاق في الشاشة (selected = (من، إلى)):
+        الفترة المختارة وحدها، أو فترات النطاق وإجماليها — صفحات جديدة عند الحاجة"""
         from reportlab.lib.colors import Color
         PW, PH = A4
         M = 10 * mm
@@ -20713,8 +20858,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ratios = (1.45, 1.2, 1.4, 1.4, 1.1)             # من اليمين: الفترة (وعنوان الإجمالي)، الحالي، الفاقد، المسترجع، الصافي
         widths = [table_w * r / sum(ratios) for r in ratios]
         head_fill, total_fill = Color(0.97, 0.92, 0.92), Color(0.93, 0.93, 0.93)
-        all_periods = selected == self.LOSSES_ALL
-        heading = "تفصيل الفترات لكل صندوق" if all_periods else "تفصيل الفترة المختارة لكل صندوق"
+        from_m, to_m = selected
+        single = from_m == to_m
+        all_periods = not single and self.range_covers_all(from_m, to_m)
+        heading = "تفصيل الفترة المختارة لكل صندوق" if single else "تفصيل الفترات لكل صندوق"
+        total_label = "الإجمالي (كل الفترات)" if all_periods else f"الإجمالي ({from_m} إلى {to_m})"
         row_h, head_h = 6.6 * mm, 7.4 * mm
 
         def new_page(title):
@@ -20754,7 +20902,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             y -= 9 * mm
 
         for cat, disp in box_defs:
-            rows, total = self.losses_period_breakdown(cat, selected)
+            rows, total = self.losses_period_breakdown(cat, from_m, to_m)
             head = ["الفترة", "الفاقد الحالي", self.get_box_loss_account(cat), self.get_box_recovery_name(cat), "الصافي"]
             title = f"صندوق خياس {disp}"
             if y - (7 * mm + head_h + 2 * row_h) < M:
@@ -20762,7 +20910,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             txt(c, PW - M, y - 4.5 * mm, title, size=11.5, bold=True, align="right", color=border_color)
             y = draw_row(y - 7 * mm, head, head_h, fill=head_fill)
             if not rows:
-                y = draw_row(y, ["لا حركات في أي فترة", "", "", "", ""], row_h)
+                y = draw_row(y, ["لا حركات في هذه الفترات", "", "", "", ""], row_h)
             for m, sm in rows:
                 if y - 2 * row_h < M:
                     y = new_page("شاشة الخسائر — تفصيل الفترات (تابع)")
@@ -20770,9 +20918,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         color=border_color)
                     y = draw_row(y - 7 * mm, head, head_h, fill=head_fill)
                 values = [m] + [f"{sm[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
-                y = draw_row(y, values, row_h, bold=not all_periods)
+                y = draw_row(y, values, row_h, bold=single)
             if total is not None:
-                values = ["الإجمالي (كل الفترات)"] + [f"{total[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
+                values = [total_label] + [f"{total[k]:.2f}" for k in ("current", "loss", "recovered", "net")]
                 y = draw_row(y, values, row_h + 0.6 * mm, fill=total_fill, bold=True)
             y -= 5 * mm
         c.showPage()
@@ -20841,7 +20989,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showinfo(
                 "لا يوجد",
                 "لا توجد صناديق خياس مضافة يمكن حذفها.\n\n"
-                "الصناديق الأساسية (الكاستنج، التلميع، التلميع/البف، خياس الطقوم) "
+                f"الصناديق الأساسية ({'، '.join(self.get_display_label(c) for c in self.get_all_stage_categories()[:4])}) "
                 "مرتبطة بمنطق النظام ولا يمكن حذفها.")
             return
 

@@ -107,6 +107,8 @@ print("✔ فاتورة المبيعات تبقى في فترتها عند تع�
 
 class Rec:
     """تجربة سلوكية: post_sale_rows يختم الفترة الممرَّرة على كل الحركات"""
+    POLISH2_SALE_BAYAN = "خياس بوليش 2"
+
     def __init__(self):
         self.invoices, self.invoice_counter, self.saved = {}, 0, []
 

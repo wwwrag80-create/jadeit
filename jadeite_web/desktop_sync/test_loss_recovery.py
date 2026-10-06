@@ -54,16 +54,17 @@ METHODS = [
     # الأرقام
     "journal_partner_index", "journal_partner", "get_box_loss_total", "get_box_recovered_total",
     "get_box_loss_summary", "get_current_unclosed_khayas", "get_box_khayas_cumulative", "get_recorded_periods",
-    # شاشة الخسائر: الفترة المختارة أو «الكل»
-    "losses_period_options", "selected_losses_period", "losses_close_period", "losses_statement_range",
-    "losses_period_breakdown",
+    # شاشة الخسائر: «من/إلى» بالقوائم (فترة، أو نطاق، أو «الكل»)
+    "losses_period_options", "selected_losses_range", "set_losses_range", "losses_show_all",
+    "reset_losses_period", "losses_close_period", "losses_statement_range", "losses_period_breakdown",
+    "combo_range", "set_combo_range", "periods_in_range", "range_covers_all", "range_scope_label",
     "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
     "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "_undo_note_row", "invoice_from_row",
     # الإقفال والبيانات القديمة
     "close_khayas_box", "close_split_khayas_box", "_post_closing_entry", "neutralize_auto_recovery_closings",
-    "migrate_casting_returns",
+    "migrate_casting_returns", "migrate_polish2_names",
     # الوارد والقيد اليومي
     "submit_inbound", "submit_journal_entry",
     # الكاستنج
@@ -81,7 +82,8 @@ METHODS = [
 ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
          "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME",
-         "LASER_NAME", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL"]
+         "LASER_NAME", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL",
+         "POLISH2_OLD_ACCOUNTS", "POLISH2_OLD_BAYAN", "POLISH2_SALE_BAYAN", "SALE_NOTE_SEP"]
 
 EXTRA = '''
 def check_edit_permission(self): return True
@@ -255,9 +257,9 @@ def summary(app, cat, month=None):
     return (s["current"], t["loss"], t["recovered"], t["net"])
 
 
-def period_summary(app, cat, month):
-    """البطاقة كما تظهر عند اختيار فترة (أو «الكل»): كل الأقسام الأربعة لها"""
-    s = app.get_box_loss_summary(cat, month=month)
+def period_summary(app, cat, month, to_month=None):
+    """البطاقة كما تظهر عند اختيار فترة أو نطاق «من/إلى» (أو «الكل»): كل الأقسام الأربعة لها"""
+    s = app.get_box_loss_summary(cat, month=month, to_month=to_month)
     return (s["current"], s["loss"], s["recovered"], s["net"])
 
 
@@ -470,23 +472,44 @@ assert period_summary(g, CAST, M8)[0] == 6.0 and period_summary(g, CAST, M9)[0] 
 assert period_summary(g, CAST, g.LOSSES_ALL) == (8.0, 0.0, 0.0, 0.0), period_summary(g, CAST, g.LOSSES_ALL)
 print("✔ «الكل» للفاقد الحالي = غير المُقفل في كل الفترات (6 من فترة ٨ + 2 من فترة ٩ = 8)")
 
-assert g.losses_period_options() == [g.LOSSES_ALL, M9, M8], g.losses_period_options()
-g.combo_losses_period, g.losses_from_month, g.losses_to_month = W(M8), W(""), W("")
-assert (g.selected_losses_period(), g.losses_close_period(), g.losses_statement_range()) == (M8, M8, (M8, M8))
-g.combo_losses_period = W(g.LOSSES_ALL)
-assert (g.selected_losses_period(), g.losses_close_period(), g.losses_statement_range()) == \
-    (g.LOSSES_ALL, M9, ("", ""))
-g.losses_from_month, g.losses_to_month = W("2026-07"), W("2026-08")
-assert g.losses_statement_range() == ("2026-07", "2026-08")
-print("✔ القائمة: «الكل» ثم الفترات (الأحدث أولاً)؛ الكشف من البطاقة بفترتها (و«الكل» كل الفترات، و«من/إلى» إن كُتبا)")
-print("✔ زر الإقفال يُقفل الفترة المعروضة في البطاقة؛ ومع «الكل» الفترة الحالية (لا إقفال لكل الفترات دفعة واحدة)")
+assert g.losses_period_options() == [M9, M8], g.losses_period_options()
+g.combo_losses_from, g.combo_losses_to = W(M8), W(M8)
+assert (g.selected_losses_range(), g.losses_close_period(), g.losses_statement_range()) == ((M8, M8), M8, (M8, M8))
+g.combo_losses_from, g.combo_losses_to = W(M9), W(M8)             # «من» بعد «إلى» ← يُقلبان
+assert (g.selected_losses_range(), g.losses_close_period(), g.losses_statement_range()) == ((M8, M9), M9, ("", ""))
+assert g.range_scope_label(M8, M9) == f"أرقام كل الفترات ({M8} إلى {M9})"
+g.reset_losses_period()
+assert (g.combo_losses_from.v, g.combo_losses_to.v) == (M9, M9)
+g.losses_show_all()
+assert (g.combo_losses_from.v, g.combo_losses_to.v) == (M8, M9) and g.range_scope_label(M9, M9) == f"أرقام فترة {M9}"
+print("✔ «من/إلى» قائمتان بالفترات المسجّلة (الأحدث أولاً) لا كتابة؛ «من» بعد «إلى» يُقلبان؛ «الكل» من أقدم فترة "
+      "لأحدثها؛ «الفترة الحالية ↺» تعيدها")
+print("✔ الكشف من البطاقة بالنطاق نفسه (و«الكل» بلا حدّ)؛ زر الإقفال يُقفل الفترة المختارة، ومع «الكل» الفترة الحالية")
+
+# نطاق من فترة إلى فترة = مجموع فتراته، والنطاق كله = «الكل»
+assert a.periods_in_range(M8, M7) == [M7, M8]
+assert period_summary(a, CAST, M7, M8) == (0.0, 11.0, 0.0, 11.0), period_summary(a, CAST, M7, M8)
+assert period_summary(a, CAST, M8, M9) == (0.0, 28.0, 8.0, 20.0), period_summary(a, CAST, M8, M9)
+assert period_summary(a, CAST, M9, M7) == period_summary(a, CAST, M7, M9)
+whole = a.get_recorded_periods()
+assert period_summary(a, CAST, whole[-1], whole[0]) == period_summary(a, CAST, a.LOSSES_ALL)
+a.combo_losses_from, a.combo_losses_to = W(M7), W(M8)
+if not a.range_covers_all(M7, M8):
+    assert a.losses_close_period() == M8 and a.losses_statement_range() == (M7, M8)
+    assert a.range_scope_label(M7, M8) == f"أرقام الفترات من {M7} إلى {M8}"
+print("✔ من فترة ٧ إلى ٨: فاقد 11 (5 + 6)، ومن ٨ إلى ٩: فاقد 28 ومسترجع 8 وصافي 20 — مجموع فتراته؛ والنطاق كله = «الكل»")
 
 tab = seg("refresh_losses_tab")
-assert "self.losses_period_options()" in tab and "self.selected_losses_period()" in tab and '"scope"' in tab
+assert "self.losses_period_options()" in tab and "self.selected_losses_range()" in tab and '"scope"' in tab
+assert "month=from_m, to_month=to_m" in tab and "self.range_scope_label(from_m, to_m)" in tab
 assert "self.losses_close_period()" in seg("refresh_losses_cards")
 assert "لكل الفترات" not in seg("refresh_losses_cards")
-assert "self.selected_losses_period()" in seg("print_losses_screen")
-print("✔ البطاقة تذكر نطاقها («أرقام فترة …» أو «أرقام كل الفترات»)، والطباعة بالاختيار نفسه")
+build = seg("build_losses_tab")
+assert "self.combo_losses_from = self.make_month_combo(" in build and "self.combo_losses_to = self.make_month_combo(" in build
+assert "CTkEntry" not in build and "YYYY-MM" not in build and "self.losses_show_all" in build
+assert 'state="readonly"' in seg("make_month_combo")
+assert "self.selected_losses_range()" in seg("print_losses_screen")
+print("✔ البطاقة تذكر نطاقها («أرقام فترة …» أو «من … إلى …» أو «كل الفترات»)، والطباعة بالنطاق نفسه — ولا خانة تاريخ تُكتب")
 
 # الطباعة: تفصيل الفترات لكل صندوق
 rows, total = a.losses_period_breakdown(CAST)
@@ -500,16 +523,22 @@ assert [m for m, _ in rows_g] == [M8, M9] and total_g["current"] == 8.0
 rows_e, total_e = a.losses_period_breakdown("التلميع")
 assert rows_e == [] and all(v == 0.0 for v in total_e.values())
 pr = seg("print_losses_screen")
-assert "self._draw_losses_breakdown(" in pr
+assert "self._draw_losses_breakdown(c, y, box_defs, (from_m, to_m)" in pr
 br = seg("_draw_losses_breakdown")
-assert "self.losses_period_breakdown(cat, selected)" in br and '"الإجمالي (كل الفترات)"' in br and "new_page(" in br
-assert "if total is not None:" in br and '"لا حركات في أي فترة"' in br
+assert "self.losses_period_breakdown(cat, from_m, to_m)" in br and '"الإجمالي (كل الفترات)"' in br and "new_page(" in br
+assert 'f"الإجمالي ({from_m} إلى {to_m})"' in br
+assert "if total is not None:" in br and '"لا حركات في هذه الفترات"' in br
 print("✔ الطباعة بـ«الكل»: لكل صندوق جدول بفتراته (الأقدم أولاً، بلا الفترات الخالية): الحالي والفاقد والمسترجع والصافي")
 print("  وإجماليه = «الكل» = مجموع الفترات (الكاستنج: 5 + 6 + 22 = 33)، وصفحات جديدة عند الحاجة")
+
+rng, rng_total = a.losses_period_breakdown(CAST, M7, M8)
+assert [m for m, _ in rng] == [M7, M8] and (rng_total["loss"], rng_total["net"]) == (11.0, 11.0), rng_total
+print("✔ الطباعة بنطاق (فترة ٧ إلى ٨): فتراته وحدها وإجماليها 11 — مطابق للبطاقة")
 
 one, none_total = a.losses_period_breakdown(CAST, M8)
 assert none_total is None and [(m, (sm["current"], sm["loss"], sm["recovered"], sm["net"])) for m, sm in one] == [
     (M8, (0.0, 6.0, 0.0, 6.0))], one
+assert a.losses_period_breakdown(CAST, M8, M8) == (one, None)
 assert a.losses_period_breakdown(CAST, a.LOSSES_ALL) == a.losses_period_breakdown(CAST)
 print("✔ الطباعة بفترة مختارة: جدول كل صندوق بتلك الفترة وحدها (فترة ٨: فاقد 6) — بلا الفترات الأخرى ولا إجمالي")
 
@@ -672,8 +701,10 @@ assert f.get_display_label(P1) == "بوليش 1"
 # أسماء الحسابات ثابتة لا تتبع اسم العرض: الحركات القديمة تبقى على حساباتها
 assert (f.get_box_account_name(P1), f.get_box_loss_account(P1), f.get_box_recovery_name(P1)) == \
        ("البوليش", "فاقد البوليش", "مسترجع البوليش")
-assert f.get_box_loss_account("خياس الطقوم") == "فاقد خياس التلميع النهائي"
-print("✔ القسم يُعرض «بوليش 1»، وحساباته كما هي: «البوليش» و«فاقد البوليش» و«مسترجع البوليش»")
+assert (f.get_display_label("خياس الطقوم"), f.get_box_account_name("خياس الطقوم"), f.get_box_loss_account("خياس الطقوم"),
+        f.get_box_recovery_name("خياس الطقوم")) == ("بوليش 2", "بوليش 2", "فاقد بوليش 2", "مسترجع بوليش 2")
+print("✔ القسم يُعرض «بوليش 1»، وحساباته كما هي: «البوليش» و«فاقد البوليش» و«مسترجع البوليش»؛ "
+      "و«خياس التلميع النهائي» صار «بوليش 2» وحساباته «بوليش 2» و«فاقد بوليش 2» و«مسترجع بوليش 2»")
 
 polish1(f, M9, "41", sarf="20", qabd="18", laser="0.5", note="طقم")
 got = sorted((i["الاسم"], i["النوع"], i["الوزن"], i["row_number"], i["البيان"]) for i in f.invoices.values())
@@ -746,6 +777,69 @@ assert '("laser", "الليزر")' in seg("build_polish_buff_ui")
 for fn in ("submit_polish_op", "submit_polish_buff_op"):
     assert "_name.get()" not in seg(fn), fn
 print("✔ التلميع وبوليش 1 بلا خانة اسم: الحركات باسم القسم نفسه")
+
+# ═══ ١٢) «خياس التلميع النهائي» ← «بوليش 2»: الحركات القديمة تنتقل لحساباتها الجديدة ═══
+B2 = "خياس الطقوم"
+
+
+def polish2_data(app):
+    """بيانات بأسماء الإصدار 1.61: خياس مبيعات، إقفال، رصيد افتتاحي، مسترجع، وقيد على مسترجعه"""
+    app.current_display_month = M9
+    ids = {"sale": add(app, "عميل أ", "خياس طقوم", 4.0, M8, "خياس التلميع النهائي — طلبية"),
+           "sale_plain": add(app, "عميل ب", "خياس طقوم", 1.0, M8, "خياس التلميع النهائي"),
+           "polish_memo": add(app, "عميل أ", "خياس طقوم", 0.7, M8, "خياس بوليش — طلبية")}
+    ref = f"JE-{app.invoice_counter + 1}"
+    ids["close_loss"] = add(app, "فاقد خياس التلميع النهائي", "قيد يومي مدين", 5.0, M8, "إقفال فاقد فترة " + M8, ref=ref)
+    ids["close_box"] = add(app, "خياس الطقوم", "قيد يومي دائن", 5.0, M8, "إقفال فاقد فترة " + M8, ref=ref)
+    ref = f"JE-{app.invoice_counter + 1}"
+    add(app, "فاقد خياس التلميع النهائي", "قيد يومي مدين", 3.0, M9, ref=ref)
+    add(app, "رصيد افتتاحي", "قيد يومي دائن", 3.0, M9, ref=ref)
+    ids["rec"] = add(app, "مسترجع خياس الطقوم", "وارد ذهب (عيار 18)", 1.5, M9, ref="V-9")
+    ids["other"] = add(app, "عميل ج", "مبيعات ذهب", 9.0, M9, "خياس التلميع النهائي — اسم في بيان مبيعات")
+    return ids
+
+
+q = new_app()
+ids = polish2_data(q)
+# قبل النقل: الحركات بأسمائها القديمة لا تصل لحسابات «بوليش 2»
+assert q.get_box_loss_total(B2) == 0.0 and q.get_box_recovered_total(B2) == 0.0
+assert q.migrate_polish2_names() == 6        # خياسا مبيعات + إقفال (طرفان) + افتتاحي + مسترجع
+names = {k: (q.invoices[i]["الاسم"], q.invoices[i]["البيان"]) for k, i in ids.items()}
+assert names["sale"] == ("عميل أ", "خياس بوليش 2 — طلبية") and names["sale_plain"] == ("عميل ب", "خياس بوليش 2")
+assert names["polish_memo"] == ("عميل أ", "خياس بوليش — طلبية")              # خياس البوليش (بوليش 1) لا يُمسّ
+assert names["close_loss"][0] == "فاقد بوليش 2" and names["close_box"][0] == "بوليش 2"
+assert names["rec"][0] == "مسترجع بوليش 2"
+assert names["other"] == ("عميل ج", "خياس التلميع النهائي — اسم في بيان مبيعات")  # ليست حركة خياس
+assert summary(q, B2, M9)[1:] == (8.0, 1.5, 6.5), summary(q, B2, M9)
+assert period_summary(q, B2, M8)[1] == 5.0 and period_summary(q, B2, M9)[1:] == (3.0, 1.5, 1.5)
+print("✔ النقل عند الفتح: «خياس الطقوم» ← «بوليش 2»، «فاقد خياس التلميع النهائي» ← «فاقد بوليش 2»، "
+      "«مسترجع خياس الطقوم» ← «مسترجع بوليش 2»")
+print("  فيعود الإقفال (5) والافتتاحي (3) والمسترجع (1.5) لحسابات بوليش 2: فاقد 8، مسترجع 1.5، صافي 6.5")
+print("✔ بيان خياس المبيعات «خياس التلميع النهائي — طلبية» ← «خياس بوليش 2 — طلبية»؛ وخياس البوليش وبيان المبيعات كما هما")
+
+with sqlite3.connect(q.db_path) as conn:
+    stored = dict(conn.execute("select invoice_id, name || '|' || note from invoices").fetchall())
+assert stored[ids["close_box"]] == "بوليش 2|إقفال فاقد فترة " + M8 and stored[ids["rec"]].startswith("مسترجع بوليش 2|")
+assert stored[ids["sale"]] == "عميل أ|خياس بوليش 2 — طلبية"
+assert not any("خياس الطقوم" in v or "فاقد خياس التلميع" in v for v in stored.values())
+assert q.migrate_polish2_names() == 0
+print("✔ نسخة العميل تحفظ النقل في قاعدتها (فيُرفع للسحابة)، وتكراره لا يغيّر شيئاً")
+
+r = new_app(admin=True)
+ids_r = polish2_data(r)
+with sqlite3.connect(r.db_path) as conn:
+    before_db = conn.execute("select name, note from invoices order by invoice_id").fetchall()
+assert r.migrate_polish2_names() == 6 and r.invoices[ids_r["close_box"]]["الاسم"] == "بوليش 2"
+with sqlite3.connect(r.db_path) as conn:
+    assert conn.execute("select name, note from invoices order by invoice_id").fetchall() == before_db
+assert summary(r, B2, M9)[1:] == summary(q, B2, M9)[1:]
+ns["IS_ADMIN_BUILD"] = False
+print("✔ نسخة المدير تنقل في الذاكرة وحدها (مرآته لا تُكتب) — فيرى أرقام العميل نفسها")
+
+load = seg("load_data_from_db")
+assert load.index("self.migrate_polish2_names()") < load.index("self.neutralize_auto_recovery_closings()")
+assert 'BOX_DISPLAY_OVERRIDES = {"خياس الطقوم": "بوليش 2"}' in src and "خياس التلميع النهائي" not in seg("get_box_account_name")
+print("✔ النقل أول خطوات الفتح (قبل ما يتعرّف على الحسابات بأسمائها)")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n✅ نموذج الفاقد والمسترجع سليم")

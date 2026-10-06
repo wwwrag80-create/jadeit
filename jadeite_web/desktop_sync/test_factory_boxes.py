@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-صناديق المصنع (الدفعة ٢٥): اختيار الشهر يعرض أرقامه وحده، و«الكل» يعرض كل الأشهر —
-بالمعادلات نفسها التي كانت (تُقارن هنا بنسخة حرفية من الحساب القديم «من شهر/إلى شهر»).
+صناديق المصنع: اختيار شهر يعرض أرقامه وحده (الدفعة ٢٥)، و«من شهر/إلى شهر» بقائمتين — بلا كتابة
+يدوية — يعرض أرقام الأشهر المختارة، و«الكل» كل الأشهر (الدفعة ٢٨) — بالمعادلات نفسها التي كانت
+(تُقارن هنا بنسخة حرفية من الحساب القديم «من شهر/إلى شهر»).
 """
 import ast, io, random, sys, textwrap
 
@@ -24,8 +25,10 @@ def body(name):
 
 ns = {}
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
-    "LOSSES_ALL", "inv_period", "get_recorded_periods", "factory_period_options", "selected_factory_period",
-    "factory_period_label", "factory_boxes_totals")), ns)
+    "LOSSES_ALL", "inv_period", "get_recorded_periods", "factory_period_options", "selected_factory_range",
+    "factory_range_label", "factory_boxes_totals", "combo_range", "set_combo_range", "periods_in_range",
+    "range_covers_all", "range_scope_label", "set_factory_range", "factory_show_all",
+    "reset_factory_boxes_period", "statement_month_options", "statement_range", "set_statement_range")), ns)
 App = ns["App"]
 
 
@@ -97,31 +100,75 @@ print(f"✔ «الكل»: كل الأشهر (مبيعات الذهب {everything
 assert app.factory_boxes_totals() == app.factory_boxes_totals("2026-09")
 print("✔ بلا اختيار: الفترة المعروضة كما كان")
 
-# ═══ ٣) القائمة والاختيار ═══
-assert app.factory_period_options() == ["الكل", "2026-09", "2026-08", "2026-07"]
+# ═══ ٣) «من شهر/إلى شهر» = الحساب القديم بالنطاق نفسه ═══
+for lo, hi in (("2026-07", "2026-08"), ("2026-08", "2026-09")):
+    assert app.factory_boxes_totals(lo, hi) == old_totals(app.invoices, lo, hi), (lo, hi)
+    assert app.factory_boxes_totals(hi, lo) == app.factory_boxes_totals(lo, hi)     # «من» بعد «إلى»
+assert app.factory_boxes_totals("2026-07", "2026-09") == everything                # النطاق كله = «الكل»
+assert app.factory_boxes_totals("2026-08", "2026-08") == app.factory_boxes_totals("2026-08")
+print("✔ من شهر إلى شهر: أرقام الأشهر المختارة = الحساب السابق بالنطاق نفسه، والمقلوب يُصحَّح، "
+      "والنطاق الكامل = «الكل»")
+
+# ═══ ٤) القائمتان والاختيار (لا كتابة يدوية) ═══
+assert app.factory_period_options() == ["2026-09", "2026-08", "2026-07"]
 
 
 class Combo:
-    def __init__(self, v): self.v = v
+    def __init__(self, v): self.v, self.values = v, None
     def get(self): return self.v
+    def set(self, v): self.v = v
+    def configure(self, values=None): self.values = values
 
 
-app.combo_factory_period = Combo("الكل")
-assert app.selected_factory_period() == "الكل" and app.factory_period_label("الكل") == "أرقام كل الأشهر"
-app.combo_factory_period = Combo("2026-08")
-assert app.selected_factory_period() == "2026-08" and app.factory_period_label("2026-08") == "أرقام شهر 2026-08"
-print("✔ القائمة: «الكل» ثم الأشهر المسجّلة (الأحدث أولاً)، والسطر يذكر النطاق المعروض")
+app.refreshes = 0
+app.refresh_factory_boxes_table = lambda: setattr(app, "refreshes", app.refreshes + 1)
+app.combo_factory_from, app.combo_factory_to = Combo("2026-09"), Combo("2026-07")
+assert app.selected_factory_range() == ("2026-07", "2026-09")
+assert app.factory_range_label(*app.selected_factory_range()) == "أرقام كل الأشهر (2026-07 إلى 2026-09)"
+app.combo_factory_from.v = app.combo_factory_to.v = "2026-08"
+assert app.factory_range_label(*app.selected_factory_range()) == "أرقام شهر 2026-08"
+app.combo_factory_from.v = "2026-07"
+assert app.factory_range_label(*app.selected_factory_range()) == "أرقام الأشهر من 2026-07 إلى 2026-08"
+app.factory_show_all()
+assert (app.combo_factory_from.v, app.combo_factory_to.v) == ("2026-07", "2026-09") and app.refreshes == 1
+assert app.combo_factory_from.values == ["2026-09", "2026-08", "2026-07"]
+app.reset_factory_boxes_period()
+assert app.selected_factory_range() == ("2026-09", "2026-09") and app.refreshes == 2
+print("✔ القائمتان: الأشهر المسجّلة (الأحدث أولاً)، «الكل» من أقدمها إلى أحدثها، «الشهر الحالي ↺» يعيده، "
+      "والسطر يذكر النطاق المعروض")
 
-# ═══ ٤) الشاشة والطباعة والكشف بالاختيار نفسه ═══
+# ═══ ٥) الشاشة والطباعة والكشف بالنطاق نفسه ═══
 build = body("build_factory_boxes_tab")
-assert "self.combo_factory_period = ctk.CTkComboBox(" in build and "factory_from_month" not in src
-assert 'state="readonly"' in build and "self.refresh_factory_boxes_table()" in build
+assert "self.combo_factory_from = self.make_month_combo(" in build and "self.combo_factory_to = self.make_month_combo(" in build
+assert "CTkEntry" not in build and "combo_factory_period" not in src and "factory_from_month" not in src
+assert "self.factory_show_all" in build and "self.reset_factory_boxes_period" in build
+mk = body("make_month_combo")
+assert 'state="readonly"' in mk and "command=lambda _v: on_change()" in mk
 ref = body("refresh_factory_boxes_table")
-assert "self.factory_boxes_totals(month)" in ref and "self.selected_factory_period()" in ref
+assert "self.factory_boxes_totals(from_m, to_m)" in ref and "self.selected_factory_range()" in ref
 pr = body("print_factory_boxes_screen")
-assert "self.factory_boxes_totals(month)" in pr and "self.factory_period_label(month)" in pr
+assert "self.factory_boxes_totals(from_m, to_m)" in pr and "self.factory_range_label(from_m, to_m)" in pr
 st = body("open_factory_box_statement")
-assert "self.selected_factory_period()" in st and "kh_from_month" in st
-print("✔ الشاشة والطباعة من الحساب نفسه وبالشهر نفسه، و«عرض كشف الحساب» بالشهر المختار («الكل» = كل الأشهر)")
+assert "self.selected_factory_range()" in st and "self.set_statement_range(from_m, to_m)" in st
+print("✔ الشاشة والطباعة من الحساب نفسه وبالنطاق نفسه، و«عرض كشف الحساب» بالأشهر المختارة («الكل» = بلا حدّ)")
 
-print("\n✅ صناديق المصنع: شهر تختاره أو «الكل» — بالمعادلات نفسها")
+# ═══ ٦) كشف الحساب: «من شهر/إلى شهر» قائمتان أيضاً، و«الكل» = بلا حدّ ═══
+assert app.statement_month_options() == ["الكل", "2026-09", "2026-08", "2026-07"]
+app.kh_from_month, app.kh_to_month = Combo("x"), Combo("x")
+app.set_statement_range("", "")
+assert (app.kh_from_month.v, app.kh_to_month.v) == ("الكل", "الكل") and app.statement_range() == ("", "")
+assert app.kh_from_month.values == app.statement_month_options()
+app.set_statement_range("2026-09", "2026-07")
+assert app.statement_range() == ("2026-07", "2026-09")                       # المقلوب يُصحَّح
+app.kh_to_month.v = "الكل"
+assert app.statement_range() == ("2026-09", "")                              # من شهر ٩ بلا نهاية
+stmt = body("build_account_statement_tab")
+assert "self.kh_from_month = self.make_month_combo(" in stmt and "self.kh_to_month = self.make_month_combo(" in stmt
+assert "CTkEntry" not in stmt and "YYYY-MM" not in stmt and "self.refresh_account_statement" in stmt
+for fn in ("refresh_account_statement", "print_account_statement"):
+    assert "from_m, to_m = self.statement_range()" in body(fn) and "kh_from_month.get()" not in body(fn), fn
+assert "kh_from_month.insert(" not in src and "kh_from_month.delete(" not in src
+print("✔ كشف الحساب: «من شهر/إلى شهر» قائمتان («الكل» ثم الفترات) — الاختيار يحدّث الكشف، و«الكل» بلا حدّ، "
+      "والشاشات تفتحه بنطاقها")
+
+print("\n✅ صناديق المصنع: شهر أو من شهر إلى شهر أو «الكل» — بالاختيار لا بالكتابة، وبالمعادلات نفسها")

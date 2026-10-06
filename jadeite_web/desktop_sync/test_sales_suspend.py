@@ -64,7 +64,7 @@ METHODS = [
     # تذاكر أرقام التشغيل مع الفاتورة (الدفعة ١٧)
     "sale_tickets_with_invoice",
 ]
-ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
+ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 
 EXTRA = '''
@@ -212,13 +212,14 @@ def db_count(app, sql, *args):
 a = new_app()
 assert a.sale_bayan("مبيعات", "طلبية العيد") == "مبيعات — طلبية العيد"
 assert a.sale_bayan("مبيعات", "  ") == "مبيعات" and a.sale_note_of("مبيعات") == ""
-assert a.sale_note_of("خياس التلميع النهائي — طلبية — العيد") == "طلبية — العيد"
+assert a.sale_note_of("خياس بوليش 2 — طلبية — العيد") == "طلبية — العيد"
+assert a.sale_note_of("خياس التلميع النهائي — طلبية — العيد") == "طلبية — العيد"   # بيان قديم قبل نقله
 a.post_sale_rows([row("S1", gold=10, gems=1, stones=2, disc=0.6, khayas=0.5, polish=0.2)],
                  "مورد 1", "2026-09-20 10:00:00", "F-1", "طلبية العيد")
 notes = sorted(i["البيان"] for i in a.invoices.values())
 assert notes == sorted(["مبيعات — طلبية العيد", "مبيعات — طلبية العيد", "مبيعات — طلبية العيد",
                         "خياس بوليش — طلبية العيد", "صافي الطقم — طلبية العيد",
-                        "خياس التلميع النهائي — طلبية العيد"]), notes
+                        "خياس بوليش 2 — طلبية العيد"]), notes
 assert db_count(a, "select count(*) from invoices where note like '% — طلبية العيد'") == len(notes)
 print("✔ البيان يُحفظ مع كل حركة من حركات الفاتورة بعد دورها («مبيعات — طلبية العيد»)")
 
