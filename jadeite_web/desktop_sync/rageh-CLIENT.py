@@ -128,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.64.0"
+APP_VERSION = "1.64.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -18908,21 +18908,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.__dict__["_pdf_logo_cache"] = cache
         return cache
 
-    # ارتفاع الترويسة المضغوطة (حتى الخط الذهبي) — يُحسب منه مكان الجدول
-    LETTERHEAD_H = 22.2 * mm if REPORTLAB_AVAILABLE else 0
+    # ارتفاع الترويسة (حتى الخط الذهبي) — يُحسب منه مكان الجدول
+    LETTERHEAD_H = 30.2 * mm if REPORTLAB_AVAILABLE else 0
 
     def draw_pdf_letterhead(self, c, top, margin, navy, gold):
-        """ترويسة الصفحة مضغوطة في أعلاها لتترك المساحة للجدول: بيانات المصنع بالعربية يميناً وبالإنجليزية
-        يساراً — كل سطر في مكانه بلا تداخل — والشعار في الوسط، ثم خطّان (كحلي وذهبي). يرجع أسفل الترويسة"""
+        """ترويسة الصفحة في أعلاها: بيانات المصنع بالعربية يميناً وبالإنجليزية يساراً — كل سطر في مكانه بلا
+        تداخل — والشعار كبيراً واضحاً في الوسط (٢٧ مم)، ثم خطّان (كحلي وذهبي). يرجع أسفل الترويسة"""
         from reportlab.lib.colors import Color
         PW = A4[0]
         gray = Color(0.30, 0.32, 0.38)
         for side, lines in ((PW - margin, self.LETTERHEAD_AR), (margin, self.LETTERHEAD_EN)):
             for k, line in enumerate(lines):
                 bold = k == 0
-                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 12.5 if bold else 8.5)
+                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 14 if bold else 9.5)
                 c.setFillColor(navy if bold else gray)
-                y = top - (4.6 * mm if bold else (5.8 + 4.2 * k) * mm)
+                y = top - (6 * mm if bold else (8 + 5.5 * k) * mm)
                 text = ar(line)
                 if side > PW / 2:
                     c.drawRightString(side, y, text)
@@ -18931,11 +18931,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         c.setFillColorRGB(0, 0, 0)
         logo = self.pdf_logo()
         if logo:
-            lh = 19 * mm
+            lh = 27 * mm
             lw = lh * logo[1]
             c.drawImage(logo[0], (PW - lw) / 2, top - lh, width=lw, height=lh, mask="auto",
                         preserveAspectRatio=True)
-        rule = top - 21 * mm
+        rule = top - 29 * mm
         c.saveState()
         c.setStrokeColor(navy); c.setLineWidth(1.4)
         c.line(margin, rule, PW - margin, rule)
@@ -18967,30 +18967,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]}
         return rows, totals
 
-    # صفحة A4 واحدة تتسع لهذا العدد على الأقل (مع الإجمالي والتوقيعات)، والجدول يُكمَّل حتى هذا العدد بصفوف فارغة
+    # صفحة A4 واحدة تتسع لهذا العدد على الأقل (مع الإجمالي)، والجدول يُكمَّل بصفوف فارغة حتى أسفل الورقة
     SALES_SUMMARY_MIN_ROWS = 28
 
     def sales_summary_layout(self):
-        """مقاسات صفحة فاتورة المبيعات (مم من أسفل الورقة): الترويسة مرفوعة لأعلى، والجدول يأخذ الباقي.
-        cap_last = صفوف الصفحة الأخيرة (مع الإجمالي والتوقيعات)، cap_full = صفوف الصفحة التابعة"""
+        """مقاسات صفحة فاتورة المبيعات (مم من أسفل الورقة): الترويسة في الأعلى، والجدول يأخذ الباقي حتى أسفل
+        الورقة (بلا توقيعات). cap_last = صفوف الصفحة الأخيرة (مع الإجمالي)، cap_full = صفوف الصفحة التابعة"""
         PH = A4[1]
-        L = {"side": 10 * mm, "top": 7 * mm, "head_h": 10 * mm, "row_h": 6.75 * mm, "total_h": 8 * mm,
+        L = {"side": 8 * mm, "top": 7 * mm, "head_h": 11 * mm, "row_h": 7.25 * mm, "total_h": 9 * mm,
              "band_gap": 2.5 * mm, "band_h": 13 * mm, "info_gap": 2 * mm, "info_h": 7.5 * mm,
-             "table_gap": 2.5 * mm, "sig_zone": 25 * mm, "foot_zone": 10 * mm}
+             "table_gap": 2.5 * mm, "foot_zone": 9 * mm}
         L["letter_top"] = PH - L["top"]
         L["band_top"] = L["letter_top"] - self.LETTERHEAD_H - L["band_gap"]
         L["info_top"] = L["band_top"] - L["band_h"] - L["info_gap"]
         L["table_top"] = L["info_top"] - L["info_h"] - L["table_gap"]
         body = L["table_top"] - L["head_h"]
-        L["cap_last"] = max(1, int((body - L["total_h"] - L["sig_zone"]) // L["row_h"]))
+        L["cap_last"] = max(1, int((body - L["total_h"] - L["foot_zone"]) // L["row_h"]))
         L["cap_full"] = max(1, int((body - L["foot_zone"]) // L["row_h"]))
         return L
 
     def draw_sales_summary_pages(self, c, rows_data, name, date_str):
-        """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة مرفوعة لأعلى (بيانات المصنع والشعار)،
-        ثم «فاتورة مبيعات» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول يملأ
-        الورقة — ٢٨ صفاً على الأقل في ورقة A4 واحدة بخط واضح، يُكمَّل بصفوف فارغة — وصف إجمالي لكل عمود،
-        والتوقيعات؛ وصفحات تابعة إن زادت الأطقم عن الورقة"""
+        """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة (بيانات المصنع والشعار الكبير)، ثم
+        «فاتورة مبيعات» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول يملأ الورقة
+        حتى أسفلها — ٢٨ صفاً على الأقل في ورقة A4 واحدة بخانات كبيرة وخط واضح، يُكمَّل بصفوف فارغة — وآخره
+        صف إجمالي لكل عمود (بلا توقيعات)؛ وصفحات تابعة إن زادت الأطقم عن الورقة"""
         from reportlab.lib.colors import Color
         PW, PH = A4
         L = self.sales_summary_layout()
@@ -19033,7 +19033,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         time_part = str(date_str or "")[11:16]
 
         cols = self.SALES_SUMMARY_COLS
-        ratios = (0.45, 1.0, 0.9, 0.85, 0.85, 1.05, 0.85, 0.85, 0.95, 0.95)
+        ratios = (0.4, 1.0, 0.95, 0.9, 0.9, 0.95, 0.9, 0.9, 1.0, 1.0)
         table_w = PW - 2 * M
         col_ws = [table_w * r / sum(ratios) for r in ratios]
         lefts = [PW - M - sum(col_ws[:i + 1]) for i in range(len(cols))]   # الحافة اليسرى لكل عمود
@@ -19043,7 +19043,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         head_h, row_h, total_h = L["head_h"], L["row_h"], L["total_h"]
         table_top, cap_last, cap_full = L["table_top"], L["cap_last"], L["cap_full"]
-        min_rows = min(self.SALES_SUMMARY_MIN_ROWS, cap_last)
+        fill_rows = cap_last          # الصفحة الأخيرة: الجدول يُكمَّل حتى أسفل الورقة
         pages, idx = [], 0
         while True:
             remaining = len(rows) - idx
@@ -19089,11 +19089,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             top = table_top
             box(M, top, table_w, head_h, fill=header_fill)
             for i, lbl in enumerate(cols):
-                size = fit_font_size(lbl, col_ws[i] - 2.5 * mm, 10, bold=True, min_size=6.5)
-                if size < 9 and " " in lbl:
+                size = fit_font_size(lbl, col_ws[i] - 2 * mm, 11, bold=True, min_size=6.5)
+                if size < 10 and " " in lbl:
                     # العنوان الطويل على سطرين بخط مقروء بدل تصغيره («الأحجار» / «بعد الخصم»)
                     line1, line2 = lbl.split(" ", 1)
-                    size = min(fit_font_size(part, col_ws[i] - 2.5 * mm, 10, bold=True, min_size=6.5)
+                    size = min(fit_font_size(part, col_ws[i] - 2 * mm, 11, bold=True, min_size=6.5)
                                for part in (line1, line2))
                     mid = top - head_h / 2
                     txt(cell_cx(i), mid + 0.6 * mm, line1, size=size, bold=True, color=navy, align="center")
@@ -19104,8 +19104,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     align="center")
             y = top - head_h
             page_rows = rows[first:last]
-            # الصفحة الأخيرة: الجدول يُكمَّل بصفوف فارغة حتى ٢٨ صفاً فيملأ الورقة كالدفتر الورقي
-            n_lines = max(len(page_rows), min_rows) if is_last else len(page_rows)
+            # الصفحة الأخيرة: الجدول يُكمَّل بصفوف فارغة حتى أسفل الورقة كالدفتر الورقي
+            n_lines = max(len(page_rows), fill_rows) if is_last else len(page_rows)
             for r_i in range(n_lines):
                 box(M, y, table_w, row_h, fill=zebra if r_i % 2 else None, width=0.5)
                 if r_i < len(page_rows):
@@ -19114,7 +19114,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         f"{row[k]:.2f}" if row[k] else "-" for k in cols[2:]]
                     for i, val in enumerate(values):
                         bold = cols[i] in ("رقم التشغيل", "الخياس", "الوزن المقيد")
-                        size = fit_font_size(val, col_ws[i] - 2 * mm, 11, bold=bold, min_size=7)
+                        size = fit_font_size(val, col_ws[i] - 1.6 * mm, 12.5, bold=bold, min_size=7)
                         txt(cell_cx(i), vcenter_baseline(y, row_h, size), val, size=size, bold=bold, align="center")
                 y -= row_h
 
@@ -19122,12 +19122,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 # آخر صف: إجمالي كل عمود («الإجمالي» على خانتي التسلسل ورقم التشغيل)
                 box(M, y, table_w, total_h, fill=header_fill, width=1)
                 span_w = col_ws[0] + col_ws[1]
-                size = fit_font_size("الإجمالي", span_w - 3 * mm, 12, bold=True)
+                size = fit_font_size("الإجمالي", span_w - 3 * mm, 13, bold=True)
                 txt(lefts[1] + span_w / 2, vcenter_baseline(y, total_h, size), "الإجمالي", size=size, bold=True,
                     color=navy, align="center")
                 for i, k in enumerate(cols[2:], start=2):
                     val = f"{totals[k]:.2f}"
-                    size = fit_font_size(val, col_ws[i] - 2.5 * mm, 11, bold=True, min_size=7)
+                    size = fit_font_size(val, col_ws[i] - 1.6 * mm, 12.5, bold=True, min_size=7)
                     txt(cell_cx(i), vcenter_baseline(y, total_h, size), val, size=size, bold=True, color=navy,
                         align="center")
                 y -= total_h
@@ -19141,16 +19141,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             c.rect(M, y, table_w, top - y, fill=0, stroke=1)
             c.restoreState()
 
-            if is_last:
-                sig_y = 17 * mm
-                sig_w = table_w / 3
-                for i, label in enumerate(("توقيع مسؤول الصالة", "توقيع المحاسب", "توقيع المدير")):
-                    x0 = PW - M - sig_w * (i + 1)
-                    c.saveState(); c.setStrokeColor(navy); c.setLineWidth(0.7)
-                    c.line(x0 + 8 * mm, sig_y, x0 + sig_w - 8 * mm, sig_y)
-                    c.restoreState()
-                    txt(x0 + sig_w / 2, sig_y - 4.6 * mm, label, size=9.5, bold=True, color=navy, align="center")
-            txt(PW / 2, 4.5 * mm, f"صفحة {page_no} من {n_pages}", size=8, color=Color(0.45, 0.45, 0.5),
+            txt(PW / 2, 3.6 * mm, f"صفحة {page_no} من {n_pages}", size=8, color=Color(0.45, 0.45, 0.5),
                 align="center")
             c.showPage()
 

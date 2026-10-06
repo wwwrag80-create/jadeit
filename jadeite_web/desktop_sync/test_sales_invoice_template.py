@@ -95,7 +95,8 @@ assert '"رقم الفاتورة"' in page and 'd.get("manual_no")' in page and 
 assert "LETTERHEAD_AR" in head and "LETTERHEAD_EN" in head and "self.pdf_logo()" in head
 assert App.LETTERHEAD_AR[0] == "مصنع جاديت للتصنيع" and App.LETTERHEAD_EN[0] == "Jadeite Factory"
 assert 'resource_path("jadeite_logo.png")' in member("pdf_logo")
-assert App.SALES_SUMMARY_MIN_ROWS == 28 and "max(len(page_rows), min_rows) if is_last" in page
+assert App.SALES_SUMMARY_MIN_ROWS == 28 and "max(len(page_rows), fill_rows) if is_last" in page
+assert not re.search(r'"توقيع [^"]*"', page) and "sig_y" not in page, "لا توقيعات في آخر الورقة (الدفعة ٣١)"
 print("✔ الترويسة: بيانات المصنع (عربي يميناً، إنجليزي يساراً) والشعار وحده في الوسط — لا صورة الترويسة مصغّرة؛ "
       "ورقم الفاتورة اليدوي في مربع يساراً")
 
@@ -183,33 +184,35 @@ if HAVE_RL:
     assert (1, ar("فاتورة مبيعات")) in texts and (2, ar("فاتورة مبيعات (تابع)")) in texts
     assert (2, ar("الإجمالي")) in texts and (1, ar("الإجمالي")) not in texts
     assert (2, "14.10") in texts or (2, ar("14.10")) in texts                    # 30 × 0.47
-    assert (2, ar("توقيع المدير")) in texts and (1, ar("توقيع المدير")) not in texts
+    assert not any("توقيع" in s or ar("توقيع") in s for _p, s in texts), "لا توقيعات"
     # الترويسة: كل سطر في مكانه — لا سطرين على ارتفاع واحد (أو متقاربين) في الجهة نفسها
     for side_lines, align in ((rapp.LETTERHEAD_AR, "right"), (rapp.LETTERHEAD_EN, "left")):
         ys = sorted(y for pg, x, y, s, a in c.items if pg == 1 and a == align and s in {ar(t) for t in side_lines})
         assert len(ys) == 4 and all(b - a >= 4 * mm for a, b in zip(ys, ys[1:])), ys
     logo = [im for im in c.images if im[0] == 1]
-    assert logo and abs(logo[0][4] - 19 * mm) < 0.1 and abs(logo[0][1] + logo[0][3] / 2 - PW / 2) < 0.5
+    assert logo and abs(logo[0][4] - 27 * mm) < 0.1 and abs(logo[0][1] + logo[0][3] / 2 - PW / 2) < 0.5
     assert PH - (logo[0][2] + logo[0][4]) <= 8 * mm, "الترويسة مرفوعة لأعلى الورقة"
     print("✔ الرسم الفعلي: 30 طقماً في صفحتين (الأولى «فاتورة مبيعات» والثانية «تابع»)، رقم الفاتورة يساراً في كل صفحة، "
-          "صف الإجمالي (الخياس 14.10) والتوقيعات في الأخيرة وحدها، سطور الترويسة متباعدة، والشعار في الوسط")
+          "صف الإجمالي (الخياس 14.10) في الأخيرة وحدها، بلا توقيعات، سطور الترويسة متباعدة، والشعار ٢٧ مم في الوسط")
 
-    # ═══ ورقة A4 واحدة تتسع لـ٢٨ صفاً على الأقل، بخط واضح، والجدول يُكمَّل حتى ٢٨ ═══
+    # ═══ ورقة A4 واحدة تتسع لـ٢٨ صفاً على الأقل بخانات كبيرة وخط واضح، والجدول يمتد حتى أسفل الورقة ═══
     L = rapp.sales_summary_layout()
     assert rapp.SALES_SUMMARY_MIN_ROWS == 28 and L["cap_last"] >= 28, L["cap_last"]
-    assert L["table_top"] >= 235 * mm, L["table_top"] / mm
+    table_bottom = L["table_top"] - L["head_h"] - L["cap_last"] * L["row_h"] - L["total_h"]
+    assert table_bottom <= 15 * mm and L["row_h"] >= 7.2 * mm, (table_bottom / mm, L["row_h"] / mm)
     full = Rec(io.BytesIO(), pagesize=A4)
     rapp.draw_sales_summary_pages(full, [dict(d1, set_number=f"7700{i}") for i in range(1, L["cap_last"] + 1)], NAME, D)
     full_texts = {(p, s) for p, _x, _y, s, _a in full.items}
-    assert full.page - 1 == 1 and (1, ar("الإجمالي")) in full_texts and (1, ar("توقيع المدير")) in full_texts
-    assert full.sizes[(1, "30.50")] >= 10.5 and full.sizes[(1, ar("الإجمالي"))] >= 10, full.sizes[(1, "30.50")]
+    assert full.page - 1 == 1 and (1, ar("الإجمالي")) in full_texts
+    assert full.sizes[(1, "30.50")] >= 12 and full.sizes[(1, ar("الإجمالي"))] >= 12, full.sizes[(1, "30.50")]
     one = Rec(io.BytesIO(), pagesize=A4)
     rapp.draw_sales_summary_pages(one, [d1, d2], NAME, D)
     assert one.page - 1 == 1 and (1, ar("الإجمالي")) in {(p, s) for p, _x, _y, s, _a in one.items}
     body_rows = sum(1 for pg, h in one.rects if pg == 1 and abs(h - round(L["row_h"], 2)) < 0.01)
-    assert body_rows == 28, body_rows
-    print(f"✔ ورقة A4 واحدة: حتى {L['cap_last']} طقماً مع الإجمالي والتوقيعات (٢٨ على الأقل)، بخط {full.sizes[(1, '30.50')]:g} "
-          "واضح، والترويسة مرفوعة؛ وفاتورة بطقمين يُكمَّل جدولها حتى ٢٨ صفاً فيملأ الورقة")
+    assert body_rows == L["cap_last"] >= 28, body_rows
+    print(f"✔ ورقة A4 واحدة: حتى {L['cap_last']} طقماً مع الإجمالي (٢٨ على الأقل)، صف {L['row_h'] / mm:g} مم بخط "
+          f"{full.sizes[(1, '30.50')]:g} واضح؛ وفاتورة بطقمين يُكمَّل جدولها حتى أسفل الورقة "
+          f"(ينتهي على {table_bottom / mm:.1f} مم من حافتها) — بلا توقيعات")
 else:
     print("… الرسم الفعلي يُجرَّب حيث تتوفّر reportlab (جهاز البناء) — هنا فحوص المنطق والمصدر وحدها")
 
