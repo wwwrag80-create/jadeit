@@ -159,7 +159,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.66.1"
+APP_VERSION = "1.66.2"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -19664,17 +19664,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]}
         return rows, totals
 
-    # صفوف الورقة الواحدة (مع الإجمالي): ٢٦ صفاً بالضبط تملأ الورقة حتى أسفلها، والجدول يُكمَّل بصفوف فارغة
+    # صفوف الورقة الواحدة (مع الإجمالي): ٢٦ صفاً بالضبط تملأ الورقة حتى خانتي التوقيع، والجدول يُكمَّل بصفوف فارغة
     SALES_SUMMARY_MIN_ROWS = 26
+    # توقيعا آخر الورقة: مسؤول الإنتاج في الجانب الأيمن، والمحاسب في الجانب الأيسر
+    SALES_SUMMARY_SIGNATURES = (("right", "توقيع مسؤول الإنتاج"), ("left", "توقيع المحاسب"))
 
     def sales_summary_layout(self):
-        """مقاسات صفحة فاتورة المبيعات (مم من أسفل الورقة): الترويسة في الأعلى، والجدول يأخذ الباقي حتى أسفل
-        الورقة (بلا توقيعات). cap_last = صفوف الصفحة الأخيرة (مع الإجمالي) = SALES_SUMMARY_MIN_ROWS،
+        """مقاسات صفحة فاتورة المبيعات (مم من أسفل الورقة): الترويسة في الأعلى، والجدول يأخذ الباقي حتى خانتي
+        التوقيع أسفل الورقة (foot_zone). cap_last = صفوف الصفحة الأخيرة (مع الإجمالي) = SALES_SUMMARY_MIN_ROWS،
         وارتفاع الصف يُحسب ليملأ الجدول الورقة بهذا العدد بالضبط؛ cap_full = صفوف الصفحة التابعة"""
         PH = A4[1]
         L = {"side": 8 * mm, "top": 7 * mm, "head_h": 11 * mm, "total_h": 9 * mm,
              "band_gap": 2.5 * mm, "band_h": 13 * mm, "info_gap": 2 * mm, "info_h": 7.5 * mm,
-             "table_gap": 2.5 * mm, "foot_zone": 9 * mm}
+             "table_gap": 2.5 * mm, "foot_zone": 21 * mm,
+             # التوقيعان تحت الجدول: اسم الخانة، وتحته مساحة التوقيع ثم خطه
+             "sig_label_y": 14.5 * mm, "sig_line_y": 6 * mm, "sig_w": 62 * mm}
         L["letter_top"] = PH - L["top"]
         L["band_top"] = L["letter_top"] - self.LETTERHEAD_H - L["band_gap"]
         L["info_top"] = L["band_top"] - L["band_h"] - L["info_gap"]
@@ -19690,7 +19694,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة (بيانات المصنع والشعار الكبير)، ثم
         «بضاعة صادرة» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول يملأ الورقة
         حتى أسفلها — ٢٦ صفاً في ورقة A4 واحدة بخانات كبيرة وخط واضح، يُكمَّل بصفوف فارغة — وآخره
-        صف إجمالي لكل عمود (بلا توقيعات)؛ وصفحات تابعة إن زادت الأطقم عن الورقة"""
+        صف إجمالي لكل عمود، وتحته توقيعا مسؤول الإنتاج (يميناً) والمحاسب (يساراً)؛ وصفحات تابعة إن زادت
+        الأطقم عن الورقة (بعنوان «تابع»، بلا ترقيم صفحات)"""
         from reportlab.lib.colors import Color
         PW, PH = A4
         L = self.sales_summary_layout()
@@ -19841,8 +19846,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             c.rect(M, y, table_w, top - y, fill=0, stroke=1)
             c.restoreState()
 
-            txt(PW / 2, 3.6 * mm, f"صفحة {page_no} من {n_pages}", size=8, color=Color(0.45, 0.45, 0.5),
-                align="center")
+            if is_last:
+                # التوقيعان أسفل الورقة: مسؤول الإنتاج في الجانب الأيمن، والمحاسب في الجانب الأيسر
+                sig_w = L["sig_w"]
+                for side, label in self.SALES_SUMMARY_SIGNATURES:
+                    cx = PW - M - sig_w / 2 if side == "right" else M + sig_w / 2
+                    txt(cx, L["sig_label_y"], label, size=12, bold=True, color=navy, align="center")
+                    c.saveState(); c.setStrokeColor(navy); c.setLineWidth(0.9); c.setDash(1.4, 1.8)
+                    c.line(cx - sig_w / 2, L["sig_line_y"], cx + sig_w / 2, L["sig_line_y"])
+                    c.restoreState()
             c.showPage()
 
     def generate_invoice_pdf(self, groups, output_path):

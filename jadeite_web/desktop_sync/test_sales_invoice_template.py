@@ -34,6 +34,7 @@ def module_src(name):
 marks = {n.targets[0].id: n.value.value for n in tree.body
          if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "").startswith("KHAYAS_MARK_")}
 MEMBERS = ("SALES_SUMMARY_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
+           "SALES_SUMMARY_SIGNATURES",
            "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
            "sales_summary_layout", "draw_sales_summary_pages")
 ns = dict(marks, REPORTLAB_AVAILABLE=False)
@@ -98,7 +99,9 @@ assert 'resource_path("jadeite_logo.png")' in member("pdf_logo")
 assert App.SALES_SUMMARY_MIN_ROWS == 26 and "max(len(page_rows), fill_rows) if is_last" in page
 assert '"بضاعة صادرة" if page_no == 1 else "بضاعة صادرة (تابع)"' in page and "فاتورة مبيعات" not in page.split('"""')[2], \
     "عنوان القالب «بضاعة صادرة» (الدفعة ٣٣)"
-assert not re.search(r'"توقيع [^"]*"', page) and "sig_y" not in page, "لا توقيعات في آخر الورقة (الدفعة ٣١)"
+assert App.SALES_SUMMARY_SIGNATURES == (("right", "توقيع مسؤول الإنتاج"), ("left", "توقيع المحاسب")), \
+    "توقيعا آخر الورقة: مسؤول الإنتاج يميناً والمحاسب يساراً"
+assert "صفحة {page_no} من" not in page, "بلا ترقيم صفحات في القالب"
 print("✔ الترويسة: بيانات المصنع (عربي يميناً، إنجليزي يساراً) والشعار وحده في الوسط — لا صورة الترويسة مصغّرة؛ "
       "ورقم الفاتورة اليدوي في مربع يساراً")
 
@@ -182,12 +185,19 @@ if HAVE_RL:
         assert (p, ar("F-2041")) in texts and (p, ar("الخياس")) in texts, p
         no = next((x, y) for pg, x, y, s, a in c.items if pg == p and s == ar("F-2041"))
         assert no[0] < PW / 2, "رقم الفاتورة في الجانب الأيسر"
-        assert (p, ar(f"صفحة {p} من 2")) in texts
+        assert not any(ar(f"صفحة {p} من") in s or "صفحة" in s or ar("صفحة") in s
+                       for pg, s in texts if pg == p), "بلا ترقيم صفحات"
     assert (1, ar("بضاعة صادرة")) in texts and (2, ar("بضاعة صادرة (تابع)")) in texts
     assert not any(ar("فاتورة مبيعات") in s for _p, s in texts), "العنوان القديم لا يظهر في القالب"
     assert (2, ar("الإجمالي")) in texts and (1, ar("الإجمالي")) not in texts
     assert (2, "14.10") in texts or (2, ar("14.10")) in texts                    # 30 × 0.47
-    assert not any("توقيع" in s or ar("توقيع") in s for _p, s in texts), "لا توقيعات"
+    # التوقيعان في الورقة الأخيرة وحدها (تحت الإجمالي): مسؤول الإنتاج يميناً، والمحاسب يساراً
+    sig = {s: (pg, x, y) for pg, x, y, s, a in c.items if s in (ar("توقيع مسؤول الإنتاج"), ar("توقيع المحاسب"))}
+    assert len(sig) == 2 and all(v[0] == 2 for v in sig.values()), sig
+    assert not any(pg == 1 and ("توقيع" in s or ar("توقيع") in s) for pg, s in texts), "التوقيعان في الورقة الأخيرة"
+    assert sig[ar("توقيع مسؤول الإنتاج")][1] > PW / 2 > sig[ar("توقيع المحاسب")][1]
+    L0 = rapp.sales_summary_layout()
+    assert all(L0["sig_line_y"] < v[2] < L0["foot_zone"] for v in sig.values()), "تحت الجدول وفوق خط التوقيع"
     # الترويسة: كل سطر في مكانه — لا سطرين على ارتفاع واحد (أو متقاربين) في الجهة نفسها
     for side_lines, align in ((rapp.LETTERHEAD_AR, "right"), (rapp.LETTERHEAD_EN, "left")):
         ys = sorted(y for pg, x, y, s, a in c.items if pg == 1 and a == align and s in {ar(t) for t in side_lines})
@@ -196,13 +206,15 @@ if HAVE_RL:
     assert logo and abs(logo[0][4] - 27 * mm) < 0.1 and abs(logo[0][1] + logo[0][3] / 2 - PW / 2) < 0.5
     assert PH - (logo[0][2] + logo[0][4]) <= 8 * mm, "الترويسة مرفوعة لأعلى الورقة"
     print("✔ الرسم الفعلي: 30 طقماً في صفحتين (الأولى «بضاعة صادرة» والثانية «تابع»)، رقم الفاتورة يساراً في كل صفحة، "
-          "صف الإجمالي (الخياس 14.10) في الأخيرة وحدها، بلا توقيعات، سطور الترويسة متباعدة، والشعار ٢٧ مم في الوسط")
+          "صف الإجمالي (الخياس 14.10) وتحته التوقيعان (مسؤول الإنتاج يميناً، المحاسب يساراً) في الأخيرة وحدها، "
+          "بلا ترقيم صفحات، سطور الترويسة متباعدة، والشعار ٢٧ مم في الوسط")
 
     # ═══ ورقة A4 واحدة: ٢٦ صفاً بالضبط بخانات كبيرة وخط واضح، والجدول يمتد حتى أسفل الورقة ═══
     L = rapp.sales_summary_layout()
     assert rapp.SALES_SUMMARY_MIN_ROWS == 26 and L["cap_last"] == 26, L["cap_last"]
     table_bottom = L["table_top"] - L["head_h"] - L["cap_last"] * L["row_h"] - L["total_h"]
-    assert 8 * mm <= table_bottom <= 10 * mm and L["row_h"] >= 7.7 * mm, (table_bottom / mm, L["row_h"] / mm)
+    assert abs(table_bottom - L["foot_zone"]) < 0.01 and L["row_h"] >= 7.3 * mm, (table_bottom / mm, L["row_h"] / mm)
+    assert L["sig_line_y"] >= 5 * mm and L["sig_label_y"] + 4.5 * mm < table_bottom, "التوقيعان داخل الورقة تحت الجدول"
     full = Rec(io.BytesIO(), pagesize=A4)
     rapp.draw_sales_summary_pages(full, [dict(d1, set_number=f"7700{i}") for i in range(1, L["cap_last"] + 1)], NAME, D)
     full_texts = {(p, s) for p, _x, _y, s, _a in full.items}
@@ -218,7 +230,7 @@ if HAVE_RL:
     assert over.page - 1 == 2, "الطقم السابع والعشرون ينتقل لصفحة «تابع»"
     print(f"✔ ورقة A4 واحدة: {L['cap_last']} صفاً بالضبط مع الإجمالي (والسابع والعشرون في صفحة «تابع»)، صف {L['row_h'] / mm:g} مم بخط "
           f"{full.sizes[(1, '30.50')]:g} واضح؛ وفاتورة بطقمين يُكمَّل جدولها حتى أسفل الورقة "
-          f"(ينتهي على {table_bottom / mm:.1f} مم من حافتها) — بلا توقيعات")
+          f"حتى خانتي التوقيع (ينتهي على {table_bottom / mm:.1f} مم من حافتها، وخط التوقيع على {L['sig_line_y'] / mm:g} مم)")
 else:
     print("… الرسم الفعلي يُجرَّب حيث تتوفّر reportlab (جهاز البناء) — هنا فحوص المنطق والمصدر وحدها")
 
