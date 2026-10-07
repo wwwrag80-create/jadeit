@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.68.0"
+APP_VERSION = "1.68.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -25025,6 +25025,14 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=20, pady=15)
         ctk.CTkLabel(top, text="👤 حسابات العملاء", font=(UI_FONT, 20, "bold")).pack(side="right")
+        # تحديث برنامج المدير من لوحته مباشرة (كان الزر داخل حساب عميل فقط)
+        self.btn_app_update = ctk.CTkButton(
+            top, text=f"⬆️ تحديث البرنامج  ·  {APP_VERSION}", font=(UI_FONT, 14, "bold"), height=42,
+            fg_color=(UI["gold_soft"], "#2a2318"), border_width=1, border_color=(UI["gold_line"], "#6B5A22"),
+            text_color=(UI["ink"], "#F0CF6A"), hover_color=(UI["surface_alt"], "#232A33"),
+            command=self.open_app_update)
+        self.btn_app_update.pack(side="left", padx=5)
+        HoverTip(self.btn_app_update, f"تحديث البرنامج إلى آخر إصدار من الحزمة المرسلة (.jup) — الحالي {APP_VERSION}")
         if not self.restricted:
             ctk.CTkButton(top, text="➕ فتح حساب عميل جديد", font=(UI_FONT, 14, "bold"), height=42,
                           fg_color="#2ecc71", hover_color="#27ae60", command=self.open_add_client_dialog).pack(side="left", padx=5)
@@ -25039,6 +25047,21 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         self.list_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
         self.refresh_clients()
+
+    # نافذة «⬆️ تحديث» نفسها التي في النظام (حزمة ‎.jup أو exe أو المصدر، و«ما الجديد»، والرجوع للسابق)
+    open_app_update = GoldSystemApp.open_app_update
+    fit_dialog_to_screen = GoldSystemApp.fit_dialog_to_screen
+    _restart_after_update = GoldSystemApp._restart_after_update
+    _relaunch = GoldSystemApp._relaunch
+    _swap_to_update = GoldSystemApp._swap_to_update
+    _build_update = GoldSystemApp._build_update
+    _exit_for_update = GoldSystemApp._exit_for_update
+
+    def perform_backup(self):
+        """قبل التحديث: لا بيانات للوحة نفسها — نسخ العملاء على جهاز المدير مرآة تُنزَّل من السحابة من جديد"""
+
+    def on_app_closing(self):
+        self.destroy()
 
     @staticmethod
     def format_cloud_time(value):

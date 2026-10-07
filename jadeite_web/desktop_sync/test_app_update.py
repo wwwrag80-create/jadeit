@@ -161,6 +161,21 @@ assert 'text="⬆️ تحديث"' in layout and "command=self.open_app_update" i
 assert 'self.btn_app_update.pack(fill="x", pady=(0, 4))' in layout
 print("✔ زر «⬆️ تحديث» أعلى الشريط فوق زرّي «فاتح» و«بحث» مباشرة وبعرضهما")
 
+# لوحة المدير (شاشة أسماء المصانع): الزر نفسه في أعلاها، بنافذة التحديث نفسها
+admin_cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AdminPanel")
+admin_src = ast.get_source_segment(src, admin_cls)
+admin_init = ast.get_source_segment(src, next(x for x in admin_cls.body
+                                              if isinstance(x, ast.FunctionDef) and x.name == "__init__"))
+assert admin_init.index("self.btn_app_update = ctk.CTkButton(") < admin_init.index("self.list_frame = ")
+assert 'text=f"⬆️ تحديث البرنامج  ·  {APP_VERSION}"' in admin_init and "command=self.open_app_update" in admin_init
+for name in ("open_app_update", "fit_dialog_to_screen", "_restart_after_update", "_relaunch", "_swap_to_update",
+             "_build_update", "_exit_for_update"):
+    assert f"    {name} = GoldSystemApp.{name}\n" in admin_src, f"لوحة المدير: {name} من نافذة التحديث نفسها"
+for name in ("perform_backup", "on_app_closing"):
+    assert any(isinstance(x, ast.FunctionDef) and x.name == name for x in admin_cls.body), name
+assert src.index("class GoldSystemApp(") < src.index("class AdminPanel(")
+print("✔ لوحة المدير: زر «⬆️ تحديث البرنامج» في أعلاها، بنافذة التحديث نفسها")
+
 go = body("open_app_update")
 assert go.index("self.perform_backup()") < go.index('if plan["mode"] == "copy":'), "نسخة احتياطية قبل أي تحديث"
 assert "inspect_update_package(path)" in go and "plan_update(info, frozen, kind, APP_VERSION, embedded_runtime())" in go
