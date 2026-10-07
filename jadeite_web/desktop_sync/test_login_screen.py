@@ -133,9 +133,10 @@ lb = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "
 lbs = ast.get_source_segment(src, lb)
 assert 'if not sys.platform.startswith("win")' in lbs
 assert 'os.path.join("fonts"' in lbs
-for f in ("Cairo-Regular.ttf", "Cairo-Bold.ttf", "OFL.txt"):
+for f in ("IBMPlexSansArabic-Regular.ttf", "IBMPlexSansArabic-Bold.ttf", "IBMPlexSansArabic-SemiBold.ttf", "OFL.txt"):
     assert os.path.exists(os.path.join("fonts", f)), f
-print("✔ خط Cairo العربي مرفق (برخصته المفتوحة) ويُحمَّل على ويندوز")
+assert "SIL Open Font License" in io.open(os.path.join("fonts", "OFL.txt"), encoding="utf-8").read()
+print("✔ خط IBM Plex Sans Arabic مرفق (برخصته المفتوحة) ويُحمَّل على ويندوز")
 
 bx = io.open("build_exe.py", encoding="utf-8").read()
 assert re.search(r'DATA_DIRS\s*=\s*\(\s*"fonts"', bx) and 'f"{d}{os.pathsep}{d}"' in bx

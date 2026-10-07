@@ -71,7 +71,7 @@ assert a.khayas_category_columns(800, [230, 100, 100, 100, 100, 100]) == 6
 print("✔ كل عمود بعرض أطول زر فيه وحده — فيتّسع السطر لأكثر عدد ممكن من الأقسام")
 
 body = seg("refresh_khayas_category_buttons")
-assert 'font=("Cairo", 13, "bold")' in body and "height=32" in body and "b.pack(" not in body
+assert 'font=(UI_FONT, 13, "bold")' in body and "height=32" in body and "b.pack(" not in body
 assert 'self.khayas_category_bar.bind("<Configure>", self.layout_khayas_category_buttons)' in seg("build_inquiries_tab")
 print("✔ الأزرار مدمجة (خط ١٣، ارتفاع ٣٢ بدل ١٦ و٤٥) وتُرصف من جديد عند تغيّر عرض الشاشة")
 print("\n✅ أزرار أقسام صناديق الخياس تتّسع لأي عدد")

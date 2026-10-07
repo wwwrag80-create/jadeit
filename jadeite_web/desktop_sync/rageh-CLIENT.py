@@ -128,7 +128,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.64.1"
+APP_VERSION = "1.65.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1312,7 +1312,9 @@ def _register_arabic_font():
     global _ARABIC_FONT_NAME, _ARABIC_FONT_BOLD_NAME, _ARABIC_FONT_PATH_USED
     if not REPORTLAB_AVAILABLE:
         return
+    # خط البرنامج المرفق أولاً (كل أشكال الحروف العربية فيه)، ثم خطوط ويندوز بديلاً إن غاب
     candidates_regular = [
+        resource_path(os.path.join("fonts", "IBMPlexSansArabic-Regular.ttf")),
         r"C:\Windows\Fonts\tahoma.ttf", r"C:\Windows\Fonts\arial.ttf",
         r"C:\Windows\Fonts\calibri.ttf", r"C:\Windows\Fonts\segoeui.ttf",
         r"C:\Windows\Fonts\times.ttf", r"C:\Windows\Fonts\micross.ttf",
@@ -1322,6 +1324,7 @@ def _register_arabic_font():
         "/usr/share/fonts/truetype/kacst/KacstOne.ttf",
     ]
     candidates_bold = [
+        resource_path(os.path.join("fonts", "IBMPlexSansArabic-Bold.ttf")),
         r"C:\Windows\Fonts\tahomabd.ttf", r"C:\Windows\Fonts\arialbd.ttf",
         r"C:\Windows\Fonts\calibrib.ttf", r"C:\Windows\Fonts\segoeuib.ttf",
         r"C:\Windows\Fonts\timesbd.ttf",
@@ -1433,13 +1436,19 @@ ctk.set_default_color_theme("blue")
 #  نظام التصميم الموحّد — «منتصف الليل والذهب»
 #
 #  مصدر واحد للألوان والخط لكل شاشات البرنامج:
-#   • خط Cairo مرفق مع البرنامج نفسه (مجلد fonts) — فيظهر بالخط نفسه على كل
-#     جهاز، بدل خط بديل غير متناسق حين لا يكون مثبّتاً في ويندوز.
+#   • خط IBM Plex Sans Arabic مرفق مع البرنامج نفسه (مجلد fonts) — للشاشات والجداول
+#     والقوالب المطبوعة معاً — فيظهر بالخط نفسه على كل جهاز.
 #   • لوحة ألوان بمعانٍ ثابتة: أزرق للعرض والبحث، أخضر للترحيل والحفظ، أحمر
 #     للحذف، ذهبي للتعديل، رمادي للمحايد، كحلي للطباعة.
 #   • الأزرار القديمة المكتوبة بألوان صريحة تُترجَم تلقائياً لهذه اللوحة
 #     (ThemedButton أدناه) — فتتوحّد ١٥٠ زراً دون المساس بمنطق أي شاشة.
 # ══════════════════════════════════════════════════════════════════════════
+# خط البرنامج كله (الشاشات والجداول والقوالب): IBM Plex Sans Arabic — حديث (IBM، رخصة OFL)، أرقامه
+# واضحة متساوية العرض تقريباً، ويحوي أشكال الحروف العربية كاملة فيُستعمل في PDF أيضاً (Cairo كان ينقصه
+# ٥١ شكلاً منها، فكانت القوالب بخط Tahoma). أسماء العائلات كما يقرؤها ويندوز من الملفات (nameID 1)
+UI_FONT = "IBM Plex Sans Arabic"
+UI_FONT_SEMIBOLD = "IBM Plex Sans Arabic SmBld"      # وزن ٦٠٠ لنص الجداول
+FONT_DEEP_DESCENT = 1.10     # أعمق حرف شائع ÷ نزول الخط (من ملفات الخط نفسها) — لارتفاع صفوف الجداول
 UI = {
     "gold": "#C9A227", "gold_dark": "#9C7A12", "gold_soft": "#FBF4DC", "gold_line": "#E9D48C",
     # النص الثانوي بتباين ٥:١ على خلفية الصفحة (كان ٤٫٤:١)، وحدود البطاقات أوضح
@@ -1657,7 +1666,7 @@ class HoverTip:
                 tw.attributes("-topmost", True)
             except Exception:
                 pass
-            tk.Label(tw, text=self.text, justify="right", bg="#10213A", fg="#FFFFFF", font=("Cairo", 11),
+            tk.Label(tw, text=self.text, justify="right", bg="#10213A", fg="#FFFFFF", font=(UI_FONT, 11),
                      padx=10, pady=5, wraplength=340).pack()
             tw.update_idletasks()
             tw.wm_geometry(f"+{max(0, x - tw.winfo_width() // 2)}+{y}")
@@ -1753,7 +1762,7 @@ class MiniChart(tk.Canvas):
         values = [v for _n, vals in self.series for v in vals if v is not None]
         if not self.labels or not values:
             self.create_text(w / 2, h / 2, text="لا توجد بيانات بعد", fill=self.pal["muted"],
-                             font=("Cairo", 12))
+                             font=(UI_FONT, 12))
             return
         if self.kind == "hbars":
             return self._draw_hbars(w, h)
@@ -1768,14 +1777,14 @@ class MiniChart(tk.Canvas):
             y = ypos(t)
             self.create_line(x0, y, x1, y, fill=self.pal["grid"], width=1)
             self.create_text(x0 - 8, y, text=fmt_compact(t), anchor="e", fill=self.pal["muted"],
-                             font=("Cairo", 10))
+                             font=(UI_FONT, 10))
         n = len(self.labels)
         band = (x1 - x0) / max(1, n)
         step = max(1, math.ceil(n / max(1, int((x1 - x0) / 70))))   # تسميات لا تتزاحم
         for i, lab in enumerate(self.labels):
             if (n - 1 - i) % step == 0:            # من الأحدث للخلف بخطوة ثابتة: الأخيرة تظهر دائماً
                 self.create_text(x0 + band * (i + 0.5), y1 + 14, text=lab, fill=self.pal["muted"],
-                                 font=("Cairo", 10))
+                                 font=(UI_FONT, 10))
         self._geom = (x0, x1, y0, y1, band, ypos)
         if self.kind == "bars":
             self._draw_bars(ypos, x0, band, lo)
@@ -1799,7 +1808,7 @@ class MiniChart(tk.Canvas):
         if len(ends) == 1 or (len(ends) == 2 and abs(ends[0][0] - ends[1][0]) >= 16):
             for y, x, v in ends:
                 self.create_text(x + 10, y, text=fmt_compact(v, self.decimals if abs(v) < 10_000 else 0),
-                                 anchor="w", fill=self.pal["ink"], font=("Cairo", 10, "bold"))
+                                 anchor="w", fill=self.pal["ink"], font=(UI_FONT, 10, "bold"))
 
     def _draw_bars(self, ypos, x0, band, lo):
         k = len(self.series)
@@ -1831,7 +1840,7 @@ class MiniChart(tk.Canvas):
         name, vals = self.series[0]
         n = len(self.labels)
         try:
-            measure = tkfont.Font(root=self, family="Cairo", size=11).measure
+            measure = tkfont.Font(root=self, family=UI_FONT, size=11).measure
             label_w = max(measure(lab) for lab in self.labels) + 18
         except Exception:
             label_w = 150
@@ -1842,7 +1851,7 @@ class MiniChart(tk.Canvas):
         self._geom = ("h", top, row)
         for i, (lab, v) in enumerate(zip(self.labels, vals)):
             yc = top + row * (i + 0.5)
-            self.create_text(w - 8, yc, text=lab, anchor="e", fill=self.pal["ink"], font=("Cairo", 11))
+            self.create_text(w - 8, yc, text=lab, anchor="e", fill=self.pal["ink"], font=(UI_FONT, 11))
             if v is None:
                 continue
             color = self.pal["series"][0 if v >= 0 else 1]
@@ -1853,12 +1862,12 @@ class MiniChart(tk.Canvas):
                 self.create_oval(x_right - length, yc - bh / 2, x_right - length + 8, yc + bh / 2, fill=color,
                                  outline="")
             self.create_text(x_right - length - 6, yc, text=f"{v:,.{self.decimals}f}", anchor="e",
-                             fill=self.pal["ink"], font=("Cairo", 10, "bold"))
+                             fill=self.pal["ink"], font=(UI_FONT, 10, "bold"))
         if any(v is not None and v < 0 for v in vals):     # مفتاح اللونين حين توجد زيادة (سالب)
             for j, (cap, color) in enumerate((("فاقد", self.pal["series"][0]), ("زيادة (سالب)", self.pal["series"][1]))):
                 x = 10 + j * 110
                 self.create_rectangle(x, h - 14, x + 14, h - 10, fill=color, outline="")
-                self.create_text(x + 20, h - 12, text=cap, anchor="w", fill=self.pal["ink"], font=("Cairo", 10))
+                self.create_text(x + 20, h - 12, text=cap, anchor="w", fill=self.pal["ink"], font=(UI_FONT, 10))
 
     # ------------------------------------------------------------ المرور
     def _on_motion(self, event):
@@ -1885,7 +1894,7 @@ class MiniChart(tk.Canvas):
         tx = event.x - 12 if right else event.x + 12
         ty = event.y - 12 if lower else event.y + 12
         item = self.create_text(tx, ty, text=text, anchor=("s" if lower else "n") + ("e" if right else "w"),
-                                fill=self.pal["ink"], font=("Cairo", 10, "bold"), tags="hover", justify="right")
+                                fill=self.pal["ink"], font=(UI_FONT, 10, "bold"), tags="hover", justify="right")
         bx = self.bbox(item)
         if bx and bx[3] + 6 > self.winfo_height():          # لا تخرج اللوحة من أسفل الرسم
             self.move(item, 0, self.winfo_height() - bx[3] - 8)
@@ -1934,21 +1943,21 @@ def _apply_theme_defaults():
     t["DropdownMenu"].update(fg_color=["#FFFFFF", "#1E242C"], hover_color=[UI["primary_soft"], "#2A313B"],
                              text_color=[UI["ink"], "#E6EDF3"])
     t["CTkLabel"]["text_color"] = [UI["ink"], "#E6EDF3"]
-    t["CTkFont"].update(family="Cairo", size=13)
+    t["CTkFont"].update(family=UI_FONT, size=13)
     # أشرطة التمرير: رفيعة مستديرة بلون هادئ يتضح عند المرور (بدل أشرطة ويندوز القديمة)
     t["CTkScrollbar"].update(corner_radius=6, border_spacing=3, fg_color="transparent",
                              button_color=["#C3CCD8", "#3C4655"],
                              button_hover_color=["#8E9AAC", "#5A6678"])
 
 
-BRAND_FONT_FILES = ("Cairo-Regular.ttf", "Cairo-Bold.ttf", "Cairo-SemiBold.ttf")
+BRAND_FONT_FILES = ("IBMPlexSansArabic-Regular.ttf", "IBMPlexSansArabic-Bold.ttf", "IBMPlexSansArabic-SemiBold.ttf")
 LOADED_BRAND_FONTS = set()
 
 
 def load_brand_fonts():
-    """يحمّل خط Cairo المرفق مع البرنامج (خاص بهذه العملية، لا يُثبَّت في النظام).
+    """يحمّل خط IBM Plex Sans Arabic المرفق مع البرنامج (خاص بهذه العملية، لا يُثبَّت في النظام).
 
-    ثلاثة أوزان: العادي والعريض، و«Cairo SemiBold» (وزن ٦٠٠) لنص الجداول — أثقل
+    ثلاثة أوزان: العادي والعريض، و«SemiBold» (وزن ٦٠٠) لنص الجداول — أثقل
     قليلاً من العادي فتبقى الأرقام والأسماء واضحة حادّة على الشاشات العادية
     (١٣٦٦×٧٦٨ وما يشبهها) دون ثِقل العريض.
 
@@ -1965,13 +1974,13 @@ def load_brand_fonts():
                 if ctk.FontManager.load_font(path):
                     LOADED_BRAND_FONTS.add(name)
             except Exception as e:
-                log_cloud_error("تعذّر تحميل خط Cairo المرفق", e)
+                log_cloud_error("تعذّر تحميل خط البرنامج المرفق", e)
     return bool(LOADED_BRAND_FONTS)
 
 
 def table_font_family():
-    """خط نص الجداول: Cairo SemiBold متى حُمِّل، وإلا Cairo نفسه"""
-    return "Cairo SemiBold" if "Cairo-SemiBold.ttf" in LOADED_BRAND_FONTS else "Cairo"
+    """خط نص الجداول: الوزن SemiBold متى حُمِّل، وإلا خط البرنامج نفسه"""
+    return UI_FONT_SEMIBOLD if "IBMPlexSansArabic-SemiBold.ttf" in LOADED_BRAND_FONTS else UI_FONT
 
 
 # تفضيلات الواجهة على هذا الجهاز وحده (المظهر…) — ملف محلي لا يُرفع للسحابة، فلا
@@ -3597,14 +3606,14 @@ class ScreenRouter(ctk.CTkFrame):
                                border_width=1, border_color=(UI["header_edge"], UI["header_edge"]))
         top_bar.pack(fill="x", padx=5, pady=(5, 8), before=content)
 
-        btn_back = ctk.CTkButton(top_bar, text="🏠  القائمة الرئيسية", font=("Cairo", 14, "bold"),
+        btn_back = ctk.CTkButton(top_bar, text="🏠  القائمة الرئيسية", font=(UI_FONT, 14, "bold"),
                                   fg_color="transparent", border_width=1,
                                   border_color=("#3D5475", "#3D5475"),
                                   text_color=(UI["header_text"], UI["header_text"]),
                                   hover_color=(UI["header_2"], UI["header_2"]),
                                   width=176, height=40, command=self._go_home)
         btn_back.pack(side="left", padx=(12, 4), pady=10)
-        ctk.CTkLabel(top_bar, text="Esc", font=("Cairo", 11, "bold"), width=34, height=22,
+        ctk.CTkLabel(top_bar, text="Esc", font=(UI_FONT, 11, "bold"), width=34, height=22,
                      corner_radius=6, fg_color=(UI["header_2"], UI["header_2"]),
                      text_color=(UI["header_muted"], UI["header_muted"])).pack(side="left", padx=(0, 8))
 
@@ -3617,12 +3626,12 @@ class ScreenRouter(ctk.CTkFrame):
         texts = ctk.CTkFrame(title_box, fg_color="transparent")
         texts.pack(side="right")
         lbl_title = ctk.CTkLabel(texts, text=title, anchor="e", height=26,
-                                 font=ctk.CTkFont(family="Cairo", size=19, weight="bold"),
+                                 font=ctk.CTkFont(family=UI_FONT, size=19, weight="bold"),
                                  text_color=(UI["header_text"], UI["header_text"]))
         lbl_title.pack(anchor="e")
         self._title_labels[name] = lbl_title
         if subtitle:
-            ctk.CTkLabel(texts, text=subtitle, anchor="e", height=18, font=("Cairo", 12),
+            ctk.CTkLabel(texts, text=subtitle, anchor="e", height=18, font=(UI_FONT, 12),
                          text_color=(UI["header_muted"], UI["header_muted"])).pack(anchor="e")
 
         info_box = ctk.CTkFrame(top_bar, fg_color="transparent")
@@ -3630,7 +3639,7 @@ class ScreenRouter(ctk.CTkFrame):
 
         def pill(bg, fg):
             lbl = ctk.CTkLabel(info_box, text="   —   ", height=32, corner_radius=16,
-                               font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                               font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                                fg_color=bg, text_color=fg)
             lbl.pack(side="right", padx=4)
             return lbl
@@ -4213,7 +4222,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             btn.configure(state="disabled", text="التعديل مقفول 🔒", fg_color="#555555", hover_color="#555555")
             if parent_window is not None:
                 ctk.CTkLabel(parent_window, text="التعديل مقفول من المدير — الحذف ما زال متاحاً",
-                             font=("Cairo", 12, "bold"), text_color="#e67e22").pack(pady=(0, 6))
+                             font=(UI_FONT, 12, "bold"), text_color="#e67e22").pack(pady=(0, 6))
         except Exception:
             pass
 
@@ -4573,11 +4582,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.focus_force()
 
         ctk.CTkLabel(win, text="🗄️ استعادة نسخة احتياطية سابقة",
-                     font=("Cairo", 20, "bold"), text_color="#d4af37").pack(pady=(16, 2))
+                     font=(UI_FONT, 20, "bold"), text_color="#d4af37").pack(pady=(16, 2))
         ctk.CTkLabel(win,
                      text="اختر النسخة التي تريد الرجوع إليها — الأحدث أولاً.\n"
                           "قبل الاستعادة تُحفظ نسخة من وضعك الحالي تلقائياً، فلا تفقد شيئاً.",
-                     font=("Cairo", 12), text_color="#8b8f95", justify="center").pack(pady=(0, 10))
+                     font=(UI_FONT, 12), text_color="#8b8f95", justify="center").pack(pady=(0, 10))
 
         frame = ttk.Frame(win)
         frame.pack(fill="both", expand=True, padx=18, pady=6)
@@ -4630,13 +4639,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(pady=12)
-        ctk.CTkButton(btns, text="↩️ استعادة النسخة المحددة", font=("Cairo", 15, "bold"),
+        ctk.CTkButton(btns, text="↩️ استعادة النسخة المحددة", font=(UI_FONT, 15, "bold"),
                       fg_color="#1e8449", hover_color="#145a32", width=250, height=44,
                       command=do_restore).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="📂 فتح مجلد النسخ", font=("Cairo", 13),
+        ctk.CTkButton(btns, text="📂 فتح مجلد النسخ", font=(UI_FONT, 13),
                       fg_color="#555555", hover_color="#333333", width=160, height=44,
                       command=lambda: self.open_folder(self.backup_dir)).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="إغلاق", font=("Cairo", 13), fg_color="#555555",
+        ctk.CTkButton(btns, text="إغلاق", font=(UI_FONT, 13), fg_color="#555555",
                       hover_color="#333333", width=120, height=44,
                       command=win.destroy).pack(side="left", padx=6)
 
@@ -4766,19 +4775,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="☁️ النسخ الاحتياطي واسترجاع البيانات", font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=(14, 6))
+        ctk.CTkLabel(win, text="☁️ النسخ الاحتياطي واسترجاع البيانات", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=(14, 6))
 
         info = ctk.CTkFrame(win)
         info.pack(fill="x", padx=18, pady=8)
-        ctk.CTkLabel(info, text=f"مجلد ملفات النظام:\n{APP_DATA_DIR}", font=("Cairo", 12), justify="right", anchor="e").pack(fill="x", padx=10, pady=(8, 2))
-        ctk.CTkLabel(info, text=f"قاعدة البيانات:\n{self.db_path}", font=("Cairo", 12), justify="right", anchor="e").pack(fill="x", padx=10, pady=2)
-        ctk.CTkLabel(info, text=f"النسخ الاحتياطية المحلية:\n{self.backup_dir}", font=("Cairo", 12), justify="right", anchor="e").pack(fill="x", padx=10, pady=(2, 8))
+        ctk.CTkLabel(info, text=f"مجلد ملفات النظام:\n{APP_DATA_DIR}", font=(UI_FONT, 12), justify="right", anchor="e").pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(info, text=f"قاعدة البيانات:\n{self.db_path}", font=(UI_FONT, 12), justify="right", anchor="e").pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(info, text=f"النسخ الاحتياطية المحلية:\n{self.backup_dir}", font=(UI_FONT, 12), justify="right", anchor="e").pack(fill="x", padx=10, pady=(2, 8))
 
-        lbl_status = ctk.CTkLabel(win, text="", font=("Cairo", 13, "bold"), text_color="#2ecc71")
+        lbl_status = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"), text_color="#2ecc71")
         lbl_status.pack(pady=4)
 
         backups = self.list_local_backups()
-        ctk.CTkLabel(win, text=f"عدد النسخ الاحتياطية المحلية المتاحة: {len(backups)}", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(pady=(2, 8))
+        ctk.CTkLabel(win, text=f"عدد النسخ الاحتياطية المحلية المتاحة: {len(backups)}", font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(pady=(2, 8))
 
         def do_backup_now():
             self.perform_backup()
@@ -4840,25 +4849,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(pady=10)
-        ctk.CTkButton(btns, text="💾 نسخة احتياطية الآن", font=("Cairo", 14, "bold"), width=185, height=42,
+        ctk.CTkButton(btns, text="💾 نسخة احتياطية الآن", font=(UI_FONT, 14, "bold"), width=185, height=42,
                       fg_color="#1e8449", hover_color="#145a32", command=do_backup_now).pack(side="right", padx=6)
         if not IS_ADMIN_BUILD:
-            ctk.CTkButton(btns, text="⬆️ رفع للسحابة الآن", font=("Cairo", 14, "bold"), width=185, height=42,
+            ctk.CTkButton(btns, text="⬆️ رفع للسحابة الآن", font=(UI_FONT, 14, "bold"), width=185, height=42,
                           fg_color="#1f77b4", hover_color="#144d75", command=do_upload_now).pack(side="right", padx=6)
 
         # الاستعادة المحلية أولاً وأبرز: النسخ على جهازك هي الأوثق، والسحابة
         # قد تحمل حالة لا تريدها
-        ctk.CTkButton(win, text="🗄️ استعادة نسخة احتياطية من جهازي", font=("Cairo", 15, "bold"),
+        ctk.CTkButton(win, text="🗄️ استعادة نسخة احتياطية من جهازي", font=(UI_FONT, 15, "bold"),
                       width=340, height=48, fg_color="#1e8449", hover_color="#145a32",
                       command=lambda: (win.destroy(), self.open_backup_restore_window())).pack(pady=(10, 6))
 
         # نسخة العميل لا تسحب من السحابة أبداً: بياناتها على جهازها هي مصدر الحقيقة،
         # وتستعيد من نسخها المحلية فقط (الزر أعلاه). السحب لنسخة المدير وحدها.
         if IS_ADMIN_BUILD:
-            ctk.CTkButton(win, text="⬇️ استرجاع آخر نسخة من السحابة", font=("Cairo", 14, "bold"), width=300, height=44,
+            ctk.CTkButton(win, text="⬇️ استرجاع آخر نسخة من السحابة", font=(UI_FONT, 14, "bold"), width=300, height=44,
                           fg_color="#b8860b", hover_color="#daa520", command=do_cloud_restore).pack(pady=8)
 
-        ctk.CTkButton(win, text="📂 فتح مجلد ملفات النظام", font=("Cairo", 13, "bold"), width=240, height=38,
+        ctk.CTkButton(win, text="📂 فتح مجلد ملفات النظام", font=(UI_FONT, 13, "bold"), width=240, height=38,
                       fg_color="#555555", hover_color="#333333", command=self.open_app_data_folder).pack(pady=(4, 14))
 
     def perform_backup(self):
@@ -5618,7 +5627,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.neg_color_buttons = {}
 
         btn = ctk.CTkButton(
-            parent, text="", font=("Cairo", 12, "bold"), width=105, height=28,
+            parent, text="", font=(UI_FONT, 12, "bold"), width=105, height=28,
             command=lambda s=section, cb=refresh_callback: self.toggle_negative_color(s, cb))
         btn.pack(side="left", padx=5)
 
@@ -6022,7 +6031,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             total_tree.column(col, width=(col_widths or {}).get(col, 110), anchor="center", stretch=False)
         # شريط رصاصي غامق بأرقام بيضاء ليتميّز بوضوح عن صفوف الجدول
         self.ensure_totals_bar_style()
-        total_tree.tag_configure("total_tag", foreground="#000000", font=("Cairo", 14, "bold"))
+        total_tree.tag_configure("total_tag", foreground="#000000", font=(UI_FONT, 14, "bold"))
         total_tree.pack(side="left", fill="x", expand=True)
 
         # ربط الشجرتين ليُعاد ضبط عرض أعمدة الإجمالي كلما تغيّر عرض الجدول
@@ -6039,7 +6048,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         try:
             style = ttk.Style(self)      # نافذة البرنامج نفسها (قد لا تكون الجذر الافتراضي)
             d = getattr(self, "_design", None) or {}
-            total_font = d.get("total_font", ("Cairo", 14, "bold"))
+            total_font = d.get("total_font", (UI_FONT, 14, "bold"))
             # ارتفاعه من قياس خط الإجمالي نفسه (لا ٣٤ ثابتة تقصّ الخط على التكبير)
             self._totals_row_h = self.table_row_height(total_font, 34)
             # رصاصي فاتح بنص أسود عريض — أوضح للقراءة من الغامق
@@ -6143,10 +6152,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
 
-        ctk.CTkLabel(win, text=title, font=("Cairo", 20, "bold"),
+        ctk.CTkLabel(win, text=title, font=(UI_FONT, 20, "bold"),
                      text_color="#d4af37").pack(pady=(14, 2))
         ctk.CTkLabel(win, text=f"عدد الصفوف: {len(rows)}   •   صف الإجمالي في آخر الجدول",
-                     font=("Cairo", 12), text_color="#8b8f95").pack(pady=(0, 8))
+                     font=(UI_FONT, 12), text_color="#8b8f95").pack(pady=(0, 8))
 
         body = ctk.CTkFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=24, pady=(0, 6))
@@ -6171,8 +6180,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # صف الإجمالي بارز: خلفية رصاصية غامقة وخط أبيض عريض، ليتميّز عن البيانات
         data_tree.tag_configure("total_tag", foreground="#000000", background="#c4c9ce",
-                                font=("Cairo", 14, "bold"))
-        data_tree.tag_configure("red_tag", foreground="#e74c3c", font=("Cairo", 13, "bold"))
+                                font=(UI_FONT, 14, "bold"))
+        data_tree.tag_configure("red_tag", foreground="#e74c3c", font=(UI_FONT, 13, "bold"))
 
         if totals_values is None:
             totals_values = self.compute_totals_row(columns, rows)
@@ -6200,7 +6209,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.after(120, fit_and_reveal)
         win.after(420, fit_and_reveal)   # إعادة بعد اكتمال التكبير
 
-        ctk.CTkButton(win, text="إغلاق", font=("Cairo", 14, "bold"), width=140, height=40,
+        ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=40,
                       command=win.destroy).pack(pady=12)
 
     @staticmethod
@@ -6254,7 +6263,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         name_tree = ttk.Treeview(name_frame, columns=("الاسم",), show="headings", height=height)
         name_tree.heading("الاسم", text="الاسم")
         name_tree.column("الاسم", width=name_col_width, anchor="center", stretch=False)
-        name_tree.tag_configure("orange_name", foreground="#e67e22", font=("Cairo", 13, "bold"))
+        name_tree.tag_configure("orange_name", foreground="#e67e22", font=(UI_FONT, 13, "bold"))
         self.normalize_tree_tags(name_tree)       # ألوان الوسوم من اللوحة الهادئة في المظهرين
         name_tree.pack(fill="y")
 
@@ -6488,8 +6497,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             design = getattr(self, "_design", None) or {}
             body_size = int(design.get("font", 11) or 11)
             head_size = int(design.get("head", body_size) or body_size)
-            body_font = tkfont.Font(root=tree, font=design.get("body_font", ("Cairo", body_size)))
-            head_font = tkfont.Font(root=tree, font=design.get("head_font", ("Cairo", head_size, "bold")))
+            body_font = tkfont.Font(root=tree, font=design.get("body_font", (UI_FONT, body_size)))
+            head_font = tkfont.Font(root=tree, font=design.get("head_font", (UI_FONT, head_size, "bold")))
             # خطوط الوسوم من نظام التصميم قبل القياس، فيُقاس الجدول بما سيُعرض فعلاً
             self.normalize_tree_tags(tree)
 
@@ -6763,11 +6772,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """أقل ارتفاع صف يسع حروف الخط كاملة (نقاط الياء وذيول الحروف).
 
         الجدول يضع سطر النص (الصعود + النزول) في منتصف الصف ويقصّ ما يخرج عنه.
-        في Cairo الصعود كبير (١٫٣١ من حجم الخط) والنزول ٠٫٥٧، وأعمق ذيل حرف
-        ٠٫٤٦ ≈ ٨١٪ من النزول. فأدنى ارتفاع = الصعود − النزول + ٢ × ٠٫٨١ × النزول.
-        كان الصف ٢٤ بكسل ثابتاً فتُقصّ نقاط «ي» على تكبير ١٢٥٪ («النهائي» ← «النهائى»).
+        في IBM Plex Sans Arabic الصعود ١٫٠٨٥ من حجم الخط والنزول ٠٫٤١٥، وأعمق حرف شائع
+        (نقطتا «ي» الأخيرة، ٠٫٤٥٥ بالعريض) ≈ ١١٠٪ من النزول — يتجاوزه — فأدنى ارتفاع
+        = الصعود − النزول + ٢ × ١٫١٠ × النزول (≈ ١٫٥٨ من حجم الخط، وأعلى علامة فوق الحروف
+        داخلها أيضاً). كان الصف ٢٤ بكسل ثابتاً فتُقصّ نقاط «ي» على تكبير ١٢٥٪.
         """
-        need = ascent - descent + 2 * 0.81 * descent
+        need = ascent - descent + 2 * FONT_DEEP_DESCENT * descent
         return max(int(minimum), int(need + 0.999) + padding)
 
     def table_row_height(self, font_spec, minimum=0):
@@ -6786,8 +6796,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             mode = "dark" if ctk.get_appearance_mode() == "Dark" else "light"
             c = self.DESIGN[mode]
             body = (table_font_family(), m["font"])
-            head = ("Cairo", m["head"], "bold")
-            total = ("Cairo", m["font"] + 1, "bold")
+            head = (UI_FONT, m["head"], "bold")
+            total = (UI_FONT, m["font"] + 1, "bold")
             row_h = self.table_row_height(body, m["row_h"])
             self._design = dict(c, **m, mode=mode, body_font=body, head_font=head, total_font=total,
                                 row_height=row_h)
@@ -6810,7 +6820,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             style.configure(
                 "Treeview.Heading",
                 background=c["head_bg"], foreground=c["head_text"],
-                # هامش رأسي معتدل: سطر Cairo طويل أصلاً (١٫٨٨ من حجم الخط)
+                # هامش رأسي معتدل: سطر الخط ١٫٥ من حجمه
                 relief="flat", borderwidth=0, padding=(6, max(2, m["pad_y"])), font=head,
                 bordercolor=c["head_bg"], lightcolor=c["head_bg"], darkcolor=c["head_bg"])
 
@@ -6864,7 +6874,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def normalize_tree_tags(self, tree):
         """خطوط الوسوم وألوانها من نظام التصميم لا بأحجام ثابتة متفرّقة.
 
-        كانت الجداول تضع لوسومها خطوطاً ثابتة (Cairo 13 أو 14 عريض) فيختلف حجم
+        كانت الجداول تضع لوسومها خطوطاً ثابتة (13 أو 14 عريض) فيختلف حجم
         النص من جدول لآخر ولا يتبع حجم الشاشة، وصفوف العمال كلها عريضة. الآن:
         العريض يبقى عريضاً بحجم خط الجدول (والإجمالي أكبر بدرجة)، والعادي عادي،
         والألوان القديمة الباهتة أو السوداء تُترجَم للون مقروء في المظهر الحالي.
@@ -6894,8 +6904,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if tag == "total_tag":
                         tree.tag_configure(tag, font=d["total_font"])
                     else:
-                        # العريض بوجه Cairo Bold الحقيقي (لا تعريض مصطنع لـ SemiBold)
-                        tree.tag_configure(tag, font=("Cairo", d["font"], "bold") if bold
+                        # العريض بوجه Bold الحقيقي (لا تعريض مصطنع لـ SemiBold)
+                        tree.tag_configure(tag, font=(UI_FONT, d["font"], "bold") if bold
                                            else d["body_font"])
                 # وسم بخلفية خاصة (شريط الإجمالي الرمادي) يبقى بلونَيه كما صُمّما معاً
                 pair = None if bg else (_LEGACY_TEXT_COLORS.get(fg.lower())
@@ -7181,7 +7191,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return hits
 
     def show_table_menu(self, tree, event):
-        menu = tk.Menu(tree, tearoff=0, font=("Cairo", 12))
+        menu = tk.Menu(tree, tearoff=0, font=(UI_FONT, 12))
         region = tree.identify_region(event.x, event.y)
         row = tree.identify_row(event.y)
         if row and row not in tree.selection():
@@ -7362,8 +7372,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         tree, total_tree, _reused = self.reuse_or_create_tree(
             table_frame, cols, height=height, sticky_total=True)
-        tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 13, "bold"))
-        tree.tag_configure("red_tag", foreground="#e74c3c", font=("Cairo", 13, "bold"))
+        tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 13, "bold"))
+        tree.tag_configure("red_tag", foreground="#e74c3c", font=(UI_FONT, 13, "bold"))
         for c in cols:
             w = 230 if c == "البيان" else 165 if c == "الاسم" else 120 if c == "الصف" else 110
             tree.column(c, width=w, anchor="center")
@@ -7494,16 +7504,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ref = invs[0]
         ctk.CTkLabel(win, text=f"📋 تفاصيل الصف ({ref.get('row_number') or 'بدون ترقيم'})",
-                     font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=(14, 2))
+                     font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=(14, 2))
         ctk.CTkLabel(win, text=f"{ref.get('الاسم', '')}   |   عدد الحركات: {len(invs)}",
-                     font=("Cairo", 12), text_color="#8b8f95").pack(pady=(0, 10))
+                     font=(UI_FONT, 12), text_color="#8b8f95").pack(pady=(0, 10))
 
         frame = ttk.Frame(win)
         frame.pack(fill="both", expand=True, padx=16, pady=6)
 
         cols = ("رقم الحركة", "التاريخ", "الوقت", "النوع", "الوزن", "عدد الأشجار", "البيان")
         tree = self.create_standard_treeview(frame, cols, height=11)
-        tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 13, "bold"))
+        tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 13, "bold"))
         for c in cols:
             tree.column(c, width=180 if c == "البيان" else 130 if c == "النوع" else 100, anchor="center")
 
@@ -7524,7 +7534,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree.insert("", "end", values=("الإجمالي", "-", "-", "-", f"{total_w:.2f}", "-", "-"),
                     tags=("total_tag",))
 
-        ctk.CTkButton(win, text="إغلاق", font=("Cairo", 14, "bold"), width=140, height=38,
+        ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=38,
                       command=win.destroy).pack(pady=12)
 
     def open_stage_op_edit_dialog(self, ids, madin_type, qabd_type, title, with_trees=False, status_text="",
@@ -7563,31 +7573,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.focus_force()
 
         ctk.CTkLabel(win, text=f"تعديل حركة الصف ({ref_row or 'بدون ترقيم'}) — {ref_name}",
-                     font=("Cairo", 17, "bold"), text_color="#d4af37").pack(pady=10)
+                     font=(UI_FONT, 17, "bold"), text_color="#d4af37").pack(pady=10)
 
         frm = ctk.CTkFrame(win)
         frm.pack(fill="x", padx=20, pady=10)
 
-        ctk.CTkLabel(frm, text="الصرف (مدين):", font=("Cairo", 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="الصرف (مدين):", font=(UI_FONT, 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
         ent_sarf = ctk.CTkEntry(frm, justify="center", width=130)
         ent_sarf.insert(0, f"{sarf_inv['الوزن']:g}" if sarf_inv else "0")
         ent_sarf.grid(row=0, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="القبض (دائن):", font=("Cairo", 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="القبض (دائن):", font=(UI_FONT, 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
         ent_qabd = ctk.CTkEntry(frm, justify="center", width=130)
         ent_qabd.insert(0, f"{qabd_inv['الوزن']:g}" if qabd_inv else "0")
         ent_qabd.grid(row=1, column=0, padx=10, pady=8)
 
         ent_trees = None
         if with_trees:
-            ctk.CTkLabel(frm, text="عدد الأشجار:", font=("Cairo", 15, "bold")).grid(row=3, column=1, padx=10, pady=8)
+            ctk.CTkLabel(frm, text="عدد الأشجار:", font=(UI_FONT, 15, "bold")).grid(row=3, column=1, padx=10, pady=8)
             ent_trees = ctk.CTkEntry(frm, justify="center", width=130)
             ent_trees.insert(0, f"{cur_trees:g}" if cur_trees else "")
             ent_trees.grid(row=3, column=0, padx=10, pady=8)
 
         ent_rec = None
         if row_extra:
-            ctk.CTkLabel(frm, text=f"{row_extra[1]}:", font=("Cairo", 15, "bold")).grid(row=2, column=1, padx=10, pady=8)
+            ctk.CTkLabel(frm, text=f"{row_extra[1]}:", font=(UI_FONT, 15, "bold")).grid(row=2, column=1, padx=10, pady=8)
             ent_rec = ctk.CTkEntry(frm, justify="center", width=130)
             ent_rec.insert(0, f"{rec_inv['الوزن']:g}" if rec_inv else "0")
             ent_rec.grid(row=2, column=0, padx=10, pady=8)
@@ -7595,22 +7605,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # حقول تعريف الحركة: قابلة للتعديل لتصحيح أي خطأ في الترقيم أو التاريخ
         ref_set = (base_inv.get("set_number", "") or "") if base_inv else ""
 
-        ctk.CTkLabel(frm, text="رقم الصف:", font=("Cairo", 15, "bold")).grid(row=4, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="رقم الصف:", font=(UI_FONT, 15, "bold")).grid(row=4, column=1, padx=10, pady=8)
         ent_row_no = ctk.CTkEntry(frm, justify="center", width=130)
         ent_row_no.insert(0, ref_row)
         ent_row_no.grid(row=4, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="رقم التشغيل:", font=("Cairo", 15, "bold")).grid(row=5, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="رقم التشغيل:", font=(UI_FONT, 15, "bold")).grid(row=5, column=1, padx=10, pady=8)
         ent_set_no = ctk.CTkEntry(frm, justify="center", width=130)
         ent_set_no.insert(0, ref_set)
         ent_set_no.grid(row=5, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="التاريخ:", font=("Cairo", 15, "bold")).grid(row=6, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="التاريخ:", font=(UI_FONT, 15, "bold")).grid(row=6, column=1, padx=10, pady=8)
         ent_date = ctk.CTkEntry(frm, justify="center", width=130)
         ent_date.insert(0, str(ref_dt)[:10])
         ent_date.grid(row=6, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(win, text="البيان:", font=("Cairo", 15, "bold")).pack(pady=(8, 0))
+        ctk.CTkLabel(win, text="البيان:", font=(UI_FONT, 15, "bold")).pack(pady=(8, 0))
         ent_note = ctk.CTkEntry(win, justify="right", width=380)
         ent_note.insert(0, common_note)
         ent_note.pack(pady=5)
@@ -7726,7 +7736,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
 
-        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=("Cairo", 16, "bold"), fg_color="#2ecc71",
+        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
                       hover_color="#27ae60", height=42, command=save_edit).pack(pady=15)
 
     # ترتيب الشاشات في الشريط الجانبي كما طلبه المستخدم
@@ -7955,13 +7965,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             mini = crisp_ctk_image(logo_img, logo_img, (dw, max(1, round(dw * h0 / w0))), self)
             ctk.CTkLabel(head, image=mini, text="").pack()
         except Exception:
-            ctk.CTkLabel(head, text="جاديت", font=("Cairo", 20, "bold"),
+            ctk.CTkLabel(head, text="جاديت", font=(UI_FONT, 20, "bold"),
                          text_color="#d4af37").pack()
 
         ttk.Separator(self.sidebar, orient="horizontal").pack(fill="x", padx=12, pady=(4, 6))
 
         ctk.CTkLabel(self.sidebar, text="الشاشات الرئيسية", anchor="e", height=22,
-                     font=ctk.CTkFont(family="Cairo", size=max(12, int(13 * scale)), weight="bold"),
+                     font=ctk.CTkFont(family=UI_FONT, size=max(12, int(13 * scale)), weight="bold"),
                      text_color=UI["muted"]).pack(fill="x", padx=18, pady=(0, 2))
 
         nav = ctk.CTkScrollableFrame(self.sidebar, fg_color=("#ffffff", "#ffffff"))
@@ -7980,7 +7990,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             try:
                 import tkinter.font as tkfont
                 for size in range(font_size, 12, -1):
-                    if tkfont.Font(root=self, family="Cairo", size=-size, weight="bold").measure(text) <= avail:
+                    if tkfont.Font(root=self, family=UI_FONT, size=-size, weight="bold").measure(text) <= avail:
                         return size
                 return 13
             except Exception:
@@ -8003,7 +8013,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if in_main and shortcut_no[0] < 6:
                 shortcut_no[0] += 1
                 hint = ctk.CTkLabel(card, text=f"Ctrl+{shortcut_no[0]}", width=50, height=22,
-                                    corner_radius=6, font=("Cairo", 11, "bold"),
+                                    corner_radius=6, font=(UI_FONT, 11, "bold"),
                                     fg_color=(UI["surface_alt"], UI["surface_alt"]),
                                     text_color=(UI["muted"], UI["muted"]))
                 hint.pack(side="left", padx=(8, 0))
@@ -8012,7 +8022,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
             btn = ctk.CTkButton(
                 card, text=f"{icon}  {label}", anchor="e",
-                font=ctk.CTkFont(family="Cairo", size=fitted_size(f"{icon}  {label}", len(widgets) > 1),
+                font=ctk.CTkFont(family=UI_FONT, size=fitted_size(f"{icon}  {label}", len(widgets) > 1),
                                  weight="bold"),
                 fg_color="transparent", hover_color=(UI["primary_soft"], UI["primary_soft"]),
                 text_color=(UI["ink"], UI["ink"]),
@@ -8053,7 +8063,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 arrows.place(relx=0.02, rely=0.5, anchor="w")
                 for txt_a, delta in (("▲", -1), ("▼", 1)):
                     ctk.CTkButton(arrows, text=txt_a, width=24, height=22,
-                                  font=("Cairo", 11, "bold"), fg_color="#2e86de",
+                                  font=(UI_FONT, 11, "bold"), fg_color="#2e86de",
                                   hover_color="#1b5e91", corner_radius=6,
                                   command=lambda n=name, d=delta: self.move_sidebar_item(n, d)
                                   ).pack(side="left", padx=1)
@@ -8078,7 +8088,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         more_card.pack_propagate(False)
         btn_more = ctk.CTkButton(
             more_card, text="▾  أخرى", anchor="e",
-            font=ctk.CTkFont(family="Cairo", size=font_size, weight="bold"),
+            font=ctk.CTkFont(family=UI_FONT, size=font_size, weight="bold"),
             fg_color="transparent", hover_color=(UI["secondary"], UI["secondary"]),
             text_color=(UI["ink"], UI["ink"]), corner_radius=10, height=btn_h - 6,
             command=toggle_more)
@@ -8094,7 +8104,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkButton(
             self.sidebar,
             text="✅ إنهاء الترتيب" if arranging else "↔️ ترتيب الشاشات",
-            font=ctk.CTkFont(family="Cairo", size=max(12, int(13 * scale)), weight="bold"),
+            font=ctk.CTkFont(family=UI_FONT, size=max(12, int(13 * scale)), weight="bold"),
             fg_color=UI["success"] if arranging else "transparent",
             hover_color=UI["success_hover"] if arranging else UI["surface_alt"],
             text_color="#ffffff" if arranging else UI["ink"],
@@ -8103,7 +8113,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             command=self.toggle_sidebar_arrange).pack(fill="x", padx=10, pady=(0, 4))
 
         ctk.CTkLabel(self.sidebar, text="يمين الفأرة: تعديل/نقل  ·  Esc: الرئيسية  ·  F1: الاختصارات",
-                     font=("Cairo", 10), text_color=UI["muted"], wraplength=max(120, self.sidebar_width() - 24),
+                     font=(UI_FONT, 10), text_color=UI["muted"], wraplength=max(120, self.sidebar_width() - 24),
                      justify="center").pack(pady=(0, 10))
 
     def create_layout(self):
@@ -8132,7 +8142,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                      border_color=(UI["gold_line"], "#6B5A22"))
         treasury_bar.pack(fill="x", pady=(0, 4))
 
-        self.lbl_live_treasury = ctk.CTkLabel(treasury_bar, text="رصيد الخزينة الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=TREASURY_BAR_TEXT)
+        self.lbl_live_treasury = ctk.CTkLabel(treasury_bar, text="رصيد الخزينة الحالي: 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=19, weight="bold"), text_color=TREASURY_BAR_TEXT)
         self.lbl_live_treasury.pack(padx=14, pady=3)
 
         # ====== شريط الرصيد الحالي (الخزينة + كل صناديق الخياس) ======
@@ -8142,22 +8152,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                   border_color=(UI["line"], "#323B47"))
         total_bar.pack(fill="x", pady=(0, 6))
 
-        self.lbl_total_gold = ctk.CTkLabel(total_bar, text="الرصيد الحالي: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color=(UI["title"], "#C9D6E8"), cursor="hand2")
+        self.lbl_total_gold = ctk.CTkLabel(total_bar, text="الرصيد الحالي: 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=19, weight="bold"), text_color=(UI["title"], "#C9D6E8"), cursor="hand2")
         self.lbl_total_gold.pack(padx=14, pady=3)
         self.lbl_total_gold.bind("<Button-1>", lambda e: self.show_gold_balance_breakdown())
 
         # أرصدة الفصوص والألماس تبقى محسوبة لكنها لا تُرصف: الشريط العلوي
         # يعرض الرصيدين الأساسيين فقط ليبقى منخفضاً ومريحاً للعين.
         # تفصيلها متاح بالضغط على (الرصيد الحالي).
-        self.lbl_gems_stones_balance = ctk.CTkLabel(treasury_display_frame, text="", font=("Cairo", 11))
-        self.lbl_diamond_balance = ctk.CTkLabel(treasury_display_frame, text="", font=("Cairo", 11))
+        self.lbl_gems_stones_balance = ctk.CTkLabel(treasury_display_frame, text="", font=(UI_FONT, 11))
+        self.lbl_diamond_balance = ctk.CTkLabel(treasury_display_frame, text="", font=(UI_FONT, 11))
 
-        self.btn_theme = ctk.CTkButton(top_frame, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=36, corner_radius=10, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
+        self.btn_theme = ctk.CTkButton(top_frame, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=36, corner_radius=10, font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
         self.btn_theme.pack(side="right", padx=8, pady=6)
 
         btn_search_all = ctk.CTkButton(
             top_frame, text="🔍 بحث", width=86, height=36, corner_radius=10,
-            font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent",
+            font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent",
             border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
             hover_color=(UI["surface_alt"], "#232A33"), command=self.open_global_search)
         btn_search_all.pack(side="right", padx=4, pady=6)
@@ -8167,7 +8177,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not IS_ADMIN_BUILD:
             btn_global_undo = ctk.CTkButton(
                 top_frame, text="↩️ تراجع", width=96, height=36, corner_radius=10,
-                font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="transparent",
+                font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent",
                 border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
                 hover_color=(UI["surface_alt"], "#232A33"), command=self.undo_last_action)
             btn_global_undo.pack(side="right", padx=4, pady=6)
@@ -8182,11 +8192,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         period_frame = ctk.CTkFrame(period_column, fg_color="transparent")
         period_frame.pack(side="right")
         
-        ctk.CTkLabel(period_frame, text="الفترة:", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=5)
-        self.combo_active_period = ctk.CTkComboBox(period_frame, width=125, font=("Cairo", 16), command=self.on_period_changed)
+        ctk.CTkLabel(period_frame, text="الفترة:", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=5)
+        self.combo_active_period = ctk.CTkComboBox(period_frame, width=125, font=(UI_FONT, 16), command=self.on_period_changed)
         self.combo_active_period.pack(side="right", padx=5)
         
-        btn_add_period = ctk.CTkButton(period_frame, text="➕ شهر جديد", width=110, height=40, font=ctk.CTkFont(family="Cairo", size=14, weight="bold"), fg_color="#1f77b4", hover_color="#144d75", command=self.add_new_period_ui)
+        btn_add_period = ctk.CTkButton(period_frame, text="➕ شهر جديد", width=110, height=40, font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"), fg_color="#1f77b4", hover_color="#144d75", command=self.add_new_period_ui)
         # نسخة المدير تتصفّح فترات العميل كما هي: فترة جديدة عندها لا تصل العميل ولا معنى لها
         if not IS_ADMIN_BUILD:
             btn_add_period.pack(side="right", padx=5)
@@ -8199,13 +8209,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # صف 1: البحث وتعديل الفاتورة
         row1 = ctk.CTkFrame(search_container, fg_color="transparent")
         row1.pack(fill="x", pady=3)
-        btn_search = ctk.CTkButton(row1, text="بحث عن فاتورة", font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), width=112, height=30, corner_radius=8, command=self.search_invoice_window)
+        btn_search = ctk.CTkButton(row1, text="بحث عن فاتورة", font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), width=112, height=30, corner_radius=8, command=self.search_invoice_window)
         btn_search.pack(side="left", padx=5)
-        self.entry_search_inv = ctk.CTkEntry(row1, placeholder_text="رقم الفاتورة...", font=("Cairo", 14), justify="center", width=125, height=35)
+        self.entry_search_inv = ctk.CTkEntry(row1, placeholder_text="رقم الفاتورة...", font=(UI_FONT, 14), justify="center", width=125, height=35)
         self.entry_search_inv.pack(side="left", padx=5)
         self.entry_search_inv.bind("<Return>", lambda e: self.search_invoice_window())
         # تحديد الشاشة التي تمت فيها الفاتورة (الأرقام قد تتكرر بين الشاشات)
-        self.combo_search_source = ctk.CTkComboBox(row1, values=self.SEARCH_SOURCES, font=("Cairo", 13),
+        self.combo_search_source = ctk.CTkComboBox(row1, values=self.SEARCH_SOURCES, font=(UI_FONT, 13),
                                                     justify="right", width=145, height=35, state="readonly")
         self.combo_search_source.set("المبيعات/الصادر")
         self.combo_search_source.pack(side="left", padx=5)
@@ -8213,14 +8223,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # صف 2: البحث برقم التشغيل الجديد
         row2 = ctk.CTkFrame(search_container, fg_color="transparent")
         row2.pack(fill="x", pady=3)
-        btn_search_op = ctk.CTkButton(row2, text="بحث برقم التشغيل", font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), width=124, height=30, corner_radius=8, fg_color="#b8860b", hover_color="#daa520", command=self.search_op_number_window)
+        btn_search_op = ctk.CTkButton(row2, text="بحث برقم التشغيل", font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), width=124, height=30, corner_radius=8, fg_color="#b8860b", hover_color="#daa520", command=self.search_op_number_window)
         btn_search_op.pack(side="left", padx=5)
-        self.entry_search_op = ctk.CTkEntry(row2, placeholder_text="رقم التشغيل...", font=("Cairo", 14), justify="center", width=140, height=35)
+        self.entry_search_op = ctk.CTkEntry(row2, placeholder_text="رقم التشغيل...", font=(UI_FONT, 14), justify="center", width=140, height=35)
         self.entry_search_op.pack(side="left", padx=5)
 
         # زر التصفير يُنشأ داخل عمود الفترة مباشرة فيظهر فوق شريط الشهر
         # زر خطير: إطار أحمر فقط (لا زر ممتلئ بارز) حتى لا يُضغط سهواً
-        btn_clear_system = ctk.CTkButton(self.period_column, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), width=132, height=34, corner_radius=10, fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"), command=self.reset_system_data_action)
+        btn_clear_system = ctk.CTkButton(self.period_column, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), width=132, height=34, corner_radius=10, fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"), command=self.reset_system_data_action)
         # نسخة المدير مرآة لجهاز العميل: التصفير لا يمسّ إلا نسختها المؤقتة ويُربك، فلا يُعرض
         if not IS_ADMIN_BUILD:
             btn_clear_system.pack(side="right", padx=(6, 0))
@@ -8233,29 +8243,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         status_box.pack(side="left", padx=12, pady=8,
                         **({"before": treasury_display_frame} if IS_ADMIN_BUILD else {}))
 
-        self.lbl_edit_status = ctk.CTkLabel(status_box, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), text_color="#2ecc71")
+        self.lbl_edit_status = ctk.CTkLabel(status_box, text="", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), text_color="#2ecc71")
         self.lbl_edit_status.pack(padx=10, pady=(7, 0))
 
-        self.lbl_cloud_sync = ctk.CTkLabel(status_box, text="☁️ المزامنة: —", font=ctk.CTkFont(family="Cairo", size=11), text_color=UI["muted"])
+        self.lbl_cloud_sync = ctk.CTkLabel(status_box, text="☁️ المزامنة: —", font=ctk.CTkFont(family=UI_FONT, size=11), text_color=UI["muted"])
         self.lbl_cloud_sync.pack(padx=10)
 
         # تنبيه واضح لو كانت الفترة المعروضة ليست الشهر الحالي
-        self.lbl_period_warning = ctk.CTkLabel(status_box, text="", font=ctk.CTkFont(family="Cairo", size=11, weight="bold"), text_color="#e67e22")
+        self.lbl_period_warning = ctk.CTkLabel(status_box, text="", font=ctk.CTkFont(family=UI_FONT, size=11, weight="bold"), text_color="#e67e22")
         self.lbl_period_warning.pack(padx=10)
 
         status_btns = ctk.CTkFrame(status_box, fg_color="transparent")
         status_btns.pack(padx=8, pady=(3, 7))
         if IS_ADMIN_BUILD and self.client_id:
             # المدير: تنزيل آخر نسخة من جهاز العميل فوراً (والتحديث التلقائي كل دقيقة)
-            ctk.CTkButton(status_btns, text="📥 تحديث من العميل", font=("Cairo", 12, "bold"), width=125, height=28,
+            ctk.CTkButton(status_btns, text="📥 تحديث من العميل", font=(UI_FONT, 12, "bold"), width=125, height=28,
                           fg_color="#1e8449", hover_color="#145a32",
                           command=lambda: self.refresh_admin_mirror(manual=True)).pack(side="left", padx=3)
         else:
-            ctk.CTkButton(status_btns, text="🔄 تحديث الصلاحية", font=("Cairo", 12, "bold"), width=125, height=28,
+            ctk.CTkButton(status_btns, text="🔄 تحديث الصلاحية", font=(UI_FONT, 12, "bold"), width=125, height=28,
                           fg_color="#1f77b4", hover_color="#144d75", command=self.refresh_edit_permission_now).pack(side="left", padx=3)
         if not (IS_ADMIN_BUILD and self.client_id):
             # المدير يستبدله بـ«تحديث من العميل» (نسخه الاحتياطية نسخ لمرآة مؤقتة لا أكثر)
-            ctk.CTkButton(status_btns, text="☁️ النسخ الاحتياطي", font=("Cairo", 12, "bold"), width=125, height=28,
+            ctk.CTkButton(status_btns, text="☁️ النسخ الاحتياطي", font=(UI_FONT, 12, "bold"), width=125, height=28,
                           fg_color="#555555", hover_color="#333333", command=self.open_backup_manager).pack(side="left", padx=3)
 
         self.main_shell = ctk.CTkFrame(self.content_area, fg_color="transparent")
@@ -8380,12 +8390,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.lbl_gold_price = ctk.CTkLabel(
             self.gold_bar, text="🥇 جارٍ جلب سعر الذهب العالمي…",
-            font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
+            font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"),
             text_color="#F5F1E3")
         self.lbl_gold_price.pack(side="right", padx=16, pady=7)
 
         ctk.CTkButton(self.gold_bar, text="🔄 تحديث", width=80, height=28,
-                      font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                      font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                       fg_color="transparent", border_width=1, border_color="#3A4A66",
                       hover_color="#22304A", text_color="#E9C75C",
                       command=lambda: self.gold_watcher and self.gold_watcher.refresh_now()
@@ -8418,7 +8428,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     pass
             bg, fg = self.TOAST_COLORS.get(kind, self.TOAST_COLORS["info"])
             frame = ctk.CTkFrame(host, fg_color=bg, corner_radius=12)
-            ctk.CTkLabel(frame, text=text, text_color=fg, font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
+            ctk.CTkLabel(frame, text=text, text_color=fg, font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"),
                          wraplength=520).pack(padx=18, pady=8)
             frame.place(relx=0.5, rely=1.0, y=-64, anchor="s")
             frame.lift()
@@ -8463,7 +8473,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if bar is None:
             return
         self.lbl_scale = ctk.CTkLabel(bar, text="⚖️ الميزان", cursor="hand2",
-                                      font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                                      font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                                       text_color="#C9D6E8")
         self.lbl_scale.pack(side="left", padx=(6, 8))
         self.lbl_scale.bind("<Button-1>", lambda e: self.open_scale_settings())
@@ -8527,13 +8537,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.geometry("560x450")
         win.transient(self)
         win.focus_force()
-        ctk.CTkLabel(win, text="⚖️ الميزان الإلكتروني", font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(win, text="⚖️ الميزان الإلكتروني", font=(UI_FONT, 19, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
         ctk.CTkLabel(win, text="وصّل الميزان بكابل RS-232 أو USB، واختر منفذه ونوعه.\n"
                                "بعدها: ضع المؤشر في أي خانة وزن واضغط F2 فيُكتب الوزن المستقر.",
-                     font=("Cairo", 12), text_color=UI["muted"], justify="center").pack(pady=(0, 8))
+                     font=(UI_FONT, 12), text_color=UI["muted"], justify="center").pack(pady=(0, 8))
         if not SCALE_MODULE_AVAILABLE or not scale_reader.SERIAL_AVAILABLE:
             ctk.CTkLabel(win, text="مكتبة الاتصال بالمنافذ (pyserial) غير مثبّتة في هذه النسخة.",
-                         font=("Cairo", 13, "bold"), text_color=UI["danger"]).pack(pady=20)
+                         font=(UI_FONT, 13, "bold"), text_color=UI["danger"]).pack(pady=20)
             ctk.CTkButton(win, text="إغلاق", command=win.destroy, **BUTTON_STYLES["secondary"]).pack()
             return win
         conf = self.scale_settings()
@@ -8543,27 +8553,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def row(label, widget_factory):
             r = ctk.CTkFrame(form, fg_color="transparent")
             r.pack(fill="x", pady=4)
-            ctk.CTkLabel(r, text=label, font=("Cairo", 13, "bold"), width=120, anchor="e").pack(side="right", padx=6)
+            ctk.CTkLabel(r, text=label, font=(UI_FONT, 13, "bold"), width=120, anchor="e").pack(side="right", padx=6)
             w = widget_factory(r)
             w.pack(side="right", padx=6)
             return w
 
         ports = [p for p, _d in scale_reader.list_ports()]
-        port_box = row("المنفذ:", lambda r: ctk.CTkComboBox(r, values=ports or [""], width=260, font=("Cairo", 13)))
+        port_box = row("المنفذ:", lambda r: ctk.CTkComboBox(r, values=ports or [""], width=260, font=(UI_FONT, 13)))
         port_box.set(conf["port"] or (ports[0] if ports else ""))
         baud_box = row("السرعة:", lambda r: ctk.CTkOptionMenu(r, values=[str(b) for b in scale_reader.BAUD_RATES],
-                                                              width=260, font=("Cairo", 13)))
+                                                              width=260, font=(UI_FONT, 13)))
         baud_box.set(str(conf["baud"]))
         preset_box = row("نوع الميزان:", lambda r: ctk.CTkOptionMenu(r, values=list(scale_reader.PRESETS),
-                                                                     width=260, font=("Cairo", 13)))
+                                                                     width=260, font=(UI_FONT, 13)))
         preset_box.set(conf["preset"])
         enabled = ctk.BooleanVar(value=conf["enabled"])
         ctk.CTkCheckBox(win, text="تفعيل الميزان على هذا الجهاز", variable=enabled,
-                        font=("Cairo", 13, "bold")).pack(pady=6)
-        live = ctk.CTkLabel(win, text="", font=("Cairo", 15, "bold"), corner_radius=10, height=44,
+                        font=(UI_FONT, 13, "bold")).pack(pady=6)
+        live = ctk.CTkLabel(win, text="", font=(UI_FONT, 15, "bold"), corner_radius=10, height=44,
                             fg_color=(UI["surface_alt"], "#1D232B"))
         live.pack(fill="x", padx=24, pady=8)
-        raw = ctk.CTkLabel(win, text="", font=("Cairo", 11), text_color=UI["muted"])
+        raw = ctk.CTkLabel(win, text="", font=(UI_FONT, 11), text_color=UI["muted"])
         raw.pack()
 
         def save():
@@ -8590,9 +8600,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(pady=10)
-        ctk.CTkButton(btns, text="💾 حفظ وتشغيل", width=150, height=40, font=("Cairo", 14, "bold"),
+        ctk.CTkButton(btns, text="💾 حفظ وتشغيل", width=150, height=40, font=(UI_FONT, 14, "bold"),
                       command=save, **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="إغلاق", width=110, height=40, font=("Cairo", 14, "bold"),
+        ctk.CTkButton(btns, text="إغلاق", width=110, height=40, font=(UI_FONT, 14, "bold"),
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         tick()
         return win
@@ -8657,12 +8667,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.title("بحث شامل")
         win.geometry("760x520")
         win.transient(self)
-        ctk.CTkLabel(win, text="🔍 بحث شامل", font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(win, text="🔍 بحث شامل", font=(UI_FONT, 19, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
         ctk.CTkLabel(win, text="اسم حساب أو عامل أو مورد · رقم تشغيل (أو امسح باركوده) · رقم فاتورة مبيعات · رقم حركة",
-                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
-        entry = ctk.CTkEntry(win, font=("Cairo", 16), height=42, justify="right", placeholder_text="اكتب للبحث…")
+                     font=(UI_FONT, 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        entry = ctk.CTkEntry(win, font=(UI_FONT, 16), height=42, justify="right", placeholder_text="اكتب للبحث…")
         entry.pack(fill="x", padx=18, pady=4)
-        status = ctk.CTkLabel(win, text="", font=("Cairo", 12), text_color=UI["muted"])
+        status = ctk.CTkLabel(win, text="", font=(UI_FONT, 12), text_color=UI["muted"])
         status.pack()
         frame = ttk.Frame(win)
         frame.pack(fill="both", expand=True, padx=18, pady=(4, 6))
@@ -8741,16 +8751,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.title("اختصارات لوحة المفاتيح")
         win.geometry("700x540")
         win.transient(self)
-        ctk.CTkLabel(win, text="⌨️ اختصارات تسرّع العمل", font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(16, 8))
+        ctk.CTkLabel(win, text="⌨️ اختصارات تسرّع العمل", font=(UI_FONT, 19, "bold"), text_color=UI_TITLE).pack(pady=(16, 8))
         box = ctk.CTkFrame(win, corner_radius=12, fg_color=(UI["surface"], "#171C23"), border_width=1,
                            border_color=(UI["line"], "#2A313B"))
         box.pack(fill="both", expand=True, padx=18, pady=(0, 10))
         for key, what in self.SHORTCUTS:
             row = ctk.CTkFrame(box, fg_color="transparent")
             row.pack(fill="x", padx=14, pady=5)
-            ctk.CTkLabel(row, text=key, width=240, height=30, corner_radius=8, font=("Cairo", 13, "bold"),
+            ctk.CTkLabel(row, text=key, width=240, height=30, corner_radius=8, font=(UI_FONT, 13, "bold"),
                          fg_color=(UI["surface_alt"], "#232A33"), text_color=(UI["title"], "#C9D6E8")).pack(side="right")
-            ctk.CTkLabel(row, text=what, anchor="e", font=("Cairo", 13),
+            ctk.CTkLabel(row, text=what, anchor="e", font=(UI_FONT, 13),
                          text_color=(UI["ink"], "#E6EDF3")).pack(side="right", fill="x", expand=True, padx=12)
         ctk.CTkButton(win, text="إغلاق", width=120, height=36, command=win.destroy,
                       **BUTTON_STYLES["secondary"]).pack(pady=(0, 14))
@@ -8847,13 +8857,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          fg_color=("#ffffff", "#12161c")).place(
                 relx=0.5, rely=0.5, anchor="center")
         except Exception:
-            ctk.CTkLabel(logo_card, text="💎 مصنع جاديت للتصنيع", font=("Cairo", 26, "bold"), text_color="#d4af37").pack(pady=16)
+            ctk.CTkLabel(logo_card, text="💎 مصنع جاديت للتصنيع", font=(UI_FONT, 26, "bold"), text_color="#d4af37").pack(pady=16)
 
         header_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         header_row.pack(fill="x", padx=30, pady=(10, 6))
 
         self.lbl_home_hint = ctk.CTkLabel(header_row, text="اختر الشاشة التي تريد الدخول إليها",
-                                          font=("Cairo", 15, "bold"), text_color=UI["muted"])
+                                          font=(UI_FONT, 15, "bold"), text_color=UI["muted"])
         self.lbl_home_hint.pack(side="right", expand=True)
         try:
             self.lbl_home_hint.configure(text=self.home_greeting_text())
@@ -8872,7 +8882,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                  "يطابق الخزينة والصناديق والكشوف والمبيعات والقيود في كل فترة — قراءة فقط"),
                 ("⌨️ الاختصارات", self.open_shortcuts_help, "secondary", "كل اختصارات لوحة المفاتيح (F1)")):
             b = ctk.CTkButton(quick, text=text, height=36, corner_radius=10, command=cmd,
-                              font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), **BUTTON_STYLES[style])
+                              font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), **BUTTON_STYLES[style])
             b.pack(side="right", padx=4, fill="x", expand=True)
             HoverTip(b, tip)
         self.home_stat_labels = {}
@@ -8890,10 +8900,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          corner_radius=12, fg_color=tint).pack(side="right", padx=(10, 12), pady=12)
             texts = ctk.CTkFrame(card, fg_color="transparent")
             texts.pack(side="right", pady=8)
-            ctk.CTkLabel(texts, text=caption, font=("Cairo", 12), height=18, anchor="e",
+            ctk.CTkLabel(texts, text=caption, font=(UI_FONT, 12), height=18, anchor="e",
                          text_color=(UI["muted"], "#9AA4B2")).pack(anchor="e")
             val = ctk.CTkLabel(texts, text="—", height=30, anchor="e",
-                               font=ctk.CTkFont(family="Cairo", size=20, weight="bold"),
+                               font=ctk.CTkFont(family=UI_FONT, size=20, weight="bold"),
                                text_color=(UI["ink"], "#F2F4F7"))
             val.pack(anchor="e")
             self.home_stat_labels[key] = val
@@ -8901,13 +8911,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.home_arrange_mode = False
         self.home_swap_pick = None
-        self.btn_home_arrange = ctk.CTkButton(header_row, text="↔️ ترتيب الشاشات", font=("Cairo", 13, "bold"),
+        self.btn_home_arrange = ctk.CTkButton(header_row, text="↔️ ترتيب الشاشات", font=(UI_FONT, 13, "bold"),
                                               width=145, height=34, fg_color="#555555", hover_color="#333333",
                                               command=self.toggle_home_arrange_mode)
         # الترتيب صار من الشريط الجانبي نفسه، فلا داعي لتكراره هنا
         # self.btn_home_arrange.pack(side="left", padx=4)
 
-        self.btn_home_reset = ctk.CTkButton(header_row, text="↺ الترتيب الافتراضي", font=("Cairo", 13, "bold"),
+        self.btn_home_reset = ctk.CTkButton(header_row, text="↺ الترتيب الافتراضي", font=(UI_FONT, 13, "bold"),
                                             width=155, height=34, fg_color="#8b0000", hover_color="#a52a2a",
                                             command=self.reset_home_order)
         # self.btn_home_reset.pack(side="left", padx=4)
@@ -8930,11 +8940,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         icon.pack(side="right", padx=(10, 12), pady=12)
         texts = ctk.CTkFrame(card, fg_color="transparent")
         texts.pack(side="right", pady=8)
-        cap = ctk.CTkLabel(texts, text="لوحة المؤشرات", font=("Cairo", 12), height=18, anchor="e",
+        cap = ctk.CTkLabel(texts, text="لوحة المؤشرات", font=(UI_FONT, 12), height=18, anchor="e",
                            text_color=(UI["muted"], "#9AA4B2"))
         cap.pack(anchor="e")
         val = ctk.CTkLabel(texts, text="عرض المؤشرات ←", height=30, anchor="e",
-                           font=ctk.CTkFont(family="Cairo", size=20, weight="bold"),
+                           font=ctk.CTkFont(family=UI_FONT, size=20, weight="bold"),
                            text_color=(UI["primary"], "#9CC0F5"))
         val.pack(anchor="e")
         open_dash = lambda _e=None: self.navigate_to_screen("لوحة المؤشرات")
@@ -8999,7 +9009,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 cmd = (lambda n=name: self.navigate_to_screen(n))
 
             b = ctk.CTkButton(self.home_btns_frame, text=screen_display.get(name, name),
-                              font=("Cairo", 15, "bold"), width=200, height=50,
+                              font=(UI_FONT, 15, "bold"), width=200, height=50,
                               fg_color=fg, hover_color="#144d75", command=cmd)
             b.grid(row=i % rows_per_col, column=(n_cols - 1) - (i // rows_per_col), padx=10, pady=9)
 
@@ -9339,51 +9349,51 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tab = self.tabview.tab("الرصيد الافتتاحي")
         frame = ctk.CTkFrame(tab, corner_radius=12)
         frame.pack(pady=30, padx=40, fill="both", expand=True)
-        lbl = ctk.CTkLabel(frame, text="⚖️ قيد افتتاحي", font=ctk.CTkFont(family="Cairo", size=22, weight="bold"), text_color="#d4af37")
+        lbl = ctk.CTkLabel(frame, text="⚖️ قيد افتتاحي", font=ctk.CTkFont(family=UI_FONT, size=22, weight="bold"), text_color="#d4af37")
         lbl.pack(pady=20)
 
-        self.lbl_opening_status = ctk.CTkLabel(frame, text="", font=("Cairo", 15, "bold"), text_color="#2ecc71")
+        self.lbl_opening_status = ctk.CTkLabel(frame, text="", font=(UI_FONT, 15, "bold"), text_color="#2ecc71")
         self.lbl_opening_status.pack()
 
         name_row = ctk.CTkFrame(frame, fg_color="transparent")
         name_row.pack(pady=10)
-        ctk.CTkLabel(name_row, text="الاسم:", font=("Cairo", 16, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.opening_name = ctk.CTkComboBox(name_row, values=self.get_supplier_name_values_no_mustarja(), font=("Cairo", 16), justify="right", width=250, height=42)
+        ctk.CTkLabel(name_row, text="الاسم:", font=(UI_FONT, 16, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.opening_name = ctk.CTkComboBox(name_row, values=self.get_supplier_name_values_no_mustarja(), font=(UI_FONT, 16), justify="right", width=250, height=42)
         self.opening_name.set("المصنع")
         self.opening_name.pack(side="right", padx=8)
         self.bind_name_autocomplete(self.opening_name, self.get_supplier_name_values_no_mustarja)
 
         type_row = ctk.CTkFrame(frame, fg_color="transparent")
         type_row.pack(pady=10)
-        self.opening_type = ctk.CTkOptionMenu(type_row, values=["ذهب", "الماس", "فصوص وأحجار"], font=("Cairo", 15, "bold"), width=140, height=40, command=self.toggle_opening_carat_field)
+        self.opening_type = ctk.CTkOptionMenu(type_row, values=["ذهب", "الماس", "فصوص وأحجار"], font=(UI_FONT, 15, "bold"), width=140, height=40, command=self.toggle_opening_carat_field)
         self.opening_type.set("ذهب")
         self.opening_type.pack(side="right", padx=8)
-        ctk.CTkLabel(type_row, text="النوع:", font=("Cairo", 16, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        ctk.CTkLabel(type_row, text="النوع:", font=(UI_FONT, 16, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
 
         weight_row = ctk.CTkFrame(frame, fg_color="transparent")
         weight_row.pack(pady=10)
-        self.lbl_opening_carat = ctk.CTkLabel(weight_row, text="العيار:", font=("Cairo", 15, "bold"))
-        self.opening_carat = ctk.CTkEntry(weight_row, placeholder_text="العيار", font=("Cairo", 16), justify="center", width=100, height=40)
+        self.lbl_opening_carat = ctk.CTkLabel(weight_row, text="العيار:", font=(UI_FONT, 15, "bold"))
+        self.opening_carat = ctk.CTkEntry(weight_row, placeholder_text="العيار", font=(UI_FONT, 16), justify="center", width=100, height=40)
         self.lbl_opening_carat.pack(side="right", padx=5)
         self.opening_carat.pack(side="right", padx=8)
 
-        self.entry_opening = ctk.CTkEntry(weight_row, placeholder_text="الوزن...", font=("Cairo", 16), justify="center", width=150, height=40)
+        self.entry_opening = ctk.CTkEntry(weight_row, placeholder_text="الوزن...", font=(UI_FONT, 16), justify="center", width=150, height=40)
         self.entry_opening.pack(side="right", padx=8)
-        ctk.CTkLabel(weight_row, text="الوزن:", font=("Cairo", 16, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        ctk.CTkLabel(weight_row, text="الوزن:", font=(UI_FONT, 16, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
 
-        btn = ctk.CTkButton(frame, text="تثبيت القيد الافتتاحي ⚖️", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), height=48, command=self.set_opening_balance)
+        btn = ctk.CTkButton(frame, text="تثبيت القيد الافتتاحي ⚖️", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), height=48, command=self.set_opening_balance)
         btn.pack(pady=20)
 
         table_top_open = ctk.CTkFrame(frame, fg_color="transparent")
         table_top_open.pack(fill="x", padx=15, pady=(10, 2))
-        ctk.CTkLabel(table_top_open, text="القيود الافتتاحية المسجّلة", font=("Cairo", 16, "bold"), text_color="#d4af37").pack(side="right")
+        ctk.CTkLabel(table_top_open, text="القيود الافتتاحية المسجّلة", font=(UI_FONT, 16, "bold"), text_color="#d4af37").pack(side="right")
 
-        btn_del_open = ctk.CTkButton(table_top_open, text="حذف القيد المحدد 🗑️", font=("Cairo", 14, "bold"),
+        btn_del_open = ctk.CTkButton(table_top_open, text="حذف القيد المحدد 🗑️", font=(UI_FONT, 14, "bold"),
                                      fg_color="#8b0000", hover_color="#a52a2a", width=165, height=32,
                                      command=self.delete_selected_opening_row)
         btn_del_open.pack(side="left", padx=5)
 
-        btn_edit_open = ctk.CTkButton(table_top_open, text="تعديل القيد المحدد ✏️", font=("Cairo", 14, "bold"),
+        btn_edit_open = ctk.CTkButton(table_top_open, text="تعديل القيد المحدد ✏️", font=(UI_FONT, 14, "bold"),
                                       fg_color="#b8860b", hover_color="#daa520", width=165, height=32,
                                       command=self.edit_selected_opening_row)
         btn_edit_open.pack(side="left", padx=5)
@@ -9392,7 +9402,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.opening_table_frame.pack(fill="both", expand=True, padx=15, pady=(0, 8))
         self.opening_tree = None
 
-        btn_print_opening = ctk.CTkButton(frame, text="🖨️ طباعة القيود الافتتاحية", font=("Cairo", 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_opening_screen)
+        btn_print_opening = ctk.CTkButton(frame, text="🖨️ طباعة القيود الافتتاحية", font=(UI_FONT, 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_opening_screen)
         btn_print_opening.pack(pady=(0, 15))
 
         self.refresh_opening_table()
@@ -9495,7 +9505,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         cols = ("رقم الفاتورة", "التاريخ", "الاسم", "النوع", "الوزن", "العيار", "وزن 18")
         self.opening_tree = self.create_standard_treeview(self.opening_table_frame, cols, height=8)
-        self.opening_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        self.opening_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         for c in cols:
             w = 170 if c == "الاسم" else 140 if c == "التاريخ" else 100
             self.opening_tree.column(c, width=w, anchor="center")
@@ -9577,37 +9587,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text=f"✏️ تعديل القيد الافتتاحي رقم ({inv_id})", font=("Cairo", 17, "bold"), text_color="#d4af37").pack(pady=12)
+        ctk.CTkLabel(win, text=f"✏️ تعديل القيد الافتتاحي رقم ({inv_id})", font=(UI_FONT, 17, "bold"), text_color="#d4af37").pack(pady=12)
 
         frm = ctk.CTkFrame(win)
         frm.pack(fill="x", padx=20, pady=8)
 
-        ctk.CTkLabel(frm, text="التاريخ:", font=("Cairo", 14, "bold")).grid(row=0, column=1, padx=10, pady=8, sticky="e")
+        ctk.CTkLabel(frm, text="التاريخ:", font=(UI_FONT, 14, "bold")).grid(row=0, column=1, padx=10, pady=8, sticky="e")
         ent_date = ctk.CTkEntry(frm, justify="center", width=190)
         ent_date.insert(0, inv.get("التاريخ", ""))
         ent_date.grid(row=0, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="الاسم:", font=("Cairo", 14, "bold")).grid(row=1, column=1, padx=10, pady=8, sticky="e")
+        ctk.CTkLabel(frm, text="الاسم:", font=(UI_FONT, 14, "bold")).grid(row=1, column=1, padx=10, pady=8, sticky="e")
         cmb_name = ctk.CTkComboBox(frm, values=self.get_supplier_name_values_no_mustarja(), justify="right", width=190)
         cmb_name.set(inv.get("الاسم", "المصنع"))
         cmb_name.grid(row=1, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="النوع:", font=("Cairo", 14, "bold")).grid(row=2, column=1, padx=10, pady=8, sticky="e")
+        ctk.CTkLabel(frm, text="النوع:", font=(UI_FONT, 14, "bold")).grid(row=2, column=1, padx=10, pady=8, sticky="e")
         opt_type = ctk.CTkOptionMenu(frm, values=["ذهب", "الماس", "فصوص وأحجار"], width=190)
         opt_type.set(cur_type)
         opt_type.grid(row=2, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="الوزن:", font=("Cairo", 14, "bold")).grid(row=3, column=1, padx=10, pady=8, sticky="e")
+        ctk.CTkLabel(frm, text="الوزن:", font=(UI_FONT, 14, "bold")).grid(row=3, column=1, padx=10, pady=8, sticky="e")
         ent_w = ctk.CTkEntry(frm, justify="center", width=190)
         ent_w.insert(0, f"{inv.get('قبل', inv['الوزن']) or inv['الوزن']:g}")
         ent_w.grid(row=3, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="العيار (للذهب فقط):", font=("Cairo", 14, "bold")).grid(row=4, column=1, padx=10, pady=8, sticky="e")
+        ctk.CTkLabel(frm, text="العيار (للذهب فقط):", font=(UI_FONT, 14, "bold")).grid(row=4, column=1, padx=10, pady=8, sticky="e")
         ent_carat = ctk.CTkEntry(frm, justify="center", width=190)
         ent_carat.insert(0, f"{inv.get('بعد', 0):g}" if inv.get("بعد", 0) else "")
         ent_carat.grid(row=4, column=0, padx=10, pady=8)
 
-        lbl_preview = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"), text_color="#1f77b4")
+        lbl_preview = ctk.CTkLabel(win, text="", font=(UI_FONT, 14, "bold"), text_color="#1f77b4")
         lbl_preview.pack(pady=(4, 0))
 
         def preview(event=None):
@@ -9683,7 +9693,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after(3000, lambda: self.lbl_opening_status.configure(text=""))
             messagebox.showinfo("تم", "تم تعديل القيد الافتتاحي وإعادة حساب الخزينة وكل الأرصدة المرتبطة.")
 
-        btn_save_open = ctk.CTkButton(win, text="حفظ التعديلات 💾", font=("Cairo", 16, "bold"), fg_color="#2ecc71",
+        btn_save_open = ctk.CTkButton(win, text="حفظ التعديلات 💾", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
                                       hover_color="#27ae60", height=42, command=save_opening_edit)
         btn_save_open.pack(pady=16)
         self.apply_edit_lock_to_button(btn_save_open, win)
@@ -9701,7 +9711,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.stage_bar = ctk.CTkFrame(tab, fg_color="transparent")
         self.stage_bar.pack(fill="x", padx=16, pady=(6, 6))
 
-        self.lbl_op_status = ctk.CTkLabel(self.stage_bar, text="", font=("Cairo", 14, "bold"), text_color="#2ecc71")
+        self.lbl_op_status = ctk.CTkLabel(self.stage_bar, text="", font=(UI_FONT, 14, "bold"), text_color="#2ecc71")
         self.lbl_op_status.pack(side="left", padx=6)
 
         self.current_op_cat = "المصنعين"
@@ -9740,16 +9750,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         sel_frame.pack(fill="x", padx=12, pady=(8, 2))
 
         def sel_label(text):
-            ctk.CTkLabel(sel_frame, text=text, font=("Cairo", 14, "bold"),
+            ctk.CTkLabel(sel_frame, text=text, font=(UI_FONT, 14, "bold"),
                          text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(8, 4))
 
         sel_label("التاريخ:")
-        self.op_date = ctk.CTkEntry(sel_frame, font=("Cairo", 14), justify="center", width=120, height=36)
+        self.op_date = ctk.CTkEntry(sel_frame, font=(UI_FONT, 14), justify="center", width=120, height=36)
         self.op_date.insert(0, self.get_smart_default_date())
         self.op_date.pack(side="right", padx=4)
 
         sel_label("الاسم:")
-        self.combo_op_name = ctk.CTkComboBox(sel_frame, values=["لا يوجد أسماء"], font=("Cairo", 14), width=200, height=36, justify="right", command=self.render_unified_fields)
+        self.combo_op_name = ctk.CTkComboBox(sel_frame, values=["لا يوجد أسماء"], font=(UI_FONT, 14), width=200, height=36, justify="right", command=self.render_unified_fields)
         self.combo_op_name.pack(side="right", padx=4)
         # اقتراح أقرب الأسماء أثناء الكتابة، واختيار الاسم يعرض خاناته مباشرة
         self.bind_name_autocomplete(
@@ -9757,11 +9767,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lambda: [self.rtl(n) for n in self.categories.get(getattr(self, "current_op_cat", "المصنعين"), [])],
             on_pick=self.render_unified_fields)
 
-        btn_submit = ctk.CTkButton(sel_frame, text="ترحيل الحركة 💾", font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
+        btn_submit = ctk.CTkButton(sel_frame, text="ترحيل الحركة 💾", font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"),
                                    height=36, width=160, fg_color=UI["primary"], hover_color=UI["primary_hover"],
                                    command=self.submit_unified_op)
         btn_submit.pack(side="left", padx=4)
-        self.op_note = ctk.CTkEntry(sel_frame, placeholder_text="البيان / الملاحظات...", font=("Cairo", 14), justify="right", height=36)
+        self.op_note = ctk.CTkEntry(sel_frame, placeholder_text="البيان / الملاحظات...", font=(UI_FONT, 14), justify="right", height=36)
         self.op_note.pack(side="left", fill="x", expand=True, padx=(4, 12))
 
         # صف مضغوط واحد يحوي كل حقول العملية المختارة جنباً إلى جنب
@@ -9772,18 +9782,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ledger_header = ctk.CTkFrame(self.mfg_inst_container, fg_color="transparent")
         ledger_header.pack(fill="x", padx=18, pady=(0, 2))
 
-        self.lbl_op_ledger_title = ctk.CTkLabel(ledger_header, text="كشف حركة العامل المحدد", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color=UI_TITLE)
+        self.lbl_op_ledger_title = ctk.CTkLabel(ledger_header, text="كشف حركة العامل المحدد", font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"), text_color=UI_TITLE)
         self.lbl_op_ledger_title.pack(side="right")
 
-        btn_del_row = ctk.CTkButton(ledger_header, text="🗑️ حذف", font=("Cairo", 13, "bold"), fg_color=UI["danger"], hover_color=UI["danger_hover"], width=90, height=30, command=self.op_ledger_delete_selected)
+        btn_del_row = ctk.CTkButton(ledger_header, text="🗑️ حذف", font=(UI_FONT, 13, "bold"), fg_color=UI["danger"], hover_color=UI["danger_hover"], width=90, height=30, command=self.op_ledger_delete_selected)
         btn_del_row.pack(side="left", padx=3)
 
         # تذكرة التشغيل للصف المحدد (أو للرقم المكتوب) وتتبّع أي رقم بالمسح (Ctrl+B)
-        btn_ticket = ctk.CTkButton(ledger_header, text="🏷️ تذكرة", font=("Cairo", 12, "bold"), width=90, height=30,
+        btn_ticket = ctk.CTkButton(ledger_header, text="🏷️ تذكرة", font=(UI_FONT, 12, "bold"), width=90, height=30,
                                    command=self.print_stage_job_ticket, **BUTTON_STYLES["secondary"])
         btn_ticket.pack(side="left", padx=3)
         HoverTip(btn_ticket, "تذكرة تشغيل بباركود وQR للصف المحدد أو للرقم المكتوب في خانته")
-        btn_trace = ctk.CTkButton(ledger_header, text="🔎 تتبّع رقم", font=("Cairo", 12, "bold"), width=105, height=30,
+        btn_trace = ctk.CTkButton(ledger_header, text="🔎 تتبّع رقم", font=(UI_FONT, 12, "bold"), width=105, height=30,
                                   command=lambda: self.open_set_number_trace(self.stage_selected_set_number() or None),
                                   **BUTTON_STYLES["secondary"])
         btn_trace.pack(side="left", padx=3)
@@ -9792,7 +9802,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # زر التلوين لقسمي المصنعين والمركبين: يتبع القسم المعروض حالياً،
         # وإعداده محفوظ لكل قسم على حدة
         self.btn_ledger_neg_color = ctk.CTkButton(
-            ledger_header, text="⚪ لون واحد", font=("Cairo", 12, "bold"), width=105, height=28,
+            ledger_header, text="⚪ لون واحد", font=(UI_FONT, 12, "bold"), width=105, height=28,
             fg_color="#555555", hover_color="#333333",
             command=lambda: self.toggle_negative_color(self.current_op_cat, self.refresh_op_ledger_table))
         self.btn_ledger_neg_color.pack(side="left", padx=3)
@@ -9802,18 +9812,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for _c in ("المصنعين", "المركبين", "الآلة/المكائن"):
             self.neg_color_buttons[_c] = self.btn_ledger_neg_color
 
-        ctk.CTkButton(ledger_header, text="👁️ عرض", font=("Cairo", 13, "bold"), fg_color=UI["primary"],
+        ctk.CTkButton(ledger_header, text="👁️ عرض", font=(UI_FONT, 13, "bold"), fg_color=UI["primary"],
                       hover_color=UI["primary_hover"], width=90, height=30,
                       command=lambda: self.view_treeview_fullscreen(
                           self.op_ledger_tree, f"عرض كامل — {self.clean_name(self.combo_op_name.get())}",
                           name_tree=self.op_ledger_name_tree)
                       ).pack(side="left", padx=3)
 
-        btn_edit_row = ctk.CTkButton(ledger_header, text="✏️ تعديل", font=("Cairo", 13, "bold"), fg_color=UI["edit"], hover_color=UI["edit_hover"], width=90, height=30, command=self.op_ledger_edit_selected)
+        btn_edit_row = ctk.CTkButton(ledger_header, text="✏️ تعديل", font=(UI_FONT, 13, "bold"), fg_color=UI["edit"], hover_color=UI["edit_hover"], width=90, height=30, command=self.op_ledger_edit_selected)
         btn_edit_row.pack(side="left", padx=3)
 
         # سطر الإجماليات يُحجز أسفل الشاشة قبل الجدول، فيأخذ الجدول كل ما بينهما
-        self.lbl_op_ledger_totals = ctk.CTkLabel(self.mfg_inst_container, text="", font=("Cairo", 14, "bold"), text_color=UI_TITLE)
+        self.lbl_op_ledger_totals = ctk.CTkLabel(self.mfg_inst_container, text="", font=(UI_FONT, 14, "bold"), text_color=UI_TITLE)
         self.lbl_op_ledger_totals.pack(side="bottom", fill="x", padx=18, pady=(0, 6))
 
         self.op_ledger_table_frame = ttk.Frame(self.mfg_inst_container)
@@ -9867,7 +9877,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         stage_defs = [(k, labels[k]) for k in self.stage_order(list(labels.keys()))]
 
         for key, label in stage_defs:
-            b = ctk.CTkButton(self.stage_bar, text=label, font=("Cairo", 15, "bold"), height=38, width=140,
+            b = ctk.CTkButton(self.stage_bar, text=label, font=(UI_FONT, 15, "bold"), height=38, width=140,
                                command=lambda k=key: self.switch_op_stage(k))
             b.pack(side="right", padx=5)
             # الزر الأيمن: تحريك القسم يميناً أو يساراً في الشريط
@@ -10040,7 +10050,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         n = len(specs)
         col_of = {k: n - 1 - i for i, (k, _l, _w) in enumerate(specs)}
         labels = {}
-        label_font = ("Cairo", 13, "bold")
+        label_font = (UI_FONT, 13, "bold")
         for i, (k, label, weight) in enumerate(specs):
             col = n - 1 - i
             grid.grid_columnconfigure(col, weight=weight, uniform=None if weight != 1 else f"stage_{key}")
@@ -10048,28 +10058,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 labels[k] = ctk.CTkLabel(grid, text=label, font=label_font, text_color=(UI["ink"], "#E5E7EB"))
                 labels[k].grid(row=0, column=col, padx=4, pady=(0, 3), sticky="s")
             if k == "date":
-                ent = ctk.CTkEntry(grid, font=("Cairo", 14), justify="center", width=110, height=36)
+                ent = ctk.CTkEntry(grid, font=(UI_FONT, 14), justify="center", width=110, height=36)
                 ent.insert(0, self.get_smart_default_date())
             elif k == "op":
-                ent = ctk.CTkSegmentedButton(grid, values=list(operations), font=("Cairo", 14, "bold"),
+                ent = ctk.CTkSegmentedButton(grid, values=list(operations), font=(UI_FONT, 14, "bold"),
                                              height=36, selected_color=UI["primary"],
                                              selected_hover_color=UI["primary_hover"],
                                              command=lambda v: set_mode(v))
                 ent.set(operations[0])
             elif k == "name":
-                ent = ctk.CTkComboBox(grid, values=name_values(), font=("Cairo", 14), width=170, height=36,
+                ent = ctk.CTkComboBox(grid, values=name_values(), font=(UI_FONT, 14), width=170, height=36,
                                       justify="right")
                 ent.set("")
                 self.bind_name_autocomplete(ent, name_values)
             elif k == "note":
-                ent = ctk.CTkEntry(grid, placeholder_text="البيان / الملاحظات...", font=("Cairo", 14),
+                ent = ctk.CTkEntry(grid, placeholder_text="البيان / الملاحظات...", font=(UI_FONT, 14),
                                    justify="right", width=180, height=36)
             elif k == "submit":
-                ent = ctk.CTkButton(grid, text=submit_text, font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
+                ent = ctk.CTkButton(grid, text=submit_text, font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"),
                                     height=36, width=150, fg_color=UI["primary"], hover_color=UI["primary_hover"],
                                     command=submit_cmd)
             else:
-                ent = ctk.CTkEntry(grid, justify="center", font=("Cairo", 15), width=70, height=36)
+                ent = ctk.CTkEntry(grid, justify="center", font=(UI_FONT, 15), width=70, height=36)
             ent.grid(row=1, column=col, padx=4, sticky="ew")
             if k in ("date", "name", "op", "note", "submit"):
                 w[k] = ent
@@ -10144,19 +10154,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # شريط أدوات الجدول
         bar = ctk.CTkFrame(parent, fg_color="transparent")
         bar.pack(fill="x", padx=18, pady=(0, 2))
-        w["title"] = ctk.CTkLabel(bar, text=title, font=ctk.CTkFont(family="Cairo", size=15, weight="bold"),
+        w["title"] = ctk.CTkLabel(bar, text=title, font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"),
                                   text_color=UI_TITLE)
         w["title"].pack(side="right")
-        ctk.CTkButton(bar, text="🗑️ حذف", font=("Cairo", 13, "bold"), width=90, height=30,
+        ctk.CTkButton(bar, text="🗑️ حذف", font=(UI_FONT, 13, "bold"), width=90, height=30,
                       fg_color=UI["danger"], hover_color=UI["danger_hover"], command=on_delete).pack(side="left", padx=3)
         self.build_negative_color_button(bar, neg_section, neg_refresh)
-        ctk.CTkButton(bar, text="👁️ عرض", font=("Cairo", 13, "bold"), width=90, height=30,
+        ctk.CTkButton(bar, text="👁️ عرض", font=(UI_FONT, 13, "bold"), width=90, height=30,
                       fg_color=UI["primary"], hover_color=UI["primary_hover"], command=view).pack(side="left", padx=3)
-        ctk.CTkButton(bar, text="✏️ تعديل", font=("Cairo", 13, "bold"), width=90, height=30,
+        ctk.CTkButton(bar, text="✏️ تعديل", font=(UI_FONT, 13, "bold"), width=90, height=30,
                       fg_color=UI["edit"], hover_color=UI["edit_hover"], command=on_edit).pack(side="left", padx=3)
 
         # سطر الإجماليات يُحجز أسفل الشاشة قبل الجدول، فيأخذ الجدول كل ما بينهما
-        w["totals"] = ctk.CTkLabel(parent, text="", font=("Cairo", 14, "bold"),
+        w["totals"] = ctk.CTkLabel(parent, text="", font=(UI_FONT, 14, "bold"),
                                    text_color=UI_TITLE)
         w["totals"].pack(side="bottom", fill="x", padx=18, pady=(0, 6))
         w["table_frame"] = ttk.Frame(parent)
@@ -10621,19 +10631,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.transient(self)
         win.grab_set()
         win.focus_force()
-        ctk.CTkLabel(win, text=f"{title} — {kind}", font=("Cairo", 15, "bold"),
+        ctk.CTkLabel(win, text=f"{title} — {kind}", font=(UI_FONT, 15, "bold"),
                      text_color="#d4af37", wraplength=420).pack(pady=(14, 8))
         frm = ctk.CTkFrame(win)
         frm.pack(fill="x", padx=20, pady=6)
-        ctk.CTkLabel(frm, text="الوزن:", font=("Cairo", 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="الوزن:", font=(UI_FONT, 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
         ent_w = ctk.CTkEntry(frm, justify="center", width=150)
         ent_w.insert(0, f"{inv.get('الوزن', 0):g}")
         ent_w.grid(row=0, column=0, padx=10, pady=8)
-        ctk.CTkLabel(frm, text="التاريخ:", font=("Cairo", 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text="التاريخ:", font=(UI_FONT, 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
         ent_date = ctk.CTkEntry(frm, justify="center", width=150)
         ent_date.insert(0, str(inv.get("التاريخ", ""))[:10])
         ent_date.grid(row=1, column=0, padx=10, pady=8)
-        ctk.CTkLabel(win, text="البيان:", font=("Cairo", 15, "bold")).pack(pady=(6, 0))
+        ctk.CTkLabel(win, text="البيان:", font=(UI_FONT, 15, "bold")).pack(pady=(6, 0))
         ent_note = ctk.CTkEntry(win, justify="right", width=360)
         ent_note.insert(0, inv.get("البيان") or "")
         ent_note.pack(pady=5)
@@ -10671,7 +10681,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.bind_vertical_navigation([ent_w, ent_date, ent_note], on_last=lambda: save_edit(), window=win)
         ent_w.focus_set()
-        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=("Cairo", 16, "bold"), fg_color="#2ecc71",
+        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
                       hover_color="#27ae60", height=42, command=save_edit).pack(pady=12)
 
     # ---------------------------------------------------------------
@@ -10998,7 +11008,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.render_unified_fields("لا يوجد أسماء")
 
     def choose_qabd_type(self, btn):
-        menu = tk.Menu(self, tearoff=0, font=("Cairo", 13))
+        menu = tk.Menu(self, tearoff=0, font=(UI_FONT, 13))
         for t in ["ايطالي", "زركون", "احجار", "الماس", "عام"]:
             menu.add_command(label=t, command=lambda v=t, b=btn: self.set_qabd_type(b, v))
         menu.post(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
@@ -11051,7 +11061,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for i, (key, lbl_text) in enumerate(fields):
             col = n_fields - 1 - i
             
-            lbl = ctk.CTkLabel(self.unified_inputs_frame, text=lbl_text, font=("Cairo", 13, "bold"),
+            lbl = ctk.CTkLabel(self.unified_inputs_frame, text=lbl_text, font=(UI_FONT, 13, "bold"),
                                text_color=(UI["ink"], "#E5E7EB"))
             lbl.grid(row=0, column=col, padx=4, pady=(2, 2), sticky="s")
             
@@ -11059,17 +11069,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 qabd_frame = ctk.CTkFrame(self.unified_inputs_frame, fg_color="transparent")
                 qabd_frame.grid(row=1, column=col, padx=4, pady=(0, 4), sticky="ew")
                 
-                ent = ctk.CTkEntry(qabd_frame, justify="center", font=("Cairo", 15), width=50, height=34)
+                ent = ctk.CTkEntry(qabd_frame, justify="center", font=(UI_FONT, 15), width=50, height=34)
                 ent.pack(side="right", padx=(0, 3), fill="x", expand=True)
                 
-                btn_type = ctk.CTkButton(qabd_frame, text=self.selected_qabd_type if self.selected_qabd_type != "عام" else "نوع", width=36, height=34, font=("Cairo", 12, "bold"), fg_color="#1f77b4")
+                btn_type = ctk.CTkButton(qabd_frame, text=self.selected_qabd_type if self.selected_qabd_type != "عام" else "نوع", width=36, height=34, font=(UI_FONT, 12, "bold"), fg_color="#1f77b4")
                 btn_type.configure(command=lambda b=btn_type: self.choose_qabd_type(b))
                 btn_type.pack(side="right")
                 
                 self.current_win_entries[key] = (ent, btn_type)
                 entries_list.append(ent)
             else:
-                ent = ctk.CTkEntry(self.unified_inputs_frame, justify="center", font=("Cairo", 15), width=70, height=34)
+                ent = ctk.CTkEntry(self.unified_inputs_frame, justify="center", font=(UI_FONT, 15), width=70, height=34)
                 ent.grid(row=1, column=col, padx=4, pady=(0, 4), sticky="ew")
                 
                 self.current_win_entries[key] = ent
@@ -11409,8 +11419,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.op_ledger_tree, self.op_ledger_total_tree, _reused = self.reuse_or_create_tree(
             self.op_ledger_table_frame, cols, height=11, sticky_total=True)
 
-        self.op_ledger_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
-        self.op_ledger_tree.tag_configure("red_tag", foreground="#e74c3c", font=("Cairo", 13, "bold"))
+        self.op_ledger_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
+        self.op_ledger_tree.tag_configure("red_tag", foreground="#e74c3c", font=(UI_FONT, 13, "bold"))
         self.op_ledger_tree.bind("<Double-1>", self._on_op_ledger_double_click)
 
         if cat == "المصنعين" and worker_name not in ("الكاستينج", "التلميع النهائي"):
@@ -11709,8 +11719,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.focus_force()
 
         ctk.CTkLabel(win, text=f"نقل حركات هذا الصف من ({current_worker}) إلى:",
-                     font=("Cairo", 14, "bold"), wraplength=340, justify="center").pack(pady=(20, 10))
-        combo = ctk.CTkComboBox(win, values=others, font=("Cairo", 14), justify="right",
+                     font=(UI_FONT, 14, "bold"), wraplength=340, justify="center").pack(pady=(20, 10))
+        combo = ctk.CTkComboBox(win, values=others, font=(UI_FONT, 14), justify="right",
                                 width=240, height=38, state="readonly")
         combo.set(others[0])
         combo.pack(pady=6)
@@ -11738,7 +11748,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.recalculate_all()
             messagebox.showinfo("تم", f"تم نقل {len(target_ids)} حركة إلى ({new_worker}).")
 
-        ctk.CTkButton(win, text="نقل الحركات", font=("Cairo", 14, "bold"), fg_color="#1e8449",
+        ctk.CTkButton(win, text="نقل الحركات", font=(UI_FONT, 14, "bold"), fg_color="#1e8449",
                       hover_color="#145a32", width=180, height=40, command=do_reassign).pack(pady=16)
 
     def op_ledger_delete_selected(self):
@@ -11828,8 +11838,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.focus_force()
 
         ctk.CTkLabel(win, text=f"✏️ تعديل كل خانات الصف ({row_key or 'بدون ترقيم'})",
-                     font=("Cairo", 17, "bold"), text_color="#d4af37").pack(pady=(14, 2))
-        ctk.CTkLabel(win, text=f"{worker_name} — {cat}", font=("Cairo", 12),
+                     font=(UI_FONT, 17, "bold"), text_color="#d4af37").pack(pady=(14, 2))
+        ctk.CTkLabel(win, text=f"{worker_name} — {cat}", font=(UI_FONT, 12),
                      text_color="#8b8f95").pack(pady=(0, 8))
 
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
@@ -11838,9 +11848,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def add_row(label_text, value=""):
             holder = ctk.CTkFrame(body, fg_color="transparent")
             holder.pack(fill="x", pady=4)
-            ctk.CTkLabel(holder, text=label_text, font=("Cairo", 14, "bold"),
+            ctk.CTkLabel(holder, text=label_text, font=(UI_FONT, 14, "bold"),
                          width=160, anchor="e").pack(side="right", padx=8)
-            ent = ctk.CTkEntry(holder, justify="center", font=("Cairo", 14), width=150, height=34)
+            ent = ctk.CTkEntry(holder, justify="center", font=(UI_FONT, 14), width=150, height=34)
             ent.insert(0, value)
             ent.pack(side="right")
             return ent
@@ -11959,7 +11969,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             win.destroy()
             messagebox.showinfo("تم", "تم تحديث كل خانات الصف بنجاح.")
 
-        ctk.CTkButton(win, text="💾 حفظ التعديلات", font=("Cairo", 16, "bold"), fg_color="#2ecc71",
+        ctk.CTkButton(win, text="💾 حفظ التعديلات", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
                       hover_color="#27ae60", height=44, width=220, command=save_row).pack(pady=12)
 
     def op_ledger_edit_selected(self):
@@ -11996,7 +12006,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         edit_win.grab_set()
         edit_win.focus_force()
 
-        ctk.CTkLabel(edit_win, text="قم بتعديل الأرقام في أي عمود وسيتحدث النظام بالكامل", font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=10)
+        ctk.CTkLabel(edit_win, text="قم بتعديل الأرقام في أي عمود وسيتحدث النظام بالكامل", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=10)
 
         fields_frame = ctk.CTkFrame(edit_win)
         fields_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -12019,9 +12029,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for i, (f_key, f_name) in enumerate(fields):
             row = i // 4 * 2
             col = i % 4
-            lbl = ctk.CTkLabel(fields_frame, text=f_name, font=("Cairo", 16, "bold"))
+            lbl = ctk.CTkLabel(fields_frame, text=f_name, font=(UI_FONT, 16, "bold"))
             lbl.grid(row=row, column=col, padx=15, pady=(10, 0))
-            ent = ctk.CTkEntry(fields_frame, justify="center", font=("Cairo", 16), width=120)
+            ent = ctk.CTkEntry(fields_frame, justify="center", font=(UI_FONT, 16), width=120)
 
             if worker_category == "الآلة/المكائن" and f_key in ["قبل", "بعد"]:
                 val_to_show = 0.0
@@ -12038,13 +12048,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bottom_frame = ctk.CTkFrame(edit_win, fg_color="transparent")
         bottom_frame.pack(fill="x", padx=20, pady=5)
 
-        ctk.CTkLabel(bottom_frame, text="رقم التشغيل:", font=("Cairo", 16, "bold")).pack(side="right", padx=5)
-        ent_set = ctk.CTkEntry(bottom_frame, justify="center", font=("Cairo", 16), width=120)
+        ctk.CTkLabel(bottom_frame, text="رقم التشغيل:", font=(UI_FONT, 16, "bold")).pack(side="right", padx=5)
+        ent_set = ctk.CTkEntry(bottom_frame, justify="center", font=(UI_FONT, 16), width=120)
         ent_set.insert(0, common_set)
         ent_set.pack(side="right", padx=10)
 
-        ctk.CTkLabel(bottom_frame, text="البيان:", font=("Cairo", 16, "bold")).pack(side="right", padx=5)
-        ent_note = ctk.CTkEntry(bottom_frame, justify="right", font=("Cairo", 16), width=350)
+        ctk.CTkLabel(bottom_frame, text="البيان:", font=(UI_FONT, 16, "bold")).pack(side="right", padx=5)
+        ent_note = ctk.CTkEntry(bottom_frame, justify="right", font=(UI_FONT, 16), width=350)
         ent_note.insert(0, common_note)
         ent_note.pack(side="right", padx=10)
 
@@ -12073,7 +12083,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             edit_win.destroy()
             messagebox.showinfo("تم", "تم تحديث الأرقام الجديدة لجميع الأعمدة بنجاح!")
 
-        btn_save = ctk.CTkButton(edit_win, text="حفظ التعديلات الشاملة 💾", font=("Cairo", 17, "bold"), fg_color="#2ecc71", hover_color="#27ae60", height=45, command=save_advanced_changes)
+        btn_save = ctk.CTkButton(edit_win, text="حفظ التعديلات الشاملة 💾", font=(UI_FONT, 17, "bold"), fg_color="#2ecc71", hover_color="#27ae60", height=45, command=save_advanced_changes)
         self.apply_edit_lock_to_button(btn_save, edit_win)
         btn_save.pack(pady=15)
 
@@ -12097,8 +12107,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text=f"عمليات الصف رقم ({row_title})", font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=(12, 2))
-        ctk.CTkLabel(win, text="اضغط ضغطاً مزدوجاً على أي عملية لتعديلها أو حذفها", font=("Cairo", 13), text_color="#aaaaaa").pack(pady=(0, 10))
+        ctk.CTkLabel(win, text=f"عمليات الصف رقم ({row_title})", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=(12, 2))
+        ctk.CTkLabel(win, text="اضغط ضغطاً مزدوجاً على أي عملية لتعديلها أو حذفها", font=(UI_FONT, 13), text_color="#aaaaaa").pack(pady=(0, 10))
 
         cols = ("رقم الفاتورة", "التاريخ", "النوع", "الوزن", "رقم التشغيل", "البيان")
         tree = self.create_standard_treeview(win, cols, height=12)
@@ -12131,17 +12141,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         
         f_prod = ctk.CTkFrame(self.dash_frame, fg_color="transparent")
         f_prod.pack(side="right", padx=15, pady=10)
-        self.lbl_dash_production = ctk.CTkLabel(f_prod, text="إنتاج المكينة (مفنش 4): 0.00 جم", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color="#2ecc71")
+        self.lbl_dash_production = ctk.CTkLabel(f_prod, text="إنتاج المكينة (مفنش 4): 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), text_color="#2ecc71")
         self.lbl_dash_production.pack(side="right", padx=8)
         
         f_loss = ctk.CTkFrame(self.dash_frame, fg_color="transparent")
         f_loss.pack(side="right", padx=15, pady=10)
-        self.lbl_dash_loss = ctk.CTkLabel(f_loss, text="إجمالي خياس الورشة: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color="#ff7f0e")
+        self.lbl_dash_loss = ctk.CTkLabel(f_loss, text="إجمالي خياس الورشة: 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), text_color="#ff7f0e")
         self.lbl_dash_loss.pack(side="right", padx=8)
-        btn_loss_details = ctk.CTkButton(f_loss, text="👁️ تفاصيل", width=80, height=30, font=ctk.CTkFont(family="Cairo", size=12, weight="bold"), fg_color="#ff7f0e", hover_color="#b85c0a", command=self.show_losses_details)
+        btn_loss_details = ctk.CTkButton(f_loss, text="👁️ تفاصيل", width=80, height=30, font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="#ff7f0e", hover_color="#b85c0a", command=self.show_losses_details)
         btn_loss_details.pack(side="right", padx=2)
 
-        self.lbl_dash_alert = ctk.CTkLabel(self.dash_frame, text="الخياس الفعلي (المصنعين): 0.00 جم", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#d4af37")
+        self.lbl_dash_alert = ctk.CTkLabel(self.dash_frame, text="الخياس الفعلي (المصنعين): 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"), text_color="#d4af37")
         self.lbl_dash_alert.pack(side="left", padx=25, pady=15)
 
         header_bar = ctk.CTkFrame(tab, fg_color="transparent")
@@ -12149,36 +12159,36 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.current_view_cat = "المصنعين"
         
-        btn_add_name = ctk.CTkButton(header_bar, text="➕ إضافة اسم", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), width=110, height=36, command=self.add_new_name_dialog)
+        btn_add_name = ctk.CTkButton(header_bar, text="➕ إضافة اسم", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), width=110, height=36, command=self.add_new_name_dialog)
         btn_add_name.pack(side="left", padx=5, pady=6)
 
-        btn_undo = ctk.CTkButton(header_bar, text="↩️ تراجع", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+        btn_undo = ctk.CTkButton(header_bar, text="↩️ تراجع", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                                  fg_color="#7d6608", hover_color="#5a4a06", width=110, height=36,
                                  command=self.undo_last_action)
         btn_undo.pack(side="left", padx=5)
         self.register_undo_button(btn_undo)
 
-        btn_del_name = ctk.CTkButton(header_bar, text="حذف العامل 🗑️", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=110, height=36, command=self.delete_selected_worker_ui)
+        btn_del_name = ctk.CTkButton(header_bar, text="حذف العامل 🗑️", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=110, height=36, command=self.delete_selected_worker_ui)
         btn_del_name.pack(side="left", padx=5, pady=6)
 
         # زر عرض الجدول كاملاً — يظهر في كل أقسام صناديق الخياس بما فيها
         # المصنعين والمركبين (كان مضافاً بالخطأ إلى شاشة شجرة الحسابات)
-        ctk.CTkButton(header_bar, text="👁️ عرض", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+        ctk.CTkButton(header_bar, text="👁️ عرض", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                       fg_color="#1f77b4", hover_color="#144d75", width=90, height=36,
                       command=lambda: self.view_treeview_fullscreen(
                           getattr(self, "tree", None),
                           f"عرض كامل — {self.get_display_label(self.current_view_cat)}")).pack(side="left", padx=5)
 
         ctk.CTkButton(header_bar, text="↩️ تراجع عن الإقفال",
-                      font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                      font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                       fg_color="#e67e22", hover_color="#b35f10", width=150, height=36,
                       command=self.reopen_khayas_box_dialog).pack(side="left", padx=5)
 
-        btn_close_khayas = ctk.CTkButton(header_bar, text="🔒 إقفال الخياس", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=130, height=36, command=lambda: self.close_khayas_box(self.current_view_cat))
+        btn_close_khayas = ctk.CTkButton(header_bar, text="🔒 إقفال الخياس", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=130, height=36, command=lambda: self.close_khayas_box(self.current_view_cat))
         btn_close_khayas.pack(side="left", padx=5, pady=6)
 
         # أداء العمال عبر الفترات: نسبة الفاقد إلى الإنتاج بالألف واتجاهها
-        btn_perf = ctk.CTkButton(header_bar, text="📊 أداء العمال", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+        btn_perf = ctk.CTkButton(header_bar, text="📊 أداء العمال", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                                  width=120, height=36,
                                  command=lambda: self.open_worker_performance_report(
                                      self.current_view_cat if self.current_view_cat in self.WORKER_SECTIONS else "المصنعين"),
@@ -12191,7 +12201,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         top_bar = ctk.CTkFrame(tab, fg_color="transparent")
         top_bar.pack(fill="x", padx=10, pady=5)
 
-        self.lbl_table_title = ctk.CTkLabel(top_bar, text="عرض أرصدة: المصنعين", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"))
+        self.lbl_table_title = ctk.CTkLabel(top_bar, text="عرض أرصدة: المصنعين", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"))
         self.lbl_table_title.pack(side="right", padx=(12, 16), pady=6, anchor="n")
 
         self.khayas_category_bar = ctk.CTkFrame(top_bar, fg_color="transparent")
@@ -12204,7 +12214,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.summary_bar = ctk.CTkFrame(tab, height=70, corner_radius=10, border_width=1, border_color=(UI["line_strong"], "#46515F"), fg_color=(UI["surface_alt"], "#1D232B"))
         self.summary_bar.pack(side="bottom", fill="x", padx=10, pady=10)
         
-        self.lbl_section_summary = ctk.CTkLabel(self.summary_bar, text="إجمالي الخياس الفعلي للقسم: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=20, weight="bold"), text_color="#f1c40f")
+        self.lbl_section_summary = ctk.CTkLabel(self.summary_bar, text="إجمالي الخياس الفعلي للقسم: 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=20, weight="bold"), text_color="#f1c40f")
         self.lbl_section_summary.pack(pady=15)
 
         self.table_frame = ttk.Frame(tab)
@@ -12219,13 +12229,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
         
-        ctk.CTkLabel(win, text=f"📉 إجمالي الفواقد والخياس مقسمة حسب الأقسام الخمسة للفترة ({self.current_display_month})", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#ff7f0e").pack(pady=15)
+        ctk.CTkLabel(win, text=f"📉 إجمالي الفواقد والخياس مقسمة حسب الأقسام الخمسة للفترة ({self.current_display_month})", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#ff7f0e").pack(pady=15)
         
         cols = ("القسم / الإجمالي", "التصنيف", "إجمالي الخياس الفعلي")
         tree = self.create_standard_treeview(win, cols, height=10)
         
-        tree.tag_configure("section_tag", foreground="#f39c12", font=("Cairo", 16, "bold"))
-        tree.tag_configure("total_tag", foreground="#e74c3c", font=("Cairo", 17, "bold"))
+        tree.tag_configure("section_tag", foreground="#f39c12", font=(UI_FONT, 16, "bold"))
+        tree.tag_configure("total_tag", foreground="#e74c3c", font=(UI_FONT, 17, "bold"))
         self.normalize_tree_tags(tree)
         
         for c in cols:
@@ -12266,7 +12276,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # أزرار مدمجة تلتفّ على أكثر من سطر: أي عدد من الأقسام يظهر كاملاً بلا
         # تمدّد للواجهة ولا أزرار مختفية خارج الشاشة (كانت كبيرة في سطر واحد)
         for key, label in cat_defs:
-            b = ctk.CTkButton(self.khayas_category_bar, text=label, font=("Cairo", 13, "bold"),
+            b = ctk.CTkButton(self.khayas_category_bar, text=label, font=(UI_FONT, 13, "bold"),
                               width=92, height=32, corner_radius=8,
                               command=lambda k=key: self.switch_category_view(k))
             self.khayas_category_buttons[key] = b
@@ -12863,21 +12873,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="⚙️ نسب استرجاع الخياس", font=("Cairo", 18, "bold"),
+        ctk.CTkLabel(win, text="⚙️ نسب استرجاع الخياس", font=(UI_FONT, 18, "bold"),
                      text_color="#d4af37").pack(pady=(16, 4))
         ctk.CTkLabel(win, text="لكل نوع خياس نسبة تُسترجع منه — والباقي هو الربح",
-                     font=("Cairo", 11), text_color="#8b8f95").pack(pady=(0, 12))
+                     font=(UI_FONT, 11), text_color="#8b8f95").pack(pady=(0, 12))
 
         entries = {}
         for key, label in self.RECOVERY_KEYS:
             row = ctk.CTkFrame(win, fg_color="transparent")
             row.pack(fill="x", padx=28, pady=6)
-            ctk.CTkLabel(row, text=label, font=("Cairo", 13, "bold"),
+            ctk.CTkLabel(row, text=label, font=(UI_FONT, 13, "bold"),
                          width=170, anchor="e").pack(side="right")
-            ent = ctk.CTkEntry(row, justify="center", font=("Cairo", 14), width=90, height=34)
+            ent = ctk.CTkEntry(row, justify="center", font=(UI_FONT, 14), width=90, height=34)
             ent.insert(0, f"{self.get_recovery_pct(key):g}")
             ent.pack(side="right", padx=8)
-            ctk.CTkLabel(row, text="%", font=("Cairo", 13, "bold")).pack(side="right")
+            ctk.CTkLabel(row, text="%", font=(UI_FONT, 13, "bold")).pack(side="right")
             entries[key] = ent
 
         def save_and_close():
@@ -12886,9 +12896,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             win.destroy()
             self.refresh_sets_profit_tab()
 
-        ctk.CTkButton(win, text="💾 حفظ وتطبيق", font=("Cairo", 15, "bold"), fg_color="#1e8449",
+        ctk.CTkButton(win, text="💾 حفظ وتطبيق", font=(UI_FONT, 15, "bold"), fg_color="#1e8449",
                       hover_color="#145a32", width=190, height=42, command=save_and_close).pack(pady=(18, 6))
-        ctk.CTkButton(win, text="إلغاء", font=("Cairo", 13), fg_color="#555555",
+        ctk.CTkButton(win, text="إلغاء", font=(UI_FONT, 13), fg_color="#555555",
                       hover_color="#333333", width=120, height=34, command=win.destroy).pack()
 
     def get_sets_gems_stones(self, month):
@@ -12990,25 +13000,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head = ctk.CTkFrame(tab, fg_color="transparent")
         head.pack(fill="x", padx=14, pady=(10, 4))
 
-        ctk.CTkLabel(head, text="📈 ربح/خسارة الطقم", font=("Cairo", 20, "bold"),
+        ctk.CTkLabel(head, text="📈 ربح/خسارة الطقم", font=(UI_FONT, 20, "bold"),
                      text_color="#d4af37").pack(side="right", padx=8)
         ctk.CTkLabel(head, text="(عرض فقط — لا يؤثر على الخزينة)",
-                     font=("Cairo", 11), text_color="#8b8f95").pack(side="right", padx=6)
+                     font=(UI_FONT, 11), text_color="#8b8f95").pack(side="right", padx=6)
 
-        ctk.CTkButton(head, text="⚙️ نسب الاسترجاع", font=("Cairo", 13, "bold"),
+        ctk.CTkButton(head, text="⚙️ نسب الاسترجاع", font=(UI_FONT, 13, "bold"),
                       fg_color="#b8860b", hover_color="#daa520", width=150, height=34,
                       command=self.open_recovery_settings).pack(side="left", padx=5)
-        ctk.CTkButton(head, text="👁️ عرض كامل", font=("Cairo", 13, "bold"),
+        ctk.CTkButton(head, text="👁️ عرض كامل", font=(UI_FONT, 13, "bold"),
                       fg_color="#1f77b4", hover_color="#144d75", width=130, height=34,
                       command=lambda: self.view_treeview_fullscreen(
                           getattr(self, "sets_profit_tree", None), "ربح/خسارة الطقم")).pack(side="left", padx=5)
-        ctk.CTkButton(head, text="🔄 تحديث", font=("Cairo", 13, "bold"),
+        ctk.CTkButton(head, text="🔄 تحديث", font=(UI_FONT, 13, "bold"),
                       fg_color="#555555", hover_color="#333333", width=110, height=34,
                       command=self.refresh_sets_profit_tab).pack(side="left", padx=5)
 
         self.lbl_sets_profit_hint = ctk.CTkLabel(
             tab, text="اضغط على رأس عمود (المسترجع) لضبط النسب  •  اضغط على أي صف لعرض تفاصيل أطقمه",
-            font=("Cairo", 11), text_color="#8b8f95")
+            font=(UI_FONT, 11), text_color="#8b8f95")
         self.lbl_sets_profit_hint.pack(pady=(0, 6))
 
         self.sets_profit_table_frame = ttk.Frame(tab)
@@ -13016,7 +13026,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sets_profit_tree = None
 
         self.lbl_sets_profit_summary = ctk.CTkLabel(
-            tab, text="", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
+            tab, text="", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"),
             text_color="#2ecc71")
         self.lbl_sets_profit_summary.pack(pady=(0, 10))
 
@@ -13034,7 +13044,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         cols = self.SETS_PROFIT_COLS
         self.sets_profit_tree = self.create_standard_treeview(self.sets_profit_table_frame, cols, height=16)
-        self.sets_profit_tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 14, "bold"))
+        self.sets_profit_tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 14, "bold"))
         self.sets_profit_tree.bind("<Double-1>", self._on_sets_profit_row_click)
 
         # الضغط على رأس عمود المسترجع يفتح ضبط النسب
@@ -13258,10 +13268,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="💰 تفصيل الرصيد الحالي", font=("Cairo", 18, "bold"),
+        ctk.CTkLabel(win, text="💰 تفصيل الرصيد الحالي", font=(UI_FONT, 18, "bold"),
                      text_color="#2ecc71").pack(pady=(16, 4))
         ctk.CTkLabel(win, text="إجمالي الذهب الذي نملكه الآن، أينما كان",
-                     font=("Cairo", 11), text_color="#8b8f95").pack(pady=(0, 10))
+                     font=(UI_FONT, 11), text_color="#8b8f95").pack(pady=(0, 10))
 
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=18, pady=6)
@@ -13271,21 +13281,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 continue      # لا نزحم القائمة بأصفار
             row = ctk.CTkFrame(body, fg_color="transparent")
             row.pack(fill="x", pady=3)
-            ctk.CTkLabel(row, text=label, font=("Cairo", 13, "bold"), anchor="e").pack(side="right")
-            ctk.CTkLabel(row, text=f"{value:.2f} جم", font=("Cairo", 13),
+            ctk.CTkLabel(row, text=label, font=(UI_FONT, 13, "bold"), anchor="e").pack(side="right")
+            ctk.CTkLabel(row, text=f"{value:.2f} جم", font=(UI_FONT, 13),
                          text_color="#d4af37" if value >= 0 else "#e74c3c").pack(side="left")
 
         sep = ctk.CTkFrame(win, height=2, fg_color="#d4af37")
         sep.pack(fill="x", padx=18, pady=8)
 
-        ctk.CTkLabel(win, text=f"الإجمالي: {total:.2f} جم", font=("Cairo", 17, "bold"),
+        ctk.CTkLabel(win, text=f"الإجمالي: {total:.2f} جم", font=(UI_FONT, 17, "bold"),
                      text_color="#2ecc71").pack(pady=(0, 2))
         ctk.CTkLabel(
             win,
             text="ملاحظة: الخياس المُقفل لا يظهر هنا لأنه رُحّل لحساب الخسائر\nوأصبح فاقداً فعلياً لا ذهباً نملكه.",
-            font=("Cairo", 10), text_color="#8b8f95", justify="center").pack(pady=(0, 10))
+            font=(UI_FONT, 10), text_color="#8b8f95", justify="center").pack(pady=(0, 10))
 
-        ctk.CTkButton(win, text="إغلاق", font=("Cairo", 14, "bold"), width=140, height=38,
+        ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=38,
                       command=win.destroy).pack(pady=(0, 14))
 
     def get_total_gold_balance(self):
@@ -13392,9 +13402,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.focus_force()
 
         ctk.CTkLabel(win, text=f"↩️ التراجع عن إقفال ({display})",
-                     font=("Cairo", 18, "bold"), text_color="#e67e22").pack(pady=(16, 2))
+                     font=(UI_FONT, 18, "bold"), text_color="#e67e22").pack(pady=(16, 2))
         ctk.CTkLabel(win, text=f"اختر الإقفال المراد التراجع عنه — يعود الفاقد للصندوق ويخرج من «{loss_account}»",
-                     font=("Cairo", 11), text_color="#8b8f95").pack(pady=(0, 10))
+                     font=(UI_FONT, 11), text_color="#8b8f95").pack(pady=(0, 10))
 
         # الأزرار تُرصف أولاً من الأسفل: لو رُصف الجدول أولاً بـ expand=True
         # التهم المساحة كلها ودُفعت الأزرار خارج النافذة فتعذّر الضغط عليها
@@ -13456,10 +13466,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 msg += f"\n\nتنبيه: تعذّر حذف {blocked} قيد من قيود هذا الإقفال."
             messagebox.showinfo("تم التراجع", msg)
 
-        ctk.CTkButton(btns, text="↩️ تراجع عن الإقفال المحدد", font=("Cairo", 15, "bold"),
+        ctk.CTkButton(btns, text="↩️ تراجع عن الإقفال المحدد", font=(UI_FONT, 15, "bold"),
                       fg_color="#e67e22", hover_color="#b35f10", width=260, height=46,
                       command=do_reopen).pack(side="left", padx=8)
-        ctk.CTkButton(btns, text="إغلاق", font=("Cairo", 13), fg_color="#555555",
+        ctk.CTkButton(btns, text="إغلاق", font=(UI_FONT, 13), fg_color="#555555",
                       hover_color="#333333", width=120, height=46,
                       command=win.destroy).pack(side="left", padx=8)
 
@@ -13691,7 +13701,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         header_row = ctk.CTkFrame(self.table_frame, fg_color="transparent")
         header_row.pack(side="top", fill="x", padx=4, pady=(0, 4))
-        ctk.CTkButton(header_row, text="👁️ عرض الجدول كاملاً", font=("Cairo", 13, "bold"),
+        ctk.CTkButton(header_row, text="👁️ عرض الجدول كاملاً", font=(UI_FONT, 13, "bold"),
                       fg_color="#1f77b4", hover_color="#144d75", width=170, height=32,
                       command=lambda: self.view_stage_monthly_fullscreen(cat)
                       ).pack(side="left", padx=4)
@@ -13715,7 +13725,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.tree.heading("دائن", text="القبض/الإقفال")
             self.tree.heading("الرصيد", text="الرصيد التراكمي")
 
-        self.tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 14, "bold"))
+        self.tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 14, "bold"))
         self.tree.bind("<Double-1>", self._on_stage_monthly_click)
 
         # الفترة المعروضة وحدها: كل فترة مستقلة بعملياتها وأرقامها.
@@ -13907,7 +13917,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text=f"تفاصيل حركة ({self.get_display_label(cat)}) لشهر ({month})", font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=15)
+        ctk.CTkLabel(win, text=f"تفاصيل حركة ({self.get_display_label(cat)}) لشهر ({month})", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=15)
 
         cols = ("التاريخ", "رقم التشغيل", "الاسم", "مدين", "دائن", "الرصيد")
         col_widths = {"الاسم": 170, "التاريخ": 140}
@@ -13933,7 +13943,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if recs:
             total_tree.insert("", "end", values=("إجمالي الشهر", "-", "-", f"{tot_madin:.2f}", f"{tot_daen:.2f}", f"{running:.2f}"), tags=("total_tag",))
         else:
-            ctk.CTkLabel(win, text="لا توجد عمليات مسجّلة لهذا الشهر", font=("Cairo", 15, "bold"), text_color="#e74c3c").pack(pady=10)
+            ctk.CTkLabel(win, text="لا توجد عمليات مسجّلة لهذا الشهر", font=(UI_FONT, 15, "bold"), text_color="#e74c3c").pack(pady=10)
 
     def refresh_inquiry_table(self):
         if not (hasattr(self, 'table_frame') and self.table_frame):
@@ -13993,11 +14003,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # لون واحد أسود لكل أرقام الجدول في جميع الأقسام.
         # الوسمان القديمان (الأخضر/الأحمر) يبقيان معرّفين بنفس اللون الأسود،
         # فتعمل كل مواضع الإدراج القائمة دون تعديلها ولا يتغيّر أي منطق حسابي.
-        self.tree.tag_configure("green_tag", foreground="#000000", font=("Cairo", 13, "bold"))
-        self.tree.tag_configure("red_tag", foreground="#000000", font=("Cairo", 13, "bold"))
+        self.tree.tag_configure("green_tag", foreground="#000000", font=(UI_FONT, 13, "bold"))
+        self.tree.tag_configure("red_tag", foreground="#000000", font=(UI_FONT, 13, "bold"))
         self._inquiry_table_key = f"inquiry_{self.current_view_cat}"
         # صف الإجمالي برتقالي ليتميّز بوضوح عن باقي الصفوف السوداء
-        self.tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 14, "bold"))
+        self.tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 14, "bold"))
         self.tree.bind("<Double-1>", self.open_worker_ledger_window)
 
         tot = {c: 0.0 for c in columns if c != "الاسم"}
@@ -14170,7 +14180,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cols = ("رقم الفاتورة", "التاريخ", "رقم التشغيل", "صرف", "قبض", "ليز", "بوليش", "مفنش 8", "مفنش 4", "سلك راجع", "عيار", "الفاقد اللحظي", "البيان")
 
         sub_tree = self.create_standard_treeview(t_frame, cols, height=13)
-        sub_tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 13, "bold"))
+        sub_tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 13, "bold"))
 
         if cat == "المصنعين" and worker_name not in ("الكاستينج", "التلميع النهائي"):
             sub_tree.heading("قبض", text="قبض/كسر")
@@ -14305,7 +14315,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             edit_win.grab_set()
             edit_win.focus_force()
             
-            ctk.CTkLabel(edit_win, text="قم بتعديل الأرقام في أي عمود وسيتحدث النظام بالكامل", font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=10)
+            ctk.CTkLabel(edit_win, text="قم بتعديل الأرقام في أي عمود وسيتحدث النظام بالكامل", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=10)
             
             fields_frame = ctk.CTkFrame(edit_win)
             fields_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -14333,9 +14343,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for i, (f_key, f_name) in enumerate(fields):
                 row = i // 4 * 2
                 col = i % 4
-                lbl = ctk.CTkLabel(fields_frame, text=f_name, font=("Cairo", 16, "bold"))
+                lbl = ctk.CTkLabel(fields_frame, text=f_name, font=(UI_FONT, 16, "bold"))
                 lbl.grid(row=row, column=col, padx=15, pady=(10, 0))
-                ent = ctk.CTkEntry(fields_frame, justify="center", font=("Cairo", 16), width=120)
+                ent = ctk.CTkEntry(fields_frame, justify="center", font=(UI_FONT, 16), width=120)
                 
                 if worker_category == "الآلة/المكائن" and f_key in ["قبل", "بعد"]:
                     val_to_show = 0.0
@@ -14352,13 +14362,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             bottom_frame = ctk.CTkFrame(edit_win, fg_color="transparent")
             bottom_frame.pack(fill="x", padx=20, pady=5)
             
-            ctk.CTkLabel(bottom_frame, text="رقم التشغيل:", font=("Cairo", 16, "bold")).pack(side="right", padx=5)
-            ent_set = ctk.CTkEntry(bottom_frame, justify="center", font=("Cairo", 16), width=120)
+            ctk.CTkLabel(bottom_frame, text="رقم التشغيل:", font=(UI_FONT, 16, "bold")).pack(side="right", padx=5)
+            ent_set = ctk.CTkEntry(bottom_frame, justify="center", font=(UI_FONT, 16), width=120)
             ent_set.insert(0, common_set)
             ent_set.pack(side="right", padx=10)
             
-            ctk.CTkLabel(bottom_frame, text="البيان:", font=("Cairo", 16, "bold")).pack(side="right", padx=5)
-            ent_note = ctk.CTkEntry(bottom_frame, justify="right", font=("Cairo", 16), width=350)
+            ctk.CTkLabel(bottom_frame, text="البيان:", font=(UI_FONT, 16, "bold")).pack(side="right", padx=5)
+            ent_note = ctk.CTkEntry(bottom_frame, justify="right", font=(UI_FONT, 16), width=350)
             ent_note.insert(0, common_note)
             ent_note.pack(side="right", padx=10)
             
@@ -14422,7 +14432,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 win.destroy()
                 messagebox.showinfo("تم", "تم تحديث الأرقام الجديدة لجميع الأعمدة بنجاح!")
                 
-            btn_save = ctk.CTkButton(edit_win, text="حفظ التعديلات الشاملة 💾", font=("Cairo", 17, "bold"), fg_color="#2ecc71", hover_color="#27ae60", height=45, command=save_advanced_changes)
+            btn_save = ctk.CTkButton(edit_win, text="حفظ التعديلات الشاملة 💾", font=(UI_FONT, 17, "bold"), fg_color="#2ecc71", hover_color="#27ae60", height=45, command=save_advanced_changes)
             self.apply_edit_lock_to_button(btn_save, edit_win)
             btn_save.pack(pady=15)
 
@@ -14430,25 +14440,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         totals_frame = ctk.CTkFrame(win, fg_color=(UI["surface_alt"], "#1D232B"), corner_radius=8, height=45)
         totals_frame.pack(fill="x", padx=20, pady=(5, 5))
         
-        lbl_st = ctk.CTkLabel(totals_frame, text=f"💎 إجمالي الأحجار: {type_totals['احجار']:.2f}", font=("Cairo", 18, "bold"), text_color="#1f77b4")
+        lbl_st = ctk.CTkLabel(totals_frame, text=f"💎 إجمالي الأحجار: {type_totals['احجار']:.2f}", font=(UI_FONT, 18, "bold"), text_color="#1f77b4")
         lbl_st.pack(side="right", padx=25, pady=8)
         
-        lbl_zi = ctk.CTkLabel(totals_frame, text=f"✨ إجمالي الزركون: {type_totals['زركون']:.2f}", font=("Cairo", 18, "bold"), text_color="#e67e22")
+        lbl_zi = ctk.CTkLabel(totals_frame, text=f"✨ إجمالي الزركون: {type_totals['زركون']:.2f}", font=(UI_FONT, 18, "bold"), text_color="#e67e22")
         lbl_zi.pack(side="right", padx=25, pady=8)
         
-        lbl_di = ctk.CTkLabel(totals_frame, text=f"⭐ إجمالي الألماس: {type_totals['الماس']:.2f}", font=("Cairo", 18, "bold"), text_color="#9b59b6")
+        lbl_di = ctk.CTkLabel(totals_frame, text=f"⭐ إجمالي الألماس: {type_totals['الماس']:.2f}", font=(UI_FONT, 18, "bold"), text_color="#9b59b6")
         lbl_di.pack(side="right", padx=25, pady=8)
 
-        lbl_it = ctk.CTkLabel(totals_frame, text=f"🔱 إجمالي إيطالي: {type_totals['ايطالي']:.2f}", font=("Cairo", 18, "bold"), text_color="#2ecc71")
+        lbl_it = ctk.CTkLabel(totals_frame, text=f"🔱 إجمالي إيطالي: {type_totals['ايطالي']:.2f}", font=(UI_FONT, 18, "bold"), text_color="#2ecc71")
         lbl_it.pack(side="right", padx=25, pady=8)
 
         btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.pack(fill="x", pady=15)
         
-        btn_delete = ctk.CTkButton(btn_frame, text="حذف العملية 🗑️", font=("Cairo", 16, "bold"), fg_color="#8b0000", hover_color="#a52a2a", height=45, command=delete_single_inv)
+        btn_delete = ctk.CTkButton(btn_frame, text="حذف العملية 🗑️", font=(UI_FONT, 16, "bold"), fg_color="#8b0000", hover_color="#a52a2a", height=45, command=delete_single_inv)
         btn_delete.pack(side="left", expand=True, padx=15)
 
-        btn_edit = ctk.CTkButton(btn_frame, text="تعديل الحركة ✏️", font=("Cairo", 16, "bold"), fg_color="#b8860b", hover_color="#daa520", height=45, command=edit_single_inv)
+        btn_edit = ctk.CTkButton(btn_frame, text="تعديل الحركة ✏️", font=(UI_FONT, 16, "bold"), fg_color="#b8860b", hover_color="#daa520", height=45, command=edit_single_inv)
         btn_edit.pack(side="left", expand=True, padx=15)
 
     # =========================================================================
@@ -14467,7 +14477,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        lbl_title = ctk.CTkLabel(win, text=f"📋 كشف تفصيلي وتعديل لرقم التشغيل: ({op_num})", font=("Cairo", 20, "bold"), text_color="#d4af37")
+        lbl_title = ctk.CTkLabel(win, text=f"📋 كشف تفصيلي وتعديل لرقم التشغيل: ({op_num})", font=(UI_FONT, 20, "bold"), text_color="#d4af37")
         lbl_title.pack(pady=10)
 
         t_frame = ttk.Frame(win)
@@ -14501,7 +14511,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 if inv["النوع"] == "صرف ذهب": tot_sarf += inv['الوزن']
                 elif inv["النوع"] == "قبض ذهب": tot_qabd += inv['الوزن']
                 
-            tree.tag_configure("total_tag", foreground="#2ecc71", font=("Cairo", 15, "bold"))
+            tree.tag_configure("total_tag", foreground="#2ecc71", font=(UI_FONT, 15, "bold"))
             tree.insert("", "end", values=("الإجمالي", "-", "-", "صرف:", f"{tot_sarf:.2f}", f"قبض: {tot_qabd:.2f}"), tags=("total_tag",))
 
         refresh_search_tree()
@@ -14509,15 +14519,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         edit_frame = ctk.CTkFrame(win)
         edit_frame.pack(fill="x", padx=20, pady=10)
 
-        ctk.CTkLabel(edit_frame, text="الوزن:", font=("Cairo", 14, "bold")).grid(row=0, column=5, padx=5, pady=8)
+        ctk.CTkLabel(edit_frame, text="الوزن:", font=(UI_FONT, 14, "bold")).grid(row=0, column=5, padx=5, pady=8)
         ent_weight = ctk.CTkEntry(edit_frame, width=110, justify="center")
         ent_weight.grid(row=0, column=4, padx=5, pady=8)
 
-        ctk.CTkLabel(edit_frame, text="رقم التشغيل:", font=("Cairo", 14, "bold")).grid(row=0, column=3, padx=5, pady=8)
+        ctk.CTkLabel(edit_frame, text="رقم التشغيل:", font=(UI_FONT, 14, "bold")).grid(row=0, column=3, padx=5, pady=8)
         ent_set_num = ctk.CTkEntry(edit_frame, width=110, justify="center")
         ent_set_num.grid(row=0, column=2, padx=5, pady=8)
 
-        ctk.CTkLabel(edit_frame, text="البيان:", font=("Cairo", 14, "bold")).grid(row=0, column=1, padx=5, pady=8)
+        ctk.CTkLabel(edit_frame, text="البيان:", font=(UI_FONT, 14, "bold")).grid(row=0, column=1, padx=5, pady=8)
         ent_note = ctk.CTkEntry(edit_frame, width=340, justify="right")
         ent_note.grid(row=0, column=0, padx=5, pady=8)
 
@@ -14591,11 +14601,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     
                 messagebox.showinfo("تم الحذف", "تم حذف الحركة المطلوبة وتحديث الأرصدة التلقائي.", parent=win)
 
-        btn_save = ctk.CTkButton(btn_action_frame, text="حفظ التعديلات 💾", font=("Cairo", 15, "bold"), fg_color="#2ecc71", hover_color="#27ae60", command=save_modifications)
+        btn_save = ctk.CTkButton(btn_action_frame, text="حفظ التعديلات 💾", font=(UI_FONT, 15, "bold"), fg_color="#2ecc71", hover_color="#27ae60", command=save_modifications)
         self.apply_edit_lock_to_button(btn_save, win)
         btn_save.pack(side="right", padx=10, expand=True, fill="x")
 
-        btn_del = ctk.CTkButton(btn_action_frame, text="حذف السجل 🗑️", font=("Cairo", 15, "bold"), fg_color="#e74c3c", hover_color="#c0392b", command=delete_record)
+        btn_del = ctk.CTkButton(btn_action_frame, text="حذف السجل 🗑️", font=(UI_FONT, 15, "bold"), fg_color="#e74c3c", hover_color="#c0392b", command=delete_record)
         btn_del.pack(side="left", padx=10, expand=True, fill="x")
 
     def bulk_settle_current_category(self):
@@ -14661,7 +14671,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.attributes("-topmost", True)
         
         # تكبير خط الاسم عند الإضافة
-        entry = ctk.CTkEntry(win, placeholder_text="اكتب الاسم هنا...", font=("Cairo", 18, "bold"), justify="center", width=280, height=45)
+        entry = ctk.CTkEntry(win, placeholder_text="اكتب الاسم هنا...", font=(UI_FONT, 18, "bold"), justify="center", width=280, height=45)
         entry.pack(pady=35)
         
         # ربط زر إنتر بالحفظ
@@ -14678,7 +14688,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.refresh_inquiry_table()
             win.destroy()
 
-        ctk.CTkButton(win, text="حفظ الاسم", font=("Cairo", 16, "bold"), height=40, command=save).pack(pady=5)
+        ctk.CTkButton(win, text="حفظ الاسم", font=(UI_FONT, 16, "bold"), height=40, command=save).pack(pady=5)
 
     # =========================================================================
     # --- شاشة صناديق المصنع: ذهب / الماس / فصوص / أحجار بفترة زمنية محددة (لا تُصفّر شهرياً) ---
@@ -14686,7 +14696,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_factory_boxes_tab(self):
         tab = self.tabview.tab("صناديق المصنع")
 
-        ctk.CTkLabel(tab, text="📦 صناديق المصنع", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 6))
+        ctk.CTkLabel(tab, text="📦 صناديق المصنع", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 6))
 
         # «من شهر / إلى شهر»: قائمتان بالأشهر المسجّلة — اختيار لا كتابة، وأي اختيار يحدّث
         # الأرقام فوراً؛ «الكل» = كل الأشهر
@@ -14695,7 +14705,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         range_row.pack(pady=(0, 10))
 
         def row_label(text):
-            ctk.CTkLabel(range_row, text=text, font=("Cairo", 13, "bold"),
+            ctk.CTkLabel(range_row, text=text, font=(UI_FONT, 13, "bold"),
                          text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(12, 4), pady=8)
 
         row_label("من شهر:")
@@ -14704,13 +14714,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         row_label("إلى شهر:")
         self.combo_factory_to = self.make_month_combo(range_row, self.refresh_factory_boxes_table)
         self.combo_factory_to.pack(side="right", padx=4)
-        ctk.CTkButton(range_row, text="الكل", font=("Cairo", 13, "bold"), fg_color=UI["success"],
+        ctk.CTkButton(range_row, text="الكل", font=(UI_FONT, 13, "bold"), fg_color=UI["success"],
                       hover_color=UI["success_hover"], width=64, height=34,
                       command=self.factory_show_all).pack(side="right", padx=4)
-        ctk.CTkButton(range_row, text="الشهر الحالي ↺", font=("Cairo", 13, "bold"), fg_color=UI["neutral"],
+        ctk.CTkButton(range_row, text="الشهر الحالي ↺", font=(UI_FONT, 13, "bold"), fg_color=UI["neutral"],
                       hover_color=UI["neutral_hover"], width=120, height=34,
                       command=self.reset_factory_boxes_period).pack(side="right", padx=4)
-        self.lbl_factory_scope = ctk.CTkLabel(range_row, text="", font=("Cairo", 12),
+        self.lbl_factory_scope = ctk.CTkLabel(range_row, text="", font=(UI_FONT, 12),
                                               text_color=(UI["muted"], "#9AA3AF"))
         self.lbl_factory_scope.pack(side="right", padx=(10, 12))
 
@@ -14724,28 +14734,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             card.grid(row=0, column=i, padx=10, pady=5, sticky="nsew")
             self.factory_cards_frame.grid_columnconfigure(i, weight=1)
 
-            ctk.CTkLabel(card, text=f"{icon} {box}", font=ctk.CTkFont(family="Cairo", size=19, weight="bold"), text_color="#d4af37").pack(pady=(14, 6))
+            ctk.CTkLabel(card, text=f"{icon} {box}", font=ctk.CTkFont(family=UI_FONT, size=19, weight="bold"), text_color="#d4af37").pack(pady=(14, 6))
 
             if box == "الماس":
                 # لوحة الألماس مختلفة: تعرض مبيعات الذهب المرافق للألماس، ثم إجمالي الألماس
-                lbl_gold_linked = ctk.CTkLabel(card, text="مبيعات ذهب: 0.00", font=("Cairo", 18, "bold"), text_color="#e74c3c")
+                lbl_gold_linked = ctk.CTkLabel(card, text="مبيعات ذهب: 0.00", font=(UI_FONT, 18, "bold"), text_color="#e74c3c")
                 lbl_gold_linked.pack(pady=4)
 
-                lbl_diamond_total = ctk.CTkLabel(card, text="الألماس: 0.00", font=("Cairo", 24, "bold"), text_color="#2ecc71")
+                lbl_diamond_total = ctk.CTkLabel(card, text="الألماس: 0.00", font=(UI_FONT, 24, "bold"), text_color="#2ecc71")
                 lbl_diamond_total.pack(pady=(4, 12))
 
-                btn = ctk.CTkButton(card, text="عرض كشف الحساب 🔍", font=("Cairo", 14, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=170, height=34, command=lambda b=box: self.open_factory_box_statement(b))
+                btn = ctk.CTkButton(card, text="عرض كشف الحساب 🔍", font=(UI_FONT, 14, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=170, height=34, command=lambda b=box: self.open_factory_box_statement(b))
                 btn.pack(pady=(0, 14))
 
                 self.factory_card_widgets[box] = {"gold_linked": lbl_gold_linked, "diamond_total": lbl_diamond_total}
             else:
-                lbl_sales = ctk.CTkLabel(card, text="المبيعات: 0.00", font=("Cairo", 18, "bold"), text_color="#e74c3c")
+                lbl_sales = ctk.CTkLabel(card, text="المبيعات: 0.00", font=(UI_FONT, 18, "bold"), text_color="#e74c3c")
                 lbl_sales.pack(pady=4)
 
-                lbl_incoming = ctk.CTkLabel(card, text="الوارد: 0.00", font=("Cairo", 24, "bold"), text_color="#2ecc71")
+                lbl_incoming = ctk.CTkLabel(card, text="الوارد: 0.00", font=(UI_FONT, 24, "bold"), text_color="#2ecc71")
                 lbl_incoming.pack(pady=(4, 12))
 
-                btn = ctk.CTkButton(card, text="عرض كشف الحساب 🔍", font=("Cairo", 14, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=170, height=34, command=lambda b=box: self.open_factory_box_statement(b))
+                btn = ctk.CTkButton(card, text="عرض كشف الحساب 🔍", font=(UI_FONT, 14, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=170, height=34, command=lambda b=box: self.open_factory_box_statement(b))
                 btn.pack(pady=(0, 14))
 
                 self.factory_card_widgets[box] = {"sales": lbl_sales, "incoming": lbl_incoming}
@@ -14754,7 +14764,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         prod_panel = ctk.CTkFrame(tab, corner_radius=14, fg_color=UI["midnight_2"])
         prod_panel.pack(fill="x", padx=20, pady=(15, 10))
         self.lbl_prod_title = ctk.CTkLabel(prod_panel, text="ملخّص الإنتاج للفترة", anchor="e",
-                                           font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+                                           font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
                                            text_color="#AEB9CC")
         self.lbl_prod_title.pack(fill="x", padx=18, pady=(10, 2))
         tiles = ctk.CTkFrame(prod_panel, fg_color="transparent")
@@ -14767,7 +14777,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                 border_width=1 if big else 0, border_color=UI["gold"])
             tile.grid(row=0, column=col, sticky="nsew", padx=6, pady=6)
             lbl = ctk.CTkLabel(tile, text="", text_color="#F5D77A" if big else "#F1E3B0",
-                               font=ctk.CTkFont(family="Cairo", size=17 if big else 15, weight="bold"))
+                               font=ctk.CTkFont(family=UI_FONT, size=17 if big else 15, weight="bold"))
             lbl.pack(padx=12, pady=12)
             return lbl
 
@@ -14777,10 +14787,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.lbl_prod_gold_diamond = prod_tile(0)
 
         self.lbl_prod_ratios = ctk.CTkLabel(prod_panel, text="", text_color="#7EE2B0",
-                                            font=ctk.CTkFont(family="Cairo", size=14, weight="bold"))
+                                            font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"))
         self.lbl_prod_ratios.pack(pady=(2, 12))
 
-        btn_print = ctk.CTkButton(tab, text="🖨️ طباعة صناديق المصنع", font=("Cairo", 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=42, command=self.print_factory_boxes_screen)
+        btn_print = ctk.CTkButton(tab, text="🖨️ طباعة صناديق المصنع", font=(UI_FONT, 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=42, command=self.print_factory_boxes_screen)
         btn_print.pack(pady=(0, 15))
 
         self.refresh_factory_boxes_table()
@@ -14928,23 +14938,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if color: c.setFillColorRGB(0, 0, 0)
 
         c = pdf_canvas.Canvas(out_path, pagesize=A4)
-        y = PH - M
-
-        txt(c, M, y - 6, "Jadeite Factory", size=12, bold=True, align="left")
-        txt(c, M, y - 13, "Saudi Arabia, Riyadh", size=8, align="left")
-        txt(c, PW - M, y - 6, "مصنع جاديت للتصنيع", size=12, bold=True, align="right")
-        txt(c, PW - M, y - 13, "المملكة العربية السعودية", size=8, align="right")
-        logo_bottom = y - 13
-        try:
-            logo_bytes = base64.b64decode(APP_LOGO_B64)
-            logo_img = ImageReader(io.BytesIO(logo_bytes))
-            lw, lh = 45 * mm, 10 * mm
-            logo_top = y - 4
-            logo_bottom = logo_top - lh
-            c.drawImage(logo_img, (PW - lw) / 2, logo_bottom, width=lw, height=lh, mask='auto', preserveAspectRatio=True)
-        except Exception:
-            pass
-        y = min(y - 13, logo_bottom) - 9 * mm
+        y = self.draw_standard_letterhead(c, M)
 
         txt(c, PW / 2, y, "📦 صناديق المصنع", size=17, bold=True, align="center", color=gold_color)
         y -= 8 * mm
@@ -15250,27 +15244,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         top_row = ctk.CTkFrame(tab, fg_color="transparent")
         top_row.pack(fill="x", padx=20, pady=(12, 6))
 
-        ctk.CTkLabel(top_row, text="📋 كشف حساب", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
+        ctk.CTkLabel(top_row, text="📋 كشف حساب", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
 
         # «من شهر / إلى شهر»: قائمتان (اختيار لا كتابة) — «الكل» = بلا حدّ، والاختيار يحدّث الكشف فوراً
-        ctk.CTkLabel(top_row, text="من شهر:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        ctk.CTkLabel(top_row, text="من شهر:", font=(UI_FONT, 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
         self.kh_from_month = self.make_month_combo(top_row, self.refresh_account_statement,
                                                    values=self.statement_month_options(), width=120,
                                                    font_size=15, height=36)
         self.kh_from_month.pack(side="right", padx=5)
-        ctk.CTkLabel(top_row, text="إلى شهر:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        ctk.CTkLabel(top_row, text="إلى شهر:", font=(UI_FONT, 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
         self.kh_to_month = self.make_month_combo(top_row, self.refresh_account_statement,
                                                  values=self.statement_month_options(), width=120,
                                                  font_size=15, height=36)
         self.kh_to_month.pack(side="right", padx=5)
         self.set_statement_range("", "")
 
-        ctk.CTkLabel(top_row, text="الاسم:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.kh_account_name = ctk.CTkComboBox(top_row, values=self.get_account_statement_options(), font=("Cairo", 15), width=230, height=36, justify="right")
+        ctk.CTkLabel(top_row, text="الاسم:", font=(UI_FONT, 15, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.kh_account_name = ctk.CTkComboBox(top_row, values=self.get_account_statement_options(), font=(UI_FONT, 15), width=230, height=36, justify="right")
         self.kh_account_name.pack(side="right", padx=5)
         self.bind_name_autocomplete(self.kh_account_name, self.get_account_statement_options)
 
-        ctk.CTkButton(top_row, text="بحث 🔍", font=("Cairo", 15, "bold"), fg_color="#1e8449", hover_color="#145a32", width=100, height=36, command=self.refresh_account_statement).pack(side="right", padx=10)
+        ctk.CTkButton(top_row, text="بحث 🔍", font=(UI_FONT, 15, "bold"), fg_color="#1e8449", hover_color="#145a32", width=100, height=36, command=self.refresh_account_statement).pack(side="right", padx=10)
 
         self.account_statement_table_frame = ttk.Frame(tab)
         self.account_statement_table_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -15278,16 +15272,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         balance_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
         balance_bar.pack(fill="x", padx=20, pady=(0, 6))
-        self.lbl_account_statement_balance = ctk.CTkLabel(balance_bar, text="", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#f1c40f")
+        self.lbl_account_statement_balance = ctk.CTkLabel(balance_bar, text="", font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"), text_color="#f1c40f")
         self.lbl_account_statement_balance.pack(pady=10)
 
-        ctk.CTkLabel(tab, text="اضغط مرتين على أي سطر لمعاينة فاتورته (إن وُجدت)، أو حدّده واضغط تعديل", font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 4))
+        ctk.CTkLabel(tab, text="اضغط مرتين على أي سطر لمعاينة فاتورته (إن وُجدت)، أو حدّده واضغط تعديل", font=(UI_FONT, 11), text_color="#aaaaaa").pack(pady=(0, 4))
 
         btns_row = ctk.CTkFrame(tab, fg_color="transparent")
         btns_row.pack(pady=(0, 12))
-        btn_print = ctk.CTkButton(btns_row, text="🖨️ طباعة كشف الحساب", font=("Cairo", 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=42, command=self.print_account_statement)
+        btn_print = ctk.CTkButton(btns_row, text="🖨️ طباعة كشف الحساب", font=(UI_FONT, 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=42, command=self.print_account_statement)
         btn_print.pack(side="right", padx=5)
-        btn_edit_row = ctk.CTkButton(btns_row, text="✏️ تعديل السطر المحدد", font=("Cairo", 14, "bold"), fg_color="#8b6d00", hover_color="#6b5400", height=42, command=self.edit_selected_account_statement_row)
+        btn_edit_row = ctk.CTkButton(btns_row, text="✏️ تعديل السطر المحدد", font=(UI_FONT, 14, "bold"), fg_color="#8b6d00", hover_color="#6b5400", height=42, command=self.edit_selected_account_statement_row)
         btn_edit_row.pack(side="right", padx=5)
 
     def statement_month_options(self):
@@ -15376,22 +15370,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         page_num = 1
 
         while idx < total_rows or (idx == 0 and total_rows == 0):
-            y = PH - M
-            txt(c, M, y - 6, "Jadeite Factory", size=11, bold=True, align="left")
-            txt(c, M, y - 12, "Saudi Arabia, Riyadh", size=7, align="left")
-            txt(c, PW - M, y - 6, "مصنع جاديت للتصنيع", size=11, bold=True, align="right")
-            txt(c, PW - M, y - 12, "المملكة العربية السعودية", size=7, align="right")
-            logo_bottom = y - 12
-            try:
-                logo_bytes = base64.b64decode(APP_LOGO_B64)
-                logo_img = ImageReader(io.BytesIO(logo_bytes))
-                lw, lh = 40 * mm, 9 * mm
-                logo_top = y - 3
-                logo_bottom = logo_top - lh
-                c.drawImage(logo_img, (PW - lw) / 2, logo_bottom, width=lw, height=lh, mask='auto', preserveAspectRatio=True)
-            except Exception:
-                pass
-            y = min(y - 12, logo_bottom) - 8 * mm
+            y = self.draw_standard_letterhead(c, M)
 
             txt(c, PW / 2, y, "📋 كشف حساب", size=15, bold=True, align="center", color=border_color)
             y -= 6 * mm
@@ -15414,7 +15393,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     c.line(M + table_w - col_x_starts[i], table_top - header_h, M + table_w - col_x_starts[i], table_top)
 
             y = table_top - header_h
-            page_rows = rows[idx: idx + max_rows_per_page]
+            # الصفوف التي تتسع لها الصفحة تحت الترويسة، مع مكان الرصيد النهائي وتاريخ الطباعة
+            page_rows = rows[idx: idx + max(1, min(max_rows_per_page, int((y - 26 * mm) // row_h)))]
             for r in page_rows:
                 running += (r["مدين"] - r["دائن"]) if use_madin_daen else (r["دائن"] - r["مدين"])
                 rect(c, M, y, table_w, row_h, stroke_color=border_color)
@@ -15507,7 +15487,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         cols = ("رقم الفاتورة", "التاريخ", "الاسم", "مدين", "دائن", "الرصيد", "البيان")
         self.account_statement_tree = self.create_standard_treeview(self.account_statement_table_frame, cols, height=16)
-        self.account_statement_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 14, "bold"))
+        self.account_statement_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 14, "bold"))
         for c in cols:
             w = 220 if c == "البيان" else 200 if c == "الاسم" else 140 if c == "التاريخ" else 110
             self.account_statement_tree.column(c, width=w, anchor="center")
@@ -15517,7 +15497,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # الرصيد = مدين - دائن لحسابات الخزينة والذهب والألماس وفصوص وأحجار تحديداً (حسب الاعتماد الأخير)
         # وبقية الحسابات (الموردين، المسترجعات، المبيعات) تبقى على صيغة دائن - مدين
         use_madin_daen = self.is_debit_nature_account(account_key)
-        self.account_statement_tree.tag_configure("opening_tag", foreground="#1f77b4", font=("Cairo", 13, "bold"))
+        self.account_statement_tree.tag_configure("opening_tag", foreground="#1f77b4", font=(UI_FONT, 13, "bold"))
         self.normalize_tree_tags(self.account_statement_tree)
         running = 0.0
         opening = None
@@ -15548,17 +15528,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_monthly_report_tab(self):
         tab = self.tabview.tab("التقرير الشهري")
 
-        lbl_desc = ctk.CTkLabel(tab, text="📊 التقرير الشهري لرصيد الخزينة (نهاية الفترة = بداية الفترة − المبيعات/الصادر − الخياس + الوارد ± قيود الخزينة)", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#1f77b4")
+        lbl_desc = ctk.CTkLabel(tab, text="📊 التقرير الشهري لرصيد الخزينة (نهاية الفترة = بداية الفترة − المبيعات/الصادر − الخياس + الوارد ± قيود الخزينة)", font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"), text_color="#1f77b4")
         lbl_desc.pack(pady=(15, 2))
         ctk.CTkLabel(tab, text="كل فترة تبدأ برصيد نهاية الفترة التي قبلها تلقائياً، والأرقام لا تتغيّر بتغيير الفترة المعروضة — ورصيد نهاية الفترة المعروضة = شريط رصيد الخزينة",
-                     font=("Cairo", 12), text_color="#aaaaaa").pack(pady=(0, 10))
+                     font=(UI_FONT, 12), text_color="#aaaaaa").pack(pady=(0, 10))
 
         t_frame = ttk.Frame(tab)
         t_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
         cols = ("الشهر", "رصيد بداية الفترة", "المبيعات / الصادر ➖", "الخياس ➖", "الوارد ➕", "قيود الخزينة ±", "رصيد نهاية الفترة ⚖️")
         self.report_tree = self.create_standard_treeview(t_frame, cols, height=16)
-        self.report_tree.tag_configure("highlight_row", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        self.report_tree.tag_configure("highlight_row", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         self.normalize_tree_tags(self.report_tree)
 
         for c in cols:
@@ -15671,7 +15651,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pop.attributes("-topmost", True)
         except Exception:
             pass
-        lb = tk.Listbox(pop, font=("Cairo", 13), justify="right", activestyle="none",
+        lb = tk.Listbox(pop, font=(UI_FONT, 13), justify="right", activestyle="none",
                         exportselection=False, relief="flat", bd=0, highlightthickness=1,
                         highlightbackground=UI["primary"], highlightcolor=UI["primary"],
                         selectbackground=UI["primary"], selectforeground="#ffffff",
@@ -15849,59 +15829,59 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         main_frame = ctk.CTkFrame(tab, corner_radius=10)
         main_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        ctk.CTkLabel(main_frame, text="📥 الوارد/قبض (مورد / مصنع / مسترجعات)", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), text_color="#2ecc71").pack(pady=10)
+        ctk.CTkLabel(main_frame, text="📥 الوارد/قبض (مورد / مصنع / مسترجعات)", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), text_color="#2ecc71").pack(pady=10)
 
         # ====== الصف العلوي: رقم الفاتورة (تلقائي) / رقم السند / التاريخ / الاسم ======
         top_row = ctk.CTkFrame(main_frame, fg_color="transparent")
         top_row.pack(fill="x", padx=15, pady=(0, 8))
 
-        self.in_date = ctk.CTkEntry(top_row, placeholder_text="التاريخ", font=("Cairo", 14), justify="center", width=120, height=36)
+        self.in_date = ctk.CTkEntry(top_row, placeholder_text="التاريخ", font=(UI_FONT, 14), justify="center", width=120, height=36)
         self.in_date.insert(0, self.get_smart_default_date())
         self.in_date.pack(side="right", padx=5)
-        ctk.CTkLabel(top_row, text="التاريخ:", font=("Cairo", 14, "bold")).pack(side="right", padx=3)
+        ctk.CTkLabel(top_row, text="التاريخ:", font=(UI_FONT, 14, "bold")).pack(side="right", padx=3)
 
-        ctk.CTkLabel(top_row, text="الاسم:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
-        self.in_supplier = ctk.CTkComboBox(top_row, values=self.get_supplier_name_values(), font=("Cairo", 14), width=230, height=36, justify="right")
+        ctk.CTkLabel(top_row, text="الاسم:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
+        self.in_supplier = ctk.CTkComboBox(top_row, values=self.get_supplier_name_values(), font=(UI_FONT, 14), width=230, height=36, justify="right")
         self.in_supplier.set("المصنع")
         self.in_supplier.pack(side="right", padx=5)
         self.bind_name_autocomplete(self.in_supplier, self.get_supplier_name_values)
 
-        self.in_invoice_num = ctk.CTkEntry(top_row, font=("Cairo", 15, "bold"), justify="center", width=110, height=36,
+        self.in_invoice_num = ctk.CTkEntry(top_row, font=(UI_FONT, 15, "bold"), justify="center", width=110, height=36,
                                             placeholder_text="رقم الفاتورة")
         self.in_invoice_num.pack(side="right", padx=5)
-        ctk.CTkLabel(top_row, text="رقم الفاتورة (يدوي):", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
+        ctk.CTkLabel(top_row, text="رقم الفاتورة (يدوي):", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
 
         # ====== صف نوع الوارد والعمليات (الوزن أولاً ثم العيار) ======
         ops_row = ctk.CTkFrame(main_frame, corner_radius=10)
         ops_row.pack(fill="x", padx=15, pady=6)
 
         # من اليمين: كل عنوان ثم خانته — الوزن، العيار، نوع الوارد، إلى حساب
-        ctk.CTkLabel(ops_row, text="الوزن:", font=("Cairo", 14, "bold")).pack(side="right", padx=3)
-        self.in_weight = ctk.CTkEntry(ops_row, placeholder_text="الوزن", font=("Cairo", 14), justify="center", width=100, height=36)
+        ctk.CTkLabel(ops_row, text="الوزن:", font=(UI_FONT, 14, "bold")).pack(side="right", padx=3)
+        self.in_weight = ctk.CTkEntry(ops_row, placeholder_text="الوزن", font=(UI_FONT, 14), justify="center", width=100, height=36)
         self.in_weight.pack(side="right", padx=8, pady=8)
 
-        self.lbl_in_carat = ctk.CTkLabel(ops_row, text="العيار:", font=("Cairo", 14, "bold"))
-        self.in_carat = ctk.CTkEntry(ops_row, placeholder_text="العيار", font=("Cairo", 14), justify="center", width=90, height=36)
+        self.lbl_in_carat = ctk.CTkLabel(ops_row, text="العيار:", font=(UI_FONT, 14, "bold"))
+        self.in_carat = ctk.CTkEntry(ops_row, placeholder_text="العيار", font=(UI_FONT, 14), justify="center", width=90, height=36)
         self.lbl_in_carat.pack(side="right", padx=3)
         self.in_carat.pack(side="right", padx=8, pady=8)
 
-        self.lbl_in_type = ctk.CTkLabel(ops_row, text="نوع الوارد:", font=("Cairo", 14, "bold"), text_color="#1f77b4")
+        self.lbl_in_type = ctk.CTkLabel(ops_row, text="نوع الوارد:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4")
         self.lbl_in_type.pack(side="right", padx=3)
-        self.in_type = ctk.CTkOptionMenu(ops_row, values=["ذهب", "الماس", "فصوص وأحجار"], font=("Cairo", 14, "bold"), width=130, height=36, command=self.toggle_in_carat_field)
+        self.in_type = ctk.CTkOptionMenu(ops_row, values=["ذهب", "الماس", "فصوص وأحجار"], font=(UI_FONT, 14, "bold"), width=130, height=36, command=self.toggle_in_carat_field)
         self.in_type.set("ذهب")
         self.in_type.pack(side="right", padx=8, pady=8)
 
         # إلى حساب: الوارد العادي للخزينة، أو حساب «مسترجع» مرحلة (القبض من المصنع
         # قد يكون ذهباً عاد من الكاستنج مثلاً) — يظهر في «مسترجع» لوحتها بشاشة
         # الخسائر ولا يمسّ فاقدها الحالي ولا يُقفل شيئاً، ويبقى مصدره (الاسم) في البيان
-        ctk.CTkLabel(ops_row, text="إلى حساب:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
+        ctk.CTkLabel(ops_row, text="إلى حساب:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=3)
         self.in_to_account = ctk.CTkOptionMenu(ops_row, values=self.get_inbound_account_options(),
-                                               font=("Cairo", 14, "bold"), width=210, height=36,
+                                               font=(UI_FONT, 14, "bold"), width=210, height=36,
                                                dynamic_resizing=False)
         self.in_to_account.set(self.INBOUND_DEFAULT_ACCOUNT)
         self.in_to_account.pack(side="right", padx=8, pady=8)
 
-        self.in_note = ctk.CTkEntry(main_frame, placeholder_text="البيان والشرح...", font=("Cairo", 14), justify="right", height=36)
+        self.in_note = ctk.CTkEntry(main_frame, placeholder_text="البيان والشرح...", font=(UI_FONT, 14), justify="right", height=36)
         self.in_note.pack(fill="x", padx=15, pady=6)
 
         in_nav_fields = [self.in_supplier, self.in_weight, self.in_carat, self.in_note]
@@ -15910,14 +15890,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             f.bind("<Return>", lambda e, nxt=in_nav_fields[i + 1]: nxt.focus_set() or "break")
         in_nav_fields[-1].bind("<Return>", lambda e: (self.submit_inbound(), "break")[1])
 
-        btn_submit_in = ctk.CTkButton(main_frame, text="تسجيل الوارد للخزينة ➕", font=("Cairo", 15, "bold"), fg_color="#1e8449", hover_color="#145a32", height=38, command=self.submit_inbound)
+        btn_submit_in = ctk.CTkButton(main_frame, text="تسجيل الوارد للخزينة ➕", font=(UI_FONT, 15, "bold"), fg_color="#1e8449", hover_color="#145a32", height=38, command=self.submit_inbound)
         btn_submit_in.pack(pady=8)
 
         cols_in = ("رقم الفاتورة", "التاريخ", "الاسم", "النوع", "الوزن", "العيار", "وزن 18", "البيان")
         # من مصنع الجداول الموحّد: شريط تمرير حديث وتظليل الصف (كان بلا شريط تمرير إطلاقاً)
         in_table_frame = ttk.Frame(main_frame)
         self.tree_in = self.create_standard_treeview(in_table_frame, cols_in, height=16)
-        self.tree_in.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        self.tree_in.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         for c in cols_in:
             self.tree_in.heading(c, text=c)
             w = 220 if c == "البيان" else (150 if c in ("التاريخ", "الاسم") else 90)
@@ -15925,27 +15905,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # ====== أزرار تعديل/حذف الحركة أعلى الجدول ======
         table_top_in = ctk.CTkFrame(main_frame, fg_color="transparent")
         table_top_in.pack(fill="x", padx=15, pady=(10, 2))
-        ctk.CTkLabel(table_top_in, text="📋 كشف حركة الوارد", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#d4af37").pack(side="right")
+        ctk.CTkLabel(table_top_in, text="📋 كشف حركة الوارد", font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"), text_color="#d4af37").pack(side="right")
 
-        btn_del_in = ctk.CTkButton(table_top_in, text="حذف الحركة المحددة 🗑️", font=("Cairo", 14, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=170, height=32, command=self.delete_selected_inout_row)
+        btn_del_in = ctk.CTkButton(table_top_in, text="حذف الحركة المحددة 🗑️", font=(UI_FONT, 14, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=170, height=32, command=self.delete_selected_inout_row)
         btn_del_in.pack(side="left", padx=5)
 
-        btn_edit_in = ctk.CTkButton(table_top_in, text="تعديل الحركة المحددة ✏️", font=("Cairo", 14, "bold"), fg_color="#b8860b", hover_color="#daa520", width=170, height=32, command=self.edit_selected_inout_row)
+        btn_edit_in = ctk.CTkButton(table_top_in, text="تعديل الحركة المحددة ✏️", font=(UI_FONT, 14, "bold"), fg_color="#b8860b", hover_color="#daa520", width=170, height=32, command=self.edit_selected_inout_row)
         btn_edit_in.pack(side="left", padx=5)
 
         in_table_frame.pack(fill="both", expand=True, padx=15, pady=(2, 4))
         self.tree_in.bind("<Double-1>", lambda e: self.edit_inout_record(self.tree_in))
 
-        ctk.CTkLabel(main_frame, text="اضغط مرتين على أي سطر لتعديله، أو حدّده واضغط معاينة", font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 4))
-        btn_preview_in_row = ctk.CTkButton(main_frame, text="👁️ معاينة السطر المحدد", font=("Cairo", 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", height=36, command=self.preview_selected_inout_row)
+        ctk.CTkLabel(main_frame, text="اضغط مرتين على أي سطر لتعديله، أو حدّده واضغط معاينة", font=(UI_FONT, 11), text_color="#aaaaaa").pack(pady=(0, 4))
+        btn_preview_in_row = ctk.CTkButton(main_frame, text="👁️ معاينة السطر المحدد", font=(UI_FONT, 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", height=36, command=self.preview_selected_inout_row)
         btn_preview_in_row.pack(pady=(0, 6))
 
         balance_bar = ctk.CTkFrame(main_frame, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
         balance_bar.pack(fill="x", padx=15, pady=(4, 6))
-        self.lbl_in_summary = ctk.CTkLabel(balance_bar, text="إجمالي الوارد: 0.00 جم", font=ctk.CTkFont(family="Cairo", size=15, weight="bold"), text_color="#f1c40f")
+        self.lbl_in_summary = ctk.CTkLabel(balance_bar, text="إجمالي الوارد: 0.00 جم", font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"), text_color="#f1c40f")
         self.lbl_in_summary.pack(pady=10)
 
-        btn_print_in = ctk.CTkButton(main_frame, text="🖨️ طباعة كشف الوارد", font=("Cairo", 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_inout_screen)
+        btn_print_in = ctk.CTkButton(main_frame, text="🖨️ طباعة كشف الوارد", font=(UI_FONT, 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_inout_screen)
         btn_print_in.pack(pady=(0, 10))
 
     def submit_inbound(self):
@@ -16103,22 +16083,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         page_num = 1
 
         while idx < total_rows or (idx == 0 and total_rows == 0):
-            y = PH - M
-            txt(c, M, y - 6, "Jadeite Factory", size=11, bold=True, align="left")
-            txt(c, M, y - 12, "Saudi Arabia, Riyadh", size=7, align="left")
-            txt(c, PW - M, y - 6, "مصنع جاديت للتصنيع", size=11, bold=True, align="right")
-            txt(c, PW - M, y - 12, "المملكة العربية السعودية", size=7, align="right")
-            logo_bottom = y - 12
-            try:
-                logo_bytes = base64.b64decode(APP_LOGO_B64)
-                logo_img = ImageReader(io.BytesIO(logo_bytes))
-                lw, lh = 40 * mm, 9 * mm
-                logo_top = y - 3
-                logo_bottom = logo_top - lh
-                c.drawImage(logo_img, (PW - lw) / 2, logo_bottom, width=lw, height=lh, mask='auto', preserveAspectRatio=True)
-            except Exception:
-                pass
-            y = min(y - 12, logo_bottom) - 8 * mm
+            y = self.draw_standard_letterhead(c, M)
 
             txt(c, PW / 2, y, title, size=15, bold=True, align="center", color=border_color)
             y -= 6 * mm
@@ -16140,7 +16105,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     c.line(M + table_w - col_x_starts[i], table_top - header_h, M + table_w - col_x_starts[i], table_top)
 
             y = table_top - header_h
-            page_rows = rows[idx: idx + max_rows_per_page]
+            # الصفوف التي تتسع لها الصفحة تحت الترويسة، مع مكان تاريخ الطباعة
+            page_rows = rows[idx: idx + max(1, min(max_rows_per_page, int((y - 18 * mm) // row_h)))]
             for row_vals in page_rows:
                 rect(c, M, y, table_w, row_h, stroke_color=border_color)
                 for i in range(1, len(cols)):
@@ -16310,14 +16276,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # و«المعلقات» (فواتير عُلّقت قبل ترحيلها). المفاتيح الداخلية ثابتة: المبيعات/العمليات/المعلقات
         for key, label in [("المبيعات", "🧾 إصدار مبيعات"), ("العمليات", "📚 المبيعات الصادرة"),
                            ("المعلقات", "⏸️ المعلقات")]:
-            b = ctk.CTkButton(sub_bar, text=label, font=("Cairo", 15, "bold"), width=150, height=38,
+            b = ctk.CTkButton(sub_bar, text=label, font=(UI_FONT, 15, "bold"), width=150, height=38,
                               command=lambda k=key: self.switch_sales_subtab(k))
             b.pack(side="right", padx=4)
             self.sales_subtab_buttons[key] = b
 
         # أرصدة المواد: شارة هادئة أعلى الشاشة بدل شريط يقتطع من مساحة الجدول
         self.lbl_sales_balance = ctk.CTkLabel(
-            sub_bar, text="", font=ctk.CTkFont(family="Cairo", size=13, weight="bold"),
+            sub_bar, text="", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
             fg_color=(UI["surface_alt"], "#1D232B"), text_color=UI_TITLE,
             corner_radius=8, height=32)
         self.lbl_sales_balance.pack(side="left", padx=4, ipadx=12)
@@ -16337,34 +16303,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head.pack(fill="x", padx=14, pady=(10, 2))
 
         def head_label(text):
-            ctk.CTkLabel(head, text=text, font=("Cairo", 14, "bold"),
+            ctk.CTkLabel(head, text=text, font=(UI_FONT, 14, "bold"),
                          text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(10, 4))
 
         head_label("التاريخ:")
-        self.sale_date = ctk.CTkEntry(head, font=("Cairo", 14), justify="center", width=120, height=34)
+        self.sale_date = ctk.CTkEntry(head, font=(UI_FONT, 14), justify="center", width=120, height=34)
         self.sale_date.insert(0, self.get_smart_default_date())
         self.sale_date.pack(side="right", padx=4)
 
         head_label("رقم الفاتورة:")
-        self.sale_invoice_num = ctk.CTkEntry(head, font=("Cairo", 14, "bold"), justify="center", width=110,
+        self.sale_invoice_num = ctk.CTkEntry(head, font=(UI_FONT, 14, "bold"), justify="center", width=110,
                                              height=34, placeholder_text="رقم الفاتورة")
         self.sale_invoice_num.pack(side="right", padx=(4, 0))
         # ترقيم تلقائي: يُختار رقم البداية مرة (ويُحفظ)، وكل فاتورة جديدة تأخذ الرقم التالي
-        ctk.CTkButton(head, text="🔢", width=34, height=34, font=("Cairo", 15), fg_color=UI["neutral"],
+        ctk.CTkButton(head, text="🔢", width=34, height=34, font=(UI_FONT, 15), fg_color=UI["neutral"],
                       hover_color=UI["neutral_hover"], command=self.open_sale_invoice_start_dialog
                       ).pack(side="right", padx=(2, 4))
         self.fill_next_sale_invoice_number()
 
         head_label("الاسم:")
         self.sale_name = ctk.CTkComboBox(head, values=self.get_supplier_name_values_no_mustarja(),
-                                         font=("Cairo", 14), justify="right", width=210, height=34)
+                                         font=(UI_FONT, 14), justify="right", width=210, height=34)
         self.sale_name.set("المصنع")
         self.sale_name.pack(side="right", padx=4)
         self.bind_name_autocomplete(self.sale_name, self.get_supplier_name_values_no_mustarja)
 
         # البيان بعد الاسم: يُحفظ مع الفاتورة ويظهر في «المبيعات الصادرة» و«المعلقات»
         head_label("البيان:")
-        self.sale_note = ctk.CTkEntry(head, font=("Cairo", 14), justify="right", height=34,
+        self.sale_note = ctk.CTkEntry(head, font=(UI_FONT, 14), justify="right", height=34,
                                       placeholder_text="بيان الفاتورة...")
         self.sale_note.pack(side="right", padx=4, fill="x", expand=True)
 
@@ -16385,10 +16351,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         def add_field(i, label_text):
             # يلتفّ العنوان الطويل على سطرين قبل أن يتجاوز عموده (اللابتوب الصغير)
-            ctk.CTkLabel(fields_row, text=label_text, font=("Cairo", 13, "bold"), wraplength=95,
+            ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=95,
                          text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=grid_col(i), padx=4,
                                                                   pady=(0, 3), sticky="s")
-            ent = ctk.CTkEntry(fields_row, justify="center", font=("Cairo", 14), width=60, height=34)
+            ent = ctk.CTkEntry(fields_row, justify="center", font=(UI_FONT, 14), width=60, height=34)
             ent.grid(row=1, column=grid_col(i), padx=4, sticky="ew")
             return ent
 
@@ -16406,7 +16372,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_set_number.bind("<FocusOut>", self.autofill_assembler_khayas, add="+")
         # مصدر خياس المركب تحت الخانات: العامل والصف والفترة التي جاء منها، أو أن
         # الرقم غير موجود في المركبين — فيُرى سبب أي قيمة بعينه (يختفي حين يفرغ)
-        self.lbl_assembler_source = ctk.CTkLabel(fields_row, text="", font=("Cairo", 12),
+        self.lbl_assembler_source = ctk.CTkLabel(fields_row, text="", font=(UI_FONT, 12),
                                                  text_color=(UI["muted"], "#9AA4B2"), anchor="e")
         self.lbl_assembler_source.grid(row=2, column=0, columnspan=n_cols, padx=6, pady=(4, 0), sticky="e")
         self.lbl_assembler_source.grid_remove()
@@ -16419,13 +16385,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # ====== نسبة الخصم القابلة للاختيار والإضافة (تُضرب في الأحجار تلقائياً) ======
         pct_i = len(labels)
-        ctk.CTkLabel(fields_row, text="نسبة الخصم", font=("Cairo", 13, "bold"),
+        ctk.CTkLabel(fields_row, text="نسبة الخصم", font=(UI_FONT, 13, "bold"),
                      text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=grid_col(pct_i), padx=4,
                                                               pady=(0, 3), sticky="s")
         pct_row = ctk.CTkFrame(fields_row, fg_color="transparent")
         pct_row.grid(row=1, column=grid_col(pct_i), padx=4, sticky="ew")
         self.sale_discount_pct = ctk.CTkComboBox(pct_row, values=[f"{p}%" for p in self.get_discount_percentages()],
-                                                   font=("Cairo", 13), width=70, height=34, justify="center",
+                                                   font=(UI_FONT, 13), width=70, height=34, justify="center",
                                                    command=lambda choice: self.on_discount_pct_change())
         self.sale_discount_pct.set(f"{self.get_last_discount_percentage()}%")
         self.sale_discount_pct.pack(side="right", fill="x", expand=True)
@@ -16433,14 +16399,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # كما هي في الفاتورة التالية وعند فتح البرنامج
         self.sale_discount_pct.bind("<KeyRelease>", lambda e: self.remember_discount_pct())
         self.sale_discount_pct.bind("<FocusOut>", lambda e: self.remember_discount_pct())
-        btn_add_pct = ctk.CTkButton(pct_row, text="➕", font=("Cairo", 13, "bold"), width=30, height=34,
+        btn_add_pct = ctk.CTkButton(pct_row, text="➕", font=(UI_FONT, 13, "bold"), width=30, height=34,
                                     fg_color="#1e8449", hover_color="#145a32",
                                     command=self.open_add_discount_pct_dialog)
         btn_add_pct.pack(side="right", padx=(0, 3))
 
         # زر إضافة السطر في نهاية صف الخانات نفسه (أعلى الشاشة، قريب من اليد)
         btn_add_row = ctk.CTkButton(fields_row, text="➕ إضافة",
-                                    font=ctk.CTkFont(family="Cairo", size=14, weight="bold"), height=34,
+                                    font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"), height=34,
                                     fg_color=UI["success"], hover_color=UI["success_hover"],
                                     command=self.stage_sale_row)
         btn_add_row.grid(row=1, column=grid_col(pct_i + 1), padx=(4, 2), sticky="ew")
@@ -16504,12 +16470,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         pending_top = ctk.CTkFrame(tab, fg_color="transparent")
         pending_top.pack(fill="x", padx=18, pady=(2, 2))
         ctk.CTkLabel(pending_top, text="📝 سطور الفاتورة الحالية (لم تُرحَّل بعد)",
-                     font=ctk.CTkFont(family="Cairo", size=14, weight="bold"),
+                     font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"),
                      text_color=UI_TITLE).pack(side="right")
         ctk.CTkLabel(pending_top, text="✏️ تعديل كل خانات الصف   ·   🗑️ حذفه — من العمود الأول (أو نقرتان على الصف)",
-                     font=("Cairo", 12), text_color=(UI["muted"], "#9AA3AF")).pack(side="right", padx=14)
+                     font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA3AF")).pack(side="right", padx=14)
         self.btn_sales_sort = ctk.CTkButton(
-            pending_top, text="⬇️ تنازلي", font=("Cairo", 13, "bold"),
+            pending_top, text="⬇️ تنازلي", font=(UI_FONT, 13, "bold"),
             fg_color=UI["neutral"], hover_color=UI["neutral_hover"], width=100, height=30,
             command=self.toggle_pending_sales_order)
         self.btn_sales_sort.pack(side="left", padx=2)
@@ -16525,21 +16491,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         commit_btns = ctk.CTkFrame(commit_bar, fg_color="transparent")
         commit_btns.grid(row=0, column=1, pady=8)
         btn_commit = ctk.CTkButton(commit_btns, text="✅ ترحيل واعتماد الفاتورة",
-                                   font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), height=44, width=300,
+                                   font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), height=44, width=300,
                                    fg_color=UI["success"], hover_color=UI["success_hover"],
                                    command=self.commit_sale_invoice)
         btn_commit.pack(side="right", padx=6)
         self.btn_suspend_sale = ctk.CTkButton(
-            commit_btns, text="⏸️ تعليق الفاتورة", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
+            commit_btns, text="⏸️ تعليق الفاتورة", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"),
             height=44, width=220, fg_color=UI["edit"], hover_color=UI["edit_hover"],
             command=self.suspend_sale_invoice)
         self.btn_suspend_sale.pack(side="right", padx=6)
         # الفاتورة المعلّقة المفتوحة الآن: تذكير ثابت بجانب الزرّين حتى تُرحَّل أو تُعلَّق
         self.lbl_suspended_open = ctk.CTkLabel(
-            commit_bar, text="", font=("Cairo", 13, "bold"), text_color=UI_TITLE,
+            commit_bar, text="", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE,
             wraplength=260, justify="left")
         self.lbl_suspended_open.grid(row=0, column=0, padx=12, sticky="w")
-        self.lbl_sales_status = ctk.CTkLabel(commit_bar, text="", font=("Cairo", 14, "bold"),
+        self.lbl_sales_status = ctk.CTkLabel(commit_bar, text="", font=(UI_FONT, 14, "bold"),
                                              text_color="#2ecc71", wraplength=260, justify="right")
         self.lbl_sales_status.grid(row=0, column=2, padx=12, sticky="e")
 
@@ -16649,37 +16615,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_sales_ops_ui(self, parent):
         head = ctk.CTkFrame(parent, fg_color="transparent")
         head.pack(fill="x", padx=20, pady=(12, 4))
-        ctk.CTkLabel(head, text="📚 الفواتير المرحّلة (كل فاتورة في صف)", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
+        ctk.CTkLabel(head, text="📚 الفواتير المرحّلة (كل فاتورة في صف)", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
 
-        ctk.CTkButton(head, text="🖨️ معاينة وطباعة", font=("Cairo", 14, "bold"), width=155, height=34,
+        ctk.CTkButton(head, text="🖨️ معاينة وطباعة", font=(UI_FONT, 14, "bold"), width=155, height=34,
                       fg_color="#1f77b4", hover_color="#144d75", command=self.preview_selected_sale_invoice).pack(side="left", padx=5)
-        btn_tickets = ctk.CTkButton(head, text="🏷️ تذاكر الطقوم", font=("Cairo", 14, "bold"), width=150, height=34,
+        btn_tickets = ctk.CTkButton(head, text="🏷️ تذاكر الطقوم", font=(UI_FONT, 14, "bold"), width=150, height=34,
                                     command=self.print_selected_sale_tickets, **BUTTON_STYLES["secondary"])
         btn_tickets.pack(side="left", padx=5)
         HoverTip(btn_tickets, "تذكرة لكل رقم تشغيل في الفاتورة المحددة: باركود وQR وبيانات بيعه — جاهزة للمسح")
-        ctk.CTkButton(head, text="حذف الفاتورة 🗑️", font=("Cairo", 14, "bold"), width=155, height=34,
+        ctk.CTkButton(head, text="حذف الفاتورة 🗑️", font=(UI_FONT, 14, "bold"), width=155, height=34,
                       fg_color="#8b0000", hover_color="#a52a2a", command=self.delete_selected_sale_invoice).pack(side="left", padx=5)
-        ctk.CTkButton(head, text="تعديل الفاتورة ✏️", font=("Cairo", 14, "bold"), width=155, height=34,
+        ctk.CTkButton(head, text="تعديل الفاتورة ✏️", font=(UI_FONT, 14, "bold"), width=155, height=34,
                       fg_color="#b8860b", hover_color="#daa520", command=self.edit_selected_sale_invoice).pack(side="left", padx=5)
         # يقارن خياس المركب المسجّل في كل الفواتير المرحّلة بكشف المركبين الآن
-        ctk.CTkButton(head, text="🔍 تدقيق خياس المركب", font=("Cairo", 14, "bold"), width=185, height=34,
+        ctk.CTkButton(head, text="🔍 تدقيق خياس المركب", font=(UI_FONT, 14, "bold"), width=185, height=34,
                       fg_color="#555555", hover_color="#333333", command=self.open_assembler_khayas_audit).pack(side="left", padx=5)
 
         # إعداد تذاكر الطقوم لهذا الجهاز: إرفاقها بالفاتورة، ومحتوى الباركود الخطي (لبرنامج المسح الآخر)
         trow = ctk.CTkFrame(parent, fg_color="transparent")
         trow.pack(fill="x", padx=20, pady=(0, 4))
-        ctk.CTkLabel(trow, text="🏷️ التذاكر:", font=("Cairo", 13, "bold"),
+        ctk.CTkLabel(trow, text="🏷️ التذاكر:", font=(UI_FONT, 13, "bold"),
                      text_color=(UI["title"], "#C9D6E8")).pack(side="right", padx=(10, 6))
         self.var_tickets_with_invoice = ctk.BooleanVar(value=self.sale_tickets_with_invoice())
-        chk = ctk.CTkCheckBox(trow, text="إرفاق التذاكر بالفاتورة", font=("Cairo", 12, "bold"),
+        chk = ctk.CTkCheckBox(trow, text="إرفاق التذاكر بالفاتورة", font=(UI_FONT, 12, "bold"),
                               variable=self.var_tickets_with_invoice,
                               command=lambda: save_ui_pref("sale_tickets_with_invoice",
                                                            bool(self.var_tickets_with_invoice.get())))
         chk.pack(side="right", padx=8)
         HoverTip(chk, "عند الترحيل والطباعة تكون صفحة التذاكر (تذكرة لكل رقم تشغيل) أول الملف، قبل الفاتورة وسندات التشغيل")
-        ctk.CTkLabel(trow, text="الباركود الخطي:", font=("Cairo", 12, "bold")).pack(side="right", padx=(16, 4))
+        ctk.CTkLabel(trow, text="الباركود الخطي:", font=(UI_FONT, 12, "bold")).pack(side="right", padx=(16, 4))
         modes = {label: key for key, label in self.SALE_BARCODE_MODES.items()}
-        example = ctk.CTkLabel(trow, text="", font=("Cairo", 12), text_color=UI["muted"])
+        example = ctk.CTkLabel(trow, text="", font=(UI_FONT, 12), text_color=UI["muted"])
 
         def show_example(key):
             sample = self.sale_ticket_barcode("88001", 40.25, key).replace(chr(9), " ⇥ ")
@@ -16689,7 +16655,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             save_ui_pref("sale_barcode_mode", modes[label])
             show_example(modes[label])
 
-        mode_menu = ctk.CTkOptionMenu(trow, values=list(modes), command=pick, width=250, font=("Cairo", 12))
+        mode_menu = ctk.CTkOptionMenu(trow, values=list(modes), command=pick, width=250, font=(UI_FONT, 12))
         mode_menu.set(self.SALE_BARCODE_MODES[self.sale_barcode_mode()])
         mode_menu.pack(side="right", padx=4)
         HoverTip(mode_menu, "ما يكتبه القارئ الخطي عند مسح باركود التذكرة في أي برنامج:\n"
@@ -16703,11 +16669,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sales_ops_tree = None
         self.sales_ops_map = {}
 
-        self.lbl_sales_ops_totals = ctk.CTkLabel(parent, text="", font=("Cairo", 15, "bold"), text_color="#d4af37")
+        self.lbl_sales_ops_totals = ctk.CTkLabel(parent, text="", font=(UI_FONT, 15, "bold"), text_color="#d4af37")
         self.lbl_sales_ops_totals.pack(fill="x", padx=20, pady=(0, 6))
 
         ctk.CTkLabel(parent, text="اضغط مرتين على أي فاتورة لفتح نافذة تعديلها بكل سطورها",
-                     font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 8))
+                     font=(UI_FONT, 11), text_color="#aaaaaa").pack(pady=(0, 8))
 
     def refresh_sales_ops_table(self):
         if not hasattr(self, 'sales_ops_table_frame') or not self.sales_ops_table_frame:
@@ -16718,7 +16684,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "الماس", "خياس", "عدد الأسطر")
         self.sales_ops_tree, _t, reused = self.reuse_or_create_tree(self.sales_ops_table_frame, cols, height=13)
         tree = self.sales_ops_tree
-        tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         if not reused:
             tree.bind("<Double-1>", lambda e: self.edit_selected_sale_invoice())
 
@@ -17016,28 +16982,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="✏️ تعديل فاتورة مبيعات مرحّلة", font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=(12, 6))
+        ctk.CTkLabel(win, text="✏️ تعديل فاتورة مبيعات مرحّلة", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=(12, 6))
 
         head = ctk.CTkFrame(win)
         head.pack(fill="x", padx=18, pady=6)
 
-        ctk.CTkLabel(head, text="رقم الفاتورة:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
+        ctk.CTkLabel(head, text="رقم الفاتورة:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
         ent_manual = ctk.CTkEntry(head, justify="center", width=110, height=34)
         ent_manual.insert(0, old_manual_no)
         ent_manual.pack(side="right", padx=4, pady=10)
 
-        ctk.CTkLabel(head, text="التاريخ:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
+        ctk.CTkLabel(head, text="التاريخ:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
         ent_date = ctk.CTkEntry(head, justify="center", width=120, height=34)
         ent_date.insert(0, old_date[:10])
         ent_date.pack(side="right", padx=4, pady=10)
 
-        ctk.CTkLabel(head, text="الاسم:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
+        ctk.CTkLabel(head, text="الاسم:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
         cmb_name = ctk.CTkComboBox(head, values=self.get_supplier_name_values_no_mustarja(), justify="right", width=190, height=34)
         cmb_name.set(old_name)
         cmb_name.pack(side="right", padx=4, pady=10)
 
         # البيان بعد الاسم — كما في شاشة المبيعات
-        ctk.CTkLabel(head, text="البيان:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
+        ctk.CTkLabel(head, text="البيان:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
         ent_note = ctk.CTkEntry(head, justify="right", height=34, placeholder_text="بيان الفاتورة...")
         if old_note:
             ent_note.insert(0, old_note)
@@ -17058,16 +17024,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             fields_row.grid_columnconfigure(c, weight=1, uniform="inv_edit_fields")
         for i, (label_text, key_name) in enumerate(field_defs):
             col = n_fields - 1 - i                  # من اليمين لليسار
-            ctk.CTkLabel(fields_row, text=label_text, font=("Cairo", 13, "bold"), wraplength=110).grid(
+            ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=110).grid(
                 row=0, column=col, padx=4, pady=(8, 3), sticky="s")
-            ent = ctk.CTkEntry(fields_row, justify="center", font=("Cairo", 14), width=60, height=32)
+            ent = ctk.CTkEntry(fields_row, justify="center", font=(UI_FONT, 14), width=60, height=32)
             ent.grid(row=1, column=col, padx=4, pady=(0, 10), sticky="ew")
             entries[key_name] = ent
 
-        lbl_state = ctk.CTkLabel(win, text="", font=("Cairo", 13, "bold"), text_color="#f1c40f")
+        lbl_state = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"), text_color="#f1c40f")
         lbl_state.pack(pady=(0, 2))
         # مصدر خياس المركب للسطر المحمّل، وتنبيه إن خالف المسجّلُ كشفَ المركبين
-        lbl_asm = ctk.CTkLabel(win, text="", font=("Cairo", 12), text_color=(UI["muted"], "#9AA4B2"),
+        lbl_asm = ctk.CTkLabel(win, text="", font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"),
                                wraplength=1000, justify="right")
         lbl_asm.pack(padx=18, pady=(0, 2))
         asm_state = {"set": ""}       # آخر رقم تشغيل جُلب له خياس المركب في هذه النافذة
@@ -17123,7 +17089,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         cols = ("رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم",
                 "الماس", "خياس بوليش 2", "خياس البوليش", "الصافي")
         rows_tree = self.create_standard_treeview(table_frame, cols, height=9)
-        rows_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        rows_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
 
         selected_idx = {"i": None}
 
@@ -17235,13 +17201,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             clear_fields()
             refresh_rows_tree()
 
-        ctk.CTkButton(btns_row, text="💾 حفظ السطر (إضافة/تعديل)", font=("Cairo", 13, "bold"), width=205, height=34,
+        ctk.CTkButton(btns_row, text="💾 حفظ السطر (إضافة/تعديل)", font=(UI_FONT, 13, "bold"), width=205, height=34,
                       fg_color="#1e8449", hover_color="#145a32", command=save_row).pack(side="right", padx=5)
-        ctk.CTkButton(btns_row, text="✏️ تحميل السطر المحدد للتعديل", font=("Cairo", 13, "bold"), width=215, height=34,
+        ctk.CTkButton(btns_row, text="✏️ تحميل السطر المحدد للتعديل", font=(UI_FONT, 13, "bold"), width=215, height=34,
                       fg_color="#b8860b", hover_color="#daa520", command=load_row_to_fields).pack(side="right", padx=5)
-        ctk.CTkButton(btns_row, text="🗑️ حذف السطر المحدد", font=("Cairo", 13, "bold"), width=175, height=34,
+        ctk.CTkButton(btns_row, text="🗑️ حذف السطر المحدد", font=(UI_FONT, 13, "bold"), width=175, height=34,
                       fg_color="#8b0000", hover_color="#a52a2a", command=delete_row).pack(side="right", padx=5)
-        ctk.CTkButton(btns_row, text="🧹 تفريغ الخانات", font=("Cairo", 13, "bold"), width=140, height=34,
+        ctk.CTkButton(btns_row, text="🧹 تفريغ الخانات", font=(UI_FONT, 13, "bold"), width=140, height=34,
                       fg_color="#555555", hover_color="#333333", command=clear_fields).pack(side="right", padx=5)
 
         rows_tree.bind("<Double-1>", lambda e: load_row_to_fields())
@@ -17304,7 +17270,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             win.destroy()
             messagebox.showinfo("تم", "تم حفظ تعديلات الفاتورة وتحديث الخزينة وكل الحسابات المرتبطة.")
 
-        btn_save_inv = ctk.CTkButton(win, text="✅ حفظ تعديلات الفاتورة", font=("Cairo", 16, "bold"), height=44,
+        btn_save_inv = ctk.CTkButton(win, text="✅ حفظ تعديلات الفاتورة", font=(UI_FONT, 16, "bold"), height=44,
                                      width=280, fg_color="#144d75", hover_color="#0d3350", command=save_invoice_changes)
         # يُحجز مكانه أسفل النافذة قبل الجدول، فلا يدفعه الجدول خارجها على الشاشة القصيرة
         btn_save_inv.pack(side="bottom", pady=10, before=table_frame)
@@ -17342,13 +17308,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="➕ إضافة نسبة خصم جديدة", font=("Cairo", 15, "bold"), text_color="#d4af37").pack(pady=(20, 10))
-        ctk.CTkLabel(win, text="النسبة (%):", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(pady=(5, 3))
-        entry = ctk.CTkEntry(win, font=("Cairo", 14), justify="center", width=140, height=38)
+        ctk.CTkLabel(win, text="➕ إضافة نسبة خصم جديدة", font=(UI_FONT, 15, "bold"), text_color="#d4af37").pack(pady=(20, 10))
+        ctk.CTkLabel(win, text="النسبة (%):", font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(pady=(5, 3))
+        entry = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="center", width=140, height=38)
         entry.pack(pady=5)
         entry.focus_set()
 
-        lbl_status = ctk.CTkLabel(win, text="", font=("Cairo", 12, "bold"), text_color="#e74c3c")
+        lbl_status = ctk.CTkLabel(win, text="", font=(UI_FONT, 12, "bold"), text_color="#e74c3c")
         lbl_status.pack(pady=3)
 
         def do_add():
@@ -17368,7 +17334,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             win.destroy()
 
         entry.bind("<Return>", lambda e: do_add())
-        ctk.CTkButton(win, text="✅ إضافة", font=("Cairo", 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=do_add).pack(pady=15)
+        ctk.CTkButton(win, text="✅ إضافة", font=(UI_FONT, 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=do_add).pack(pady=15)
 
     # أرقام هندية/فارسية ← أرقام لاتينية: «٧٠٠٣» و«7003» رقم تشغيل واحد
     _SET_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
@@ -17512,11 +17478,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.transient(self)
 
         ctk.CTkLabel(win, text="🔍 تدقيق خياس المركب في فواتير المبيعات المرحّلة",
-                     font=("Cairo", 17, "bold"), text_color=(UI["ink"], "#E6EDF3")).pack(pady=(12, 2))
+                     font=(UI_FONT, 17, "bold"), text_color=(UI["ink"], "#E6EDF3")).pack(pady=(12, 2))
         ctk.CTkLabel(win, text=("يقارن «خياس المركب» المسجّل في كل سطر برقم تشغيل بقيمته الصحيحة الآن في كشف "
                                 "المركبين (مسموح/٨ لصفوف رقم التشغيل). لا يغيّر شيئاً — التصحيح من نافذة تعديل الفاتورة."),
-                     font=("Cairo", 12), text_color=(UI["muted"], "#9AA4B2"), wraplength=1000).pack(padx=18)
-        lbl_result = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"))
+                     font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"), wraplength=1000).pack(padx=18)
+        lbl_result = ctk.CTkLabel(win, text="", font=(UI_FONT, 14, "bold"))
         lbl_result.pack(pady=(6, 4))
 
         table_frame = ttk.Frame(win)
@@ -17557,10 +17523,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree.bind("<Double-1>", open_selected)
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(pady=(4, 12))
-        ctk.CTkButton(btns, text="✏️ فتح الفاتورة للتعديل", font=("Cairo", 14, "bold"), width=200, height=36,
+        ctk.CTkButton(btns, text="✏️ فتح الفاتورة للتعديل", font=(UI_FONT, 14, "bold"), width=200, height=36,
                       fg_color=UI["primary"], hover_color=UI["primary_hover"],
                       command=open_selected).pack(side="right", padx=6)
-        ctk.CTkButton(btns, text="↻ إعادة التدقيق", font=("Cairo", 14, "bold"), width=160, height=36,
+        ctk.CTkButton(btns, text="↻ إعادة التدقيق", font=(UI_FONT, 14, "bold"), width=160, height=36,
                       fg_color=UI["neutral"], hover_color=UI["neutral_hover"],
                       command=run).pack(side="right", padx=6)
         run()
@@ -17847,7 +17813,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.pending_sales_tree, _t, reused = self.reuse_or_create_tree(
             self.pending_sales_table_frame, cols, height=16)
         tree = self.pending_sales_tree
-        tree.tag_configure("total_tag", foreground="#e67e22", font=("Cairo", 13, "bold"))
+        tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 13, "bold"))
         for c in cols:
             tree.column(c, width=70, anchor="center", stretch=False)
 
@@ -18011,8 +17977,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head = ctk.CTkFrame(win, fg_color="transparent")
         head.pack(fill="x", padx=18, pady=(14, 4))
         ctk.CTkLabel(head, text=f"✏️ تعديل السطر رقم {row.get('row_number') or idx + 1}",
-                     font=("Cairo", 18, "bold"), text_color=UI_TITLE).pack(side="right")
-        lbl_live = ctk.CTkLabel(head, text="", font=("Cairo", 13, "bold"),
+                     font=(UI_FONT, 18, "bold"), text_color=UI_TITLE).pack(side="right")
+        lbl_live = ctk.CTkLabel(head, text="", font=(UI_FONT, 13, "bold"),
                                 fg_color=(UI["primary_soft"], "#1B2A44"), text_color=(UI["primary"], "#9CC0F5"),
                                 corner_radius=8, height=30)
         lbl_live.pack(side="left", ipadx=10)
@@ -18027,9 +17993,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         entries = {}
         for i, (label, key) in enumerate(fields):
             col = n - 1 - i                    # من اليمين لليسار
-            ctk.CTkLabel(card, text=label, font=("Cairo", 13, "bold"), wraplength=120,
+            ctk.CTkLabel(card, text=label, font=(UI_FONT, 13, "bold"), wraplength=120,
                          text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=col, padx=5, pady=(10, 3), sticky="s")
-            ent = ctk.CTkEntry(card, justify="center", font=("Cairo", 15), width=88, height=38)
+            ent = ctk.CTkEntry(card, justify="center", font=(UI_FONT, 15), width=88, height=38)
             val = row.get(key, "")
             if key == "set_number":
                 ent.insert(0, str(val or ""))
@@ -18125,12 +18091,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(fill="x", padx=18, pady=(4, 14))
-        ctk.CTkButton(btns, text="💾 حفظ التعديل", font=("Cairo", 15, "bold"), height=40, width=180,
+        ctk.CTkButton(btns, text="💾 حفظ التعديل", font=(UI_FONT, 15, "bold"), height=40, width=180,
                       fg_color=UI["success"], hover_color=UI["success_hover"], command=save_row).pack(side="right")
-        ctk.CTkButton(btns, text="إلغاء", font=("Cairo", 14, "bold"), height=40, width=110,
+        ctk.CTkButton(btns, text="إلغاء", font=(UI_FONT, 14, "bold"), height=40, width=110,
                       fg_color=UI["neutral"], hover_color=UI["neutral_hover"],
                       command=win.destroy).pack(side="right", padx=8)
-        ctk.CTkLabel(btns, text="Enter: التالي ثم الحفظ   ·   Esc: إلغاء", font=("Cairo", 12),
+        ctk.CTkLabel(btns, text="Enter: التالي ثم الحفظ   ·   Esc: إلغاء", font=(UI_FONT, 12),
                      text_color=(UI["muted"], "#9AA3AF")).pack(side="left")
 
         order = [entries[key] for _l, key in fields]
@@ -18447,18 +18413,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.transient(self)
         win.grab_set()
         win.focus_force()
-        ctk.CTkLabel(win, text="🔢 ترقيم فواتير المبيعات تلقائياً", font=("Cairo", 18, "bold"),
+        ctk.CTkLabel(win, text="🔢 ترقيم فواتير المبيعات تلقائياً", font=(UI_FONT, 18, "bold"),
                      text_color="#d4af37").pack(pady=(16, 4))
         ctk.CTkLabel(win, text="اكتب الرقم الذي يبدأ منه الترقيم (مثل 1001 أو F-0001) واحفظه —\n"
                                "ثم تأخذ كل فاتورة جديدة الرقم التالي تلقائياً، ولا يتكرر رقم مستخدم",
-                     font=("Cairo", 12), text_color="#8b8f95", justify="center", wraplength=500).pack(pady=(0, 12))
+                     font=(UI_FONT, 12), text_color="#8b8f95", justify="center", wraplength=500).pack(pady=(0, 12))
         row = ctk.CTkFrame(win, fg_color="transparent")
         row.pack(pady=4)
-        ctk.CTkLabel(row, text="يبدأ من:", font=("Cairo", 14, "bold")).pack(side="right", padx=6)
-        ent = ctk.CTkEntry(row, justify="center", font=("Cairo", 16, "bold"), width=170, height=38)
+        ctk.CTkLabel(row, text="يبدأ من:", font=(UI_FONT, 14, "bold")).pack(side="right", padx=6)
+        ent = ctk.CTkEntry(row, justify="center", font=(UI_FONT, 16, "bold"), width=170, height=38)
         ent.insert(0, self.sale_invoice_start() or self.suggest_sale_invoice_start())
         ent.pack(side="right", padx=6)
-        lbl_next = ctk.CTkLabel(win, text="", font=("Cairo", 13, "bold"), text_color=(UI["primary"], "#9CC0F5"))
+        lbl_next = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"), text_color=(UI["primary"], "#9CC0F5"))
         lbl_next.pack(pady=(10, 4))
 
         def preview(_e=None):
@@ -18483,10 +18449,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ent.bind("<KeyRelease>", preview)
         ent.bind("<Return>", lambda _e: save())
         preview()
-        ctk.CTkButton(win, text="💾 حفظ", font=("Cairo", 15, "bold"), fg_color="#1e8449", hover_color="#145a32",
+        ctk.CTkButton(win, text="💾 حفظ", font=(UI_FONT, 15, "bold"), fg_color="#1e8449", hover_color="#145a32",
                       width=170, height=40, command=save).pack(pady=(10, 6))
         if self.sale_invoice_start():
-            ctk.CTkButton(win, text="إيقاف الترقيم التلقائي", font=("Cairo", 12), fg_color="#555555",
+            ctk.CTkButton(win, text="إيقاف الترقيم التلقائي", font=(UI_FONT, 12), fg_color="#555555",
                           hover_color="#333333", width=170, height=32, command=stop).pack()
         ent.focus_set()
 
@@ -18610,12 +18576,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head = ctk.CTkFrame(parent, fg_color="transparent")
         head.pack(fill="x", padx=20, pady=(12, 4))
         ctk.CTkLabel(head, text="⏸️ الفواتير المعلّقة (لم تُرحَّل — بلا أثر على الأرصدة)",
-                     font=ctk.CTkFont(family="Cairo", size=18, weight="bold"),
+                     font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"),
                      text_color="#d4af37").pack(side="right", padx=10)
-        ctk.CTkButton(head, text="حذف 🗑️", font=("Cairo", 14, "bold"), width=120, height=34,
+        ctk.CTkButton(head, text="حذف 🗑️", font=(UI_FONT, 14, "bold"), width=120, height=34,
                       fg_color=UI["danger"], hover_color=UI["danger_hover"],
                       command=self.delete_selected_suspended_sale).pack(side="left", padx=5)
-        ctk.CTkButton(head, text="📂 فتح الفاتورة", font=("Cairo", 14, "bold"), width=170, height=34,
+        ctk.CTkButton(head, text="📂 فتح الفاتورة", font=(UI_FONT, 14, "bold"), width=170, height=34,
                       fg_color=UI["success"], hover_color=UI["success_hover"],
                       command=lambda: self.open_suspended_sale()).pack(side="left", padx=5)
 
@@ -18624,11 +18590,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.suspended_tree = None
         self.suspended_map = {}
 
-        self.lbl_suspended_totals = ctk.CTkLabel(parent, text="", font=("Cairo", 15, "bold"), text_color="#d4af37")
+        self.lbl_suspended_totals = ctk.CTkLabel(parent, text="", font=(UI_FONT, 15, "bold"), text_color="#d4af37")
         self.lbl_suspended_totals.pack(fill="x", padx=20, pady=(0, 6))
         ctk.CTkLabel(parent, text="اضغط مرتين على أي فاتورة (أو Enter) لفتحها في «إصدار مبيعات» "
                                   "واستكمالها من حيث توقفت — وعند ترحيلها تنتقل إلى «المبيعات الصادرة»",
-                     font=("Cairo", 11), text_color="#aaaaaa").pack(pady=(0, 8))
+                     font=(UI_FONT, 11), text_color="#aaaaaa").pack(pady=(0, 8))
 
     def refresh_suspended_sales_table(self):
         if not getattr(self, "suspended_table_frame", None):
@@ -18637,7 +18603,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "الماس", "خياس", "عدد الأسطر", "آخر تعديل")
         tree, _t, reused = self.reuse_or_create_tree(self.suspended_table_frame, cols, height=13)
         self.suspended_tree = tree
-        tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         if not reused:
             tree.bind("<Double-1>", lambda e: self.open_suspended_sale()
                       if self.suspended_map.get(tree.identify_row(e.y)) else None)
@@ -18803,9 +18769,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 fit = fit_font_size(label, (x1 - x0) * k - 8, size, bold=bold, min_size=7)   # النص داخل خانته دائماً
                 text(px, (y0 + y1) / 2, label, fit, bold, align)
 
-        # ── الرأس: مصنع جاديت + NO ──
+        # ── الرأس: مصنع جاديت + NO، وشعار المصنع في يمينه ──
         box(193, 95, 1315, 248, HEAD, lw=1.2)
         text(755, 148, "مصنع جاديت", 21)
+        logo = self.pdf_logo()
+        if logo:
+            lh = 132 * k
+            c.drawImage(logo[0], X(1298) - lh * logo[1], Y(238), width=lh * logo[1], height=lh, mask="auto",
+                        preserveAspectRatio=True)
         text(212, 195, "NO:", 14, align="left")
         cell(290, 172, 460, 218, str(data.get("set_number") or ""), Color(1, 1, 1), size=15)
         # ── بيانات السند ──
@@ -18916,18 +18887,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         تداخل — والشعار كبيراً واضحاً في الوسط (٢٧ مم)، ثم خطّان (كحلي وذهبي). يرجع أسفل الترويسة"""
         from reportlab.lib.colors import Color
         PW = A4[0]
-        gray = Color(0.30, 0.32, 0.38)
+        gray = Color(0.26, 0.28, 0.34)
         for side, lines in ((PW - margin, self.LETTERHEAD_AR), (margin, self.LETTERHEAD_EN)):
+            right = side > PW / 2
             for k, line in enumerate(lines):
                 bold = k == 0
-                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 14 if bold else 9.5)
+                c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, 15.5 if bold else 9.5)
                 c.setFillColor(navy if bold else gray)
-                y = top - (6 * mm if bold else (8 + 5.5 * k) * mm)
+                y = top - (6 * mm if bold else (8.5 + 5.3 * k) * mm)
                 text = ar(line)
-                if side > PW / 2:
+                if right:
                     c.drawRightString(side, y, text)
                 else:
                     c.drawString(side, y, text)
+            # خط ذهبي قصير تحت اسم المصنع (من جهته)
+            c.saveState()
+            c.setStrokeColor(gold); c.setLineWidth(1.4)
+            x0 = side - 24 * mm if right else side
+            c.line(x0, top - 8.4 * mm, x0 + 24 * mm, top - 8.4 * mm)
+            c.restoreState()
         c.setFillColorRGB(0, 0, 0)
         logo = self.pdf_logo()
         if logo:
@@ -18943,6 +18921,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         c.line(margin, rule - 1.2 * mm, PW - margin, rule - 1.2 * mm)
         c.restoreState()
         return rule - 1.2 * mm
+
+    def draw_standard_letterhead(self, c, margin):
+        """ترويسة كل القوالب المطبوعة (كشف الحساب، الخسائر، صناديق المصنع، الجداول…) — الترويسة نفسها في
+        فاتورة المبيعات: بيانات المصنع والشعار في أعلى الورقة. يرجع موضع أول سطر تحتها"""
+        from reportlab.lib.colors import Color
+        navy, gold = Color(0.15, 0.15, 0.55), Color(0.80, 0.64, 0.22)
+        return self.draw_pdf_letterhead(c, A4[1] - 7 * mm, margin, navy, gold) - 7 * mm
 
     # أعمدة فاتورة المبيعات من اليمين؛ «الخياس» = بوليش 1 + بوليش 2 + المركب لرقم التشغيل
     SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
@@ -19553,7 +19538,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.geometry("1100x620")
         win.transient(self)
         win.focus_force()
-        ctk.CTkLabel(win, text=f"🔎 رحلة رقم التشغيل ({key})", font=("Cairo", 19, "bold"),
+        ctk.CTkLabel(win, text=f"🔎 رحلة رقم التشغيل ({key})", font=(UI_FONT, 19, "bold"),
                      text_color=UI_TITLE).pack(pady=(14, 2))
         info = self.job_ticket_info(key)
         sold = sorted({(m.get("رقم الفاتورة اليدوي") or "").strip() for m in moves
@@ -19562,10 +19547,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                    f"صرف ذهب {info['issued']:.2f} جم — {len(moves)} حركة")
         if sold:
             summary += f" — بيع في الفاتورة: {'، '.join(sold)}"
-        ctk.CTkLabel(win, text=summary, font=("Cairo", 13, "bold"), text_color=UI["muted"]).pack(pady=(0, 2))
+        ctk.CTkLabel(win, text=summary, font=(UI_FONT, 13, "bold"), text_color=UI["muted"]).pack(pady=(0, 2))
         asm = self.describe_assembler_khayas(key)
         if asm:
-            ctk.CTkLabel(win, text=asm, font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+            ctk.CTkLabel(win, text=asm, font=(UI_FONT, 12), text_color=UI["muted"]).pack(pady=(0, 6))
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(side="bottom", pady=(4, 12))
@@ -19580,20 +19565,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 str(m.get("التاريخ", ""))[:16], self.trace_section(m), m.get("الاسم", ""),
                 (m.get("row_number") or "").strip() or "-", m.get("النوع", ""),
                 f"{m.get('الوزن', 0.0) or 0.0:.2f}", self.inv_period(m), m.get("البيان") or ""))
-        ctk.CTkButton(btns, text="🏷️ طباعة تذكرة التشغيل", width=200, height=40, font=("Cairo", 14, "bold"),
+        ctk.CTkButton(btns, text="🏷️ طباعة تذكرة التشغيل", width=200, height=40, font=(UI_FONT, 14, "bold"),
                       command=lambda: self.print_job_ticket(key), **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
         # مُسح الطقم بعد بيعه: فاتورة بيعه وتذكرة البيع مباشرة من هنا
         sale = self.set_sale_move(moves)
         if sale is not None:
             sale_key = (sale.get("رقم الفاتورة اليدوي") or "", sale.get("التاريخ"), sale.get("الاسم"))
-            ctk.CTkButton(btns, text="🧾 فاتورة البيع", width=150, height=40, font=("Cairo", 14, "bold"),
+            ctk.CTkButton(btns, text="🧾 فاتورة البيع", width=150, height=40, font=(UI_FONT, 14, "bold"),
                           command=lambda: self.preview_invoice_groups(self.sale_invoice_groups(sale_key)),
                           **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-            ctk.CTkButton(btns, text="🏷️ تذكرة البيع", width=140, height=40, font=("Cairo", 14, "bold"),
+            ctk.CTkButton(btns, text="🏷️ تذكرة البيع", width=140, height=40, font=(UI_FONT, 14, "bold"),
                           command=lambda: self.print_sale_tickets(
                               [(sale.get("set_number") or "", sale.get("التاريخ"), sale.get("الاسم"))]),
                           **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=("Cairo", 14, "bold"),
+        ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=(UI_FONT, 14, "bold"),
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         return win
 
@@ -19693,17 +19678,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.geometry("1220x800")
         win.transient(self)
         win.focus_force()
-        ctk.CTkLabel(win, text="📊 أداء العمال — نسبة الفاقد إلى الإنتاج (بالألف)", font=("Cairo", 19, "bold"),
+        ctk.CTkLabel(win, text="📊 أداء العمال — نسبة الفاقد إلى الإنتاج (بالألف)", font=(UI_FONT, 19, "bold"),
                      text_color=UI_TITLE).pack(pady=(14, 2))
         ctk.CTkLabel(win, text="الفاقد = ذهب/صافي − المرجع ٧٥٠ (بعد المسموح ٨/٤)  ·  النسبة = الفاقد ÷ الإنتاج × ١٠٠٠  "
                                "·  الاتجاه من آخر فترتين منتهيتين  ·  السالب زيادة لصالح العامل",
-                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
+                     font=(UI_FONT, 12), text_color=UI["muted"]).pack(pady=(0, 6))
         bar = ctk.CTkFrame(win, fg_color="transparent")
         bar.pack(pady=4)
         section_var = ctk.StringVar(value=cat)
         span_var = ctk.StringVar(value="آخر ٦ فترات")
         spans = {"آخر ٣ فترات": 3, "آخر ٦ فترات": 6, "آخر ١٢ فترة": 12, "كل الفترات": None}
-        summary = ctk.CTkLabel(win, text="", font=("Cairo", 14, "bold"))
+        summary = ctk.CTkLabel(win, text="", font=(UI_FONT, 14, "bold"))
         summary.pack(pady=(2, 4))
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(side="bottom", pady=(4, 12))
@@ -19714,12 +19699,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         trend_head = ctk.CTkFrame(trend_box, fg_color="transparent")
         trend_head.pack(fill="x", padx=12, pady=(6, 0))
         trend_title = ctk.CTkLabel(trend_head, text="حدّد عاملاً لرؤية اتجاهه مقابل متوسط القسم",
-                                   font=("Cairo", 13, "bold"), text_color=UI_TITLE)
+                                   font=(UI_FONT, 13, "bold"), text_color=UI_TITLE)
         trend_title.pack(side="right")
         for si, name in enumerate(("العامل", "متوسط القسم")):
             item = ctk.CTkFrame(trend_head, fg_color="transparent")      # العلامة ملاصقة لاسمها، وبين البندين فراغ
             item.pack(side="left", padx=(0, 18))
-            ctk.CTkLabel(item, text=name, font=("Cairo", 12),
+            ctk.CTkLabel(item, text=name, font=(UI_FONT, 12),
                          text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(0, 5))
             ctk.CTkFrame(item, width=16, height=4, corner_radius=2,
                          fg_color=(CHART_SERIES["light"][si], CHART_SERIES["dark"][si])).pack(side="left")
@@ -19783,9 +19768,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         for value in self.WORKER_SECTIONS:
             ctk.CTkRadioButton(bar, text=self.get_display_label(value), value=value, variable=section_var,
-                               command=build, font=("Cairo", 13, "bold")).pack(side="right", padx=8)
+                               command=build, font=(UI_FONT, 13, "bold")).pack(side="right", padx=8)
         ctk.CTkOptionMenu(bar, values=list(spans), variable=span_var, command=lambda _v: build(),
-                          font=("Cairo", 13), width=140).pack(side="right", padx=12)
+                          font=(UI_FONT, 13), width=140).pack(side="right", padx=12)
 
         def print_report():
             if state["rows"]:
@@ -19793,9 +19778,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.print_generic_table_screen(state["title"], state["cols"], ratios, state["rows"],
                                                 "worker_performance", subtitle=summary.cget("text"))
 
-        ctk.CTkButton(btns, text="🖨️ طباعة التقرير", width=170, height=40, font=("Cairo", 14, "bold"),
+        ctk.CTkButton(btns, text="🖨️ طباعة التقرير", width=170, height=40, font=(UI_FONT, 14, "bold"),
                       command=print_report, **BUTTON_STYLES["primary"]).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=("Cairo", 14, "bold"),
+        ctk.CTkButton(btns, text="إغلاق", width=120, height=40, font=(UI_FONT, 14, "bold"),
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
         build()
         return win
@@ -19858,17 +19843,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bar = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                            border_width=1, border_color=(UI["line"], "#2A313B"))
         bar.pack(fill="x", padx=16, pady=(8, 6))
-        ctk.CTkLabel(bar, text="المدى:", font=("Cairo", 13, "bold"),
+        ctk.CTkLabel(bar, text="المدى:", font=(UI_FONT, 13, "bold"),
                      text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(12, 4), pady=8)
-        self.dash_span = ctk.CTkOptionMenu(bar, values=list(self.DASH_SPANS), width=140, font=("Cairo", 13),
+        self.dash_span = ctk.CTkOptionMenu(bar, values=list(self.DASH_SPANS), width=140, font=(UI_FONT, 13),
                                            command=lambda _v: self.refresh_dashboard())
         self.dash_span.set("آخر ١٢ فترة")
         self.dash_span.pack(side="right", padx=4, pady=8)
-        ctk.CTkButton(bar, text="🔄 تحديث", width=100, height=32, font=("Cairo", 13, "bold"),
+        ctk.CTkButton(bar, text="🔄 تحديث", width=100, height=32, font=(UI_FONT, 13, "bold"),
                       command=self.refresh_dashboard, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-        ctk.CTkButton(bar, text="🩺 فحص السلامة", width=130, height=32, font=("Cairo", 13, "bold"),
+        ctk.CTkButton(bar, text="🩺 فحص السلامة", width=130, height=32, font=(UI_FONT, 13, "bold"),
                       command=self.open_integrity_check_window, **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
-        self.lbl_dash_note = ctk.CTkLabel(bar, text="", font=("Cairo", 12), text_color=UI["muted"])
+        self.lbl_dash_note = ctk.CTkLabel(bar, text="", font=(UI_FONT, 12), text_color=UI["muted"])
         self.lbl_dash_note.pack(side="right", padx=10)
 
         body = ctk.CTkScrollableFrame(tab, fg_color="transparent")
@@ -19884,13 +19869,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                 border_color=(UI["line"], "#2A313B"))
             card.grid(row=0, column=len(specs) - 1 - i, padx=5, sticky="nsew")
             tiles.grid_columnconfigure(len(specs) - 1 - i, weight=1, uniform="tile")
-            ctk.CTkLabel(card, text=caption, font=("Cairo", 12), text_color=(UI["muted"], "#9AA4B2"),
+            ctk.CTkLabel(card, text=caption, font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"),
                          anchor="e").pack(fill="x", padx=14, pady=(10, 0))
             value = ctk.CTkLabel(card, text="—", anchor="e",
-                                 font=ctk.CTkFont(family="Cairo", size=30 if key == "treasury" else 22, weight="bold"),
+                                 font=ctk.CTkFont(family=UI_FONT, size=30 if key == "treasury" else 22, weight="bold"),
                                  text_color=(UI["ink"], "#F2F4F7"))
             value.pack(fill="x", padx=14)
-            sub = ctk.CTkLabel(card, text="", font=("Cairo", 11), anchor="e", text_color=(UI["muted"], "#9AA4B2"))
+            sub = ctk.CTkLabel(card, text="", font=(UI_FONT, 11), anchor="e", text_color=(UI["muted"], "#9AA4B2"))
             sub.pack(fill="x", padx=14, pady=(0, 10))
             self.dash_tiles[key] = (value, sub)
 
@@ -19908,18 +19893,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             card.grid(row=i // 2, column=1 - i % 2, padx=5, pady=5, sticky="nsew")
             head = ctk.CTkFrame(card, fg_color="transparent")
             head.pack(fill="x", padx=12, pady=(10, 2))
-            ctk.CTkLabel(head, text=title, font=("Cairo", 14, "bold"), text_color=UI_TITLE).pack(side="right")
+            ctk.CTkLabel(head, text=title, font=(UI_FONT, 14, "bold"), text_color=UI_TITLE).pack(side="right")
             if legend:
                 for si, name in enumerate(legend):
                     item = ctk.CTkFrame(head, fg_color="transparent")    # العلامة ملاصقة لاسمها، وبين البندين فراغ
                     item.pack(side="left", padx=(0, 16))
                     ctk.CTkLabel(item, text=self.get_display_label(name) if name in self.WORKER_SECTIONS else name,
-                                 font=("Cairo", 12), text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(0, 5))
+                                 font=(UI_FONT, 12), text_color=(UI["ink"], "#E6EDF3")).pack(side="left", padx=(0, 5))
                     ctk.CTkFrame(item, width=16, height=4, corner_radius=2,
                                  fg_color=(CHART_SERIES["light"][si], CHART_SERIES["dark"][si])).pack(side="left")
             chart = MiniChart(card, kind=kind, unit=unit, decimals=2, height=230)
             chart.pack(fill="both", expand=True, padx=10, pady=(0, 4))
-            ctk.CTkButton(card, text="📋 الأرقام", width=90, height=26, font=("Cairo", 11, "bold"),
+            ctk.CTkButton(card, text="📋 الأرقام", width=90, height=26, font=(UI_FONT, 11, "bold"),
                           command=lambda k=key, t=title: self.show_dashboard_table(k, t),
                           **BUTTON_STYLES["secondary"]).pack(anchor="w", padx=12, pady=(0, 8))
             self.dash_charts[key] = chart
@@ -19954,7 +19939,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rs = k["ratio"]
         tiles["ratio"][0].configure(text="\n".join(
             f"{self.get_display_label(sec)}: " + (f"{rs[sec]:,.2f} ‰" if rs[sec] is not None else "—")
-            for sec in self.WORKER_SECTIONS), font=ctk.CTkFont(family="Cairo", size=15, weight="bold"))
+            for sec in self.WORKER_SECTIONS), font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"))
         tiles["ratio"][1].configure(text="الفاقد ÷ الإنتاج × ١٠٠٠ — الفترة المعروضة")
         tiles["sales"][0].configure(text=f"{en(k['sales'])} جم")
         tiles["sales"][1].configure(text=delta(k["sales"], k["prev_sales"]) or f"الوارد {en(k['inbound'])} جم")
@@ -19989,7 +19974,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.title(title)
         win.geometry("560x460")
         win.transient(self)
-        ctk.CTkLabel(win, text=title, font=("Cairo", 15, "bold"), text_color=UI_TITLE).pack(pady=(12, 6))
+        ctk.CTkLabel(win, text=title, font=(UI_FONT, 15, "bold"), text_color=UI_TITLE).pack(pady=(12, 6))
         frame = ttk.Frame(win)
         frame.pack(fill="both", expand=True, padx=14, pady=(0, 6))
         tree = self.create_standard_treeview(frame, cols, height=12)
@@ -19997,7 +19982,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tree.column(c, width=150, anchor="center")
         for r in rows:
             tree.insert("", "end", values=r)
-        ctk.CTkButton(win, text="🖨️ طباعة", width=120, height=34, font=("Cairo", 13, "bold"),
+        ctk.CTkButton(win, text="🖨️ طباعة", width=120, height=34, font=(UI_FONT, 13, "bold"),
                       command=lambda: self.print_generic_table_screen(title, cols, [1.0] * len(cols), rows,
                                                                       "dashboard_" + key),
                       **BUTTON_STYLES["primary"]).pack(pady=(0, 10))
@@ -20206,11 +20191,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.transient(self)
         win.focus_force()
 
-        ctk.CTkLabel(win, text="🩺 فحص سلامة الحسابات", font=("Cairo", 20, "bold"),
+        ctk.CTkLabel(win, text="🩺 فحص سلامة الحسابات", font=(UI_FONT, 20, "bold"),
                      text_color=(UI["title"], "#C9D6E8")).pack(pady=(14, 0))
         ctk.CTkLabel(win, text="يطابق الخزينة والصناديق والكشوف والمبيعات والمواد والقيود في كل فترة — قراءة فقط",
-                     font=("Cairo", 12), text_color=UI["muted"]).pack(pady=(0, 6))
-        summary = ctk.CTkLabel(win, text="جاري الفحص…", font=("Cairo", 16, "bold"), corner_radius=10,
+                     font=(UI_FONT, 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        summary = ctk.CTkLabel(win, text="جاري الفحص…", font=(UI_FONT, 16, "bold"), corner_radius=10,
                                fg_color=(UI["surface_alt"], "#1D232B"), height=40)
         summary.pack(fill="x", padx=18, pady=6)
 
@@ -20222,7 +20207,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree = self.create_standard_treeview(frame, cols, height=9)
         for c, w in zip(cols, (360, 120, 120)):
             tree.column(c, width=w, anchor="center")
-        details = ctk.CTkTextbox(win, font=("Cairo", 13), wrap="word")
+        details = ctk.CTkTextbox(win, font=(UI_FONT, 13), wrap="word")
         details.pack(fill="both", expand=True, padx=18, pady=6)
         try:
             details._textbox.tag_configure("rtl", justify="right")
@@ -20268,7 +20253,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         for text, cmd, style in (("🔄 إعادة الفحص", run, "primary"), ("📋 نسخ التقرير", copy_report, "secondary"),
                                  ("إغلاق", win.destroy, "secondary")):
-            ctk.CTkButton(btns, text=text, command=cmd, width=150, height=40, font=("Cairo", 14, "bold"),
+            ctk.CTkButton(btns, text=text, command=cmd, width=150, height=40, font=(UI_FONT, 14, "bold"),
                           **BUTTON_STYLES[style]).pack(side="left", padx=6)
         win.after(80, run)
         return win
@@ -20283,24 +20268,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_journal_entries_tab(self):
         tab = self.tabview.tab("القيود اليومية")
 
-        ctk.CTkLabel(tab, text="📖 القيود اليومية", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 8))
+        ctk.CTkLabel(tab, text="📖 القيود اليومية", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 8))
 
         date_row = ctk.CTkFrame(tab, fg_color="transparent")
         date_row.pack(pady=6)
-        ctk.CTkLabel(date_row, text="التاريخ:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.je_date = ctk.CTkEntry(date_row, font=("Cairo", 14), justify="center", width=140, height=38)
+        ctk.CTkLabel(date_row, text="التاريخ:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.je_date = ctk.CTkEntry(date_row, font=(UI_FONT, 14), justify="center", width=140, height=38)
         self.je_date.insert(0, self.get_smart_default_date())
         self.je_date.pack(side="right", padx=5)
 
-        self.je_invoice_display = ctk.CTkLabel(date_row, text=f"# {self.invoice_counter + 1}", font=("Cairo", 15, "bold"), text_color="#d4af37", fg_color=(UI["surface_alt"], "#1D232B"), corner_radius=6, width=90, height=38)
+        self.je_invoice_display = ctk.CTkLabel(date_row, text=f"# {self.invoice_counter + 1}", font=(UI_FONT, 15, "bold"), text_color="#d4af37", fg_color=(UI["surface_alt"], "#1D232B"), corner_radius=6, width=90, height=38)
         self.je_invoice_display.pack(side="right", padx=5)
-        ctk.CTkLabel(date_row, text="رقم الفاتورة:", font=("Cairo", 14, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        ctk.CTkLabel(date_row, text="رقم الفاتورة:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
 
         # ====== الصف الأول: من حساب (مدين) ======
         row1 = ctk.CTkFrame(tab, corner_radius=10)
         row1.pack(fill="x", padx=30, pady=8)
-        ctk.CTkLabel(row1, text="من حساب (مدين):", font=("Cairo", 15, "bold"), text_color="#e74c3c").pack(side="right", padx=10, pady=12)
-        self.je_from_name = ctk.CTkComboBox(row1, values=self.get_journal_entry_account_options(), font=("Cairo", 14), justify="right", width=280, height=38)
+        ctk.CTkLabel(row1, text="من حساب (مدين):", font=(UI_FONT, 15, "bold"), text_color="#e74c3c").pack(side="right", padx=10, pady=12)
+        self.je_from_name = ctk.CTkComboBox(row1, values=self.get_journal_entry_account_options(), font=(UI_FONT, 14), justify="right", width=280, height=38)
         self.je_from_name.set("")
         self.je_from_name.pack(side="right", padx=10, pady=12)
         self.bind_name_autocomplete(self.je_from_name, self.get_journal_entry_account_options)
@@ -20308,38 +20293,38 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # ====== الصف الثاني: إلى حساب (دائن) ======
         row2 = ctk.CTkFrame(tab, corner_radius=10)
         row2.pack(fill="x", padx=30, pady=8)
-        ctk.CTkLabel(row2, text="إلى حساب (دائن):", font=("Cairo", 15, "bold"), text_color="#2ecc71").pack(side="right", padx=10, pady=12)
-        self.je_to_name = ctk.CTkComboBox(row2, values=self.get_journal_entry_account_options(), font=("Cairo", 14), justify="right", width=280, height=38)
+        ctk.CTkLabel(row2, text="إلى حساب (دائن):", font=(UI_FONT, 15, "bold"), text_color="#2ecc71").pack(side="right", padx=10, pady=12)
+        self.je_to_name = ctk.CTkComboBox(row2, values=self.get_journal_entry_account_options(), font=(UI_FONT, 14), justify="right", width=280, height=38)
         self.je_to_name.set("")
         self.je_to_name.pack(side="right", padx=10, pady=12)
         self.bind_name_autocomplete(self.je_to_name, self.get_journal_entry_account_options)
 
         amount_row = ctk.CTkFrame(tab, fg_color="transparent")
         amount_row.pack(pady=10)
-        ctk.CTkLabel(amount_row, text="الوزن / القيمة:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=8)
-        self.je_amount = ctk.CTkEntry(amount_row, justify="center", font=("Cairo", 15), width=140, height=40)
+        ctk.CTkLabel(amount_row, text="الوزن / القيمة:", font=(UI_FONT, 15, "bold"), text_color="#1f77b4").pack(side="right", padx=8)
+        self.je_amount = ctk.CTkEntry(amount_row, justify="center", font=(UI_FONT, 15), width=140, height=40)
         self.je_amount.pack(side="right", padx=8)
 
         # البيان: سبب القيد يُحفظ على طرفيه ويظهر في الجدول وكشف الحساب والطباعة
         note_row = ctk.CTkFrame(tab, fg_color="transparent")
         note_row.pack(pady=(0, 4))
-        ctk.CTkLabel(note_row, text="البيان:", font=("Cairo", 15, "bold"), text_color="#1f77b4").pack(side="right", padx=8)
-        self.je_note = ctk.CTkEntry(note_row, justify="right", font=("Cairo", 14), width=420, height=38,
+        ctk.CTkLabel(note_row, text="البيان:", font=(UI_FONT, 15, "bold"), text_color="#1f77b4").pack(side="right", padx=8)
+        self.je_note = ctk.CTkEntry(note_row, justify="right", font=(UI_FONT, 14), width=420, height=38,
                                     placeholder_text="سبب القيد (اختياري)")
         self.je_note.pack(side="right", padx=8)
 
-        btn_submit = ctk.CTkButton(tab, text="✅ ترحيل العملية", font=ctk.CTkFont(family="Cairo", size=16, weight="bold"), height=46, fg_color="#144d75", hover_color="#0d3350", command=self.submit_journal_entry)
+        btn_submit = ctk.CTkButton(tab, text="✅ ترحيل العملية", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), height=46, fg_color="#144d75", hover_color="#0d3350", command=self.submit_journal_entry)
         btn_submit.pack(pady=15)
 
-        self.lbl_je_status = ctk.CTkLabel(tab, text="", font=("Cairo", 13, "bold"), text_color="#2ecc71")
+        self.lbl_je_status = ctk.CTkLabel(tab, text="", font=(UI_FONT, 13, "bold"), text_color="#2ecc71")
         self.lbl_je_status.pack()
 
-        ctk.CTkLabel(tab, text="آخر القيود اليومية المرحّلة", font=("Cairo", 14, "bold"), text_color="#d4af37").pack(pady=(15, 4))
+        ctk.CTkLabel(tab, text="آخر القيود اليومية المرحّلة", font=(UI_FONT, 14, "bold"), text_color="#d4af37").pack(pady=(15, 4))
         self.je_table_frame = ttk.Frame(tab)
         self.je_table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 8))
         self.je_tree = None
 
-        btn_print_je = ctk.CTkButton(tab, text="🖨️ طباعة القيود اليومية", font=("Cairo", 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_journal_entries_screen)
+        btn_print_je = ctk.CTkButton(tab, text="🖨️ طباعة القيود اليومية", font=(UI_FONT, 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_journal_entries_screen)
         btn_print_je.pack(pady=(0, 15))
 
         self.refresh_journal_entries_table()
@@ -20518,7 +20503,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bar.pack(fill="x", padx=16, pady=(8, 6))
 
         def bar_label(text):
-            ctk.CTkLabel(bar, text=text, font=("Cairo", 13, "bold"),
+            ctk.CTkLabel(bar, text=text, font=(UI_FONT, 13, "bold"),
                          text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(10, 4), pady=10)
 
         # «من/إلى»: قائمتان بالفترات المسجّلة — اختيار لا كتابة، وأي اختيار يحدّث البطاقات
@@ -20529,17 +20514,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bar_label("إلى:")
         self.combo_losses_to = self.make_month_combo(bar, self.refresh_losses_tab)
         self.combo_losses_to.pack(side="right", padx=4)
-        ctk.CTkButton(bar, text="الكل", font=("Cairo", 13, "bold"), fg_color=UI["success"],
+        ctk.CTkButton(bar, text="الكل", font=(UI_FONT, 13, "bold"), fg_color=UI["success"],
                       hover_color=UI["success_hover"], width=64, height=34,
                       command=self.losses_show_all).pack(side="right", padx=4)
-        ctk.CTkButton(bar, text="الفترة الحالية ↺", font=("Cairo", 13, "bold"), fg_color=UI["neutral"],
+        ctk.CTkButton(bar, text="الفترة الحالية ↺", font=(UI_FONT, 13, "bold"), fg_color=UI["neutral"],
                       hover_color=UI["neutral_hover"], width=118, height=34,
                       command=self.reset_losses_period).pack(side="right", padx=4)
 
-        ctk.CTkButton(bar, text="🖨️ طباعة", font=("Cairo", 13, "bold"), fg_color=UI["navy"],
+        ctk.CTkButton(bar, text="🖨️ طباعة", font=(UI_FONT, 13, "bold"), fg_color=UI["navy"],
                       hover_color=UI["navy_hover"], width=100, height=34,
                       command=self.print_losses_screen).pack(side="left", padx=(10, 4))
-        ctk.CTkButton(bar, text="📋 كشف حساب الخسائر", font=("Cairo", 13, "bold"), fg_color=UI["primary"],
+        ctk.CTkButton(bar, text="📋 كشف حساب الخسائر", font=(UI_FONT, 13, "bold"), fg_color=UI["primary"],
                       hover_color=UI["primary_hover"], width=170, height=34,
                       command=self.open_losses_statement).pack(side="left", padx=4)
 
@@ -20630,7 +20615,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
             display_name = self.get_display_label(cat)
             ctk.CTkLabel(card, text=f"{icon}  صندوق خياس {display_name}",
-                         font=ctk.CTkFont(family="Cairo", size=16, weight="bold"),
+                         font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"),
                          text_color=UI_TITLE).pack(pady=(12, 8))
 
             # أربعة أقسام لكل صندوق: الخياس الحالي، الفاقد (كل الفترات)، المسترجع، الصافي
@@ -20642,10 +20627,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 box = ctk.CTkFrame(stats, corner_radius=10, fg_color=soft, border_width=1,
                                    border_color=(UI["line"], "#2A313B"))
                 box.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
-                title_lbl = ctk.CTkLabel(box, text=title, font=("Cairo", 12, "bold"), wraplength=170,
+                title_lbl = ctk.CTkLabel(box, text=title, font=(UI_FONT, 12, "bold"), wraplength=170,
                                          text_color=(UI["muted"], "#9AA3AF"))
                 title_lbl.pack(pady=(6, 0), padx=4)
-                val = ctk.CTkLabel(box, text="0.00", font=("Cairo", 19, "bold"), text_color=fg)
+                val = ctk.CTkLabel(box, text="0.00", font=(UI_FONT, 19, "bold"), text_color=fg)
                 val.pack(pady=(0, 6))
                 if account:
                     # النقر على القسم يفتح كشف حسابه (فاقد المرحلة أو مسترجعها أو المرحلة نفسها)
@@ -20666,16 +20651,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lbl_loss = stat(0, 0, loss_account, calm_fg, calm_bg, account=loss_account)
             lbl_recovered = stat(1, 1, recovery_account, calm_fg, calm_bg, account=recovery_account)
             lbl_net = stat(1, 0, "الصافي (الفاقد − المسترجع)", calm_fg, calm_bg)
-            lbl_scope = ctk.CTkLabel(card, text="", font=("Cairo", 11), text_color=(UI["muted"], "#9AA3AF"))
+            lbl_scope = ctk.CTkLabel(card, text="", font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA3AF"))
             lbl_scope.pack(pady=(2, 0))
 
             btns_row = ctk.CTkFrame(card, fg_color="transparent")
             btns_row.pack(pady=(10, 14))
-            ctk.CTkButton(btns_row, text="🔒 إقفال الخياس", font=("Cairo", 13, "bold"), fg_color=UI["danger"],
+            ctk.CTkButton(btns_row, text="🔒 إقفال الخياس", font=(UI_FONT, 13, "bold"), fg_color=UI["danger"],
                           hover_color=UI["danger_hover"], width=140, height=36,
                           command=lambda c=cat: self.close_khayas_box(c, month=self.losses_close_period())
                           ).pack(side="right", padx=4)
-            ctk.CTkButton(btns_row, text="📋 كشف حساب", font=("Cairo", 13, "bold"), fg_color=UI["primary"],
+            ctk.CTkButton(btns_row, text="📋 كشف حساب", font=(UI_FONT, 13, "bold"), fg_color=UI["primary"],
                           hover_color=UI["primary_hover"], width=120, height=36,
                           command=lambda c=cat: self.open_box_statement(c)).pack(side="right", padx=4)
             self.losses_card_widgets[cat] = {"current": lbl_current, "loss": lbl_loss,
@@ -20740,7 +20725,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def make_month_combo(self, parent, on_change, values=None, width=118, font_size=14, height=34):
         """قائمة اختيار فترة (للقراءة فقط) — تبدأ بالفترة المعروضة"""
         combo = ctk.CTkComboBox(parent, values=self.get_recorded_periods() if values is None else values,
-                                font=("Cairo", font_size), width=width, height=height, justify="center",
+                                font=(UI_FONT, font_size), width=width, height=height, justify="center",
                                 state="readonly", command=lambda _v: on_change())
         combo.set(self.current_display_month)
         return combo
@@ -20984,23 +20969,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if color: c.setFillColorRGB(0, 0, 0)
 
         c = pdf_canvas.Canvas(out_path, pagesize=A4)
-        y = PH - M
-
-        txt(c, M, y - 6, "Jadeite Factory", size=12, bold=True, align="left")
-        txt(c, M, y - 13, "Saudi Arabia, Riyadh", size=8, align="left")
-        txt(c, PW - M, y - 6, "مصنع جاديت للتصنيع", size=12, bold=True, align="right")
-        txt(c, PW - M, y - 13, "المملكة العربية السعودية", size=8, align="right")
-        logo_bottom = y - 13
-        try:
-            logo_bytes = base64.b64decode(APP_LOGO_B64)
-            logo_img = ImageReader(io.BytesIO(logo_bytes))
-            lw, lh = 45 * mm, 10 * mm
-            logo_top = y - 4
-            logo_bottom = logo_top - lh
-            c.drawImage(logo_img, (PW - lw) / 2, logo_bottom, width=lw, height=lh, mask='auto', preserveAspectRatio=True)
-        except Exception:
-            pass
-        y = min(y - 13, logo_bottom) - 9 * mm
+        y = self.draw_standard_letterhead(c, M)
 
         # النطاق نفسه المعروض في الشاشة («من/إلى»)
         from_m, to_m = self.selected_losses_range()
@@ -21144,8 +21113,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_chart_of_accounts_tab(self):
         tab = self.tabview.tab("الحسابات")
 
-        ctk.CTkLabel(tab, text="🌳 الحسابات", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 8))
-        ctk.CTkLabel(tab, text="اضغط مرتين على أي حساب فرعي لفتح كشف حسابه مباشرة", font=("Cairo", 12), text_color="#aaaaaa").pack(pady=(0, 8))
+        ctk.CTkLabel(tab, text="🌳 الحسابات", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 8))
+        ctk.CTkLabel(tab, text="اضغط مرتين على أي حساب فرعي لفتح كشف حسابه مباشرة", font=(UI_FONT, 12), text_color="#aaaaaa").pack(pady=(0, 8))
 
         tree_frame = ttk.Frame(tab)
         tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -21168,9 +21137,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_row = ctk.CTkFrame(tab, fg_color="transparent")
         btn_row.pack(pady=(0, 12))
-        ctk.CTkButton(btn_row, text="↺ تحديث الشجرة", font=("Cairo", 13, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=self.refresh_chart_of_accounts).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row, text="➕ إضافة حساب", font=("Cairo", 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=140, height=38, command=self.open_add_account_dialog).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row, text="🗑️ حذف صندوق خياس", font=("Cairo", 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=170, height=38, command=self.delete_khayas_box_dialog).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="↺ تحديث الشجرة", font=(UI_FONT, 13, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=self.refresh_chart_of_accounts).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="➕ إضافة حساب", font=(UI_FONT, 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=140, height=38, command=self.open_add_account_dialog).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="🗑️ حذف صندوق خياس", font=(UI_FONT, 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=170, height=38, command=self.delete_khayas_box_dialog).pack(side="left", padx=5)
 
         self.refresh_chart_of_accounts()
 
@@ -21213,17 +21182,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="🗑️ حذف صندوق خياس", font=("Cairo", 18, "bold"),
+        ctk.CTkLabel(win, text="🗑️ حذف صندوق خياس", font=(UI_FONT, 18, "bold"),
                      text_color="#e74c3c").pack(pady=(16, 4))
-        ctk.CTkLabel(win, text="سيُحذف الصندوق وكل ما يخصه نهائياً", font=("Cairo", 12),
+        ctk.CTkLabel(win, text="سيُحذف الصندوق وكل ما يخصه نهائياً", font=(UI_FONT, 12),
                      text_color="#8b8f95").pack(pady=(0, 12))
 
-        combo = ctk.CTkComboBox(win, values=boxes, font=("Cairo", 15), justify="right",
+        combo = ctk.CTkComboBox(win, values=boxes, font=(UI_FONT, 15), justify="right",
                                 width=280, height=40, state="readonly")
         combo.set(boxes[0])
         combo.pack(pady=6)
 
-        lbl_info = ctk.CTkLabel(win, text="", font=("Cairo", 12, "bold"), text_color="#e67e22",
+        lbl_info = ctk.CTkLabel(win, text="", font=(UI_FONT, 12, "bold"), text_color="#e67e22",
                                 wraplength=400, justify="center")
         lbl_info.pack(pady=10)
 
@@ -21259,9 +21228,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.perform_khayas_box_deletion(box)
             win.destroy()
 
-        ctk.CTkButton(win, text="🗑️ حذف نهائياً", font=("Cairo", 15, "bold"), fg_color="#8b0000",
+        ctk.CTkButton(win, text="🗑️ حذف نهائياً", font=(UI_FONT, 15, "bold"), fg_color="#8b0000",
                       hover_color="#a52a2a", width=180, height=42, command=do_delete).pack(pady=8)
-        ctk.CTkButton(win, text="إلغاء", font=("Cairo", 13), fg_color="#555555",
+        ctk.CTkButton(win, text="إلغاء", font=(UI_FONT, 13), fg_color="#555555",
                       hover_color="#333333", width=120, height=34, command=win.destroy).pack()
 
     def perform_khayas_box_deletion(self, stage_name):
@@ -21340,18 +21309,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="➕ إضافة حساب جديد", font=("Cairo", 16, "bold"), text_color="#d4af37").pack(pady=(20, 6))
+        ctk.CTkLabel(win, text="➕ إضافة حساب جديد", font=(UI_FONT, 16, "bold"), text_color="#d4af37").pack(pady=(20, 6))
         if selected_branch:
-            ctk.CTkLabel(win, text=f"الفرع المحدد: {selected_branch}", font=("Cairo", 12, "bold"), text_color="#aaaaaa").pack(pady=(0, 6))
+            ctk.CTkLabel(win, text=f"الفرع المحدد: {selected_branch}", font=(UI_FONT, 12, "bold"), text_color="#aaaaaa").pack(pady=(0, 6))
         if is_khayas_branch:
-            ctk.CTkLabel(win, text="سيُضاف كصندوق خياس فعّال بصرف/قبض خاص به\nويظهر في مراحل التصنيع وصناديق الخياس وشاشة الخسائر", font=("Cairo", 11), text_color="#2ecc71").pack(pady=(0, 6))
+            ctk.CTkLabel(win, text="سيُضاف كصندوق خياس فعّال بصرف/قبض خاص به\nويظهر في مراحل التصنيع وصناديق الخياس وشاشة الخسائر", font=(UI_FONT, 11), text_color="#2ecc71").pack(pady=(0, 6))
 
-        ctk.CTkLabel(win, text="اسم الحساب:", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(pady=(5, 3))
-        entry = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=280, height=38)
+        ctk.CTkLabel(win, text="اسم الحساب:", font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(pady=(5, 3))
+        entry = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=280, height=38)
         entry.pack(pady=5)
         entry.focus_set()
 
-        lbl_status = ctk.CTkLabel(win, text="", font=("Cairo", 12, "bold"), text_color="#e74c3c")
+        lbl_status = ctk.CTkLabel(win, text="", font=(UI_FONT, 12, "bold"), text_color="#e74c3c")
         lbl_status.pack(pady=3)
 
         def do_add():
@@ -21388,7 +21357,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             win.destroy()
 
         entry.bind("<Return>", lambda e: do_add())
-        ctk.CTkButton(win, text="✅ إضافة", font=("Cairo", 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=150, height=40, command=do_add).pack(pady=15)
+        ctk.CTkButton(win, text="✅ إضافة", font=(UI_FONT, 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=150, height=40, command=do_add).pack(pady=15)
 
     def refresh_chart_of_accounts(self):
         if not hasattr(self, 'coa_tree') or not self.coa_tree:
@@ -21501,25 +21470,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_invoice_archive_tab(self):
         tab = self.tabview.tab("أرشيف الفواتير")
 
-        ctk.CTkLabel(tab, text="🗂️ أرشيف الفواتير", font=ctk.CTkFont(family="Cairo", size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 6))
+        ctk.CTkLabel(tab, text="🗂️ أرشيف الفواتير", font=ctk.CTkFont(family=UI_FONT, size=18, weight="bold"), text_color="#d4af37").pack(pady=(15, 6))
 
         search_row = ctk.CTkFrame(tab, fg_color="transparent")
         search_row.pack(fill="x", padx=20, pady=6)
 
-        ctk.CTkLabel(search_row, text="رقم الفاتورة:", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.archive_search_invoice = ctk.CTkEntry(search_row, justify="center", font=("Cairo", 14), width=110, height=36)
+        ctk.CTkLabel(search_row, text="رقم الفاتورة:", font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.archive_search_invoice = ctk.CTkEntry(search_row, justify="center", font=(UI_FONT, 14), width=110, height=36)
         self.archive_search_invoice.pack(side="right", padx=5)
 
-        ctk.CTkLabel(search_row, text="اسم العميل:", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.archive_search_name = ctk.CTkEntry(search_row, justify="right", font=("Cairo", 14), width=170, height=36)
+        ctk.CTkLabel(search_row, text="اسم العميل:", font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.archive_search_name = ctk.CTkEntry(search_row, justify="right", font=(UI_FONT, 14), width=170, height=36)
         self.archive_search_name.pack(side="right", padx=5)
 
-        ctk.CTkLabel(search_row, text="التاريخ:", font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
-        self.archive_search_date = ctk.CTkEntry(search_row, placeholder_text="YYYY-MM-DD", justify="center", font=("Cairo", 14), width=130, height=36)
+        ctk.CTkLabel(search_row, text="التاريخ:", font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(side="right", padx=5)
+        self.archive_search_date = ctk.CTkEntry(search_row, placeholder_text="YYYY-MM-DD", justify="center", font=(UI_FONT, 14), width=130, height=36)
         self.archive_search_date.pack(side="right", padx=5)
 
-        ctk.CTkButton(search_row, text="بحث 🔍", font=("Cairo", 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=100, height=36, command=self.refresh_invoice_archive_table).pack(side="right", padx=10)
-        ctk.CTkButton(search_row, text="عرض الكل ↺", font=("Cairo", 14, "bold"), fg_color="#555555", hover_color="#333333", width=100, height=36, command=self.clear_invoice_archive_search).pack(side="right", padx=5)
+        ctk.CTkButton(search_row, text="بحث 🔍", font=(UI_FONT, 14, "bold"), fg_color="#1e8449", hover_color="#145a32", width=100, height=36, command=self.refresh_invoice_archive_table).pack(side="right", padx=10)
+        ctk.CTkButton(search_row, text="عرض الكل ↺", font=(UI_FONT, 14, "bold"), fg_color="#555555", hover_color="#333333", width=100, height=36, command=self.clear_invoice_archive_search).pack(side="right", padx=5)
 
         self.archive_table_frame = ttk.Frame(tab)
         self.archive_table_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -21529,13 +21498,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # ====== لوحة إجراءات الفاتورة المحددة ======
         action_bar = ctk.CTkFrame(tab, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
         action_bar.pack(fill="x", padx=20, pady=(0, 15))
-        self.lbl_archive_selected = ctk.CTkLabel(action_bar, text="اختر فاتورة من الجدول أعلاه لعرض إجراءاتها", font=("Cairo", 13, "bold"), text_color="#aaaaaa")
+        self.lbl_archive_selected = ctk.CTkLabel(action_bar, text="اختر فاتورة من الجدول أعلاه لعرض إجراءاتها", font=(UI_FONT, 13, "bold"), text_color="#aaaaaa")
         self.lbl_archive_selected.pack(side="right", padx=15, pady=12)
 
-        ctk.CTkButton(action_bar, text="إغلاق ✖️", font=("Cairo", 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=110, height=38, command=lambda: self.navigate_to_screen("أرشيف الفواتير")).pack(side="left", padx=8, pady=10)
-        ctk.CTkButton(action_bar, text="🖨️ طباعة الفاتورة", font=("Cairo", 13, "bold"), fg_color="#144d75", hover_color="#0d3350", width=150, height=38, command=self.print_selected_archive_invoice).pack(side="left", padx=8, pady=10)
-        ctk.CTkButton(action_bar, text="👁️ معاينة الفاتورة", font=("Cairo", 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=150, height=38, command=self.preview_selected_archive_invoice).pack(side="left", padx=8, pady=10)
-        ctk.CTkButton(action_bar, text="🔤 اختبار الخط العربي", font=("Cairo", 13, "bold"), fg_color="#8e44ad", hover_color="#6c3483", width=170, height=38, command=self.generate_arabic_test_pdf).pack(side="left", padx=8, pady=10)
+        ctk.CTkButton(action_bar, text="إغلاق ✖️", font=(UI_FONT, 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=110, height=38, command=lambda: self.navigate_to_screen("أرشيف الفواتير")).pack(side="left", padx=8, pady=10)
+        ctk.CTkButton(action_bar, text="🖨️ طباعة الفاتورة", font=(UI_FONT, 13, "bold"), fg_color="#144d75", hover_color="#0d3350", width=150, height=38, command=self.print_selected_archive_invoice).pack(side="left", padx=8, pady=10)
+        ctk.CTkButton(action_bar, text="👁️ معاينة الفاتورة", font=(UI_FONT, 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=150, height=38, command=self.preview_selected_archive_invoice).pack(side="left", padx=8, pady=10)
+        ctk.CTkButton(action_bar, text="🔤 اختبار الخط العربي", font=(UI_FONT, 13, "bold"), fg_color="#8e44ad", hover_color="#6c3483", width=170, height=38, command=self.generate_arabic_test_pdf).pack(side="left", padx=8, pady=10)
 
         self.refresh_invoice_archive_table()
 
@@ -21655,8 +21624,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         top_bar = ctk.CTkFrame(tab, fg_color="transparent")
         top_bar.pack(fill="x", padx=15, pady=10)
 
-        ctk.CTkLabel(top_bar, text="👥 كشف حسابات الموردين", font=ctk.CTkFont(family="Cairo", size=17, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
-        ctk.CTkButton(top_bar, text="➕ إضافة مورد", font=("Cairo", 15, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=self.add_supplier_dialog).pack(side="left", padx=10)
+        ctk.CTkLabel(top_bar, text="👥 كشف حسابات الموردين", font=ctk.CTkFont(family=UI_FONT, size=17, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
+        ctk.CTkButton(top_bar, text="➕ إضافة مورد", font=(UI_FONT, 15, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=self.add_supplier_dialog).pack(side="left", padx=10)
 
         self.suppliers_table_frame = ttk.Frame(tab)
         self.suppliers_table_frame.pack(fill="both", expand=True, padx=15, pady=10)
@@ -21672,7 +21641,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="اسم المورد الجديد:", font=("Cairo", 16, "bold")).pack(pady=15)
+        ctk.CTkLabel(win, text="اسم المورد الجديد:", font=(UI_FONT, 16, "bold")).pack(pady=15)
         ent = ctk.CTkEntry(win, justify="right", width=280, height=38)
         ent.pack(pady=5)
 
@@ -21690,7 +21659,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             win.destroy()
             messagebox.showinfo("تم", f"تمت إضافة المورد ({name}) بنجاح.")
 
-        ctk.CTkButton(win, text="حفظ 💾", font=("Cairo", 16, "bold"), fg_color="#2ecc71", hover_color="#27ae60", height=40, command=save).pack(pady=15)
+        ctk.CTkButton(win, text="حفظ 💾", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71", hover_color="#27ae60", height=40, command=save).pack(pady=15)
 
     def refresh_suppliers_table(self):
         if not hasattr(self, 'suppliers_table_frame') or not self.suppliers_table_frame:
@@ -21700,7 +21669,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         cols = ("الاسم", "مدين", "دائن", "الرصيد")
         self.suppliers_tree = self.create_standard_treeview(self.suppliers_table_frame, cols, height=18)
-        self.suppliers_tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 14, "bold"))
+        self.suppliers_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 14, "bold"))
         for c in cols:
             self.suppliers_tree.column(c, width=220, anchor="center")
 
@@ -21900,16 +21869,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.focus_force()
 
         ctk.CTkLabel(win, text=f"🔎 نتائج البحث عن الرقم ({query}) في شاشة ({source})",
-                     font=("Cairo", 18, "bold"), text_color="#d4af37").pack(pady=(14, 4))
+                     font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=(14, 4))
         ctk.CTkLabel(win, text=f"عدد الحركات المطابقة: {len(records)}",
-                     font=("Cairo", 13, "bold"), text_color="#1f77b4").pack(pady=(0, 8))
+                     font=(UI_FONT, 13, "bold"), text_color="#1f77b4").pack(pady=(0, 8))
 
         t_frame = ttk.Frame(win)
         t_frame.pack(fill="both", expand=True, padx=18, pady=8)
 
         cols = ("رقم الحركة", "التاريخ", "الاسم", "النوع", "الوزن", "رقم التشغيل", "رقم الفاتورة", "البيان")
         tree = self.create_standard_treeview(t_frame, cols, height=12)
-        tree.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 13, "bold"))
+        tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         for c in cols:
             w = 175 if c == "التاريخ" else 165 if c in ("الاسم", "النوع", "البيان") else 105
             tree.column(c, width=w, anchor="center")
@@ -21968,11 +21937,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(pady=10)
-        ctk.CTkButton(btns, text="🔧 فتح الحركة (تعديل/حذف)", font=("Cairo", 14, "bold"), width=200, height=40,
+        ctk.CTkButton(btns, text="🔧 فتح الحركة (تعديل/حذف)", font=(UI_FONT, 14, "bold"), width=200, height=40,
                       fg_color="#b8860b", hover_color="#daa520", command=open_record).pack(side="right", padx=6)
-        ctk.CTkButton(btns, text="🧾 تعديل الفاتورة كاملة", font=("Cairo", 14, "bold"), width=190, height=40,
+        ctk.CTkButton(btns, text="🧾 تعديل الفاتورة كاملة", font=(UI_FONT, 14, "bold"), width=190, height=40,
                       fg_color="#1e8449", hover_color="#145a32", command=open_full_invoice).pack(side="right", padx=6)
-        ctk.CTkButton(btns, text="🖨️ معاينة الطباعة", font=("Cairo", 14, "bold"), width=170, height=40,
+        ctk.CTkButton(btns, text="🖨️ معاينة الطباعة", font=(UI_FONT, 14, "bold"), width=170, height=40,
                       fg_color="#1f77b4", hover_color="#144d75", command=preview_record).pack(side="right", padx=6)
 
         tree.bind("<Double-1>", lambda e: open_record())
@@ -22014,12 +21983,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         entries_edit = []
 
-        entry_date = ctk.CTkEntry(win, font=("Cairo", 14), justify="center", width=300, height=35)
+        entry_date = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="center", width=300, height=35)
         entry_date.insert(0, inv["التاريخ"])
         entry_date.pack(pady=10)
         entries_edit.append(entry_date)
 
-        entry_name = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+        entry_name = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
         entry_name.insert(0, inv["الاسم"])
         entry_name.pack(pady=10)
         if inv_id == 1000: entry_name.configure(state="disabled")
@@ -22027,60 +21996,60 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if inv["النوع"] == "خياس الاله/المكائن":
             if "الصب الداخلي" in inv["الاسم"]:
-                entry_before = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+                entry_before = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
                 entry_before.insert(0, str(inv["قبل"]))
                 entry_before.pack(pady=8)
                 entries_edit.append(entry_before)
                 
-                entry_after = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+                entry_after = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
                 entry_after.insert(0, str(inv["بعد"]))
                 entry_after.pack(pady=8)
                 entries_edit.append(entry_after)
                 
-                entry_trees = ctk.CTkEntry(win, placeholder_text="عدد الشجر", font=("Cairo", 14), justify="right", width=300, height=35)
+                entry_trees = ctk.CTkEntry(win, placeholder_text="عدد الشجر", font=(UI_FONT, 14), justify="right", width=300, height=35)
                 entry_trees.insert(0, str(inv.get("trees_count", 0.0)))
                 entry_trees.pack(pady=8)
                 entries_edit.append(entry_trees)
             elif "التلميع النهائي" in inv["الاسم"]:
-                entry_weight = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+                entry_weight = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
                 entry_weight.insert(0, str(inv["الوزن"]))
                 entry_weight.pack(pady=8)
                 entries_edit.append(entry_weight)
             else:
-                entry_before = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+                entry_before = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
                 entry_before.insert(0, str(inv["قبل"]))
                 entry_before.pack(pady=8)
                 entries_edit.append(entry_before)
                 
-                entry_after = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+                entry_after = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
                 entry_after.insert(0, str(inv["بعد"]))
                 entry_after.pack(pady=8)
                 entries_edit.append(entry_after)
                 
         elif inv["النوع"] == "وارد ذهب (عيار 18)":
-            entry_before = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+            entry_before = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
             entry_before.insert(0, str(inv["قبل"]))
             entry_before.pack(pady=8)
             entries_edit.append(entry_before)
             
-            entry_after = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+            entry_after = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
             entry_after.insert(0, str(inv["بعد"]))
             entry_after.pack(pady=8)
             entries_edit.append(entry_after)
         else:
-            entry_weight = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+            entry_weight = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
             entry_weight.insert(0, str(inv["الوزن"]))
             entry_weight.pack(pady=8)
             entries_edit.append(entry_weight)
 
-        entry_note = ctk.CTkEntry(win, font=("Cairo", 14), justify="right", width=300, height=35)
+        entry_note = ctk.CTkEntry(win, font=(UI_FONT, 14), justify="right", width=300, height=35)
         entry_note.insert(0, inv["البيان"])
         entry_note.pack(pady=8)
         entries_edit.append(entry_note)
         if partner is not None:
             ctk.CTkLabel(win, text=f"قيد يومي ({inv.get('set_number') or '-'}): المبلغ والتاريخ والبيان والحذف تُطبَّق "
                                    f"على طرفيه معاً — والطرف الآخر «{partner.get('الاسم')}»",
-                         font=("Cairo", 12), wraplength=440, text_color=(UI["muted"], "#9AA4B2")).pack(pady=(0, 4))
+                         font=(UI_FONT, 12), wraplength=440, text_color=(UI["muted"], "#9AA4B2")).pack(pady=(0, 4))
 
         def valid_date(text):
             text = (text or "").strip()
@@ -22179,9 +22148,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.pack(pady=20)
         
-        btn_save_edit = ctk.CTkButton(btn_frame, text="حفظ التعديلات", font=("Cairo", 15, "bold"), height=40, fg_color=UI["primary"], command=save_changes)
+        btn_save_edit = ctk.CTkButton(btn_frame, text="حفظ التعديلات", font=(UI_FONT, 15, "bold"), height=40, fg_color=UI["primary"], command=save_changes)
         btn_save_edit.pack(side="right", padx=10)
-        ctk.CTkButton(btn_frame, text="حذف الحركة ❌", font=("Cairo", 15, "bold"), height=40, fg_color="#c0392b", hover_color="#922b21", command=delete_record).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="حذف الحركة ❌", font=(UI_FONT, 15, "bold"), height=40, fg_color="#c0392b", hover_color="#922b21", command=delete_record).pack(side="left", padx=10)
         self.apply_edit_lock_to_button(btn_save_edit, win)
 
 class SyncDownWindow(ctk.CTkToplevel):
@@ -22219,12 +22188,12 @@ class SyncDownWindow(ctk.CTkToplevel):
             self.grab_set()
         self.protocol("WM_DELETE_WINDOW", lambda: None)   # لا يُغلق أثناء التجهيز
 
-        ctk.CTkLabel(self, text="💎 جاديت", font=("Cairo", 26, "bold"),
+        ctk.CTkLabel(self, text="💎 جاديت", font=(UI_FONT, 26, "bold"),
                      text_color="#d4af37").pack(pady=(28, 2))
-        ctk.CTkLabel(self, text=business_name or "", font=("Cairo", 15, "bold")).pack()
+        ctk.CTkLabel(self, text=business_name or "", font=(UI_FONT, 15, "bold")).pack()
 
         self.lbl = ctk.CTkLabel(self, text="جارٍ الاتصال بالسحابة…",
-                                font=("Cairo", 13), text_color="#d4af37",
+                                font=(UI_FONT, 13), text_color="#d4af37",
                                 wraplength=420, justify="center")
         self.lbl.pack(pady=(18, 8))
 
@@ -22233,7 +22202,7 @@ class SyncDownWindow(ctk.CTkToplevel):
         self.bar.pack(pady=6)
 
         ctk.CTkLabel(self, text="لا تغلق البرنامج أثناء التجهيز",
-                     font=("Cairo", 11), text_color="#7f858c").pack(pady=(10, 0))
+                     font=(UI_FONT, 11), text_color="#7f858c").pack(pady=(10, 0))
 
         threading.Thread(target=self._work, daemon=True).start()
 
@@ -22463,7 +22432,7 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         return 1 - (1 - t) ** 3
 
     def _font(self, size, bold=False):
-        return ("Cairo", -int(size * self.S), "bold") if bold else ("Cairo", -int(size * self.S))
+        return (UI_FONT, -int(size * self.S), "bold") if bold else (UI_FONT, -int(size * self.S))
 
     def _round_rect(self, x1, y1, x2, y2, r, **kw):
         pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
@@ -22741,7 +22710,7 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
     def _build_window_controls(self):
         bar = ctk.CTkFrame(self.cv, fg_color=self._BG[0], corner_radius=0)
         for text, cmd in (("✕", self.destroy), ("—", self._minimize)):
-            ctk.CTkButton(bar, text=text, width=42, height=34, corner_radius=8, font=("Cairo", 15, "bold"),
+            ctk.CTkButton(bar, text=text, width=42, height=34, corner_radius=8, font=(UI_FONT, 15, "bold"),
                           fg_color="transparent", hover_color="#1B2740", text_color=self._MUTED,
                           command=cmd).pack(side="left", padx=2)
         self._controls_item = self.cv.create_window(14, 12, window=bar, anchor="nw")
@@ -22833,7 +22802,7 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         part((accent, self._GOLD, "fill"))
 
         # الحقول
-        field = dict(font=("Cairo", 16), height=50, corner_radius=14, border_width=1,
+        field = dict(font=(UI_FONT, 16), height=50, corner_radius=14, border_width=1,
                      fg_color=self._FIELD, border_color=self._FIELD_LINE, text_color=self._TEXT,
                      placeholder_text_color="#5E6B80", justify="center")
         cap_user = text(cx + half - 4 * S, mid("cap_user"), "👤  اسم المستخدم", 13, "#AAB4C3",
@@ -22876,7 +22845,7 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         # رسالة الحالة وزر الدخول
         status = text(cx, mid("status"), "", 12, "#F08A8F", bold=True, width=w * S, justify="center")
         self.lbl_status = _CanvasLabel(cv, status)
-        self.btn_login = ctk.CTkButton(cv, text="دخول", font=("Cairo", 18, "bold"), width=w, height=52,
+        self.btn_login = ctk.CTkButton(cv, text="دخول", font=(UI_FONT, 18, "bold"), width=w, height=52,
                                        corner_radius=14, fg_color=self._GOLD, hover_color="#E0BE4E",
                                        text_color="#0B1220", text_color_disabled="#5A4A12",
                                        bg_color=under(cx, mid("login")), command=self.try_login)
@@ -23330,15 +23299,15 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
 
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=20, pady=15)
-        ctk.CTkLabel(top, text="👤 حسابات العملاء", font=("Cairo", 20, "bold")).pack(side="right")
+        ctk.CTkLabel(top, text="👤 حسابات العملاء", font=(UI_FONT, 20, "bold")).pack(side="right")
         if not self.restricted:
-            ctk.CTkButton(top, text="➕ فتح حساب عميل جديد", font=("Cairo", 14, "bold"), height=42,
+            ctk.CTkButton(top, text="➕ فتح حساب عميل جديد", font=(UI_FONT, 14, "bold"), height=42,
                           fg_color="#2ecc71", hover_color="#27ae60", command=self.open_add_client_dialog).pack(side="left", padx=5)
-            ctk.CTkButton(top, text="➕ إضافة مدير مساعد", font=("Cairo", 14, "bold"), height=42,
+            ctk.CTkButton(top, text="➕ إضافة مدير مساعد", font=(UI_FONT, 14, "bold"), height=42,
                           fg_color="#1f77b4", command=self.open_add_sub_admin_dialog).pack(side="left", padx=5)
-            ctk.CTkButton(top, text="📋 إدارة المدراء المساعدين", font=("Cairo", 14, "bold"), height=42,
+            ctk.CTkButton(top, text="📋 إدارة المدراء المساعدين", font=(UI_FONT, 14, "bold"), height=42,
                           fg_color="#555555", command=self.open_manage_sub_admins_dialog).pack(side="left", padx=5)
-        ctk.CTkButton(top, text="🔄 تحديث القائمة", font=("Cairo", 14, "bold"), height=42,
+        ctk.CTkButton(top, text="🔄 تحديث القائمة", font=(UI_FONT, 14, "bold"), height=42,
                       fg_color="#555555", command=self.refresh_clients).pack(side="left", padx=5)
 
         self.list_frame = ctk.CTkScrollableFrame(self, label_text="")
@@ -23385,7 +23354,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             return
         if not clients:
             ctk.CTkLabel(self.list_frame, text="لا يوجد عملاء مسجّلين بعد — افتح أول حساب من زر «فتح حساب عميل جديد»",
-                         font=("Cairo", 14)).pack(pady=30)
+                         font=(UI_FONT, 14)).pack(pady=30)
             return
         for c in clients:
             # بطاقة فاتحة بإطار واضح ونص داكن (كانت كحلية بنص داكن — تباين ١٫٣:١ لا يُقرأ)
@@ -23416,19 +23385,19 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             if not self.restricted:
                 edit_status = "✏️ التعديل مفتوح" if can_edit else "🔒 التعديل مقفول"
                 label_text += f"   |   {edit_status}"
-            ctk.CTkLabel(row, text=label_text, font=("Cairo", 14, "bold"), justify="right",
+            ctk.CTkLabel(row, text=label_text, font=(UI_FONT, 14, "bold"), justify="right",
                          text_color=(UI["ink"], "#E6EDF3")).pack(side="right", padx=15, pady=10)
-            ctk.CTkButton(row, text="فتح الحساب (دخول كالعميل) 🔑", font=("Cairo", 13, "bold"),
+            ctk.CTkButton(row, text="فتح الحساب (دخول كالعميل) 🔑", font=(UI_FONT, 13, "bold"),
                           fg_color="#d4af37", hover_color="#b8952e", text_color="black",
                           command=lambda cid=c["client_id"], name=c["business_name"]: self.open_as_client(cid, name)
                           ).pack(side="left", padx=10, pady=8)
             if not self.restricted:
                 toggle_text = "🔒 إغلاق التعديل" if can_edit else "🔓 فتح التعديل"
                 toggle_color = "#8b0000" if can_edit else "#2ecc71"
-                ctk.CTkButton(row, text=toggle_text, font=("Cairo", 13, "bold"), fg_color=toggle_color,
+                ctk.CTkButton(row, text=toggle_text, font=(UI_FONT, 13, "bold"), fg_color=toggle_color,
                               command=lambda cid=c["client_id"], new_val=(not can_edit): self.toggle_client_edit(cid, new_val)
                               ).pack(side="left", padx=10, pady=8)
-                ctk.CTkButton(row, text="🗑️ حذف الحساب نهائياً", font=("Cairo", 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a",
+                ctk.CTkButton(row, text="🗑️ حذف الحساب نهائياً", font=(UI_FONT, 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a",
                               command=lambda cid=c["client_id"], name=c["business_name"]: self.delete_client(cid, name)
                               ).pack(side="left", padx=10, pady=8)
 
@@ -23440,20 +23409,20 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         card.pack(fill="x", padx=40, pady=30)
         ctk.CTkLabel(card, text="🔑 مفتاح المدير غير مضبوط على هذا الجهاز" if no_key
                      else "⚠️ تعذّر عرض حسابات العملاء",
-                     font=("Cairo", 19, "bold"), text_color=UI_TITLE).pack(pady=(18, 6))
+                     font=(UI_FONT, 19, "bold"), text_color=UI_TITLE).pack(pady=(18, 6))
         reason = ("لهذا لا تظهر أسماء الحسابات: لوحة المدير تقرأ حسابات العملاء بالمفتاح السري للمشروع،\n"
                   "والمفتاح لا يُكتب داخل البرنامج أبداً (حتى لا يتسرّب مع أي نسخة)." if no_key else error)
-        ctk.CTkLabel(card, text=reason, font=("Cairo", 13), justify="center", wraplength=760,
+        ctk.CTkLabel(card, text=reason, font=(UI_FONT, 13), justify="center", wraplength=760,
                      text_color=(UI["ink"], "#E5E7EB")).pack(padx=20, pady=(0, 8))
         ctk.CTkLabel(card, text="الصق المفتاح السري (Supabase ← Project Settings ← API Keys ← Secret key)\n"
                                 "يُحفظ على هذا الجهاز فقط ويُستخدم تلقائياً في كل تشغيل بعد ذلك.",
-                     font=("Cairo", 12), justify="center", text_color=(UI["muted"], "#9AA3AF")).pack(pady=(4, 6))
+                     font=(UI_FONT, 12), justify="center", text_color=(UI["muted"], "#9AA3AF")).pack(pady=(4, 6))
         row = ctk.CTkFrame(card, fg_color="transparent")
         row.pack(pady=(2, 6))
         ent = ctk.CTkEntry(row, width=460, height=40, show="•", justify="center",
                            placeholder_text="sb_secret_…")
         ent.pack(side="right", padx=6)
-        lbl_msg = ctk.CTkLabel(card, text="", font=("Cairo", 12), text_color="#e74c3c", wraplength=760)
+        lbl_msg = ctk.CTkLabel(card, text="", font=(UI_FONT, 12), text_color="#e74c3c", wraplength=760)
         lbl_msg.pack(pady=(0, 4))
 
         def done(ok, why):
@@ -23474,12 +23443,12 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
 
             threading.Thread(target=work, daemon=True).start()
 
-        btn = ctk.CTkButton(row, text="حفظ وتفعيل 🔑", font=("Cairo", 14, "bold"), height=40, width=150,
+        btn = ctk.CTkButton(row, text="حفظ وتفعيل 🔑", font=(UI_FONT, 14, "bold"), height=40, width=150,
                             fg_color=UI["primary"], hover_color=UI["primary_hover"], command=save)
         btn.pack(side="right", padx=6)
         ent.bind("<Return>", lambda e: save())
         if not no_key:
-            ctk.CTkButton(card, text="🔄 إعادة المحاولة", font=("Cairo", 13, "bold"), height=36,
+            ctk.CTkButton(card, text="🔄 إعادة المحاولة", font=(UI_FONT, 13, "bold"), height=36,
                           fg_color="#555555", hover_color="#333333",
                           command=self.refresh_clients).pack(pady=(2, 16))
         else:
@@ -23514,7 +23483,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="📋 المدراء المساعدون", font=("Cairo", 18, "bold")).pack(pady=15)
+        ctk.CTkLabel(win, text="📋 المدراء المساعدون", font=(UI_FONT, 18, "bold")).pack(pady=15)
         list_frame = ctk.CTkScrollableFrame(win, label_text="")
         list_frame.pack(fill="both", expand=True, padx=15, pady=10)
 
@@ -23523,14 +23492,14 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 w.destroy()
             admins = cloud_list_sub_admins()
             if not admins:
-                ctk.CTkLabel(list_frame, text="لا يوجد مدراء مساعدون حالياً", font=("Cairo", 13)).pack(pady=20)
+                ctk.CTkLabel(list_frame, text="لا يوجد مدراء مساعدون حالياً", font=(UI_FONT, 13)).pack(pady=20)
                 return
             for a in admins:
                 row = ctk.CTkFrame(list_frame, fg_color=(UI["surface"], "#1B222B"), corner_radius=10,
                                    border_width=1, border_color=(UI["line"], "#323B47"))
                 row.pack(fill="x", pady=4, padx=3)
-                ctk.CTkLabel(row, text=a.get("username", ""), font=("Cairo", 14, "bold")).pack(side="right", padx=12, pady=10)
-                ctk.CTkButton(row, text="🗑️ حذف", font=("Cairo", 12, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=80,
+                ctk.CTkLabel(row, text=a.get("username", ""), font=(UI_FONT, 14, "bold")).pack(side="right", padx=12, pady=10)
+                ctk.CTkButton(row, text="🗑️ حذف", font=(UI_FONT, 12, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=80,
                               command=lambda aid=a["id"], uname=a["username"]: do_delete(aid, uname)).pack(side="left", padx=10, pady=6)
 
         def do_delete(admin_id, username):
@@ -23552,18 +23521,18 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="اسم المستخدم:", font=("Cairo", 14, "bold")).pack(pady=(25, 5))
+        ctk.CTkLabel(win, text="اسم المستخدم:", font=(UI_FONT, 14, "bold")).pack(pady=(25, 5))
         ent_user = ctk.CTkEntry(win, width=250, height=40, justify="center")
         ent_user.pack()
 
-        ctk.CTkLabel(win, text="كلمة المرور:", font=("Cairo", 14, "bold")).pack(pady=(18, 5))
+        ctk.CTkLabel(win, text="كلمة المرور:", font=(UI_FONT, 14, "bold")).pack(pady=(18, 5))
         ent_pass = ctk.CTkEntry(win, width=250, height=40, justify="center")
         ent_pass.pack()
 
         ctk.CTkLabel(win, text="ملاحظة: هذا المستخدم هيقدر بس يدخل كأي عميل (انتحال شخصية)،\nمن غير ما يقدر يفتح حسابات جديدة أو يتحكم بصلاحية التعديل.",
-                     font=("Cairo", 11), text_color="#aaaaaa", justify="center").pack(pady=12)
+                     font=(UI_FONT, 11), text_color="#aaaaaa", justify="center").pack(pady=12)
 
-        lbl_msg = ctk.CTkLabel(win, text="", font=("Cairo", 12), text_color="#e74c3c")
+        lbl_msg = ctk.CTkLabel(win, text="", font=(UI_FONT, 12), text_color="#e74c3c")
         lbl_msg.pack(pady=5)
 
         def do_create():
@@ -23579,7 +23548,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             else:
                 lbl_msg.configure(text=f"فشل الإنشاء: {err}")
 
-        ctk.CTkButton(win, text="إنشاء الحساب", font=("Cairo", 15, "bold"), fg_color="#1f77b4",
+        ctk.CTkButton(win, text="إنشاء الحساب", font=(UI_FONT, 15, "bold"), fg_color="#1f77b4",
                       height=44, command=do_create).pack(pady=15)
 
     def open_add_client_dialog(self):
@@ -23590,19 +23559,19 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        ctk.CTkLabel(win, text="اسم المنشأة/العميل:", font=("Cairo", 14, "bold")).pack(pady=(25, 5))
+        ctk.CTkLabel(win, text="اسم المنشأة/العميل:", font=(UI_FONT, 14, "bold")).pack(pady=(25, 5))
         ent_name = ctk.CTkEntry(win, width=260, height=40, justify="center")
         ent_name.pack()
 
-        ctk.CTkLabel(win, text="اسم المستخدم:", font=("Cairo", 14, "bold")).pack(pady=(18, 5))
+        ctk.CTkLabel(win, text="اسم المستخدم:", font=(UI_FONT, 14, "bold")).pack(pady=(18, 5))
         ent_user = ctk.CTkEntry(win, width=260, height=40, justify="center")
         ent_user.pack()
 
-        ctk.CTkLabel(win, text="كلمة المرور:", font=("Cairo", 14, "bold")).pack(pady=(18, 5))
+        ctk.CTkLabel(win, text="كلمة المرور:", font=(UI_FONT, 14, "bold")).pack(pady=(18, 5))
         ent_pass = ctk.CTkEntry(win, width=260, height=40, justify="center")
         ent_pass.pack()
 
-        lbl_msg = ctk.CTkLabel(win, text="", font=("Cairo", 12), text_color="#e74c3c")
+        lbl_msg = ctk.CTkLabel(win, text="", font=(UI_FONT, 12), text_color="#e74c3c")
         lbl_msg.pack(pady=8)
 
         def do_create():
@@ -23620,7 +23589,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             else:
                 lbl_msg.configure(text=f"فشل الإنشاء: {result}")
 
-        ctk.CTkButton(win, text="فتح الحساب", font=("Cairo", 15, "bold"), fg_color="#2ecc71",
+        ctk.CTkButton(win, text="فتح الحساب", font=(UI_FONT, 15, "bold"), fg_color="#2ecc71",
                       hover_color="#27ae60", height=44, command=do_create).pack(pady=25)
 
     ADMIN_CLOUD_ONLY = True   # نسخة المدير لا تعتمد على بيانات الجهاز المحلية إطلاقاً

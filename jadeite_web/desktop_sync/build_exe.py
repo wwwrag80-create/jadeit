@@ -19,7 +19,7 @@
   ٣) نسخة العميل: يولّد rageh-CLIENT.py (بلا مفتاح سري وبلا لوحة مدير)
      نسخة المدير: يتأكد أن المفتاح السري غير مكتوب داخل الكود
   ٤) يشغّل كل فحوص البرنامج على الملف الذي سيُبنى
-  ٥) يبني exe واحداً بالأيقونة والشعار وخط Cairo ووحدات المزامنة
+  ٥) يبني exe واحداً بالأيقونة والشعار وخط IBM Plex Sans Arabic ووحدات المزامنة
   ٦) يتحقق من الناتج: موجود، وحجمه معقول، ولا مفتاح سري بداخله
 """
 import argparse
@@ -52,9 +52,10 @@ TARGETS = {
 LOCAL_MODULES = ("gold_price", "scale_reader")
 # ملفات يقرؤها البرنامج وقت التشغيل عبر resource_path
 DATA_FILES = ("jadeite.ico", "jadeite_logo.png")
-# مجلدات تُضمَّن كما هي (خط Cairo العربي للواجهة)
+# مجلدات تُضمَّن كما هي (خط IBM Plex Sans Arabic للواجهة والقوالب)
 DATA_DIRS = ("fonts",)
-FONT_FILES = ("fonts/Cairo-Regular.ttf", "fonts/Cairo-Bold.ttf", "fonts/Cairo-SemiBold.ttf")
+FONT_FILES = ("fonts/IBMPlexSansArabic-Regular.ttf", "fonts/IBMPlexSansArabic-Bold.ttf",
+              "fonts/IBMPlexSansArabic-SemiBold.ttf")
 # مكتبات خارجية لازمة للتشغيل: (اسم الاستيراد، اسم الحزمة في pip)
 RUNTIME_PACKAGES = (("customtkinter", "customtkinter"), ("PIL", "Pillow"),
                     ("reportlab", "reportlab"), ("arabic_reshaper", "arabic-reshaper"),

@@ -8,7 +8,7 @@
   • المقاسات حسب المساحة الفعلية للشاشة (بعد تكبير ويندوز).
   • ألوان الوسوم القديمة وخطوطها تتبع نظام التصميم والمظهر (الأسود كان يختفي على الداكن).
   • تظليل الصف تحت المؤشر، وأشرطة تمرير حديثة، وإطار علوي قوي، ومظهر تلقائي محفوظ.
-  • أحدث إصدارات المكتبات، وخط Cairo SemiBold مرفقاً.
+  • أحدث إصدارات المكتبات، وخط IBM Plex Sans Arabic (وSemiBold لنص الجداول) مرفقاً.
 """
 import ast, io, os, re, sys, textwrap
 
@@ -104,12 +104,12 @@ assert 'fg_color=head' in hdr and 'border_color=(UI["header_edge"], UI["header_e
 print("✔ الإطار العلوي لكل شاشة كحلي بحافة ذهبية، وشاراته مقروءة (≥ ٤٫٥:١)")
 
 # ═══ ٢) ارتفاع الصف من قياس الخط ═══
-ns = {}
+ns = {"FONT_DEEP_DESCENT": ast.literal_eval(module_node("FONT_DEEP_DESCENT").value)}
 exec(textwrap.dedent(seg("row_height_for")).replace("@staticmethod\n", ""), ns)
 row_height_for = ns["row_height_for"]
-# مقاييس Cairo (من ملف الخط: usWinAscent ١٣١٢، usWinDescent ٥٧١ لكل ١٠٠٠)، وأعمق ذيل حرف
-# ٠٫٤٦ وأعلى حرف ٠٫٩٦٣ من حجم الخط (glyf) — يُتحقَّق منها أدناه إن توفّر fontTools
-ASC, DESC, INK_DOWN, INK_UP = 1.312, 0.571, 0.462, 1.0
+# مقاييس IBM Plex Sans Arabic (من ملف الخط: usWinAscent ١٠٨٥، usWinDescent ٤١٥ لكل ١٠٠٠)، وأعمق حرف شائع
+# (نقطتا «ي»، بالعريض) ٠٫٤٥٥ — تحت النزول — وأعلى حرف شائع ٠٫٩٣٤ (glyf) — يُتحقَّق منها أدناه إن توفّر fontTools
+ASC, DESC, INK_DOWN, INK_UP = 1.085, 0.415, 0.455, 0.934
 
 
 def ink_fits(row, em):
@@ -122,7 +122,7 @@ for pt, scale in ((11, 1.0), (11, 1.25), (12, 1.25), (11, 1.5), (14, 1.0), (15, 
     em = pt * 96 / 72 * scale
     row = row_height_for(round(ASC * em), round(DESC * em))
     assert ink_fits(row, em), (pt, scale, row)
-    assert row <= round((ASC + DESC) * em) + 2, (pt, scale, row)     # لا أطول من السطر كاملاً
+    assert row <= round((ASC + 1.25 * DESC) * em) + 3, (pt, scale, row)     # لا أطول مما يلزم
 assert not ink_fits(24, 11 * 96 / 72 * 1.25)
 print("✔ صف الجدول يسع الحروف كاملة على كل تكبير (١٠٠–١٥٠٪) دون أن يطول بلا داعٍ؛ "
       "و٢٤ بكسل الثابتة تقصّ «ي» على ١٢٥٪")
@@ -131,9 +131,15 @@ print("✔ والحد الأدنى للشاشة يبقى محترماً")
 
 try:
     from fontTools.ttLib import TTFont
-    f = TTFont("fonts/Cairo-Regular.ttf")
-    assert (f["OS/2"].usWinAscent, f["OS/2"].usWinDescent) == (1312, 571)
-    print("✔ مقاييس Cairo المعتمدة مطابقة لملف الخط نفسه")
+    for weight in ("Regular", "SemiBold", "Bold"):
+        f = TTFont(f"fonts/IBMPlexSansArabic-{weight}.ttf")
+        assert (f["OS/2"].usWinAscent, f["OS/2"].usWinDescent) == (1085, 415)
+        cmap, glyf = f.getBestCmap(), f["glyf"]
+        common = list(range(0x0621, 0x064B)) + list(range(0xFE80, 0xFEFD)) + list(range(0x30, 0x3A))
+        assert min(getattr(glyf[cmap[c]], "yMin", 0) for c in common) >= -INK_DOWN * 1000
+        assert max(getattr(glyf[cmap[c]], "yMax", 0) for c in common) <= INK_UP * 1000
+        assert all(c in cmap for c in range(0xFE80, 0xFEFD)), "أشكال الحروف العربية كاملة (للقوالب)"
+    print("✔ مقاييس IBM Plex Sans Arabic المعتمدة مطابقة لملفات الخط نفسها، وفيها أشكال الحروف كاملة")
 except ImportError:
     pass
 
@@ -212,7 +218,7 @@ class FakeTree:
 def build(methods, attrs=(), extra=""):
     body = "\n".join(textwrap.indent(f"{a} = {class_value(a)!r}", "    ") for a in attrs)
     body += "\n" + "\n".join(textwrap.indent(method_src(m), "    ") for m in methods)
-    n = {"_LEGACY_TEXT_COLORS": LEGACY}
+    n = {"_LEGACY_TEXT_COLORS": LEGACY, "UI_FONT": "IBM Plex Sans Arabic"}
     exec("class A:\n" + body + "\n" + textwrap.indent(extra, "    "), n)
     return n["A"]
 
@@ -221,19 +227,19 @@ A = build(["normalize_tree_tags", "enable_row_hover", "style_tree_rows"],
           attrs=("DESIGN", "_LEGACY_TREE_COLORS"))
 for mode in ("light", "dark"):
     a = A()
-    a._design = dict(DESIGN[mode], mode=mode, font=11, body_font=("Cairo SemiBold", 11),
-                     total_font=("Cairo", 12, "bold"))
+    a._design = dict(DESIGN[mode], mode=mode, font=11, body_font=("IBM Plex Sans Arabic SmBld", 11),
+                     total_font=("IBM Plex Sans Arabic", 12, "bold"))
     t = FakeTree()
-    t.tag_configure("green_tag", foreground="#000000", font=("Cairo", 13, "bold"))
-    t.tag_configure("total_tag", foreground="#d4af37", font=("Cairo", 14, "bold"))
-    t.tag_configure("red_tag", foreground="#e74c3c", font=("Cairo", 13, "bold"))
+    t.tag_configure("green_tag", foreground="#000000", font=("IBM Plex Sans Arabic", 13, "bold"))
+    t.tag_configure("total_tag", foreground="#d4af37", font=("IBM Plex Sans Arabic", 14, "bold"))
+    t.tag_configure("red_tag", foreground="#e74c3c", font=("IBM Plex Sans Arabic", 13, "bold"))
     t.tag_configure("bar", foreground="#000000", background="#c4c9ce")
     a.normalize_tree_tags(t)
     a.normalize_tree_tags(t)                                 # تكراره لا يغيّر شيئاً
     want_black = "#1f2937" if mode == "light" else "#e6edf3"
     assert t.tags["green_tag"]["foreground"] == want_black, (mode, t.tags["green_tag"])
-    assert t.tags["green_tag"]["font"] == ("Cairo", 11, "bold")
-    assert t.tags["total_tag"]["font"] == ("Cairo", 12, "bold")
+    assert t.tags["green_tag"]["font"] == ("IBM Plex Sans Arabic", 11, "bold")
+    assert t.tags["total_tag"]["font"] == ("IBM Plex Sans Arabic", 12, "bold")
     assert t.tags["total_tag"]["foreground"] == LEGACY["#d4af37"][0 if mode == "light" else 1]
     assert t.tags["red_tag"]["foreground"] == LEGACY["#e74c3c"][0 if mode == "light" else 1]
     assert t.tags["bar"]["foreground"] == "#000000"          # بخلفيته الخاصة: كما صُمّم
@@ -241,7 +247,7 @@ print("✔ ألوان الوسوم القديمة تتبع المظهر (الأ�
       "وخطوطها بحجم الجدول لا ١٣ و١٤ ثابتة")
 
 a = A()
-a._design = dict(DESIGN["light"], mode="light", font=11, body_font=("Cairo", 11), total_font=("Cairo", 12, "bold"))
+a._design = dict(DESIGN["light"], mode="light", font=11, body_font=("IBM Plex Sans Arabic", 11), total_font=("IBM Plex Sans Arabic", 12, "bold"))
 t = FakeTree()
 a.enable_row_hover(t)
 assert list(t.tags)[0] == "hover_row" and t.tags["hover_row"]["background"] == DESIGN["light"]["hover"]
@@ -321,15 +327,22 @@ assert captured["resample"] == "LANCZOS" and captured["dark_image"] is captured[
 print("✔ الشعار يُصغَّر مسبقاً بفلتر LANCZOS لبكسلات العرض الفعلية (٢٤٠ × ١٢٥٪ = ٣٠٠) فيبقى حادّاً")
 
 # ═══ ٨) الخطوط والإصدارات ═══
-assert os.path.exists("fonts/Cairo-SemiBold.ttf") and os.path.getsize("fonts/Cairo-SemiBold.ttf") > 100000
+assert os.path.getsize("fonts/IBMPlexSansArabic-SemiBold.ttf") > 100000
 assert ast.literal_eval(module_node("BRAND_FONT_FILES").value) == (
-    "Cairo-Regular.ttf", "Cairo-Bold.ttf", "Cairo-SemiBold.ttf")
+    "IBMPlexSansArabic-Regular.ttf", "IBMPlexSansArabic-Bold.ttf", "IBMPlexSansArabic-SemiBold.ttf")
+assert ast.literal_eval(module_node("UI_FONT").value) == "IBM Plex Sans Arabic"
+assert ast.literal_eval(module_node("UI_FONT_SEMIBOLD").value) == "IBM Plex Sans Arabic SmBld"
 bx = io.open("build_exe.py", encoding="utf-8").read()
-assert '"fonts/Cairo-SemiBold.ttf"' in bx and '"install", "--upgrade", "-r"' in bx
-assert 'return "Cairo SemiBold" if "Cairo-SemiBold.ttf" in LOADED_BRAND_FONTS else "Cairo"' in module_func(
+assert '"fonts/IBMPlexSansArabic-SemiBold.ttf"' in bx and '"install", "--upgrade", "-r"' in bx
+assert 'return UI_FONT_SEMIBOLD if "IBMPlexSansArabic-SemiBold.ttf" in LOADED_BRAND_FONTS else UI_FONT' in module_func(
     "table_font_family")
 assert "(table_font_family(), m[\"font\"])" in app_src
-print("✔ Cairo SemiBold (وزن ٦٠٠) مرفق ومحمّل لنص الجداول، ويُضمَّن في exe")
+assert '"Cairo"' not in src and "Cairo-" not in src.replace("Cairo كان ينقصه", "")
+reg = module_func("_register_arabic_font")
+assert reg.index('"IBMPlexSansArabic-Regular.ttf"') < reg.index("tahoma.ttf")
+assert reg.index('"IBMPlexSansArabic-Bold.ttf"') < reg.index("tahomabd.ttf")
+print("✔ IBM Plex Sans Arabic بأوزانه (وSemiBold لنص الجداول) مرفق ومحمّل في كل الشاشات، ويُضمَّن في exe، "
+      "والقوالب المطبوعة به أولاً (Tahoma بديلاً فقط)")
 
 req = io.open("requirements-desktop.txt", encoding="utf-8").read()
 for pin in ("customtkinter>=6.0,<7", "Pillow>=12.0,<13", "reportlab>=5.0,<6", "supabase>=2.30,<3",

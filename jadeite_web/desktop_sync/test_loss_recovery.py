@@ -173,7 +173,7 @@ class FakeTree:
 
 
 errors = []
-ns = {"messagebox": FakeBox, "datetime": datetime, "calendar": calendar, "sqlite3": sqlite3,
+ns = {"messagebox": FakeBox, "datetime": datetime, "calendar": calendar, "sqlite3": sqlite3, "UI_FONT": "IBM Plex Sans Arabic",
       "MEMO_STATUS": module_value("MEMO_STATUS"), "COUNTED_STATUSES": module_value("COUNTED_STATUSES"),
       "IS_ADMIN_BUILD": False, "log_cloud_error": lambda *a, **k: errors.append(a),
       "en": lambda v: f"{v:.2f}", "FakeTree": FakeTree}
