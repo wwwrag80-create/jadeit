@@ -224,6 +224,18 @@ def main():
     ok(f"SHA-256: {digest}")
     ok("لا مفتاح سري داخل الملف")
 
+    # ---------- ٧) حزمة التحديث السريع ----------
+    # الملف نفسه بلا بايثون ولا مكتبات (أقل من ميجا): برنامج exe من 1.67.0 فما بعد يثبّته من زر «⬆️ تحديث»
+    # في ثوانٍ — للتوزيع على العملاء بدل exe الكامل ما دامت المكتبات لم تتغيّر
+    step(7, "حزمة التحديث السريع (.jup)")
+    try:
+        import make_update_package
+        jup = make_update_package.build_package(args.target, os.path.join(HERE, "dist"),
+                                                allow_missing_notes=True, regenerate_client=False)
+        ok(f"{os.path.relpath(jup, HERE)}  ({os.path.getsize(jup) // 1024} كيلوبايت)")
+    except Exception as e:
+        print(f"   (لم تُصنع حزمة التحديث السريع: {e} — exe نفسه سليم)")
+
     print(f"\n✅ اكتمل بناء {t['label']} — الإصدار {version}")
     if args.target == "client":
         print("   سلّم هذا الملف وحده للعميل. بياناته تبقى في %LOCALAPPDATA%\\JadeiteERP\n"

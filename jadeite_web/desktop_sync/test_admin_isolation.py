@@ -133,7 +133,18 @@ assert "self.db_path = client_db_path(client_id) if client_id else old_generic_p
 assert "self.backup_dir = client_backup_dir(client_id)" in init
 assert __import__("re").search(r"if client_id and not IS_ADMIN_BUILD:\s+migrate_legacy_file\(", init)
 assert 'os.path.join(DATA_DIR, f"client_data_' not in src
-assert src.count("os.replace(") == 1 and "replace_db_file(tmp_path, self.db_path)" in src
+# استبدال قواعد البيانات كله عبر replace_db_file (بإعادة المحاولة) — os.replace المباشر خارجها لملفات
+# التحديث السريع وحدها (مؤشّر الإصدار ومجلده في App، لا قاعدة بيانات)
+import ast as _ast
+_lines = src.split("\n")
+_funcs = []
+for _n in _ast.parse(src).body:
+    for _m in ([_n] if isinstance(_n, _ast.FunctionDef) else _n.body if isinstance(_n, _ast.ClassDef) else []):
+        if isinstance(_m, _ast.FunctionDef):
+            _funcs.append((_m.name, "\n".join(_lines[_m.lineno - 1:_m.end_lineno])))
+_direct = {name for name, seg in _funcs if "os.replace(" in seg}
+assert _direct <= {"replace_db_file", "write_hot_pointer", "install_hot_package"}, _direct
+assert "replace_db_file(tmp_path, self.db_path)" in src
 if "class AdminPanel" in src:
     assert "db_path = client_db_path(client_id)" in method("AdminPanel", "open_as_client")
 assert "db_path = client_db_path(client_id)" in method("LoginWindow", "try_login")

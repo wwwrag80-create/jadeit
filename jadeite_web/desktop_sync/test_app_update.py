@@ -30,9 +30,11 @@ def body(name):
     return ast.get_source_segment(src, n)
 
 
+import hashlib, json
 g = {"os": os, "re": re, "sys": sys, "shutil": shutil, "subprocess": subprocess, "zipfile": zipfile,
-     "IS_ADMIN_BUILD": IS_ADMIN}
-for name in ("UPDATE_SOURCE_NAME", "UPDATE_EXE_RE", "version_tuple", "app_build_kind", "inspect_update_package",
+     "json": json, "hashlib": hashlib, "IS_ADMIN_BUILD": IS_ADMIN}
+for name in ("HOT_RUNTIME", "HOT_UPDATE_EXT", "JUP_FORMAT", "_jup_safe_name", "read_jup_package",
+             "UPDATE_SOURCE_NAME", "UPDATE_EXE_RE", "version_tuple", "app_build_kind", "inspect_update_package",
              "safe_extract_zip", "find_build_python", "write_swap_script", "plan_update", "apply_source_package"):
     exec(module_src(name), g)
 kind = g["app_build_kind"]()
@@ -161,7 +163,7 @@ print("✔ زر «⬆️ تحديث» أعلى الشريط فوق زرّي «ف
 
 go = body("open_app_update")
 assert go.index("self.perform_backup()") < go.index('if plan["mode"] == "copy":'), "نسخة احتياطية قبل أي تحديث"
-assert "inspect_update_package(path)" in go and "plan_update(info, frozen, kind, APP_VERSION)" in go
+assert "inspect_update_package(path)" in go and "plan_update(info, frozen, kind, APP_VERSION, embedded_runtime())" in go
 assert "messagebox.askyesno" in go and 'state="disabled"' in go
 build = body("_build_update")
 assert '[vpy, "build_exe.py", k]' in build and '"--skip-install"' in build and "find_build_python()" in build

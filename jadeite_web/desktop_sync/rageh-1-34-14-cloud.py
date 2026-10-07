@@ -122,22 +122,6 @@ def _load_admin_secret_key():
 
 SUPABASE_SECRET_KEY = _load_admin_secret_key()
 
-# ================= وحدات المزامنة السحابية =================
-try:
-    from gold_price import GoldPriceWatcher
-    GOLD_PRICE_AVAILABLE = True
-except Exception:
-    GoldPriceWatcher = None
-    GOLD_PRICE_AVAILABLE = False
-
-# الميزان الإلكتروني (منفذ تسلسلي): اختياري — بدون الوحدة أو pyserial تُعطَّل الميزة وحدها
-try:
-    import scale_reader
-    SCALE_MODULE_AVAILABLE = True
-except Exception:
-    scale_reader = None
-    SCALE_MODULE_AVAILABLE = False
-
 # الويب أُزيل (الدفعة ٢١): لا رفع للحركات صفاً صفاً ولا سحب منها. السحابة تحمل لكل عميل
 # نسخته الكاملة فقط (يرفعها برنامجه، ويفتحها برنامج المدير مرآةً حرفية).
 # بقايا المزامنة القديمة في قاعدة الجهاز (محفّزات صندوق الصادر وجداوله) تُحذف عند فتحها
@@ -159,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.66.2"
+APP_VERSION = "1.67.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -170,6 +154,120 @@ APP_VERSION = "1.66.2"
 #  False = نسخة العميل: تستعيد بياناتها المحلية أولاً ثم ترفعها للسحابة.
 # ══════════════════════════════════════════════════════════════════════════
 IS_ADMIN_BUILD = True
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  التحديث السريع (حزمة ‎.jup)
+#
+#  ملف exe يحمل بايثون وكل المكتبات والخطوط، فلا يلزم لأي إصدار جديد إلا ملفات
+#  البرنامج نفسها: حزمة ‎.jup (أقل من ميجا) تُثبَّت في مجلد البيانات
+#  (%LOCALAPPDATA%\JadeiteERP\App\<client|admin>\<الإصدار>) في ثوانٍ، وعند فتح exe
+#  يُشغَّل الإصدار المثبَّت الأحدث بدل المضمَّن فيه — بلا بناء ولا بايثون على الجهاز.
+#  إن تعطّل الإصدار المثبَّت قبل أن يفتح (ملف ناقص أو مكتبة لا يحملها exe) يُعلَّم معطوباً
+#  ويفتح المضمَّن، فلا يمنع تحديثٌ تالف فتح البرنامج أبداً.
+# ═══════════════════════════════════════════════════════════════════════
+# مستوى ما يحمله exe (المكتبات، الخطوط، إعدادات البناء): يُرفع عند إضافة شيء لا تحمله حزمة ‎.jup —
+# فالحزمة التي تتطلب مستوى أعلى من exe تُرفض برسالة «يلزم برنامج exe كامل جديد»
+HOT_RUNTIME = 1
+HOT_UPDATE_EXT = ".jup"
+# وحدات البرنامج المحلية التي تحملها الحزمة مع الملف الرئيسي (تُستورد من مجلدها قبل exe)
+HOT_LOCAL_MODULES = ("gold_price", "scale_reader")
+
+
+def hot_update_root(kind=None):
+    """مجلد الإصدارات المثبَّتة بحزم سريعة لهذه النسخة (عميل/مدير) على هذا الجهاز"""
+    kind = kind or ("admin" if IS_ADMIN_BUILD else "client")
+    return os.path.join(admin_secret_dir(), "App", kind)
+
+
+def _hot_vt(text):
+    try:
+        return tuple(int(x) for x in str(text).strip().split("."))
+    except (TypeError, ValueError):
+        return ()
+
+
+def read_hot_pointer(kind=None):
+    """الإصدار المثبَّت حالياً بحزمة سريعة: محتوى current.json مع مساره الكامل، أو None"""
+    try:
+        with open(os.path.join(hot_update_root(kind), "current.json"), encoding="utf-8") as f:
+            cur = json.load(f)
+        folder = os.path.join(hot_update_root(kind), str(cur["version"]))
+        path = os.path.join(folder, os.path.basename(str(cur["entry"])))
+        if os.path.isfile(path):
+            return dict(cur, folder=folder, path=path)
+    except Exception:
+        pass
+    return None
+
+
+def write_hot_pointer(data, kind=None):
+    """يكتب current.json دفعة واحدة (ملف مؤقت ثم استبدال): لا مؤشّر نصف مكتوب أبداً"""
+    root = hot_update_root(kind)
+    os.makedirs(root, exist_ok=True)
+    tmp = os.path.join(root, "current.json.tmp")
+    keep = {k: v for k, v in data.items() if k not in ("folder", "path")}
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(keep, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, os.path.join(root, "current.json"))
+
+
+def run_hot_update_if_newer():
+    """نسخة exe: إن ثُبّت إصدار أحدث منها بحزمة سريعة يُشغَّل هو بدلها، في العملية نفسها
+    وبمكتبات exe نفسها. يُتجاهل إن كان أقدم من exe (exe جديد كامل يتقدّم عليه)، أو يحتاج
+    ما لا يحمله exe، أو عُلِّم معطوباً. متغيّر البيئة JADEITE_SAFE_MODE=1 يفتح المضمَّن دائماً."""
+    if not getattr(sys, "frozen", False) or getattr(sys, "_jadeite_hot_running", False):
+        return False
+    if os.environ.get("JADEITE_SAFE_MODE", "").strip() not in ("", "0"):
+        return False
+    cur = read_hot_pointer()
+    if (not cur or cur.get("bad") or _hot_vt(cur.get("version")) <= _hot_vt(APP_VERSION)
+            or int(cur.get("runtime", 1) or 1) > HOT_RUNTIME):
+        return False
+    import runpy
+    sys._jadeite_hot_running = True
+    sys._jadeite_embedded = {"version": APP_VERSION, "runtime": HOT_RUNTIME}
+    sys.path.insert(0, cur["folder"])
+    try:
+        runpy.run_path(cur["path"], run_name="__main__")
+    except SystemExit:
+        raise
+    except BaseException as e:
+        if getattr(sys, "_jadeite_hot_started", False):
+            raise           # عطل بعد أن فتح البرنامج: كأي خطأ في البرنامج نفسه
+        # تعطّل قبل أن يفتح: يُعلَّم معطوباً (لا يُعاد كل مرة) ويكمل البرنامج المضمَّن
+        try:
+            write_hot_pointer(dict(cur, bad=True, error=f"{type(e).__name__}: {e}"[:400]))
+        except Exception:
+            pass
+        sys._jadeite_hot_running = False
+        try:
+            sys.path.remove(cur["folder"])
+        except ValueError:
+            pass
+        for name in HOT_LOCAL_MODULES:
+            sys.modules.pop(name, None)
+        return False
+    raise SystemExit(0)
+
+
+run_hot_update_if_newer()
+
+# ================= وحدات المزامنة السحابية =================
+try:
+    from gold_price import GoldPriceWatcher
+    GOLD_PRICE_AVAILABLE = True
+except Exception:
+    GoldPriceWatcher = None
+    GOLD_PRICE_AVAILABLE = False
+
+# الميزان الإلكتروني (منفذ تسلسلي): اختياري — بدون الوحدة أو pyserial تُعطَّل الميزة وحدها
+try:
+    import scale_reader
+    SCALE_MODULE_AVAILABLE = True
+except Exception:
+    scale_reader = None
+    SCALE_MODULE_AVAILABLE = False
 
 # نسب المسموح — معرّفة هنا في مكان واحد لتبقى شاشة صناديق الخياس
 # وكشف حركة المصنعين/المركبين متطابقتين دائماً
@@ -373,9 +471,23 @@ def sync_error_message(raw_error):
 
 
 def resource_path(filename):
-    """مسار ملف مرفق مع البرنامج، يعمل في التشغيل العادي وداخل ملف exe معاً"""
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    """مسار ملف مرفق مع البرنامج، يعمل في التشغيل العادي وداخل ملف exe معاً.
+    الإصدار المثبَّت بحزمة سريعة يقرأ ملفاته (الشعار والأيقونة) من مجلده إن حملتها الحزمة،
+    وإلا من exe نفسه (الخطوط وغيرها)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, "_jadeite_hot_running", False) and os.path.exists(os.path.join(here, filename)):
+        return os.path.join(here, filename)
+    base = getattr(sys, "_MEIPASS", here)
     return os.path.join(base, filename)
+
+
+def clean_relaunch_env():
+    """بيئة تشغيل نظيفة لفتح البرنامج من جديد (بعد تحديث): نسخة exe المجمّعة بـPyInstaller
+    تضع متغيّرات تخصّ عمليتها (مجلد فكّها المؤقت)؛ إن ورثها البرنامج الجديد ظنّ نفسه جزءاً
+    منها فبحث عن مجلد حُذف بإغلاقها ولم يفتح. PYINSTALLER_RESET_ENVIRONMENT يطلب بداية مستقلة."""
+    env = {k: v for k, v in os.environ.items() if not (k.startswith("_PYI_") or k == "_MEIPASS2")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -407,14 +519,153 @@ def app_build_kind():
     return "admin" if IS_ADMIN_BUILD else "client"
 
 
+JUP_FORMAT = "jadeite-update"
+
+
+def _jup_safe_name(name):
+    """اسم ملف داخل الحزمة صالح للكتابة: نسبي، بلا «..» ولا مسار مطلق"""
+    parts = str(name).replace("\\", "/").split("/")
+    return bool(name) and not str(name).startswith("/") and ":" not in str(name) and \
+        all(p not in ("", ".", "..") for p in parts)
+
+
+def read_jup_package(path):
+    """يقرأ بيان حزمة التحديث السريع (‎.jup) دون تنفيذ أي شيء منها:
+    {"type": "jup", "version", "build", "runtime", "entry", "files": {اسم: بصمة}, "notes": {إصدار: [سطور]},
+     "date", "size", "file"} — أو ValueError برسالة عربية واضحة."""
+    try:
+        zf = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError):
+        raise ValueError("ملف التحديث تالف — ليس حزمة ‎.jup صالحة.")
+    with zf:
+        try:
+            man = json.loads(zf.read("manifest.json").decode("utf-8"))
+        except KeyError:
+            raise ValueError("الحزمة بلا بيان (manifest.json) — ليست حزمة تحديث جاديت.")
+        except ValueError:
+            raise ValueError("بيان الحزمة تالف.")
+        if man.get("format") != JUP_FORMAT:
+            raise ValueError("ليست حزمة تحديث جاديت.")
+        kind, version, entry = man.get("kind"), str(man.get("version", "")), man.get("entry")
+        files = man.get("files") or {}
+        if kind not in ("client", "admin") or not version_tuple(version) or not isinstance(files, dict):
+            raise ValueError("بيان الحزمة ناقص (النوع أو الإصدار أو الملفات).")
+        if entry not in files or not str(entry).endswith(".py"):
+            raise ValueError("الحزمة بلا ملف البرنامج الرئيسي.")
+        names = set(zf.namelist())
+        bad = [n for n in files if not _jup_safe_name(n) or n not in names]
+        if bad:
+            raise ValueError(f"ملفات الحزمة ناقصة أو بأسماء غير صالحة: {', '.join(map(str, bad[:3]))}")
+        notes = man.get("notes") or {}
+        if not isinstance(notes, dict):
+            notes = {}
+    return {"type": "jup", "version": version, "build": kind, "runtime": int(man.get("runtime", 1) or 1),
+            "entry": entry, "files": dict(files), "notes": notes, "date": str(man.get("date", "")),
+            "size": os.path.getsize(path), "file": path}
+
+
+def jup_notes_since(info, current):
+    """ما الجديد: سطور كل إصدار أحدث من الحالي حتى إصدار الحزمة، الأحدث أولاً — [(الإصدار، [سطور])]"""
+    out = []
+    for v, lines in (info.get("notes") or {}).items():
+        if version_tuple(current) < version_tuple(v) <= version_tuple(info.get("version")):
+            out.append((v, [str(x) for x in (lines if isinstance(lines, list) else [lines])]))
+    out.sort(key=lambda item: version_tuple(item[0]), reverse=True)
+    return out
+
+
+def extract_jup_files(info, dest):
+    """يفك ملفات الحزمة في dest بعد التحقق من بصمة كل ملف (SHA-256) وصياغة ملفات بايثون —
+    ملف واحد تالف أو مُعدَّل يوقف كل شيء قبل أن يُلمس البرنامج"""
+    os.makedirs(dest, exist_ok=True)
+    root = os.path.realpath(dest)
+    with zipfile.ZipFile(info["file"]) as zf:
+        for name, digest in info["files"].items():
+            data = zf.read(name)
+            if hashlib.sha256(data).hexdigest() != str(digest).lower():
+                raise ValueError(f"الملف {name} تالف أو مُعدَّل (بصمته لا تطابق البيان) — لا يُثبَّت شيء.")
+            if name.endswith(".py"):
+                try:
+                    compile(data.decode("utf-8"), name, "exec")
+                except (SyntaxError, UnicodeDecodeError) as e:
+                    raise ValueError(f"الملف {name} لا يصلح للتشغيل ({e}) — لا يُثبَّت شيء.")
+            target = os.path.realpath(os.path.join(root, *name.split("/")))
+            if not target.startswith(root + os.sep):
+                raise ValueError(f"اسم ملف غير صالح في الحزمة: {name}")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(data)
+    return dest
+
+
+def install_hot_package(info, kind=None, progress=None):
+    """يثبّت حزمة ‎.jup لنسخة exe: فكّ وتحقّق في مجلد مؤقت، ثم نقل للمكان، ثم المؤشّر (current.json).
+    أي خطأ قبل المؤشّر يترك البرنامج الحالي كما هو. يُحفظ الإصدار السابق للرجوع إليه، وتُحذف الأقدم.
+    progress(نص): لعرض الخطوات في نافذة التحديث."""
+    say = progress or (lambda _t: None)
+    kind = kind or app_build_kind()
+    root = hot_update_root(kind)
+    os.makedirs(root, exist_ok=True)
+    version = info["version"]
+    final = os.path.join(root, version)
+    tmp = final + ".partial"
+    shutil.rmtree(tmp, ignore_errors=True)
+    say("فكّ الحزمة والتحقق من بصمة كل ملف…")
+    extract_jup_files(info, tmp)
+    say("تثبيت الإصدار الجديد…")
+    shutil.rmtree(final, ignore_errors=True)
+    os.replace(tmp, final)
+    prev = read_hot_pointer(kind)
+    previous = None
+    if prev and not prev.get("bad") and prev.get("version") != version:
+        previous = {k: prev.get(k) for k in ("version", "entry", "runtime")}
+    write_hot_pointer({"version": version, "entry": info["entry"], "runtime": info["runtime"],
+                       "installed": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "previous": previous}, kind)
+    keep = {version, (previous or {}).get("version")}
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if os.path.isdir(path) and name not in keep:
+            shutil.rmtree(path, ignore_errors=True)
+    say("تم التثبيت.")
+    return final
+
+
+def rollback_hot_update(kind=None):
+    """يرجع للإصدار السابق المثبَّت بحزمة سريعة، أو لبرنامج exe نفسه إن لم يوجد سابق.
+    يرجع رقم الإصدار الذي سيُفتح، أو None إن لم يكن هناك تحديث سريع مثبَّت."""
+    cur = read_hot_pointer(kind)
+    pointer = os.path.join(hot_update_root(kind), "current.json")
+    if not cur and not os.path.exists(pointer):
+        return None
+    prev = (cur or {}).get("previous") or {}
+    if prev.get("version") and os.path.isfile(os.path.join(hot_update_root(kind), str(prev["version"]),
+                                                          os.path.basename(str(prev.get("entry", ""))))):
+        write_hot_pointer({"version": prev["version"], "entry": prev["entry"], "runtime": prev.get("runtime", 1),
+                           "previous": None}, kind)
+        return prev["version"]
+    try:
+        os.remove(pointer)
+    except OSError:
+        pass
+    return "exe"
+
+
+def embedded_runtime():
+    """مستوى ما يحمله exe الذي يعمل الآن (للإصدار المثبَّت بحزمة سريعة: مستوى exe الذي فتحه)"""
+    return int((getattr(sys, "_jadeite_embedded", None) or {}).get("runtime", HOT_RUNTIME))
+
+
 def inspect_update_package(path):
     """يقرأ الحزمة دون تنفيذ أي شيء منها، ويرجع وصفها:
-        {"type": "source" | "exe" | "zip_exe", "version": "1.66.0",
+        {"type": "jup" | "source" | "exe" | "zip_exe", "version": "1.66.0",
          "build": "client"/"admin" (لملف exe)، "prefix": مسار desktop_sync داخل الحزمة، "member": ملف exe داخلها}
     أو يرفع ValueError برسالة عربية واضحة."""
     name = os.path.basename(path or "")
     if not path or not os.path.isfile(path):
         raise ValueError("الملف غير موجود.")
+    if name.lower().endswith(HOT_UPDATE_EXT):
+        return read_jup_package(path)
     if name.lower().endswith(".exe"):
         m = UPDATE_EXE_RE.search(name)
         if not m:
@@ -517,9 +768,10 @@ def write_swap_script(folder, old_pid, new_exe, target_exe, reveal=None):
     return path
 
 
-def plan_update(info, frozen, kind, current):
+def plan_update(info, frozen, kind, current, exe_runtime=None):
     """ماذا سيفعل التحديث بهذه الحزمة على هذا البرنامج — أو لماذا لا يصلح.
-    يرجع {"ok": bool, "mode": "copy" | "build" | "swap" | None, "text": شرح عربي}."""
+    يرجع {"ok": bool, "mode": "hot" | "jup_copy" | "copy" | "build" | "swap" | None, "text": شرح عربي}.
+    exe_runtime: مستوى ما يحمله exe العامل (embedded_runtime) — للحزمة السريعة."""
     labels = {"client": "نسخة العميل", "admin": "نسخة المدير"}
     v, cur = info.get("version", ""), current
     if version_tuple(v) < version_tuple(cur):
@@ -528,6 +780,20 @@ def plan_update(info, frozen, kind, current):
     same = version_tuple(v) == version_tuple(cur)
     head = (f"الحزمة بالإصدار نفسه ({v}) — إعادة تثبيت." if same
             else f"الإصدار الحالي {cur}  ←  الإصدار الجديد {v}")
+    if info.get("type") == "jup":
+        if info.get("build") != kind:
+            return {"ok": False, "mode": None,
+                    "text": f"هذه الحزمة لـ{labels.get(info.get('build'), '؟')}، وهذا البرنامج {labels[kind]}."}
+        if not frozen:
+            return {"ok": True, "mode": "jup_copy",
+                    "text": f"{head}\n⚡ تحديث سريع: تُنسخ ملفات الإصدار الجديد فوق ملفات البرنامج ثم يُفتح من جديد."}
+        have = HOT_RUNTIME if exe_runtime is None else exe_runtime
+        if int(info.get("runtime", 1)) > int(have):
+            return {"ok": False, "mode": None,
+                    "text": "هذا الإصدار يحتاج برنامج exe كاملاً جديداً (فيه مكتبات أو خطوط لا يحملها برنامجك الحالي):\n"
+                            "اختر ملف Jadeite-…exe الجاهز، أو حزمة المصدر jadeite_<الإصدار>.zip."}
+        return {"ok": True, "mode": "hot",
+                "text": f"{head}\n⚡ تحديث سريع: يُثبَّت في ثوانٍ ثم يُفتح البرنامج من جديد — بياناتك كما هي."}
     if info.get("type") in ("exe", "zip_exe"):
         if info.get("build") != kind:
             return {"ok": False, "mode": None,
@@ -5339,91 +5605,186 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win = ctk.CTkToplevel(self)
         self._update_win = win
         win.title("تحديث البرنامج")
-        win.geometry("760x600")
+        self.fit_dialog_to_screen(win, 800, 680)
         win.transient(self)
         win.focus_force()
         state = {"info": None, "plan": None, "busy": False}
         frozen = bool(getattr(sys, "frozen", False))
         kind = app_build_kind()
+        hot_now = read_hot_pointer(kind) if frozen else None
 
-        ctk.CTkLabel(win, text="⬆️ تحديث البرنامج إلى آخر إصدار", font=(UI_FONT, 20, "bold"),
-                     text_color=UI_TITLE).pack(pady=(18, 2))
-        ctk.CTkLabel(win, text=f"الإصدار الحالي: {APP_VERSION}  ·  "
-                               f"{'نسخة المدير' if IS_ADMIN_BUILD else 'نسخة العميل'}",
-                     font=(UI_FONT, 13), text_color=UI["muted"]).pack()
-        ctk.CTkLabel(win, text="اختر الحزمة التي وصلتك: jadeite_<الإصدار>.zip أو ملف Jadeite-…exe الجاهز.\n"
-                               "بياناتك لا تُمسّ: تُحفظ نسخة احتياطية منها أولاً، وتبقى في مجلدها على هذا الجهاز.",
+        ctk.CTkLabel(win, text="⬆️ تحديث البرنامج", font=(UI_FONT, 21, "bold"),
+                     text_color=UI_TITLE).pack(pady=(16, 2))
+        current_text = f"الإصدار الحالي: {APP_VERSION}  ·  {'نسخة المدير' if IS_ADMIN_BUILD else 'نسخة العميل'}"
+        if getattr(sys, "_jadeite_hot_running", False):
+            current_text += f"  ·  ⚡ محدَّث بحزمة سريعة (البرنامج الأساسي {sys._jadeite_embedded['version']})"
+        elif hot_now and hot_now.get("bad"):
+            current_text += f"  ·  ⚠️ تحديث {hot_now.get('version')} السريع تعطّل فيعمل البرنامج الأساسي"
+        ctk.CTkLabel(win, text=current_text, font=(UI_FONT, 13), text_color=UI["muted"],
+                     wraplength=740).pack()
+        ctk.CTkLabel(win, text="اختر حزمة التحديث التي وصلتك — الأسرع ⚡ ملف ‎.jup (ثوانٍ)، أو ملف Jadeite-…exe الجاهز،\n"
+                               "أو حزمة المصدر ‎.zip. بياناتك لا تُمسّ: تُحفظ نسخة احتياطية منها أولاً.",
                      font=(UI_FONT, 12), justify="center").pack(pady=(10, 8))
-        lbl_file = ctk.CTkLabel(win, text="", font=(UI_FONT, 11), text_color=UI["muted"], wraplength=700)
-        lbl_plan = ctk.CTkLabel(win, text="", font=(UI_FONT, 14, "bold"), justify="center", wraplength=700)
+        lbl_file = ctk.CTkLabel(win, text="", font=(UI_FONT, 11), text_color=UI["muted"], wraplength=740)
+        card = ctk.CTkFrame(win, corner_radius=14, border_width=1, fg_color=(UI["surface"], "#171C23"),
+                            border_color=(UI["line"], "#2A313B"))
+        lbl_plan = ctk.CTkLabel(card, text="", font=(UI_FONT, 15, "bold"), justify="center", wraplength=700)
+        lbl_plan.pack(padx=16, pady=(12, 2))
+        lbl_meta = ctk.CTkLabel(card, text="", font=(UI_FONT, 12), text_color=UI["muted"])
+        lbl_meta.pack(padx=16)
+        lbl_new = ctk.CTkLabel(card, text="✨ ما الجديد", font=(UI_FONT, 14, "bold"), text_color=UI_TITLE,
+                               anchor="e")
+        notes_box = ctk.CTkTextbox(card, height=190, font=(UI_FONT, 13), wrap="word", border_width=0,
+                                   fg_color=(UI["surface_alt"], "#1D232B"))
         var_clients = ctk.BooleanVar(value=True)
-        chk_clients = ctk.CTkCheckBox(win, text="بناء نسخة العملاء أيضاً (توضع بجانب برنامجك لتوزيعها)",
+        chk_clients = ctk.CTkCheckBox(card, text="بناء نسخة العملاء أيضاً (توضع بجانب برنامجك لتوزيعها)",
                                       variable=var_clients, font=(UI_FONT, 12))
-        progress = ctk.CTkProgressBar(win, mode="indeterminate", width=520)
-        log = ctk.CTkTextbox(win, height=170, font=("Consolas", 11), wrap="word")
+        progress = ctk.CTkProgressBar(win, width=560, height=12)
+        lbl_step = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"))
+        log = ctk.CTkTextbox(win, height=150, font=("Consolas", 11), wrap="word")
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(side="bottom", pady=(6, 14))
 
         def say(line):
             try:
-                log.insert("end", line.rstrip() + "\n")
-                log.see("end")
+                lbl_step.configure(text=line.strip()[:140])
+                if log.winfo_ismapped():
+                    log.insert("end", line.rstrip() + "\n")
+                    log.see("end")
             except Exception:
                 pass
 
-        def set_busy(busy):
+        def set_busy(busy, indeterminate=False):
             state["busy"] = busy
             for b, on in ((btn_pick, not busy), (btn_go, not busy and bool(state["plan"] and state["plan"]["ok"])),
-                          (btn_close, not busy)):
+                          (btn_close, not busy), (btn_back, not busy)):
                 try:
                     b.configure(state="normal" if on else "disabled")
                 except Exception:
                     pass
             try:
                 if busy:
-                    progress.pack(pady=(4, 4), before=log)
-                    progress.start()
+                    progress.configure(mode="indeterminate" if indeterminate else "determinate")
+                    progress.set(0)
+                    # فوق الأزرار مباشرة (تحت بطاقة الحزمة): الشريط ثم ما يجري الآن (ثم السجلّ عند البناء)
+                    below = log if log.winfo_manager() else btns
+                    lbl_step.pack(side="bottom", pady=(0, 6), after=below)
+                    progress.pack(side="bottom", pady=(8, 2), after=lbl_step)
+                    if indeterminate:
+                        progress.start()
                 else:
                     progress.stop()
-                    progress.pack_forget()
             except Exception:
                 pass
+
+        def step(fraction, text):
+            """خطوة ظاهرة في التحديث السريع: الشريط يتقدّم والنص يقول ما يجري"""
+            try:
+                progress.set(fraction)
+                say(text)
+                win.update_idletasks()
+            except Exception:
+                pass
+
+        def show_notes(info):
+            items = jup_notes_since(info, APP_VERSION) if info.get("type") == "jup" else []
+            notes_box.configure(state="normal")
+            notes_box.delete("1.0", "end")
+            if info.get("type") != "jup":
+                lbl_new.pack_forget()
+                notes_box.pack_forget()
+                return
+            if not items:
+                notes_box.insert("end", "لا تفاصيل مكتوبة لهذا الإصدار في الحزمة.")
+            for v, lines in items:
+                notes_box.insert("end", f"الإصدار {v}\n")
+                for line in lines:
+                    notes_box.insert("end", f"   •  {line}\n")
+                notes_box.insert("end", "\n")
+            notes_box.configure(state="disabled")
+            lbl_new.pack(fill="x", padx=18, pady=(10, 2))
+            notes_box.pack(fill="both", expand=True, padx=14, pady=(0, 12))
 
         def choose():
             path = filedialog.askopenfilename(
                 parent=win, title="اختر حزمة التحديث",
-                filetypes=[("حزمة التحديث", "*.zip *.exe"), ("كل الملفات", "*.*")])
+                filetypes=[("حزم التحديث (.jup .exe .zip)", "*.jup *.exe *.zip"),
+                           ("حزمة سريعة .jup", "*.jup"), ("كل الملفات", "*.*")])
             if not path:
                 return
             lbl_file.configure(text=path)
             lbl_file.pack(pady=(2, 0), after=btn_pick)
+            card.pack(fill="both", expand=True, padx=20, pady=(10, 4), after=lbl_file)
             try:
                 info = inspect_update_package(path)
             except Exception as e:
                 state["info"] = state["plan"] = None
                 lbl_plan.configure(text=f"✘ {e}", text_color=UI["danger"])
-                lbl_plan.pack(pady=(10, 4), after=lbl_file)
+                lbl_meta.configure(text="")
+                show_notes({})
+                chk_clients.pack_forget()
                 set_busy(False)
                 return
-            plan = plan_update(info, frozen, kind, APP_VERSION)
+            plan = plan_update(info, frozen, kind, APP_VERSION, embedded_runtime())
             state["info"], state["plan"] = info, plan
             lbl_plan.configure(text=("✔ " if plan["ok"] else "✘ ") + plan["text"],
                                text_color=UI["success"] if plan["ok"] else UI["danger"])
-            lbl_plan.pack(pady=(10, 4), after=lbl_file)
+            if info["type"] == "jup":
+                meta = f"⚡ حزمة سريعة · {max(1, info['size'] // 1024)} كيلوبايت"
+                lbl_meta.configure(text=meta + (f" · {info['date']}" if info.get("date") else ""))
+            else:
+                lbl_meta.configure(text={"exe": "ملف برنامج جاهز", "zip_exe": "ملف برنامج جاهز داخل zip",
+                                         "source": "حزمة المصدر (يُبنى البرنامج على هذا الجهاز — دقائق)"}
+                                   .get(info["type"], ""))
+            show_notes(info)
             if plan["ok"] and plan["mode"] == "build" and kind == "admin":
-                chk_clients.pack(pady=(2, 4), after=lbl_plan)
+                chk_clients.pack(pady=(2, 10), before=lbl_new)
             else:
                 chk_clients.pack_forget()
             set_busy(False)
+
+        def fast_update(plan, info):
+            """التحديث السريع (‎.jup): نسخة احتياطية ← تحقق وتثبيت ← فتح الإصدار الجديد — في ثوانٍ"""
+            set_busy(True)
+            step(0.08, "نسخة احتياطية من البيانات…")
+            try:
+                self.perform_backup()
+            except Exception as e:
+                log_cloud_error("تعذّرت النسخة الاحتياطية قبل التحديث", e)
+            try:
+                if plan["mode"] == "hot":
+                    install_hot_package(info, kind, progress=lambda t: step(0.55, t))
+                else:
+                    tmp = os.path.join(_make_dir(os.path.join(APP_DATA_DIR, "Updates")), info["version"] + ".jup")
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    step(0.4, "فكّ الحزمة والتحقق من بصمة كل ملف…")
+                    extract_jup_files(info, tmp)
+                    step(0.7, "نسخ ملفات الإصدار الجديد…")
+                    for name in info["files"]:
+                        dest = os.path.join(get_app_base_dir(), *name.split("/"))
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        shutil.copy2(os.path.join(tmp, *name.split("/")), dest)
+                    shutil.rmtree(tmp, ignore_errors=True)
+            except Exception as e:
+                log_cloud_error("تعذّر التحديث السريع", e)
+                step(0.0, f"✘ {e}")
+                messagebox.showerror("تعذّر التحديث", f"{e}\n\nالبرنامج الحالي باقٍ كما هو.", parent=win)
+                set_busy(False)
+                return
+            step(1.0, f"✅ تم التحديث إلى الإصدار {info['version']} — يُفتح البرنامج الآن…")
+            win.after(1100, self._relaunch)
 
         def go():
             plan, info = state["plan"], state["info"]
             if not plan or not plan["ok"] or state["busy"]:
                 return
+            if plan["mode"] in ("hot", "jup_copy"):
+                fast_update(plan, info)
+                return
             if not messagebox.askyesno("تحديث البرنامج", f"{plan['text']}\n\nهل تريد المتابعة؟", parent=win):
                 return
-            log.pack(fill="both", expand=True, padx=18, pady=(4, 4))
-            set_busy(True)
+            log.pack(side="bottom", fill="both", expand=True, padx=18, pady=(4, 4), after=btns)
+            set_busy(True, indeterminate=True)
             say(f"• نسخة احتياطية من البيانات قبل التحديث…")
             try:
                 self.perform_backup()
@@ -5447,6 +5808,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                      parent=win)
                 set_busy(False)
 
+        def go_back():
+            """الرجوع للإصدار السابق (المثبَّت قبل آخر تحديث سريع، أو البرنامج الأساسي نفسه)"""
+            if state["busy"]:
+                return
+            if not messagebox.askyesno("الرجوع للإصدار السابق",
+                                       "يُلغى آخر تحديث سريع ويُفتح البرنامج بالإصدار السابق.\nبياناتك كما هي.\n\n"
+                                       "هل تريد المتابعة؟", parent=win):
+                return
+            target = rollback_hot_update(kind)
+            say(f"↩️ يُفتح الإصدار {'الأساسي' if target == 'exe' else target}…")
+            win.after(500, self._relaunch)
+
         def close():
             if not state["busy"]:
                 win.destroy()
@@ -5461,6 +5834,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_close = ctk.CTkButton(btns, text="إغلاق", width=120, height=42, font=(UI_FONT, 14, "bold"),
                                   command=close, **BUTTON_STYLES["secondary"])
         btn_close.pack(side="right", padx=6)
+        btn_back = ctk.CTkButton(btns, text="↩️ الإصدار السابق", width=150, height=42,
+                                 font=(UI_FONT, 13, "bold"), command=go_back, **BUTTON_STYLES["secondary"])
+        if hot_now:
+            # تحديث سريع مثبَّت: يمكن الرجوع عنه بضغطة
+            btn_back.pack(side="left", padx=6)
         win.protocol("WM_DELETE_WINDOW", close)
         return win
 
@@ -5468,8 +5846,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """التشغيل من ملفات بايثون: يُفتح البرنامج الجديد ثم يُغلق الحالي"""
         messagebox.showinfo("تم التحديث", f"✅ حُدّث البرنامج إلى الإصدار {version}.\nسيُفتح الآن من جديد.",
                             parent=win)
-        subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:],
-                         cwd=get_app_base_dir())
+        self._relaunch()
+
+    def _relaunch(self):
+        """يفتح البرنامج من جديد في عملية مستقلة (exe أو ملف بايثون) ثم يُغلق الحالي.
+        البيئة نظيفة (clean_relaunch_env): وإلا ظنّت نسخة exe الجديدة نفسها جزءاً من القديمة فلم تفتح."""
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable] + sys.argv[1:]
+        else:
+            cmd = [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
+        subprocess.Popen(cmd, cwd=get_app_base_dir(), env=clean_relaunch_env(), close_fds=True)
         self._exit_for_update()
 
     def _swap_to_update(self, info, say, win, reveal=None, new_exe=None):
@@ -5491,9 +5877,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if not powershell:
             raise RuntimeError(f"PowerShell غير موجود: ضع الملف مكان البرنامج يدوياً:\n{new_exe}")
+        # البيئة النظيفة يرثها البرنامج الذي يشغّله السكربت: يبدأ مستقلاً لا كجزء من القديم
         subprocess.Popen([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
                           "-File", script], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                         close_fds=True)
+                         close_fds=True, env=clean_relaunch_env())
         messagebox.showinfo("تحديث البرنامج", f"✅ الإصدار {info['version']} جاهز.\n"
                                               "سيُغلق البرنامج ويُفتح الجديد خلال ثوانٍ.", parent=win)
         self._exit_for_update()
@@ -5511,7 +5898,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "أو اختر ملف Jadeite-…exe الجاهز بدل حزمة المصدر.", parent=win)
             return
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        env = dict(clean_relaunch_env(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
 
         def post(fn, *a):
             try:
@@ -24403,6 +24790,8 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
 
 
 if __name__ == "__main__":
+    # البرنامج بدأ فعلاً: أي خطأ بعد هذا ليس «تحديثاً معطوباً لم يفتح» (run_hot_update_if_newer)
+    sys._jadeite_hot_started = True
     # تسجيل الدخول مطلوب في كل مرة (لا يُحفظ تلقائياً)
     login = LoginWindow()
     login.mainloop()

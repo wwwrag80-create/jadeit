@@ -43,6 +43,6 @@ if errorlevel 1 (
 
 echo.
 echo OK  Done. Your file is in the dist folder:
-dir /b dist\Jadeite-Client-*.exe
+dir /b dist\Jadeite-Client-*.exe dist\Jadeite-Client-*.jup
 start "" "%~dp0dist"
 pause
