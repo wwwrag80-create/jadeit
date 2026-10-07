@@ -94,6 +94,7 @@ CHECKS = [
     ("فتح الشاشات فوراً",        [PY, "test_instant_screens.py", TARGET]),
     ("زر تحديث البرنامج",        [PY, "test_app_update.py", TARGET]),
     ("التحديث السريع .jup",      [PY, "test_hot_update.py", TARGET]),
+    ("مدة الاشتراك والأجهزة",    [PY, "test_access_control.py", TARGET]),
     ("البحث الشامل والطباعة",   [PY, "test_ui_extras.py", TARGET]),
 ]
 

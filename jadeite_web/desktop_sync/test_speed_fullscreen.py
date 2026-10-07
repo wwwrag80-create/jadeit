@@ -394,7 +394,9 @@ print("✔ عميل المدير مشترك أيضاً، والعميلان يُ
 # ═══ ٤) مسار الدخول ═══
 login = seg("try_login", get_class("LoginWindow"))
 verify = login[login.index("def verify"):login.index("self._busy = True")]
-assert "threading.Thread(" in verify and "cloud_verify_client_login(username, password, touch=False)" in verify
+# الدخول الأحدث (1.68.0) يرجع سبب الرفض أيضاً، ولا يسجّل وقت الدخول أثناء التحقق
+assert "threading.Thread(" in verify and "cloud_client_login(username, password)" in verify
+assert "touch_client_login_async" not in module_src("cloud_client_login")
 print("✔ فحص المدير المساعد وفحص العميل يجريان معاً (طلب واحد من الوقت بدل طلبين)")
 assert "touch_client_login_async(client_id)" in login
 assert "threading.Thread" in module_src("touch_client_login_async")

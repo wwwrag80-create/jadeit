@@ -85,7 +85,8 @@ notify pgrst, 'reload schema';
 --  تقرير المراجعة: كل دالة ما زال anon يستطيع تنفيذها
 --
 --  المتوقع: دوال المزامنة (sync_*) و client_login_full و upload_backup_secure فقط،
---  وكلها محمية برمز (الأخيرة من 17_backup_security.sql).
+--  وكلها محمية برمز (الأخيرة من 17_backup_security.sql)، ومن 20 و21: download_backup_secure
+--  و backup_stamp_secure و client_login_v2 و client_access_check (برمز المزامنة/كلمة المرور).
 --  أي دالة أخرى تظهر هنا (غالباً من النظام القديم: verify_client_login،
 --  check_client_can_edit، upload_backup، download_backup، verify_sub_admin_login)
 --  راجِع تعريفها: هل تتحقق من كلمة مرور أو رمز قبل أن تُرجع بيانات عميل؟
@@ -93,7 +94,8 @@ notify pgrst, 'reload schema';
 select p.proname                                  as الدالة,
        pg_get_function_identity_arguments(p.oid)  as المعاملات,
        case when p.prosecdef then 'SECURITY DEFINER' else 'INVOKER' end as النوع,
-       case when p.proname like 'sync\_%' or p.proname in ('client_login_full', 'upload_backup_secure')
+       case when p.proname like 'sync\_%' or p.proname in ('client_login_full', 'upload_backup_secure', 'download_backup_secure',
+                                                      'backup_stamp_secure', 'client_login_v2', 'client_access_check')
             then '✔ متوقعة (محمية برمز المزامنة/كلمة المرور)'
             else '⚠️ راجعها — متاحة لأي زائر بمفتاح anon'
        end                                        as الحالة

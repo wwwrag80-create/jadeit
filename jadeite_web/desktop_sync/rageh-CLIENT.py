@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.67.0"
+APP_VERSION = "1.68.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1228,35 +1228,318 @@ def get_supabase_admin_client():
 CURRENT_SYNC_TOKEN = None   # رمز مزامنة الجلسة الحالية (ذاكرة فقط)
 
 
+# ================= مدة الاشتراك وعدد الأجهزة لكل حساب (21_access_control.sql) =================
+# المدير يحدّد لكل مصنع: حتى متى يعمل حسابه (أو مفتوح بلا حد)، وعلى كم جهاز. الدخول يُفحص في
+# السحابة، والبرنامج المفتوح يُفحص كل ٣٠ ثانية: إن انتهت المدة أو أُزيل الجهاز يتوقف حتى التجديد.
+
+# حالات تُوقف الحساب (من client_login_v2 / client_access_check)
+ACCESS_BLOCKING = ("expired", "inactive", "device_limit", "device_removed", "update_required")
+ACCESS_WARN_DAYS = 7          # تنبيه في الشريط العلوي قبل الانتهاء بهذه الأيام
+ACCESS_POPUP_DAYS = 3         # ونافذة تنبيه مرة واحدة عند الدخول
+ACCESS_EXTEND_CHOICES = (("+ شهر", 1), ("+ ٣ أشهر", 3), ("+ ٦ أشهر", 6), ("+ سنة", 12))
+ACCESS_DEVICE_CHOICES = ("بلا حد", "1", "2", "3", "4", "5", "10")
+ACCESS_UNLIMITED = "بلا حد"
+
+CLIENT_LOGIN_VIA = None       # "v2" (الجهاز معرَّف ويُفحص دورياً) | "full" | "legacy" | None
+_DEVICE_IDENTITY = None
+
+
+def _read_machine_guid():
+    """المعرّف الثابت لنسخة ويندوز (يبقى بعد حذف البرنامج وإعادة تثبيته)، أو machine-id على لينكس"""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            flags = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, flags) as key:
+                value = str(winreg.QueryValueEx(key, "MachineGuid")[0]).strip()
+            return value or None
+        except Exception:
+            return None
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            with open(path, encoding="ascii") as f:
+                value = f.read().strip()
+            if value:
+                return value
+        except (OSError, UnicodeDecodeError):
+            pass
+    return None
+
+
+def _device_display_name():
+    """اسم الجهاز كما يراه المدير في قائمة أجهزة الحساب (اسم الكمبيوتر ونسخة ويندوز)"""
+    name = os.environ.get("COMPUTERNAME") or ""
+    if not name:
+        try:
+            name = os.uname().nodename
+        except Exception:
+            name = ""
+    system = ""
+    if sys.platform == "win32":
+        try:
+            system = "Windows 11" if sys.getwindowsversion().build >= 22000 else "Windows 10"
+        except Exception:
+            system = "Windows"
+    elif sys.platform.startswith("linux"):
+        system = "Linux"
+    elif sys.platform == "darwin":
+        system = "macOS"
+    return " · ".join(p for p in (name.strip(), system) if p)[:120] or "جهاز"
+
+
+def device_identity():
+    """(معرّف هذا الجهاز، اسمه). المعرّف بصمة ثابتة لا تكشف شيئاً عن الجهاز: من معرّف ويندوز
+    نفسه (لا يتغيّر بحذف البرنامج ولا بنقل مجلد بياناته)، وإلا معرّف عشوائي يُحفظ مرة واحدة"""
+    global _DEVICE_IDENTITY
+    if _DEVICE_IDENTITY:
+        return _DEVICE_IDENTITY
+    raw = _read_machine_guid()
+    if not raw:
+        path = os.path.join(APP_DATA_DIR, "device.id")
+        try:
+            with open(path, encoding="ascii") as f:
+                raw = f.read().strip()
+        except (OSError, UnicodeDecodeError):
+            raw = ""
+        if not raw:
+            raw = "local-" + os.urandom(16).hex()
+            try:
+                with open(path, "w", encoding="ascii") as f:
+                    f.write(raw)
+            except OSError:
+                pass
+    digest = hashlib.sha256(("jadeite-device|" + raw).encode("utf-8")).hexdigest()[:32]
+    _DEVICE_IDENTITY = (digest, _device_display_name())
+    return _DEVICE_IDENTITY
+
+
+def parse_cloud_timestamp(value):
+    """وقت السحابة (نص ISO) ← datetime بتوقيت UTC، أو None"""
+    if not value:
+        return None
+    if isinstance(value, datetime.datetime):
+        dt = value
+    else:
+        raw = str(value).strip().replace("Z", "+00:00").replace(" ", "T", 1)
+        # بايثون ٣٫١٠ لا يقبل كسور ثانية بغير ٣ أو ٦ أرقام (Supabase يرسلها أحياناً ٥)
+        m = re.match(r"^(.*T\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$", raw)
+        if m:
+            frac = (m.group(2) or "")[1:7]
+            raw = m.group(1) + ("." + frac.ljust(6, "0") if frac else "") + m.group(3)
+        try:
+            dt = datetime.datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def access_end_of_day(day):
+    """آخر لحظة من يوم (بتوقيت هذا الجهاز) بتوقيت UTC — الحساب يعمل طوال يومه الأخير"""
+    local = datetime.datetime.combine(day, datetime.time(23, 59, 59)).astimezone()
+    return local.astimezone(datetime.timezone.utc)
+
+
+def access_local_date(until):
+    """تاريخ نهاية الاشتراك كما يُعرض (بتوقيت هذا الجهاز)"""
+    return until.astimezone().date() if until else None
+
+
+def add_months(day, months):
+    """نفس اليوم بعد عدد من الأشهر (٣١ يناير + شهر = آخر فبراير)"""
+    total = day.month - 1 + months
+    year, month = day.year + total // 12, total % 12 + 1
+    return datetime.date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def extend_access(current_until, months, today=None):
+    """التجديد يبدأ من نهاية المدة الحالية — أو من اليوم إن كانت منتهية أو الحساب مفتوحاً.
+    current_until: وقت النهاية (datetime) أو يومها الأخير (date) أو None. يرجع اليوم الأخير الجديد"""
+    today = today or datetime.date.today()
+    if isinstance(current_until, datetime.datetime):
+        base = access_local_date(current_until)
+    else:
+        base = current_until
+    if base is None or base < today:
+        base = today
+    return add_months(base, months)
+
+
+def arabic_days(n):
+    n = int(n)
+    if n == 1:
+        return "يوم واحد"
+    if n == 2:
+        return "يومان"
+    if 3 <= n <= 10:
+        return f"{n} أيام"
+    return f"{n} يوماً"
+
+
+def arabic_devices(n):
+    n = int(n)
+    if n == 1:
+        return "جهاز واحد"
+    if n == 2:
+        return "جهازان"
+    if 3 <= n <= 10:
+        return f"{n} أجهزة"
+    return f"{n} جهازاً"
+
+
+def access_days_left(until, now=None):
+    """الأيام الباقية بالتاريخ المحلي: ٠ = ينتهي اليوم، سالب = منتهٍ"""
+    if until is None:
+        return None
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if until <= now:
+        return -1
+    return (access_local_date(until) - now.astimezone().date()).days
+
+
+def describe_access(until, is_active=True, now=None):
+    """(النص، الحالة) لمدة اشتراك حساب. الحالة: open | ok | soon | expired | inactive"""
+    if is_active is False:
+        return "⛔ الحساب موقوف", "inactive"
+    if until is None:
+        return "♾️ مفتوح بلا حد", "open"
+    day = access_local_date(until).strftime("%Y-%m-%d")
+    left = access_days_left(until, now)
+    if left < 0:
+        return f"⛔ منتهي منذ {day}", "expired"
+    if left == 0:
+        return f"⏳ ينتهي اليوم ({day})", "soon"
+    state = "soon" if left <= ACCESS_WARN_DAYS else "ok"
+    return f"{'⏳' if state == 'soon' else '✔'} حتى {day} — باقي {arabic_days(left)}", state
+
+
+def device_rows(devices, max_devices):
+    """أجهزة الحساب مرتّبة بأقدمها تسجيلاً، ولكل جهاز هل هو مسموح (أقدمها بقدر العدد المسموح)
+    — القاعدة نفسها التي تطبّقها السحابة"""
+    ordered = sorted(devices or [], key=lambda d: (str(d.get("first_seen") or ""), str(d.get("device_id") or "")))
+    limit = max_devices if (isinstance(max_devices, int) and max_devices > 0) else None
+    return [dict(d, allowed=(limit is None or i < limit)) for i, d in enumerate(ordered)]
+
+
+def describe_devices(devices, max_devices):
+    used = len(devices or [])
+    if not max_devices:
+        return f"📱 الأجهزة: {used} (بلا حد)"
+    warn = " ⚠️ زائدة عن الحد" if used > max_devices else ""
+    return f"📱 الأجهزة: {used} من {max_devices}{warn}"
+
+
+def access_denial_message(info):
+    """رسالة شاشة الدخول حين تكون كلمة المرور صحيحة لكن الحساب لا يعمل الآن"""
+    status = (info or {}).get("status")
+    name = (info or {}).get("business_name") or "هذا الحساب"
+    until = parse_cloud_timestamp((info or {}).get("access_until"))
+    if status == "expired":
+        day = access_local_date(until).strftime("%Y-%m-%d") if until else ""
+        return (f"⛔ انتهت مدة اشتراك «{name}»" + (f" في {day}" if day else "") +
+                ".\nتواصل مع المدير لتجديد الاشتراك.")
+    if status == "device_limit":
+        n = (info or {}).get("max_devices")
+        allowed = f"على {arabic_devices(n)} فقط" if n else "على عدد محدد من الأجهزة"
+        return (f"📱 هذا الحساب مسموح {allowed}، وهذا جهاز إضافي.\n"
+                "تواصل مع المدير ليزيل جهازاً قديماً من حسابك أو يزيد العدد.")
+    if status == "inactive":
+        return "⛔ هذا الحساب موقوف من المدير.\nتواصل معه لإعادة تفعيله."
+    if status in ("update_required", "device_removed"):
+        if IS_ADMIN_BUILD:
+            return ("هذا الحساب له حدّ أجهزة، وبرنامج المدير لا يشغل مكان جهاز للعميل.\n"
+                    "ادخل بحساب المدير ثم «فتح الحساب» من لوحة العملاء.")
+        return "سجّل الدخول من جديد."
+    return None
+
+
+def _rpc_missing(error):
+    """هل الخطأ «الدالة غير مثبّتة في السحابة بعد» (لا انقطاع إنترنت ولا رفض)؟"""
+    text = str(error)
+    code = str(getattr(error, "code", "") or "")
+    return (code in ("PGRST202", "42883") or "PGRST202" in text or "Could not find the function" in text
+            or ("function" in text and "does not exist" in text))
+
+
+def cloud_client_login(username, password):
+    """دخول العميل عبر السحابة: كلمة المرور ثم مدة الاشتراك ثم الجهاز.
+
+    يرجع dict: client_id، business_name، can_edit، status (ok أو سبب التوقف)، access_until،
+    max_devices، devices_used — أو None إن كانت البيانات خاطئة أو لا يوجد اتصال.
+    الدالة الأحدث أولاً، والأقدم فقط إن لم تكن الأحدث مثبّتة في السحابة (لا عند انقطاع الإنترنت:
+    كان أي خطأ يحوّل للدالة القديمة، فتتجاوز فحوص المدة والأجهزة)."""
+    global CURRENT_SYNC_TOKEN, CLIENT_LOGIN_VIA
+    sb = get_supabase_login_client()
+    if sb is None:
+        return None
+    pw = hash_password(password)
+    # برنامج المدير لا يشغل مكان جهاز في حساب العميل (يفتحه من لوحته)
+    dev_id, dev_name = (None, None) if IS_ADMIN_BUILD else device_identity()
+    calls = (("v2", "client_login_v2", {"p_username": username, "p_password_hash": pw, "p_device_id": dev_id,
+                                        "p_device_name": dev_name, "p_app_version": APP_VERSION}),
+             ("full", "client_login_full", {"p_username": username, "p_password_hash": pw}),
+             ("legacy", "verify_client_login", {"p_username": username, "p_password_hash": pw}))
+    for via, fn, params in calls:
+        try:
+            res = sb.rpc(fn, params).execute()
+        except Exception as e:
+            if _rpc_missing(e):
+                continue
+            log_cloud_error("تعذر التحقق من بيانات الدخول عبر السحابة", e)
+            return None
+        rows = res.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        info = {"client_id": row.get("out_client_id"), "business_name": row.get("out_business_name"),
+                "can_edit": bool(row.get("out_can_edit")), "status": row.get("out_status") or "ok",
+                "access_until": row.get("out_access_until"), "max_devices": row.get("out_max_devices"),
+                "devices_used": row.get("out_devices_used"), "via": via}
+        if info["status"] != "ok" or not info["client_id"]:
+            info["client_id"] = None
+            return info
+        CLIENT_LOGIN_VIA = via
+        # رمز المزامنة يبقى في الذاكرة فقط طوال تشغيل البرنامج
+        CURRENT_SYNC_TOKEN = row.get("out_sync_token")
+        return info
+    return None
+
+
 def cloud_verify_client_login(username, password, touch=True):
     """يتحقق من بيانات دخول عميل عبر السحابة. يرجع (client_id, business_name, can_edit) أو (None, None, False)
 
     touch: يسجّل وقت الدخول للمدير — في خيط خلفي، فلا ينتظر الدخول طلباً إضافياً.
     """
-    sb = get_supabase_login_client()
-    if sb is None:
+    info = cloud_client_login(username, password)
+    if not info or not info.get("client_id"):
         return None, None, False
-    try:
-        # نجرّب أولاً الدالة الموسّعة التي ترجع رمز المزامنة معها،
-        # ونرجع للقديمة تلقائياً لو لم تكن مثبّتة في السحابة بعد
-        try:
-            res = sb.rpc("client_login_full", {"p_username": username, "p_password_hash": hash_password(password)}).execute()
-        except Exception:
-            res = sb.rpc("verify_client_login", {"p_username": username, "p_password_hash": hash_password(password)}).execute()
+    if touch and info.get("via") != "v2":       # الدخول الأحدث يسجّل وقته في السحابة نفسها
+        touch_client_login_async(info["client_id"])
+    return info["client_id"], info.get("business_name"), info["can_edit"]
 
-        if res.data:
-            row = res.data[0]
-            client_id = row.get("out_client_id")
-            # رمز المزامنة يبقى في الذاكرة فقط طوال تشغيل البرنامج
-            global CURRENT_SYNC_TOKEN
-            CURRENT_SYNC_TOKEN = row.get("out_sync_token")
-            # تسجيل وقت الدخول ليظهر للمدير في لوحته — في الخلفية
-            if touch:
-                touch_client_login_async(client_id)
-            return client_id, row.get("out_business_name"), bool(row.get("out_can_edit"))
-    except Exception as e:
-        log_cloud_error("تعذر التحقق من بيانات الدخول عبر السحابة", e)
-    return None, None, False
+
+def cloud_client_access_check(client_id):
+    """الفحص الدوري (كل ٣٠ ثانية): حالة الحساب على هذا الجهاز وصلاحية التعديل معاً، برمز
+    مزامنة العميل. يرجع dict (status قد يكون None إن كانت السحابة قبل 21) أو None عند الانقطاع"""
+    sb = get_supabase_public_client()
+    if sb is None or not client_id:
+        return None
+    if CURRENT_SYNC_TOKEN and CLIENT_LOGIN_VIA == "v2":
+        try:
+            res = sb.rpc("client_access_check", {"p_client_id": client_id, "p_sync_token": CURRENT_SYNC_TOKEN,
+                                                 "p_device_id": device_identity()[0]}).execute()
+            row = (res.data or [None])[0]
+            if isinstance(row, dict) and row.get("out_status") not in (None, "unauthorized"):
+                return {"status": row.get("out_status"), "can_edit": row.get("out_can_edit"),
+                        "access_until": row.get("out_access_until"), "max_devices": row.get("out_max_devices"),
+                        "devices_used": row.get("out_devices_used")}
+        except Exception as e:
+            if not _rpc_missing(e):
+                log_cloud_error("تعذر فحص حالة الحساب", e)
+                return None
+    can_edit = cloud_check_can_edit(client_id)
+    return None if can_edit is None else {"status": None, "can_edit": can_edit}
 
 
 # يتحوّل إلى False لو تبيّن أن أعمدة تتبّع النشاط غير موجودة، فلا نكرر المحاولة ولا نملأ ملف السجل
@@ -1269,6 +1552,10 @@ def cloud_touch_client_activity(client_id, is_login=False):
     global _ACTIVITY_TRACKING_SUPPORTED
     if not client_id or not _ACTIVITY_TRACKING_SUPPORTED:
         return False
+    if CLIENT_LOGIN_VIA == "v2" and not SUPABASE_SECRET_KEY:
+        # السحابة الأحدث (21): جدول العملاء محجوب عن المفتاح العام، و«آخر ظهور» يُسجَّل
+        # مع الفحص الدوري (client_access_check) — ووقت الدخول مع الدخول نفسه
+        return True
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     payload = {"last_seen": now_iso}
@@ -1685,13 +1972,34 @@ def cloud_list_clients_checked():
     if sb is None:
         return [], "تعذّر تجهيز الاتصال بالسحابة بمفتاح المدير."
     try:
-        # نحاول أولاً جلب أعمدة تتبّع النشاط، وإن لم تكن مضافة في السحابة نرجع للأعمدة الأساسية بدون تعطّل
+        # الأعمدة الأحدث أولاً (مدة الاشتراك وعدد الأجهزة من 21، ثم تتبّع النشاط)، وإن لم تكن
+        # مضافة في السحابة نرجع للأعمدة الأساسية بدون تعطّل
         base_cols = "client_id, business_name, username, is_active, can_edit, created_at"
-        try:
-            result = sb.table("clients").select(base_cols + ", last_login, last_seen").order("created_at", desc=True).execute()
-        except Exception:
-            result = sb.table("clients").select(base_cols).order("created_at", desc=True).execute()
+        result, access_ok, last_err = None, False, None
+        for extra, with_access in ((", last_login, last_seen, access_until, max_devices", True),
+                                   (", last_login, last_seen", False), ("", False)):
+            try:
+                result = sb.table("clients").select(base_cols + extra).order("created_at", desc=True).execute()
+                access_ok = with_access
+                break
+            except Exception as e:
+                last_err = e
+        if result is None:
+            raise last_err
         clients = result.data or []
+        devices = {}
+        if access_ok:
+            try:
+                rows = sb.table("client_devices").select(
+                    "client_id, device_id, device_name, app_version, first_seen, last_seen").execute().data or []
+                for d in rows:
+                    devices.setdefault(d.get("client_id"), []).append(d)
+            except Exception as e:
+                access_ok = False
+                log_cloud_error("تعذر جلب أجهزة العملاء (شغّل 21_access_control.sql)", e)
+        for c in clients:
+            c["access_supported"] = access_ok
+            c["devices"] = device_rows(devices.get(c.get("client_id"), []), c.get("max_devices"))
         try:
             backups = sb.table("db_backups").select("client_id, updated_at").execute()
             backup_map = {b["client_id"]: b["updated_at"] for b in (backups.data or [])}
@@ -1707,6 +2015,60 @@ def cloud_list_clients_checked():
         if any(k in text for k in ("401", "403", "Invalid API key", "JWT", "apikey", "permission denied")):
             return [], f"مفتاح المدير المحفوظ على هذا الجهاز مرفوض من السحابة (ربما تغيّر):\n{text[:200]}"
         return [], f"تعذّر الاتصال بالسحابة — تحقق من الإنترنت:\n{text[:200]}"
+
+
+ACCESS_SQL_MISSING = ("مدة الاشتراك وعدد الأجهزة غير مفعّلة في السحابة بعد.\n"
+                      "شغّل الملف supabase/21_access_control.sql مرة واحدة في Supabase ← SQL Editor ثم أعد المحاولة.")
+
+
+def cloud_set_client_access(client_id, access_until, max_devices):
+    """(المدير فقط) يضبط مدة اشتراك الحساب (datetime بتوقيت UTC، أو None = مفتوح بلا حد)
+    وعدد أجهزته (رقم، أو None = بلا حد). يرجع (True, None) أو (False, السبب)"""
+    sb = get_supabase_admin_client()
+    if sb is None:
+        return False, "تعذر الاتصال بالسحابة بمفتاح المدير."
+    payload = {"access_until": access_until.astimezone(datetime.timezone.utc).isoformat() if access_until else None,
+               "max_devices": int(max_devices) if max_devices else None}
+    try:
+        sb.table("clients").update(payload).eq("client_id", client_id).execute()
+        return True, None
+    except Exception as e:
+        log_cloud_error("تعذر ضبط مدة الاشتراك/عدد الأجهزة", e)
+        text = str(e)
+        if "access_until" in text or "max_devices" in text or "PGRST204" in text:
+            return False, ACCESS_SQL_MISSING
+        return False, f"تعذّر الحفظ — تحقق من الإنترنت:\n{text[:200]}"
+
+
+def cloud_list_client_devices(client_id):
+    """(المدير فقط) أجهزة حساب واحد بترتيب السماح. يرجع (القائمة، None) أو (None، السبب)"""
+    sb = get_supabase_admin_client()
+    if sb is None:
+        return None, "تعذر الاتصال بالسحابة بمفتاح المدير."
+    try:
+        rows = sb.table("client_devices").select("client_id, device_id, device_name, app_version, first_seen, last_seen") \
+            .eq("client_id", client_id).execute().data or []
+        return rows, None
+    except Exception as e:
+        log_cloud_error("تعذر جلب أجهزة الحساب", e)
+        return None, (ACCESS_SQL_MISSING if "client_devices" in str(e) else f"تعذّر جلب الأجهزة:\n{str(e)[:200]}")
+
+
+def cloud_remove_client_devices(client_id, device_id=None):
+    """(المدير فقط) يزيل جهازاً من الحساب (أو كل أجهزته إن لم يُحدَّد): يفرغ مكانه، والجهاز المُزال
+    إن كان مفتوحاً يتوقف خلال ٣٠ ثانية ويطلب دخولاً جديداً. يرجع (True, None) أو (False, السبب)"""
+    sb = get_supabase_admin_client()
+    if sb is None:
+        return False, "تعذر الاتصال بالسحابة بمفتاح المدير."
+    try:
+        q = sb.table("client_devices").delete().eq("client_id", client_id)
+        if device_id:
+            q = q.eq("device_id", device_id)
+        q.execute()
+        return True, None
+    except Exception as e:
+        log_cloud_error("تعذر إزالة جهاز الحساب", e)
+        return False, f"تعذّرت الإزالة:\n{str(e)[:200]}"
 
 
 def cloud_verify_sub_admin_login(username, password):
@@ -1742,7 +2104,7 @@ def cloud_delete_client(client_id):
         return False, "تعذر الاتصال بالسحابة."
 
     # الجداول التابعة المعروفة تُحذف مباشرة
-    for child_table in ("db_backups",):
+    for child_table in ("db_backups", "client_devices"):
         try:
             sb.table(child_table).delete().eq("client_id", client_id).execute()
         except Exception as e:
@@ -4218,8 +4580,13 @@ class ScreenRouter(ctk.CTkFrame):
 
 
 class GoldSystemApp(StableWindowMixin, ctk.CTk):
-    def __init__(self, client_id=None, client_name=None, supabase_client=None, is_admin_session=False, initial_can_edit=False, intro=None):
+    def __init__(self, client_id=None, client_name=None, supabase_client=None, is_admin_session=False, initial_can_edit=False, intro=None,
+                 access=None):
         super().__init__()
+        # مدة الاشتراك كما أعادها الدخول (تتجدّد مع الفحص الدوري)، وقفل البرنامج إن انتهت
+        self._access_until = parse_cloud_timestamp((access or {}).get("access_until"))
+        self._access_locked = None
+        self._access_warned = False
         apply_screen_fit(self)      # قبل أي عنصر: الواجهة كلها تتسع للشاشات الصغيرة
         # intro: قادم من شاشة الدخول — يُبنى النظام مخفياً تماماً خلف آخر إطار منها،
         # ثم يظهر فوقه بالإطار نفسه وتنحسر الأمواج عن الرئيسية (_intro_show)
@@ -4783,22 +5150,223 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def schedule_permission_refresh(self):
         self.after(30000, self.refresh_edit_permission)   # كل ٣٠ ثانية — ليصل فتح المدير للعميل بسرعة
 
+    def _in_background(self, work, done):
+        """يشغّل work (اتصال بالإنترنت) في خيط خلفي، ثم done(النتيجة) في خيط الواجهة: النتيجة
+        تُستلم بفحص دوري خفيف من الواجهة نفسها — لا يلمس الخيط الخلفي أدوات الواجهة أبداً"""
+        box = {}
+
+        def run():
+            try:
+                box["value"] = work()
+            except Exception as e:
+                log_cloud_error("خلل في عملية خلفية", e)
+                box["value"] = None
+            box["done"] = True
+
+        def poll():
+            if not box.get("done"):
+                self.after(100, poll)
+                return
+            done(box.get("value"))
+
+        threading.Thread(target=run, daemon=True).start()
+        self.after(100, poll)
+
     def refresh_edit_permission(self):
         def _check():
-            result = cloud_check_can_edit(self.client_id)
-            if result is not None:
-                def _apply():
-                    changed = (self.can_edit != result)
-                    self.can_edit = result
-                    self.update_edit_status_ui()
-                    if changed and result:
-                        try:
-                            messagebox.showinfo("تم فتح التعديل ✅", "قام المدير بفتح صلاحية التعديل على حسابك الآن.")
-                        except Exception:
-                            pass
-                self.after(0, _apply)
-        threading.Thread(target=_check, daemon=True).start()
+            if IS_ADMIN_BUILD:
+                # برنامج المدير: صلاحية التعديل فقط — لا يُحسب ظهوره حضوراً للعميل ولا يُقفل
+                result = cloud_check_can_edit(self.client_id)
+                return None if result is None else {"status": None, "can_edit": result}
+            return cloud_client_access_check(self.client_id)
+
+        def _apply(state):
+            if state is not None and state.get("can_edit") is not None:
+                result = bool(state["can_edit"])
+                changed = (self.can_edit != result)
+                self.can_edit = result
+                self.update_edit_status_ui()
+                if changed and result and not self._access_locked:
+                    try:
+                        messagebox.showinfo("تم فتح التعديل ✅", "قام المدير بفتح صلاحية التعديل على حسابك الآن.")
+                    except Exception:
+                        pass
+            self.apply_access_state(state)
+
+        self._in_background(_check, _apply)
         self.schedule_permission_refresh()
+
+    # ------------------------------------------------------------------ مدة الاشتراك والأجهزة
+    def apply_access_state(self, state):
+        """نتيجة الفحص الدوري (أو None عند انقطاع الإنترنت): تحدّث نهاية الاشتراك، وتقفل البرنامج إن
+        انتهت المدة أو أُزيل الجهاز، وتفتحه حين يجدّد المدير. بلا إنترنت تكفي ساعة الجهاز: انتهاء
+        المدة يقفله أيضاً (فلا يُتجاوز الاشتراك بقطع الإنترنت)"""
+        if IS_ADMIN_BUILD or self.is_admin_session or not self.client_id:
+            return
+        status = (state or {}).get("status")
+        if status:                                  # جواب السحابة الأحدث (21)
+            self._access_until = parse_cloud_timestamp(state.get("access_until"))
+            self._access_max_devices = state.get("max_devices")
+        if status in ACCESS_BLOCKING:
+            self.show_access_lock(status, state)
+        elif status == "ok":
+            self.hide_access_lock()
+        elif self._access_until and datetime.datetime.now(datetime.timezone.utc) >= self._access_until:
+            self.show_access_lock("expired", {"access_until": self._access_until.isoformat()})
+        self.update_access_ui()
+        self.warn_access_expiry()
+
+    def update_access_ui(self):
+        """سطر الاشتراك في خانة الحالة أعلى الشاشة: يظهر فقط لحساب له مدة، ويتلوّن قبل الانتهاء"""
+        lbl = getattr(self, "lbl_access", None)
+        if lbl is None:
+            return
+        if IS_ADMIN_BUILD or self.is_admin_session or not self._access_until:
+            if lbl.winfo_manager():
+                lbl.pack_forget()
+            return
+        text, state = describe_access(self._access_until)
+        color = {"soon": "#F5A35C", "expired": "#FF8A8A"}.get(state, "#AFC3E0")    # على الشريط الكحلي
+        lbl.configure(text=f"📅 الاشتراك: {text.lstrip('✔⏳⛔ ')}", text_color=color)
+        if not lbl.winfo_manager():
+            lbl.pack(side="left", padx=(18, 8))
+
+    def warn_access_expiry(self):
+        """نافذة تنبيه مرة واحدة إن بقي على انتهاء الاشتراك ٣ أيام أو أقل — بعد ظهور النظام فعلاً"""
+        if (self._access_warned or IS_ADMIN_BUILD or self.is_admin_session or not self._access_until
+                or self._access_locked):
+            return
+        if self._intro_cv is not None or not self.winfo_viewable():
+            self.after(3000, self.warn_access_expiry)      # ما زالت شاشة الترحيب: بعد قليل
+            return
+        left = access_days_left(self._access_until)
+        if left is None or not 0 <= left <= ACCESS_POPUP_DAYS:
+            return
+        self._access_warned = True
+        day = access_local_date(self._access_until).strftime("%Y-%m-%d")
+        when = "اليوم" if left == 0 else f"خلال {arabic_days(left)}"
+        try:
+            messagebox.showwarning("⏳ تنبيه الاشتراك",
+                                   f"ينتهي اشتراك هذا الحساب {when} ({day}).\n\n"
+                                   "بعدها يتوقف البرنامج حتى يجدّده المدير — تواصل معه قبل الموعد.")
+        except Exception:
+            pass
+
+    ACCESS_LOCK_TEXT = {
+        "expired": ("⛔ انتهت مدة الاشتراك",
+                    "انتهت مدة اشتراك هذا الحساب، فتوقف البرنامج.\n"
+                    "بياناتك محفوظة كما هي على هذا الجهاز ولم يُحذف منها شيء.\n"
+                    "تواصل مع المدير لتجديد الاشتراك، ثم اضغط «تحقّق الآن»."),
+        "inactive": ("⛔ الحساب موقوف",
+                     "أوقف المدير هذا الحساب، فتوقف البرنامج.\n"
+                     "بياناتك محفوظة كما هي على هذا الجهاز.\nتواصل مع المدير لإعادة تفعيله."),
+        "device_limit": ("📱 هذا الجهاز خارج الأجهزة المسموحة",
+                         "خفّض المدير عدد الأجهزة المسموحة لهذا الحساب، وهذا الجهاز أحدثها.\n"
+                         "بياناتك محفوظة كما هي على هذا الجهاز.\n"
+                         "تواصل مع المدير ليسمح لهذا الجهاز، ثم اضغط «تحقّق الآن»."),
+        "device_removed": ("📱 أُزيل هذا الجهاز من الحساب",
+                           "أزال المدير هذا الجهاز من أجهزة الحساب.\n"
+                           "بياناتك محفوظة كما هي على هذا الجهاز.\n"
+                           "اخرج ثم سجّل الدخول من جديد (إن بقي مكان لجهاز)."),
+        "update_required": ("سجّل الدخول من جديد",
+                            "تغيّرت إعدادات أجهزة هذا الحساب.\nاخرج ثم سجّل الدخول من جديد."),
+    }
+
+    def show_access_lock(self, status, state=None):
+        """يغطي البرنامج كله برسالة السبب وزرّي «تحقّق الآن» و«خروج». ما كان مكتوباً في أي شاشة
+        يبقى تحت الغطاء كما هو، والنوافذ المفتوحة تُخفى وتعود بعد التجديد"""
+        title, body = self.ACCESS_LOCK_TEXT.get(status, self.ACCESS_LOCK_TEXT["expired"])
+        until = parse_cloud_timestamp((state or {}).get("access_until")) or self._access_until
+        if status == "expired" and until:
+            title += f" ({access_local_date(until).strftime('%Y-%m-%d')})"
+        if self._access_locked:
+            self._lock_title.configure(text=title)
+            self._lock_body.configure(text=body)
+            self._access_locked = status
+            return
+        self._access_locked = status
+        self._lock_hidden_windows = []
+        for w in self.winfo_children():
+            if isinstance(w, tk.Toplevel):
+                try:
+                    if w.winfo_viewable():
+                        w.withdraw()
+                        self._lock_hidden_windows.append(w)
+                except tk.TclError:
+                    pass
+        cover = ctk.CTkFrame(self, corner_radius=0, fg_color=(UI["canvas"], "#0F141A"))
+        cover.place(relx=0, rely=0, relwidth=1, relheight=1)
+        card = ctk.CTkFrame(cover, corner_radius=18, border_width=1, border_color=UI["gold_line"],
+                            fg_color=(UI["surface"], "#171C23"))
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkLabel(card, text=self.client_name or "", font=(UI_FONT, 15, "bold"),
+                     text_color=UI["muted"]).pack(padx=60, pady=(30, 4))
+        self._lock_title = ctk.CTkLabel(card, text=title, font=(UI_FONT, 24, "bold"), text_color=UI["danger"])
+        self._lock_title.pack(padx=60, pady=(0, 12))
+        self._lock_body = ctk.CTkLabel(card, text=body, font=(UI_FONT, 15), justify="center",
+                                       text_color=(UI["ink"], "#E6EDF3"))
+        self._lock_body.pack(padx=60, pady=(0, 10))
+        self._lock_msg = ctk.CTkLabel(card, text="", font=(UI_FONT, 13, "bold"), text_color=UI["muted"])
+        self._lock_msg.pack(pady=(0, 6))
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.pack(pady=(4, 28))
+        self._lock_check_btn = ctk.CTkButton(btns, text="🔄 تحقّق الآن", font=(UI_FONT, 15, "bold"), width=170,
+                                             height=44, fg_color=UI["primary"], hover_color=UI["primary_hover"],
+                                             command=self.check_access_now)
+        self._lock_check_btn.pack(side="right", padx=8)
+        ctk.CTkButton(btns, text="🚪 خروج", font=(UI_FONT, 15, "bold"), width=140, height=44,
+                      fg_color="#555555", hover_color="#333333",
+                      command=self.on_app_closing).pack(side="right", padx=8)
+        self._lock_cover = cover
+        cover.lift()
+        try:
+            cover.grab_set()            # لا نقر ولا كتابة في الشاشات تحت الغطاء
+        except tk.TclError:
+            pass
+        self._lock_check_btn.focus_set()
+
+    def hide_access_lock(self):
+        """التجديد وصل: يُرفع الغطاء وتعود النوافذ التي كانت مفتوحة كما كانت"""
+        if not self._access_locked:
+            return
+        self._access_locked = None
+        cover = getattr(self, "_lock_cover", None)
+        self._lock_cover = None
+        if cover is not None:
+            try:
+                cover.grab_release()
+                cover.destroy()
+            except tk.TclError:
+                pass
+        for w in getattr(self, "_lock_hidden_windows", []):
+            try:
+                w.deiconify()
+            except tk.TclError:
+                pass
+        self._lock_hidden_windows = []
+        try:
+            messagebox.showinfo("تم التجديد ✅", "عاد الحساب للعمل — شكراً لك.")
+        except Exception:
+            pass
+
+    def check_access_now(self):
+        """زر «تحقّق الآن» على غطاء الإيقاف: فحص فوري بدل انتظار الفحص الدوري"""
+        btn = getattr(self, "_lock_check_btn", None)
+        if btn is not None:
+            btn.configure(state="disabled", text="جارٍ التحقق…")
+
+        def _apply(state):
+            if btn is not None and self._access_locked:
+                try:
+                    btn.configure(state="normal", text="🔄 تحقّق الآن")
+                    self._lock_msg.configure(
+                        text="تعذّر الاتصال بالإنترنت — تحقّق من الاتصال وأعد المحاولة." if state is None
+                        else f"ما زال الحساب متوقفاً — آخر تحقّق {datetime.datetime.now():%H:%M:%S}")
+                except tk.TclError:
+                    pass
+            self.apply_access_state(state)
+
+        self._in_background(lambda: cloud_client_access_check(self.client_id), _apply)
 
     def is_edit_locked(self):
         """هل التعديل مقفول حالياً؟ (يخص العملاء فقط — المدير والجلسة المحلية مفتوحة دائماً)"""
@@ -9398,6 +9966,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.build_home_screen()
         self.show_home_screen()
         self.update_edit_status_ui()
+        self.update_access_ui()
+        self.after(6000, self.warn_access_expiry)
         self.update_period_warning()
         self.watch_system_month()
         self.refresh_live_date_fields()
@@ -9408,12 +9978,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def _on_escape_key(self, event=None):
         """Esc داخل أي شاشة يعود للقائمة الرئيسية (لا يمسّ النوافذ المنبثقة)"""
+        if getattr(self, "_access_locked", None):
+            return "break"              # البرنامج متوقف (انتهى الاشتراك): لا تنقّل تحت الغطاء
         tv = getattr(self, "tabview", None)
         if tv is not None and tv.winfo_ismapped():
             tv._go_home()
 
     def _on_ctrl_number_key(self, event):
         """Ctrl + رقم (١–٦) يفتح شاشة الشريط الرئيسية بنفس ترتيبها، وCtrl+Z للتراجع، وCtrl+B لتتبّع رقم تشغيل"""
+        if getattr(self, "_access_locked", None):
+            return "break"
         if (getattr(event, "keysym", "") in ("z", "Z")
                 or (sys.platform.startswith("win") and getattr(event, "keycode", 0) == 90)):
             if not IS_ADMIN_BUILD:
@@ -9467,6 +10041,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       hover_color="#22304A", text_color="#E9C75C",
                       command=lambda: self.gold_watcher and self.gold_watcher.refresh_now()
                       ).pack(side="left", padx=10)
+        # مدة الاشتراك: في الشريط السفلي الظاهر على كل الشاشات (خانة الحالة أعلى الشاشة تُزاح
+        # على الشاشات المتوسطة). يظهر فقط لحساب حدّد له المدير مدة — update_access_ui
+        self.lbl_access = ctk.CTkLabel(self.gold_bar, text="", font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"),
+                                       text_color="#AFC3E0")
 
         if not GOLD_PRICE_AVAILABLE:
             self.lbl_gold_price.configure(text="🥇 سعر الذهب غير متاح (وحدة الأسعار غير موجودة)",
@@ -9809,6 +10387,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     )
 
     def open_shortcuts_help(self):
+        if getattr(self, "_access_locked", None):
+            return None
         win = getattr(self, "_shortcuts_win", None)
         if win is not None and win.winfo_exists():
             win.lift()
@@ -24347,19 +24927,21 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
                 target=lambda: box.__setitem__("sub", cloud_verify_sub_admin_login(username, password)),
                 daemon=True)
             sub_thread.start()
-            client = cloud_verify_client_login(username, password, touch=False)
+            client = cloud_client_login(username, password)
             sub_thread.join(timeout=15)
             if box.get("sub"):
-                return "sub_admin", (None, None, False)
+                return "sub_admin", None
             return "client", client
 
         self._busy = True
         try:
-            kind, (client_id, business_name, can_edit) = self._run_in_background(verify)
+            kind, info = self._run_in_background(verify)
         except _LoginClosed:
             return
         finally:
             self._busy = False
+        info = info or {}
+        client_id, business_name, can_edit = info.get("client_id"), info.get("business_name"), info.get("can_edit")
 
         if kind == "sub_admin":
             global CURRENT_SYNC_TOKEN
@@ -24369,8 +24951,17 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
             panel.mainloop()
             return
 
+        denial = None if client_id else access_denial_message(info)
+        if denial:
+            # كلمة المرور صحيحة لكن الحساب لا يعمل الآن: السبب كما هو، لا «بيانات غير صحيحة»
+            self.btn_login.configure(state="normal", text="دخول")
+            self.lbl_status.configure(text=denial)
+            self._shake()
+            return
+
         if client_id:
-            touch_client_login_async(client_id)     # وقت الدخول للمدير — في الخلفية
+            if info.get("via") != "v2":
+                touch_client_login_async(client_id)     # وقت الدخول للمدير — في الخلفية
             self._busy = True
             # من هنا لا إغلاق ولا نوافذ: الأمواج تغمر الشاشة، ورفع البيانات يظهر
             # تحت الترحيب، ثم يُبنى النظام خلف آخر إطار ويظهر فوقه بالإطار نفسه
@@ -24400,7 +24991,8 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
             # بعد أن يظهر فوقها — فلا تُرى الشاشة تُغلق ولا فراغ بين النافذتين
             tk._default_root = None
             try:
-                app = GoldSystemApp(client_id=client_id, client_name=business_name, supabase_client=get_supabase_public_client(), initial_can_edit=can_edit, intro=spec)
+                app = GoldSystemApp(client_id=client_id, client_name=business_name, supabase_client=get_supabase_public_client(), initial_can_edit=can_edit, intro=spec,
+                                    access=info)
             except Exception:
                 self.destroy()
                 raise
@@ -24489,6 +25081,14 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             ctk.CTkLabel(self.list_frame, text="لا يوجد عملاء مسجّلين بعد — افتح أول حساب من زر «فتح حساب عميل جديد»",
                          font=(UI_FONT, 14)).pack(pady=30)
             return
+        if not self.restricted and not clients[0].get("access_supported"):
+            note = ctk.CTkFrame(self.list_frame, corner_radius=12, border_width=1, border_color=UI["gold_line"],
+                                fg_color=(UI["gold_soft"], "#2A2412"))
+            note.pack(fill="x", pady=(2, 8), padx=5)
+            ctk.CTkLabel(note, text="⚙️ لتفعيل «مدة الاشتراك وعدد الأجهزة» لكل مصنع: شغّل الملف "
+                                    "supabase/21_access_control.sql مرة واحدة في Supabase ← SQL Editor، ثم «🔄 تحديث القائمة».",
+                         font=(UI_FONT, 13, "bold"), justify="right", wraplength=1100,
+                         text_color=(UI["ink"], "#F2E6C2")).pack(anchor="e", padx=14, pady=10)
         for c in clients:
             # بطاقة فاتحة بإطار واضح ونص داكن (كانت كحلية بنص داكن — تباين ١٫٣:١ لا يُقرأ)
             row = ctk.CTkFrame(self.list_frame, fg_color=(UI["surface"], "#1B222B"), corner_radius=12,
@@ -24518,8 +25118,19 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             if not self.restricted:
                 edit_status = "✏️ التعديل مفتوح" if can_edit else "🔒 التعديل مقفول"
                 label_text += f"   |   {edit_status}"
-            ctk.CTkLabel(row, text=label_text, font=(UI_FONT, 14, "bold"), justify="right",
-                         text_color=(UI["ink"], "#E6EDF3")).pack(side="right", padx=15, pady=10)
+            text_box = ctk.CTkFrame(row, fg_color="transparent")
+            text_box.pack(side="right", padx=15, pady=10)
+            ctk.CTkLabel(text_box, text=label_text, font=(UI_FONT, 14, "bold"), justify="right",
+                         text_color=(UI["ink"], "#E6EDF3")).pack(anchor="e")
+            if c.get("access_supported"):
+                # سطر الاشتراك والأجهزة: أحمر إن كان الحساب متوقفاً، برتقالي قبل الانتهاء
+                until = parse_cloud_timestamp(c.get("access_until"))
+                acc_text, acc_state = describe_access(until, c.get("is_active", True) is not False)
+                dev_text = describe_devices(c.get("devices"), c.get("max_devices"))
+                color = {"expired": UI["danger"], "inactive": UI["danger"], "soon": "#e67e22"}.get(
+                    acc_state, (UI["primary"], "#7FB3E6"))
+                ctk.CTkLabel(text_box, text=f"📅 الاشتراك: {acc_text}   |   {dev_text}", font=(UI_FONT, 13, "bold"),
+                             justify="right", text_color=color).pack(anchor="e", pady=(2, 0))
             ctk.CTkButton(row, text="فتح الحساب (دخول كالعميل) 🔑", font=(UI_FONT, 13, "bold"),
                           fg_color="#d4af37", hover_color="#b8952e", text_color="black",
                           command=lambda cid=c["client_id"], name=c["business_name"]: self.open_as_client(cid, name)
@@ -24529,6 +25140,10 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 toggle_color = "#8b0000" if can_edit else "#2ecc71"
                 ctk.CTkButton(row, text=toggle_text, font=(UI_FONT, 13, "bold"), fg_color=toggle_color,
                               command=lambda cid=c["client_id"], new_val=(not can_edit): self.toggle_client_edit(cid, new_val)
+                              ).pack(side="left", padx=10, pady=8)
+                ctk.CTkButton(row, text="⚙️ الاشتراك والأجهزة", font=(UI_FONT, 13, "bold"),
+                              fg_color=UI["primary"], hover_color=UI["primary_hover"],
+                              command=lambda client=c: self.open_access_dialog(client)
                               ).pack(side="left", padx=10, pady=8)
                 ctk.CTkButton(row, text="🗑️ حذف الحساب نهائياً", font=(UI_FONT, 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a",
                               command=lambda cid=c["client_id"], name=c["business_name"]: self.delete_client(cid, name)
@@ -24607,6 +25222,289 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             self.refresh_clients()
         else:
             messagebox.showerror("خطأ", "تعذر تغيير الصلاحية. تأكد من الاتصال بالإنترنت.")
+
+    # ------------------------------------------------------------------ الاشتراك والأجهزة
+    ACCESS_MODE_OPEN = "♾️ مفتوح بلا حد"
+    ACCESS_MODE_LIMITED = "📅 لمدة محددة"
+
+    @staticmethod
+    def parse_device_limit(text):
+        """«بلا حد» أو فارغ ← None، ورقم ١–١٠٠٠ ← الرقم، وغير ذلك ← ValueError"""
+        text = str(text or "").strip().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        if not text or text == ACCESS_UNLIMITED:
+            return None
+        n = int(text)
+        if not 1 <= n <= 1000:
+            raise ValueError(n)
+        return n
+
+    def open_access_dialog(self, client):
+        """لكل مصنع: حتى متى يعمل حسابه (أو مفتوح بلا حد)، وعلى كم جهاز — مع قائمة أجهزته وإزالتها"""
+        if not client.get("access_supported"):
+            messagebox.showwarning("الاشتراك والأجهزة", ACCESS_SQL_MISSING)
+            return
+        cid, name = client["client_id"], client.get("business_name", "")
+        today = datetime.date.today()
+        saved = {"until": parse_cloud_timestamp(client.get("access_until")), "max": client.get("max_devices"),
+                 "devices": list(client.get("devices") or []), "changed": False}
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"الاشتراك والأجهزة — {name}")
+        height = min(800, max(560, self.winfo_screenheight() - 90))
+        win.geometry(f"700x{height}")
+        win.transient(self)
+        win.grab_set()
+        win.focus_force()
+        self._access_win = win
+
+        def close():
+            win.grab_release()
+            win.destroy()
+            self._access_win = None
+            if saved["changed"]:
+                self.refresh_clients()
+        win.protocol("WM_DELETE_WINDOW", close)
+
+        footer = ctk.CTkFrame(win, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=18, pady=(6, 14))
+        lbl_msg = ctk.CTkLabel(win, text="", font=(UI_FONT, 12, "bold"), text_color=UI["danger"], wraplength=640)
+        lbl_msg.pack(side="bottom", pady=(0, 2))
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+
+        ctk.CTkLabel(body, text=f"⚙️ {name}", font=(UI_FONT, 20, "bold"), text_color=UI_TITLE).pack(pady=(6, 10))
+
+        def card(title):
+            frame = ctk.CTkFrame(body, corner_radius=14, border_width=1, border_color=(UI["line"], "#323B47"),
+                                 fg_color=(UI["surface"], "#1B222B"))
+            frame.pack(fill="x", padx=6, pady=6)
+            ctk.CTkLabel(frame, text=title, font=(UI_FONT, 16, "bold"),
+                         text_color=(UI["ink"], "#E6EDF3")).pack(anchor="e", padx=16, pady=(12, 4))
+            return frame
+
+        # ---------- ١) مدة الاشتراك ----------
+        period = card("📅 مدة الاشتراك")
+        lbl_now = ctk.CTkLabel(period, text="", font=(UI_FONT, 14, "bold"))
+        lbl_now.pack(anchor="e", padx=16)
+
+        def show_now():
+            text, state = describe_access(saved["until"], client.get("is_active", True) is not False)
+            lbl_now.configure(text=f"الآن: {text}",
+                              text_color={"expired": UI["danger"], "inactive": UI["danger"],
+                                          "soon": "#e67e22"}.get(state, ("#1e8449", "#58D68D")))
+        show_now()
+
+        mode = ctk.CTkSegmentedButton(period, values=[self.ACCESS_MODE_LIMITED, self.ACCESS_MODE_OPEN],
+                                      font=(UI_FONT, 14, "bold"), height=38)
+        mode.pack(anchor="e", padx=16, pady=(10, 6))
+
+        day_row = ctk.CTkFrame(period, fg_color="transparent")
+        day_row.pack(anchor="e", padx=16, pady=2)
+        ctk.CTkLabel(day_row, text="اليوم الأخير:", font=(UI_FONT, 14, "bold")).pack(side="right", padx=(0, 8))
+        ent_day = ctk.CTkEntry(day_row, width=150, height=36, justify="center", font=(UI_FONT, 14),
+                               placeholder_text="YYYY-MM-DD")
+        ent_day.pack(side="right")
+        ctk.CTkLabel(day_row, text="(يعمل الحساب حتى نهاية هذا اليوم)", font=(UI_FONT, 12),
+                     text_color=UI["muted"]).pack(side="right", padx=8)
+
+        quick = ctk.CTkFrame(period, fg_color="transparent")
+        quick.pack(anchor="e", padx=16, pady=(6, 2))
+        lbl_preview = ctk.CTkLabel(period, text="", font=(UI_FONT, 13, "bold"), text_color=UI["primary"])
+        lbl_preview.pack(anchor="e", padx=16, pady=(4, 2))
+        ctk.CTkLabel(period, text="التمديد يبدأ من نهاية المدة الحالية — أو من اليوم إن كانت منتهية.",
+                     font=(UI_FONT, 12), text_color=UI["muted"]).pack(anchor="e", padx=16, pady=(0, 4))
+
+        def entered_day():
+            raw = ent_day.get().strip().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+            try:
+                return datetime.date.fromisoformat(raw)
+            except ValueError:
+                return None
+
+        def preview(*_):
+            # أزرار التمديد تبقى فعّالة دائماً (الضغط عليها يحوّل إلى «لمدة محددة»)، والتاريخ للمدة فقط
+            if mode.get() == self.ACCESS_MODE_OPEN:
+                ent_day.configure(state="disabled")
+                lbl_preview.configure(text="سيبقى الحساب يعمل بلا حد حتى توقفه أنت.", text_color=UI["primary"])
+                return
+            ent_day.configure(state="normal")
+            day = entered_day()
+            if day is None:
+                lbl_preview.configure(text="اكتب التاريخ بالشكل 2026-12-31 أو اختر مدة من الأزرار.",
+                                      text_color=UI["danger"])
+                return
+            left = (day - today).days
+            if left < 0:
+                lbl_preview.configure(text="⛔ هذا التاريخ مضى — الحساب سيتوقف فور الحفظ.", text_color=UI["danger"])
+            elif left == 0:
+                lbl_preview.configure(text="سيعمل الحساب حتى نهاية اليوم فقط.", text_color="#e67e22")
+            else:
+                lbl_preview.configure(text=f"سيعمل الحساب حتى نهاية يوم {day:%Y-%m-%d} — {arabic_days(left)} من اليوم.",
+                                      text_color=UI["primary"])
+
+        def extend(months):
+            # الحساب المفتوح يبدأ من اليوم (التاريخ الظاهر في الحقل حينها اقتراح فقط)
+            base = entered_day() if mode.get() == self.ACCESS_MODE_LIMITED else None
+            mode.set(self.ACCESS_MODE_LIMITED)
+            preview()               # يفعّل الحقل قبل الكتابة فيه
+            new_day = extend_access(base, months, today)
+            ent_day.delete(0, "end")
+            ent_day.insert(0, new_day.isoformat())
+            preview()
+
+        for label, months in ACCESS_EXTEND_CHOICES:
+            ctk.CTkButton(quick, text=label, width=96, height=34, font=(UI_FONT, 13, "bold"),
+                          fg_color="#1e8449", hover_color="#145a32",
+                          command=lambda m=months: extend(m)).pack(side="right", padx=4)
+
+        def stop_now():
+            if not messagebox.askyesno("⛔ إيقاف الحساب الآن",
+                                       f"إيقاف حساب «{name}» الآن؟\n\nيتوقف برنامجه خلال ٣٠ ثانية ولا يدخل حتى تجدّده "
+                                       "(بياناته على جهازه لا تُمس).", parent=win):
+                return
+            now = datetime.datetime.now(datetime.timezone.utc)
+            ok, err = cloud_set_client_access(cid, now, saved["max"])
+            if not ok:
+                lbl_msg.configure(text=err)
+                return
+            saved["until"], saved["changed"] = now, True
+            ent_day.delete(0, "end")
+            ent_day.insert(0, today.isoformat())
+            mode.set(self.ACCESS_MODE_LIMITED)
+            show_now()
+            preview()
+            lbl_msg.configure(text="⛔ أُوقف الحساب. للتجديد اختر مدة ثم «💾 حفظ».", text_color=UI["danger"])
+
+        ctk.CTkButton(period, text="⛔ إيقاف الحساب الآن", width=170, height=34, font=(UI_FONT, 13, "bold"),
+                      fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"],
+                      hover_color=(UI["danger_soft"], "#3A1C1E"), command=stop_now).pack(anchor="e", padx=16, pady=(4, 14))
+
+        if saved["until"] is None:
+            mode.set(self.ACCESS_MODE_OPEN)
+            ent_day.insert(0, add_months(today, 1).isoformat())
+        else:
+            mode.set(self.ACCESS_MODE_LIMITED)
+            ent_day.insert(0, access_local_date(saved["until"]).isoformat())
+        mode.configure(command=preview)
+        ent_day.bind("<KeyRelease>", preview)
+        preview()
+
+        # ---------- ٢) الأجهزة ----------
+        dev_card = card("📱 الأجهزة المسموحة")
+        lim_row = ctk.CTkFrame(dev_card, fg_color="transparent")
+        lim_row.pack(anchor="e", padx=16, pady=(2, 4))
+        ctk.CTkLabel(lim_row, text="عدد الأجهزة:", font=(UI_FONT, 14, "bold")).pack(side="right", padx=(0, 8))
+        combo = ctk.CTkComboBox(lim_row, values=list(ACCESS_DEVICE_CHOICES), width=120, height=36,
+                                font=(UI_FONT, 14), justify="center")
+        combo.set(str(saved["max"]) if saved["max"] else ACCESS_UNLIMITED)
+        combo.pack(side="right")
+        ctk.CTkLabel(lim_row, text="(اختر أو اكتب أي رقم)", font=(UI_FONT, 12),
+                     text_color=UI["muted"]).pack(side="right", padx=8)
+        ctk.CTkLabel(dev_card, text="المسموح أقدم الأجهزة دخولاً بقدر العدد. أزل جهازاً ليحلّ مكانه جهاز آخر — "
+                                    "والجهاز المُزال إن كان مفتوحاً يتوقف خلال ٣٠ ثانية.",
+                     font=(UI_FONT, 12), text_color=UI["muted"], wraplength=600, justify="right").pack(anchor="e", padx=16)
+        dev_list = ctk.CTkFrame(dev_card, fg_color="transparent")
+        dev_list.pack(fill="x", padx=12, pady=(6, 4))
+
+        def pending_limit():
+            try:
+                return self.parse_device_limit(combo.get())
+            except ValueError:
+                return saved["max"]
+
+        def remove(device_id=None):
+            what = "كل أجهزة هذا الحساب" if device_id is None else "هذا الجهاز"
+            if not messagebox.askyesno("إزالة", f"إزالة {what}؟\n\nيُفرغ مكانه لجهاز آخر، وإن كان البرنامج مفتوحاً "
+                                                "عليه يتوقف خلال ٣٠ ثانية ويطلب دخولاً جديداً.", parent=win):
+                return
+            ok, err = cloud_remove_client_devices(cid, device_id)
+            if not ok:
+                lbl_msg.configure(text=err)
+                return
+            saved["changed"] = True
+            rows, err = cloud_list_client_devices(cid)
+            if rows is None:
+                lbl_msg.configure(text=err)
+                return
+            saved["devices"] = rows
+            render_devices()
+
+        def render_devices(*_):
+            for w in dev_list.winfo_children():
+                w.destroy()
+            rows = device_rows(saved["devices"], pending_limit())
+            if not rows:
+                ctk.CTkLabel(dev_list, text="لم يدخل الحساب من أي جهاز بعد (يُسجَّل الجهاز عند أول دخول ببرنامج 1.68.0 أو أحدث).",
+                             font=(UI_FONT, 13), text_color=UI["muted"], wraplength=600).pack(anchor="e", pady=6)
+                return
+            for d in rows:
+                item = ctk.CTkFrame(dev_list, corner_radius=10, border_width=1,
+                                    border_color=(UI["line"], "#323B47") if d["allowed"] else UI["danger"],
+                                    fg_color=(UI["surface_alt"], "#1D232B"))
+                item.pack(fill="x", pady=3)
+                badge = "✔ مسموح" if d["allowed"] else "⛔ زائد عن الحد"
+                seen_txt, seen_mins = self.format_cloud_time(d.get("last_seen"))
+                first_txt, _ = self.format_cloud_time(d.get("first_seen"))
+                details = f"آخر دخول: {self.humanize_since(seen_mins) or seen_txt or '—'}   |   أول دخول: {first_txt or '—'}"
+                if d.get("app_version"):
+                    details += f"   |   الإصدار {d['app_version']}"
+                info = ctk.CTkFrame(item, fg_color="transparent")
+                info.pack(side="right", padx=10, pady=6)
+                ctk.CTkLabel(info, text=f"{badge}   💻 {d.get('device_name') or 'جهاز'}", font=(UI_FONT, 14, "bold"),
+                             text_color=("#1e8449", "#58D68D") if d["allowed"] else UI["danger"]).pack(anchor="e")
+                ctk.CTkLabel(info, text=details, font=(UI_FONT, 12), text_color=UI["muted"]).pack(anchor="e")
+                ctk.CTkButton(item, text="🗑️ إزالة", width=90, height=32, font=(UI_FONT, 12, "bold"),
+                              fg_color="#8b0000", hover_color="#a52a2a",
+                              command=lambda did=d.get("device_id"): remove(did)).pack(side="left", padx=10)
+            if len(rows) > 1:
+                ctk.CTkButton(dev_list, text="🧹 إزالة كل الأجهزة", width=160, height=32, font=(UI_FONT, 12, "bold"),
+                              fg_color="transparent", border_width=1, border_color=UI["danger"],
+                              text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"),
+                              command=remove).pack(anchor="w", pady=(6, 2))
+
+        combo.configure(command=render_devices)
+        combo.bind("<KeyRelease>", render_devices)
+        render_devices()
+        ctk.CTkFrame(dev_card, height=8, fg_color="transparent").pack()
+
+        # ---------- الحفظ ----------
+        def save():
+            lbl_msg.configure(text="", text_color=UI["danger"])
+            try:
+                limit = self.parse_device_limit(combo.get())
+            except ValueError:
+                lbl_msg.configure(text="عدد الأجهزة: اختر «بلا حد» أو اكتب رقماً من 1 إلى 1000.")
+                return
+            if mode.get() == self.ACCESS_MODE_OPEN:
+                until = None
+            else:
+                day = entered_day()
+                if day is None:
+                    lbl_msg.configure(text="اكتب اليوم الأخير بالشكل 2026-12-31، أو اختر مدة من الأزرار.")
+                    return
+                if day < today and not messagebox.askyesno(
+                        "تاريخ مضى", f"اليوم الأخير ({day:%Y-%m-%d}) مضى، فيتوقف الحساب فور الحفظ. متابعة؟", parent=win):
+                    return
+                until = access_end_of_day(day)
+            used = len(saved["devices"])
+            ok, err = cloud_set_client_access(cid, until, limit)
+            if not ok:
+                lbl_msg.configure(text=err)
+                return
+            saved.update(until=until, max=limit, changed=True)
+            summary = describe_access(until)[0]
+            devices_txt = f"على {arabic_devices(limit)}" if limit else "على عدد غير محدود من الأجهزة"
+            extra = (f"\n\n⚠️ المسجّل الآن {arabic_devices(used)} والحد {limit}: يعمل أقدمها دخولاً ويتوقف الباقي."
+                     if limit and used > limit else "")
+            messagebox.showinfo("تم الحفظ ✅", f"«{name}»\n\nالاشتراك: {summary}\nيعمل {devices_txt}.{extra}\n\n"
+                                               "يصل التغيير لبرنامج العميل خلال ٣٠ ثانية.", parent=win)
+            close()
+
+        ctk.CTkButton(footer, text="💾 حفظ", width=160, height=44, font=(UI_FONT, 15, "bold"),
+                      fg_color="#2ecc71", hover_color="#27ae60", command=save).pack(side="right", padx=6)
+        ctk.CTkButton(footer, text="إغلاق", width=120, height=44, font=(UI_FONT, 14, "bold"),
+                      fg_color="#555555", hover_color="#333333", command=close).pack(side="right", padx=6)
+        return win
 
     def open_manage_sub_admins_dialog(self):
         win = ctk.CTkToplevel(self)
@@ -24687,7 +25585,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
     def open_add_client_dialog(self):
         win = ctk.CTkToplevel(self)
         win.title("فتح حساب عميل جديد")
-        win.geometry("400x420")
+        win.geometry(f"420x{min(640, max(520, self.winfo_screenheight() - 90))}")
         win.transient(self)
         win.grab_set()
         win.focus_force()
@@ -24704,7 +25602,21 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         ent_pass = ctk.CTkEntry(win, width=260, height=40, justify="center")
         ent_pass.pack()
 
-        lbl_msg = ctk.CTkLabel(win, text="", font=(UI_FONT, 12), text_color="#e74c3c")
+        # مدة الاشتراك وعدد الأجهزة من البداية (تُعدَّل لاحقاً من «⚙️ الاشتراك والأجهزة»)
+        periods = ["مفتوح بلا حد"] + [label.lstrip("+ ") for label, _ in ACCESS_EXTEND_CHOICES]
+        months_of = {label.lstrip("+ "): m for label, m in ACCESS_EXTEND_CHOICES}
+        ctk.CTkLabel(win, text="مدة الاشتراك:", font=(UI_FONT, 14, "bold")).pack(pady=(18, 5))
+        combo_period = ctk.CTkComboBox(win, values=periods, width=260, height=38, justify="center",
+                                       font=(UI_FONT, 13), state="readonly")
+        combo_period.set(periods[0])
+        combo_period.pack()
+        ctk.CTkLabel(win, text="عدد الأجهزة:", font=(UI_FONT, 14, "bold")).pack(pady=(14, 5))
+        combo_devices = ctk.CTkComboBox(win, values=list(ACCESS_DEVICE_CHOICES), width=260, height=38,
+                                        justify="center", font=(UI_FONT, 13))
+        combo_devices.set(ACCESS_UNLIMITED)
+        combo_devices.pack()
+
+        lbl_msg = ctk.CTkLabel(win, text="", font=(UI_FONT, 12), text_color="#e74c3c", wraplength=380)
         lbl_msg.pack(pady=8)
 
         def do_create():
@@ -24714,16 +25626,30 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             if not name or not user or not pw:
                 lbl_msg.configure(text="من فضلك املأ كل الحقول")
                 return
+            try:
+                limit = self.parse_device_limit(combo_devices.get())
+            except ValueError:
+                lbl_msg.configure(text="عدد الأجهزة: اختر «بلا حد» أو اكتب رقماً من 1 إلى 1000.")
+                return
+            months = months_of.get(combo_period.get())
+            until = access_end_of_day(extend_access(None, months)) if months else None
             ok, result = cloud_create_client_account(name, user, pw)
             if ok:
-                messagebox.showinfo("تم فتح الحساب", f"تم فتح حساب '{name}' بنجاح.\n\nاسم المستخدم: {user}\nكلمة المرور: {pw}\n\nسلّم بيانات الدخول دي للعميل.")
+                access_txt = ""
+                if until or limit:
+                    set_ok, err = cloud_set_client_access(result, until, limit)
+                    access_txt = (f"\nالاشتراك: {describe_access(until)[0]}\nالأجهزة: "
+                                  f"{arabic_devices(limit) if limit else 'بلا حد'}" if set_ok
+                                  else f"\n\n⚠️ تعذّر ضبط المدة/الأجهزة:\n{err}")
+                messagebox.showinfo("تم فتح الحساب", f"تم فتح حساب '{name}' بنجاح.\n\nاسم المستخدم: {user}\nكلمة المرور: {pw}"
+                                                    f"{access_txt}\n\nسلّم بيانات الدخول دي للعميل.")
                 win.destroy()
                 self.refresh_clients()
             else:
                 lbl_msg.configure(text=f"فشل الإنشاء: {result}")
 
         ctk.CTkButton(win, text="فتح الحساب", font=(UI_FONT, 15, "bold"), fg_color="#2ecc71",
-                      hover_color="#27ae60", height=44, command=do_create).pack(pady=25)
+                      hover_color="#27ae60", height=44, command=do_create).pack(pady=18)
 
     ADMIN_CLOUD_ONLY = True   # نسخة المدير لا تعتمد على بيانات الجهاز المحلية إطلاقاً
 
