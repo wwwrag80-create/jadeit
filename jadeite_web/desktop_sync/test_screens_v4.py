@@ -240,7 +240,8 @@ for (sw, sh, dpi), lo, hi in (((1920, 1080, 1.0), 1.0, 1.0), ((1920, 1080, 1.5),
     assert lo <= f <= hi, (sw, sh, dpi, f)
     print(f"✔ شاشة {sw}×{sh} بتكبير {int(dpi * 100)}٪ ← الواجهة {int(f * 100)}٪ من حجمها")
 login = seg("__init__", get_class("LoginWindow"))
-assert "max(self.winfo_screenheight(), 240)" in login and "apply_screen_fit(self)" in login
+assert "self.W, self.H = primary_screen_size(self)" in login and "apply_screen_fit(self)" in login
+assert "max(widget.winfo_screenheight(), 240)" in src   # بلا حدّ أدنى ٦٠٠ (الاحتياط خارج ويندوز)
 assert "get_widget_scaling" in login
 print("✔ شاشة الدخول بحجم الشاشة الفعلي (كان زر «دخول» يقع تحت حافة الشاشات القصيرة)")
 init = seg("__init__")

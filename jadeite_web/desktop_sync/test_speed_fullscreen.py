@@ -269,15 +269,20 @@ print("✔ لوحة المدير: تُكبَّر بعد أن تُظهرها ال
 # شاشة الدخول
 login = get_class("LoginWindow")
 assert "self._go_fullscreen()" in seg("__init__", login)
-L = build(["_go_fullscreen", "_ensure_fullscreen"], ns={"tk": ns["tk"]}, cls=login, extra=textwrap.dedent("""
+lns = {"tk": ns["tk"], "sys": sys}
+exec(module_src("window_screen_rect"), lns)
+lns["maximize_window"] = lambda w: w.calls.append(("maximize",))
+L = build(["_go_fullscreen", "_ensure_fullscreen"], ns=lns, cls=login, extra=textwrap.dedent("""
     def __init__(self, size, pos=(0, 0), st="normal"):
         self.W, self.H, self._alive, self.size, self.pos, self.st, self.calls = 1366, 768, True, size, pos, st, []
+        self._fs_attempts, self.jobs = 0, []
     def state(self): return self.st
     def winfo_width(self): return self.size[0]
     def winfo_height(self): return self.size[1]
     def winfo_rootx(self): return self.pos[0]
     def winfo_rooty(self): return self.pos[1]
     def update_idletasks(self): pass
+    def after(self, ms, fn): self.jobs.append(ms)
     def attributes(self, *a): self.calls.append(a)
 """))
 lw = L((1366, 768))
@@ -286,10 +291,69 @@ assert lw.calls == []
 for bad in (L((1100, 700)), L((1366, 768), pos=(1920, 0))):
     bad._ensure_fullscreen()
     assert bad.calls == [("-fullscreen", False), ("wm_geometry", "1366x768+0+0"), ("-fullscreen", True)], bad.calls
+    assert bad.jobs == [400], "يُتحقَّق مرة أخرى بعد أن يطبّق ويندوز الأمر"
 lw = L((300, 200), st="iconic")
 lw._ensure_fullscreen()
 assert lw.calls == []
+stubborn = L((900, 500))
+for _ in range(3):
+    stubborn._ensure_fullscreen()
+assert stubborn.calls[-1] == ("maximize",) and stubborn.calls.count(("-fullscreen", True)) == 2
+print("✔ جهاز يتجاهل ملء الشاشة مرتين ← تُكبَّر كأي نافذة بدل أن تبقى على جزء من الشاشة")
 print("✔ شاشة الدخول: أصغر من الشاشة أو على شاشة أخرى ← تُعاد لملء الشاشة الرئيسية (والمصغّرة تُترك)")
+
+# ═══ ٢ب) ويندوز بتكبير العرض (ThinkPad ١٥٠٪): البرنامج يعرف التكبير قبل أي نافذة ═══
+i_call = src.index("\nenable_windows_dpi_awareness()\n")
+assert src.index("import customtkinter as ctk") < i_call < src.index("class StableWindowMixin")
+assert i_call < src.index("class LoginWindow") and i_call < src.index('if __name__ == "__main__":')
+first_window = min(src.index(x) for x in ("ctk.CTk(", "tk.Tk(", "LoginWindow()") if x in src)
+assert i_call < first_window
+
+
+class FakeDll:
+    def __init__(self, fail_shcore=False):
+        self.calls, self.fail = [], fail_shcore
+
+    @property
+    def shcore(self):
+        if self.fail:
+            raise OSError("shcore.dll غير موجود (ويندوز ٧)")
+        return types.SimpleNamespace(SetProcessDpiAwareness=lambda v: self.calls.append(("shcore", v)))
+
+    @property
+    def user32(self):
+        return types.SimpleNamespace(
+            SetProcessDPIAware=lambda: self.calls.append(("user32",)),
+            GetSystemMetrics=lambda i: (1920, 1080)[i])
+
+
+for fail, expect in ((False, [("shcore", 2)]), (True, [("user32",)])):
+    dll = FakeDll(fail)
+    fake_ctypes = types.ModuleType("ctypes")
+    fake_ctypes.windll = dll
+    saved = sys.modules.get("ctypes")
+    sys.modules["ctypes"] = fake_ctypes
+    try:
+        dns = {"sys": types.SimpleNamespace(platform="win32")}
+        exec(module_src("enable_windows_dpi_awareness"), dns)
+        assert dns["enable_windows_dpi_awareness"]() is True and dll.calls == expect, dll.calls
+        exec(module_src("primary_screen_size"), dns)
+        # Tk حفظ المقاس المصغّر ١٢٨٠×٧٢٠ — المقاس الحقيقي من ويندوز مباشرة
+        stale = types.SimpleNamespace(winfo_screenwidth=lambda: 1280, winfo_screenheight=lambda: 720)
+        assert dns["primary_screen_size"](stale) == (1920, 1080)
+    finally:
+        if saved is not None:
+            sys.modules["ctypes"] = saved
+lns2 = {"sys": types.SimpleNamespace(platform="linux")}
+exec(module_src("enable_windows_dpi_awareness") + "\n" + module_src("primary_screen_size"), lns2)
+assert lns2["enable_windows_dpi_awareness"]() is False
+assert lns2["primary_screen_size"](types.SimpleNamespace(winfo_screenwidth=lambda: 1600,
+                                                         winfo_screenheight=lambda: 900)) == (1600, 900)
+init_login = seg("__init__", login)
+assert "self.W, self.H = primary_screen_size(self)" in init_login and "winfo_screenwidth" not in init_login
+assert "window_screen_rect(self)" in seg("_ensure_fullscreen", login)
+print("✔ ويندوز بتكبير العرض (حاسوب ThinkPad ١٥٠٪): البرنامج يعرف التكبير قبل إنشاء أي نافذة، وشاشة الدخول "
+      "تقيس الشاشة من ويندوز مباشرة (١٩٢٠×١٠٨٠ لا ١٢٨٠×٧٢٠ المحفوظ) — فتفتح بملء الشاشة من أول لحظة")
 
 # ═══ ٣) عميل سحابي مشترك بمهلة محدّدة ═══
 created = []

@@ -15,6 +15,36 @@ import tkinter.font as tkfont
 import customtkinter as ctk
 from PIL import Image
 
+
+def enable_windows_dpi_awareness():
+    """ويندوز: البرنامج يعرف تكبير العرض **قبل** إنشاء أي نافذة.
+
+    customtkinter يفعّل ذلك بعد أن يكون Tk قد قاس الشاشة وحفظ مقاسها: على حاسوب
+    بتكبير ١٢٥٪ أو ١٥٠٪ (أغلب الحواسيب المحمولة، مثل ThinkPad) يحفظ Tk مقاساً
+    مصغّراً (١٢٨٠×٧٢٠ بدل ١٩٢٠×١٠٨٠) ثم تعمل النوافذ بالبكسل الفعلي — فكانت شاشة
+    الدخول تظهر على جزء من الشاشة، ونسخة exe خاصة (ملفها لا يحمل هذا الإعداد).
+    هنا يُفعَّل أولاً فيقيس Tk الشاشة بمقاسها الحقيقي؛ ونداء customtkinter بعده يُتجاهل بلا ضرر.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+    except Exception:
+        return False
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)      # لكل شاشة — كما تضبطه customtkinter
+        return True
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()            # ويندوز ٧
+        return True
+    except Exception:
+        return False
+
+
+enable_windows_dpi_awareness()
+
 # ================= مكتبات توليد فواتير PDF وعرضها بالعربية (اختيارية، لا توقف البرنامج إن غابت) =================
 try:
     import arabic_reshaper
@@ -129,7 +159,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.66.0"
+APP_VERSION = "1.66.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -538,6 +568,37 @@ def screen_work_area(widget):
         except Exception:
             pass
     return 0, 0, widget.winfo_screenwidth(), max(400, widget.winfo_screenheight() - 48)
+
+
+def primary_screen_size(widget):
+    """مقاس الشاشة الرئيسية بالبكسل الفعلي **الآن** — من ويندوز مباشرة، لا المقاس الذي
+    حفظه Tk عند بدئه (قد يكون مصغّراً بتكبير العرض، أو قبل تغيير الدقة)"""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            w = ctypes.windll.user32.GetSystemMetrics(0)     # SM_CXSCREEN
+            h = ctypes.windll.user32.GetSystemMetrics(1)     # SM_CYSCREEN
+            if w > 0 and h > 0:
+                return w, h
+        except Exception:
+            pass
+    return max(widget.winfo_screenwidth(), 320), max(widget.winfo_screenheight(), 240)
+
+
+def window_screen_rect(win):
+    """مكان النافذة ومقاسها على الشاشة (x، y، العرض، الارتفاع) بالبكسل الفعلي —
+    إطار النافذة كما يراه ويندوز، لا ما تظنه Tk"""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+            r = wintypes.RECT()
+            if hwnd and ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return r.left, r.top, r.right - r.left, r.bottom - r.top
+        except Exception:
+            pass
+    return win.winfo_rootx(), win.winfo_rooty(), win.winfo_width(), win.winfo_height()
 
 
 # أصغر مساحة عمل (بوحدات الواجهة) صُمّمت لها الشاشات، وأدنى تصغير مقبول للقراءة
@@ -6750,9 +6811,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.grab_set()
         win.focus_force()
 
-        # حجم يناسب الشاشة مع هامش، ثم تكبير على ويندوز إن أمكن
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        win.geometry(f"{max(900, sw - 80)}x{max(600, sh - 120)}+40+30")
+        # حجم يناسب الشاشة مع هامش (بوحدات الواجهة: لا يتجاوزها بتكبير العرض)، ثم تكبير على ويندوز إن أمكن
+        self.fit_dialog_to_screen(win, 100000, 100000)
         try:
             win.state("zoomed")
         except Exception:
@@ -9465,7 +9525,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # الشعار يملأ المساحة البيضاء: نصف عرضها المتاح تقريباً، بحدّ
             # أدنى وأقصى يمنعان صِغره على الشاشات الكبيرة أو قصّه على الصغيرة
             try:
-                avail = self.winfo_screenwidth() - self.sidebar_width() - 60
+                # بوحدات الواجهة كالشريط الجانبي (البكسل الفعلي ÷ تكبير العرض)
+                avail = self.logical_screen_width() - self.sidebar_width() - 60
             except Exception:
                 avail = 1000
             # حجم معتدل: كبير بما يكفي ليبرز، وصغير بما يكفي ألا يطغى
@@ -23001,9 +23062,10 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         self._trans_t0 = None
 
         # المشهد بحجم الشاشة الفعلي مهما صغرت (كان حدّه الأدنى ٦٠٠ بكسل ارتفاعاً،
-        # فيقع زر «دخول» تحت حافة الشاشات القصيرة)
-        self.W = max(self.winfo_screenwidth(), 320)
-        self.H = max(self.winfo_screenheight(), 240)
+        # فيقع زر «دخول» تحت حافة الشاشات القصيرة) — من ويندوز مباشرة لا من ذاكرة Tk:
+        # بتكبير العرض كانت تعطي مقاساً مصغّراً فتظهر الشاشة على جزء من الشاشة
+        self.W, self.H = primary_screen_size(self)
+        self._fs_attempts = 0
         apply_screen_fit(self)
         self._go_fullscreen()
         try:
@@ -23070,13 +23132,21 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         try:
             if self.state() in ("iconic", "withdrawn"):
                 return          # صغّرها المستخدم بزر (—)
-            if (self.winfo_width() >= self.W - 2 and self.winfo_height() >= self.H - 2
-                    and abs(self.winfo_rootx()) <= 2 and abs(self.winfo_rooty()) <= 2):
+            # الإطار كما يراه ويندوز نفسه (مكانه ومقاسه) مقابل مقاس الشاشة الحقيقي
+            x, y, w, h = window_screen_rect(self)
+            if w >= self.W - 2 and h >= self.H - 2 and abs(x) <= 2 and abs(y) <= 2:
                 return
+            self._fs_attempts += 1
             self.attributes("-fullscreen", False)
         except Exception:
             return
+        if self._fs_attempts >= 3:
+            # تجاهل الجهاز ملء الشاشة مرتين: تُكبَّر كأي نافذة (بشريط عنوانها) بدل جزء من الشاشة
+            maximize_window(self)
+            return
         self._go_fullscreen()
+        # يُتحقَّق مرة أخرى بعد أن يطبّق ويندوز الأمر
+        self.after(400, self._ensure_fullscreen)
 
     _after_scaling_change = _ensure_fullscreen
 

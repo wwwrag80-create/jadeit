@@ -83,7 +83,7 @@ home = seg("build_home_screen")
 assert 'logo_card.pack(fill="both", expand=True' in home
 assert 'relx=0.5, rely=0.5, anchor="center"' in home
 print("✔ بطاقة الشعار تملأ المساحة الفارغة")
-assert "avail = self.winfo_screenwidth() - self.sidebar_width()" in home
+assert "avail = self.logical_screen_width() - self.sidebar_width()" in home
 print("✔ وحجم الشعار يُحسب بعد خصم عرض الشريط الجانبي")
 assert "self.build_sidebar()" in home
 print("✔ الشريط يُبنى مع الشاشة الرئيسية بعد تسجيل الشاشات")
