@@ -56,7 +56,7 @@ def inv(no, name, t, w, row="", note="", status="ACTIVE", trees=0.0, set_no=""):
 
 
 # ═══ ١) الموردون: القيد اليومي في رصيد المورد ═══
-S = build(["get_supplier_totals"])
+S = build(["get_supplier_totals", "invoices_by_name"])
 app = S()
 app.invoices = {i["رقم الفاتورة"]: i for i in [
     inv(1, "مورد جديد", "قيد يومي مدين", 10.0),          # القيد الذي أبلغ عنه العميل

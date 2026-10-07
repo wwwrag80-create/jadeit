@@ -16,7 +16,7 @@ INHERITED = {"after","after_idle","title","geometry","update_idletasks","state",
  "grab_set","transient","bind","configure","winfo_children","pack_forget","eval","grid_columnconfigure",
  "resizable","deiconify","pack","wait_window","update","quit","iconbitmap","columnconfigure",
  "rowconfigure","lift","grid","focus_set","winfo_exists","after_cancel","bell","clipboard_clear",
- "clipboard_append","selection_get","winfo_width", "winfo_viewable","winfo_height","wm_attributes","tk","cget",
+ "clipboard_append","selection_get","winfo_width", "winfo_viewable","winfo_ismapped","winfo_height","wm_attributes","tk","cget",
  "yview","yview_moveto","yview_scroll","bind_all","unbind_all","item","identify_column",
  "get_children","index","selection","winfo_rgb","iconify","winfo_rootx","winfo_rooty","focus_get",
  # رسوم لوحة المؤشرات (MiniChart يرث tk.Canvas)

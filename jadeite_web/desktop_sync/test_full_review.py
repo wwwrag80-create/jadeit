@@ -49,7 +49,7 @@ class Box:
 
 ns["messagebox"] = Box
 members = ["worker_rows_raji", "calculate_single_ledger", "inv_period", "inv_in_period", "invoices_by_name",
-           "_DATE_DIGITS", "read_entry_date"]
+           "invoices_by_name_period",           "_DATE_DIGITS", "read_entry_date"]
 exec("class S:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in members), ns)
 S = ns["S"]
 

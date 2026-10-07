@@ -350,8 +350,11 @@ P = build(["_note_user_input", "_prebuild_screens"], ns={"time": time, "log_clou
 
 
 class Pre(P):
+    WARM_STEP_MS = 60
+
     def __init__(self):
         self.built, self.after_calls, self.binds = [], [], []
+        self._built_screens, self._dirty_screens = set(), set()
 
     def bind_all(self, seq, fn, add=None):
         self.binds.append((seq, add))
@@ -359,10 +362,19 @@ class Pre(P):
     def after(self, ms, fn):
         self.after_calls.append(ms)
 
-    def ensure_screen_built(self, name):
+    def screen_needs_warm(self, name):
+        return name not in self._built_screens
+
+    def ensure_screen_built(self, name, background=False):
+        assert background, "التجهيز في الخلفية لا يُظهر مؤشّر انتظار ولا رسالة"
         self.built.append(name)
+        self._built_screens.add(name)
+        return True
 
     def refresh_pending_screen(self, name):
+        pass
+
+    def prerender_screen(self, name):
         pass
 
 
@@ -374,7 +386,7 @@ assert ("<KeyPress>", "+") in p.binds and ("<ButtonPress>", "+") in p.binds
 print("✔ المستخدم يكتب أو ينقر ← التجهيز ينتظر (لا توقّف تحت يده)")
 p._last_user_input = time.monotonic() - 5
 p._prebuild_screens(["المبيعات", "مراحل التصنيع"])
-assert p.built == ["المبيعات"] and p.after_calls[-1] == 120 and len(p.binds) == 2
+assert p.built == ["المبيعات"] and p.after_calls[-1] == 60 and len(p.binds) == 2
 print("✔ بعد الهدوء تُجهَّز شاشة كل مرة، والمراقبة تُركَّب مرة واحدة")
 
 # ═══ ٦) البناء عند أول فتح ═══

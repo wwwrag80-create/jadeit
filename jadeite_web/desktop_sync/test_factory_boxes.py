@@ -25,7 +25,7 @@ def body(name):
 
 ns = {}
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
-    "LOSSES_ALL", "inv_period", "get_recorded_periods", "factory_period_options", "selected_factory_range",
+    "LOSSES_ALL", "inv_period", "invoices_by_period", "get_recorded_periods", "factory_period_options", "selected_factory_range",
     "factory_range_label", "factory_boxes_totals", "combo_range", "set_combo_range", "periods_in_range",
     "range_covers_all", "range_scope_label", "set_factory_range", "factory_show_all",
     "reset_factory_boxes_period", "statement_month_options", "statement_range", "set_statement_range")), ns)

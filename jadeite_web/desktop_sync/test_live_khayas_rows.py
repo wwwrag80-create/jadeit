@@ -51,7 +51,7 @@ print("✔ رصيد افتتاح الفترة يُقرأ من دفتر الخز�
 ns = {"calendar": calendar, "datetime": datetime, "COUNTED_STATUSES": ("ACTIVE", "SETTLED_INOUT")}
 exec("class S:\n"
      + "\n".join(method_src(m) for m in (
-         "inv_period", "inv_in_period", "get_treasury_type_sets", "treasury_bucket",
+         "inv_period", "inv_in_period", "invoices_by_period", "get_treasury_type_sets", "treasury_bucket",
          "get_workers_khayas", "treasury_period_components", "get_treasury_ledger",
          "get_opening_treasury_balance", "period_closing_datetime"))
      + "\n    def get_smart_default_date(self): return '2026-10-05'\n"

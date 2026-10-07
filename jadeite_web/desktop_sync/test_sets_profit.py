@@ -15,7 +15,7 @@ for node in ast.walk(tree):
 
 WANT = ["get_recovery_pct", "set_recovery_pct", "get_sets_profit_rows",
         "get_sets_profit_totals", "get_set_khayas_breakdown", "get_sets_net_rows",
-        "get_sets_gems_stones"]
+        "get_sets_gems_stones", "invoices_by_period", "period_invoices"]
 chunks = []
 for m in cls.body:
     if isinstance(m, ast.FunctionDef) and m.name in WANT:

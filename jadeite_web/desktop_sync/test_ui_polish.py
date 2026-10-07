@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """اختبار: أسماء الأعمدة كاملة، الترقيم التلقائي، والتجهيز المسبق للشاشات"""
-import ast, io, textwrap
+import ast, io, re, textwrap
 
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
 cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "GoldSystemApp")
@@ -55,14 +55,15 @@ print("✔ وإعادة الترقيم مربوطة بالحذف فعلاً")
 
 # ═══ ٣) التجهيز المسبق للشاشات الثلاث ═══
 pre = seg("_prebuild_screens")
-assert "ensure_screen_built" in pre and "self.after(120" in pre
-print("✔ الشاشات الثلاث تُبنى في الخلفية تباعاً (١٢٠ ملّي بين كل شاشة)")
+assert "ensure_screen_built" in pre and "self.after(self.WARM_STEP_MS" in pre
+print("✔ الشاشات تُبنى في الخلفية تباعاً (خطوة صغيرة كل مرة بمهلة بينها)")
 assert "log_cloud_error" in pre
 print("✔ فشل تجهيز شاشة لا يوقف تجهيز البقية")
 
 calc = seg("_startup_first_calc")
-assert '["المبيعات", "مراحل التصنيع", "صناديق الخياس"]' in calc
-print("✔ الشاشات المجهّزة: المبيعات، مراحل التصنيع، صناديق الخياس")
+assert "self.warm_screens(delay=0)" in calc
+assert re.search(r'WARM_FIRST = \("المبيعات", "مراحل التصنيع", "صناديق الخياس"\)', src)
+print("✔ كل الشاشات تُجهَّز بعد الدخول — المبيعات، مراحل التصنيع، صناديق الخياس أولاً")
 print("  → تفتح فوراً بلا «تكوّن» أمام المستخدم")
 
 print("\n✅ كل التحسينات تعمل")

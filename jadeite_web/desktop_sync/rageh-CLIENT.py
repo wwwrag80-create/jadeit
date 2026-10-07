@@ -45,6 +45,7 @@ import random
 import time
 import zlib
 import lzma
+import zipfile
 
 SUPABASE_URL = "https://ttpqksvtnhoulghgovob.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ymRG7rKUf-704V3j1bNwgg_b1IvlMlX"
@@ -128,7 +129,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.65.0"
+APP_VERSION = "1.66.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -345,6 +346,184 @@ def resource_path(filename):
     """مسار ملف مرفق مع البرنامج، يعمل في التشغيل العادي وداخل ملف exe معاً"""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, filename)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  تحديث البرنامج من الحزمة (زر «⬆️ تحديث» أعلى الشاشة)
+#
+#  الحزمة واحدة من:
+#    • حزمة المصدر المرسلة (jadeite_<الإصدار>.zip): فيها desktop_sync كاملاً.
+#      - تشغيل من ملفات بايثون ← تُنسخ الملفات الجديدة فوق القديمة ثم يُعاد التشغيل.
+#      - نسخة exe ← يُبنى exe الجديد على هذا الجهاز ببايثون (build_exe.py نفسه،
+#        بكل فحوصه) ثم يحلّ محلّ القديم. والمدير يبني نسخة العملاء أيضاً للتوزيع.
+#    • ملف exe جاهز (Jadeite-Client/Admin-<الإصدار>.exe) أو zip فيه هذا الملف
+#      ← يحلّ محلّ البرنامج مباشرة.
+#  قبل أي تحديث: نسخة احتياطية من البيانات. والبيانات نفسها في %LOCALAPPDATA%\JadeiteERP
+#  لا يلمسها التحديث إطلاقاً.
+# ═══════════════════════════════════════════════════════════════════════
+UPDATE_SOURCE_NAME = "rageh-1-34-14-cloud.py"
+UPDATE_EXE_RE = re.compile(r"(?:^|/)Jadeite-(Client|Admin)-(\d+(?:\.\d+)+)\.exe$", re.I)
+
+
+def version_tuple(text):
+    """«1.66.0» ← (1, 66, 0) للمقارنة؛ والنص غير الصالح ← ()"""
+    try:
+        return tuple(int(x) for x in str(text).strip().split("."))
+    except (TypeError, ValueError):
+        return ()
+
+
+def app_build_kind():
+    return "admin" if IS_ADMIN_BUILD else "client"
+
+
+def inspect_update_package(path):
+    """يقرأ الحزمة دون تنفيذ أي شيء منها، ويرجع وصفها:
+        {"type": "source" | "exe" | "zip_exe", "version": "1.66.0",
+         "build": "client"/"admin" (لملف exe)، "prefix": مسار desktop_sync داخل الحزمة، "member": ملف exe داخلها}
+    أو يرفع ValueError برسالة عربية واضحة."""
+    name = os.path.basename(path or "")
+    if not path or not os.path.isfile(path):
+        raise ValueError("الملف غير موجود.")
+    if name.lower().endswith(".exe"):
+        m = UPDATE_EXE_RE.search(name)
+        if not m:
+            raise ValueError("اسم ملف exe لا يحمل اسم البرنامج وإصداره (مثل Jadeite-Client-1.66.0.exe).")
+        return {"type": "exe", "version": m.group(2), "build": m.group(1).lower(), "file": path}
+    if not zipfile.is_zipfile(path):
+        raise ValueError("الملف ليس حزمة zip ولا ملف exe.")
+    with zipfile.ZipFile(path) as zf:
+        names = [n for n in zf.namelist() if not n.endswith("/")]
+        sources = sorted((n for n in names if n == UPDATE_SOURCE_NAME or n.endswith("/" + UPDATE_SOURCE_NAME)),
+                         key=len)
+        if sources:
+            member = sources[0]
+            prefix = member[:-len(UPDATE_SOURCE_NAME)]
+            text = zf.read(member).decode("utf-8", errors="replace")
+            m = re.search(r'^APP_VERSION\s*=\s*"([\d.]+)"', text, re.M)
+            if not m:
+                raise ValueError("لم يُعثر على رقم الإصدار داخل الحزمة.")
+            return {"type": "source", "version": m.group(1), "prefix": prefix,
+                    "has_builder": prefix + "build_exe.py" in names, "file": path}
+        exes = [n for n in names if UPDATE_EXE_RE.search(n)]
+        if exes:
+            # الملف المناسب لهذه النسخة (عميل/مدير) أولاً
+            exes.sort(key=lambda n: UPDATE_EXE_RE.search(n).group(1).lower() != app_build_kind())
+            m = UPDATE_EXE_RE.search(exes[0])
+            return {"type": "zip_exe", "version": m.group(2), "build": m.group(1).lower(),
+                    "member": exes[0], "file": path}
+    raise ValueError("الحزمة لا تحوي برنامج جاديت (لا ملفات المصدر ولا ملف exe).")
+
+
+def safe_extract_zip(zf, dest, prefix="", strip_prefix=False):
+    """يفك الحزمة داخل dest وحده — اسم ملف فيه «..» أو مسار مطلق لا يخرج منه أبداً.
+    prefix: يقصر الفك على ما تحته؛ strip_prefix: يُزال من المسار عند الكتابة. يرجع عدد الملفات."""
+    root = os.path.realpath(dest)
+    count = 0
+    for info in zf.infolist():
+        name = info.filename
+        if name.endswith("/") or not name.startswith(prefix):
+            continue
+        rel = name[len(prefix):] if strip_prefix else name
+        target = os.path.realpath(os.path.join(root, *rel.split("/")))
+        if not target.startswith(root + os.sep):
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with zf.open(info) as src, open(target, "wb") as out:
+            shutil.copyfileobj(src, out)
+        count += 1
+    return count
+
+
+def find_build_python():
+    """بايثون مثبّت على الجهاز يصلح لبناء exe (٣٫١٠ فأحدث وفيه tkinter) — أو None.
+    (نسخة exe لا تحمل بايثون صالحاً للبناء؛ و«python» على ويندوز قد يكون اختصار المتجر الفارغ)"""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for cmd in (["py", "-3"], ["python"], ["python3"]):
+        exe = shutil.which(cmd[0])
+        try:
+            if not exe or (getattr(sys, "frozen", False) and os.path.samefile(exe, sys.executable)):
+                continue
+        except OSError:
+            continue
+        try:
+            out = subprocess.run([exe] + cmd[1:] + ["-c", "import sys, tkinter; print('%d.%d' % sys.version_info[:2])"],
+                                 capture_output=True, text=True, timeout=30, creationflags=flags)
+        except Exception:
+            continue
+        if out.returncode == 0 and version_tuple(out.stdout.strip()) >= (3, 10):
+            return [exe] + cmd[1:]
+    return None
+
+
+def write_swap_script(folder, old_pid, new_exe, target_exe, reveal=None):
+    """سكربت PowerShell صغير: ينتظر إغلاق البرنامج، يحفظ القديم باسم ‎.previous، يضع الجديد مكانه
+    (الاسم نفسه: اختصار سطح المكتب يبقى يعمل)، ثم يشغّله. ويُظهر ملف نسخة العملاء إن وُجد."""
+    def q(p):
+        return "'" + str(p).replace("'", "''") + "'"
+
+    lines = [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        f"$old = {int(old_pid)}",
+        f"$new = {q(new_exe)}",
+        f"$target = {q(target_exe)}",
+        "for ($i = 0; $i -lt 120 -and (Get-Process -Id $old -ErrorAction SilentlyContinue); $i++) "
+        "{ Start-Sleep -Milliseconds 500 }",
+        "Copy-Item -LiteralPath $target -Destination ($target + '.previous') -Force",
+        "$done = $false",
+        "for ($i = 0; $i -lt 30 -and -not $done; $i++) {",
+        "  try { Copy-Item -LiteralPath $new -Destination $target -Force -ErrorAction Stop; $done = $true }",
+        "  catch { Start-Sleep -Seconds 1 }",
+        "}",
+        "Start-Process -FilePath $target",
+    ]
+    if reveal:
+        lines.append(f"Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,\"' + {q(reveal)} + '\"')")
+    lines.append("Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force")
+    path = os.path.join(folder, "jadeite_update.ps1")
+    # UTF-8 بعلامة BOM: PowerShell يقرأ المسارات العربية صحيحة
+    with open(path, "w", encoding="utf-8-sig") as f:
+        f.write("\r\n".join(lines) + "\r\n")
+    return path
+
+
+def plan_update(info, frozen, kind, current):
+    """ماذا سيفعل التحديث بهذه الحزمة على هذا البرنامج — أو لماذا لا يصلح.
+    يرجع {"ok": bool, "mode": "copy" | "build" | "swap" | None, "text": شرح عربي}."""
+    labels = {"client": "نسخة العميل", "admin": "نسخة المدير"}
+    v, cur = info.get("version", ""), current
+    if version_tuple(v) < version_tuple(cur):
+        return {"ok": False, "mode": None,
+                "text": f"الحزمة أقدم من البرنامج الحالي ({v} أقدم من {cur}) — لا تُثبَّت نسخة أقدم."}
+    same = version_tuple(v) == version_tuple(cur)
+    head = (f"الحزمة بالإصدار نفسه ({v}) — إعادة تثبيت." if same
+            else f"الإصدار الحالي {cur}  ←  الإصدار الجديد {v}")
+    if info.get("type") in ("exe", "zip_exe"):
+        if info.get("build") != kind:
+            return {"ok": False, "mode": None,
+                    "text": f"هذا الملف لـ{labels.get(info.get('build'), '؟')}، وهذا البرنامج {labels[kind]}."}
+        if not frozen:
+            return {"ok": False, "mode": None,
+                    "text": "البرنامج يعمل هنا من ملفات بايثون، وهذه الحزمة ملف exe جاهز: شغّله مباشرة، "
+                            "أو اختر حزمة المصدر (jadeite_<الإصدار>.zip) لتحديث الملفات."}
+        return {"ok": True, "mode": "swap",
+                "text": f"{head}\nيُستبدل البرنامج بالملف الجاهز ثم يُفتح من جديد (اختصار سطح المكتب يبقى يعمل)."}
+    if not frozen:
+        return {"ok": True, "mode": "copy",
+                "text": f"{head}\nتُنسخ ملفات الإصدار الجديد فوق ملفات البرنامج ثم يُفتح من جديد."}
+    if not info.get("has_builder"):
+        return {"ok": False, "mode": None, "text": "الحزمة ناقصة: لا يوجد فيها build_exe.py لبناء البرنامج."}
+    extra = "\nوتُبنى نسخة العملاء أيضاً لتوزيعها." if kind == "admin" else ""
+    return {"ok": True, "mode": "build",
+            "text": f"{head}\nيُبنى البرنامج الجديد على هذا الجهاز (بكل فحوصه — دقائق) ثم يحلّ محلّ الحالي "
+                    f"ويُفتح من جديد.{extra}"}
+
+
+def apply_source_package(info, program_dir):
+    """يكتب ملفات desktop_sync من حزمة المصدر فوق مجلد البرنامج (التشغيل من ملفات بايثون).
+    لا يحذف شيئاً: ملف المفتاح السري وبيئة البناء وأي ملف لك يبقى كما هو. يرجع عدد الملفات."""
+    with zipfile.ZipFile(info["file"]) as zf:
+        return safe_extract_zip(zf, program_dir, prefix=info.get("prefix", ""), strip_prefix=True)
 
 
 def screen_work_area(widget):
@@ -3664,10 +3843,46 @@ class ScreenRouter(ctk.CTkFrame):
         self.current_screen = name
         self._ensure_header(name)
         self.pack(fill="both", expand=True)
+        target = self._wrappers.get(name)
         for w in self._wrappers.values():
-            w.pack_forget()
-        if name in self._wrappers:
-            self._wrappers[name].pack(fill="both", expand=True)
+            if w is not target:
+                w.pack_forget()
+        if target is not None and target.winfo_manager() != "pack":
+            target.pack(fill="both", expand=True)
+
+    def prerender(self, name, size):
+        """يعرض الشاشة مرة **خارج حدود النافذة** (في الخلفية) بمقاسها الحقيقي:
+        تُنشأ نوافذ أدواتها وتُرتَّب وتُرسم مسبقاً، فيصير أول ظهور لها أمام المستخدم
+        كأي ظهور تالٍ — كان أول فتح لكل شاشة يُنشئ مئات النوافذ ويرسمها تحت يده.
+
+        size: (العرض، الارتفاع) لمنطقة الشاشات. يرجع True لو رُسمت.
+        (place من tkinter مباشرة: customtkinter يرفض width/height في place)
+        """
+        wrapper = self._wrappers.get(name)
+        if wrapper is None or not size:
+            return False
+        w, h = size
+        router_mapped = bool(self.winfo_ismapped())
+        if router_mapped and self.current_screen == name:
+            return False                    # ظاهرة أمام المستخدم أصلاً
+        self._ensure_header(name)
+        try:
+            if router_mapped:
+                # داخل شاشة أخرى: تُرسم بجانبها خارج الحدود (مقصوصة لا تُرى)
+                tk.Place.place_configure(wrapper, x=-(w + 400), y=0, width=w, height=h)
+            else:
+                # في الرئيسية: منطقة الشاشات كلها خارج الحدود، والشاشة داخلها
+                tk.Place.place_configure(self, x=-(w + 400), y=0, width=w, height=h)
+                tk.Place.place_configure(wrapper, x=0, y=0, width=w, height=h)
+            self.update_idletasks()
+            return True
+        finally:
+            for widget in ((wrapper,) if router_mapped else (wrapper, self)):
+                try:
+                    if widget.winfo_manager() == "place":
+                        tk.Place.place_forget(widget)
+                except Exception:
+                    pass
 
     def _go_home(self):
         self.pack_forget()
@@ -3851,11 +4066,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.update_idletasks()
         except Exception:
             pass
-        # الشاشات الثلاث الأكثر استخداماً تُبنى في الخلفية بعد ظهور النظام،
+        # كل الشاشات تُبنى في الخلفية بعد ظهور النظام (الثلاث الأكثر استخداماً أولاً)،
         # فتفتح **فوراً** بلا «تكوّن» أمام المستخدم. البناء متدرّج (شاشة كل
         # ١٢٠ ملّي ثانية) حتى لا تتجمّد الواجهة أثناء التجهيز.
         def prebuild():
-            self._prebuild_screens(["المبيعات", "مراحل التصنيع", "صناديق الخياس"])
+            self.warm_screens(delay=0)       # سلسلة تجهيز واحدة (تحلّ محل ما جدولته recalculate_all)
 
         try:
             self.recalculate_all()
@@ -4106,12 +4321,105 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def _note_user_input(self, _event=None):
         self._last_user_input = time.monotonic()
 
-    def _prebuild_screens(self, names):
-        """يبني الشاشات المطلوبة تباعاً في الخلفية بلا إظهارها.
+    # ══ فتح فوري لأي شاشة ══
+    # كل الشاشات تُجهَّز في أوقات الفراغ: تُبنى بعد الدخول، وتُحدَّث بعد كل تعديل
+    # بيانات (ترحيل، حذف، إقفال...) — فعند النقر تُعرض جاهزة بلا بناء ولا حساب.
+    # الشاشات الثلاث الأكثر استخداماً أولاً، ثم بترتيب القائمة الرئيسية.
+    WARM_FIRST = ("المبيعات", "مراحل التصنيع", "صناديق الخياس")
+    WARM_STEP_MS = 60          # مهلة بين خطوات التجهيز: تمرّ فيها أحداث الواجهة أولاً
 
-        لا يبني شاشة والمستخدم يكتب أو ينقر: ينتظر هدوءاً قصيراً ثم يكمل —
-        فلا يحسّ المستخدم بأي توقّف لحظة بدئه العمل بعد الدخول مباشرة.
+    def warm_order(self):
+        """ترتيب تجهيز الشاشات في الخلفية"""
+        builders = getattr(self, "_screen_builders", {})
+        order = list(self.WARM_FIRST) + list(getattr(self, "home_order", None) or self.get_home_screens_default())
+        order += list(builders)
+        seen = set()
+        return [n for n in order if n in builders and not (n in seen or seen.add(n))]
+
+    def screen_needs_warm(self, name):
+        """هل تحتاج الشاشة تجهيزاً؟ لم تُبنَ بعد، أو بُنيت وتغيّرت بياناتها منذ آخر عرض.
+
+        الشاشة المفتوحة أمام المستخدم لا تُلمس (تحدّثها recalculate_all فوراً)، والشاشة
+        التي فشل بناؤها في الخلفية تُترك لأول فتح لها (فتظهر رسالة الخطأ هناك).
         """
+        if name not in getattr(self, "_built_screens", set()):
+            return (name in getattr(self, "_screen_builders", {})
+                    and name not in getattr(self, "_warm_failed", set()))
+        tv = getattr(self, "tabview", None)
+        try:
+            visible = tv is not None and tv.current_screen == name and bool(tv.winfo_ismapped())
+        except Exception:
+            visible = False
+        if visible:
+            return False
+        if name in getattr(self, "_dirty_screens", set()):
+            return True
+        # مبنية ومحدَّثة: يبقى أن تكون مرسومة مسبقاً بمقاس منطقة الشاشات الحالي
+        size = self.screen_area_size()
+        return size is not None and getattr(self, "_rendered_size", {}).get(name) != size
+
+    def screen_area_size(self):
+        """مقاس منطقة الشاشات كما سيكون عند فتح أي شاشة (أو None إن تعذّر معرفته الآن).
+
+        داخل شاشة: مقاسها الفعلي (ويُحفظ مع مقاس النافذة). في الرئيسية: المحفوظ ما دامت
+        النافذة بمقاسها نفسه، وإلا يُحسب من الرئيسية: الشريط الجانبي والشريط العلوي
+        يختفيان داخل الشاشات، فعرضها = عرض الإطار + الشريط الجانبي، وارتفاعها = ارتفاع
+        الإطار + ما فوقه.
+        """
+        try:
+            tv, shell = self.tabview, self.main_shell
+            win = (self.winfo_width(), self.winfo_height())
+            if tv.winfo_ismapped() and tv.winfo_manager() == "pack":
+                size = (tv.winfo_width(), tv.winfo_height())
+                self._router_geom = (win, size)
+            else:
+                saved = getattr(self, "_router_geom", None)
+                if saved and saved[0] == win:
+                    size = saved[1]
+                elif shell.winfo_ismapped():
+                    side = getattr(self, "sidebar", None)
+                    extra_w = side.winfo_width() if side is not None and side.winfo_ismapped() else 0
+                    size = (shell.winfo_width() + extra_w, shell.winfo_height() + shell.winfo_y())
+                else:
+                    return None
+        except Exception:
+            return None
+        return size if size[0] > 50 and size[1] > 50 else None
+
+    def prerender_screen(self, name):
+        """يرسم الشاشة مسبقاً خارج حدود النافذة بمقاس منطقة الشاشات (ScreenRouter.prerender)"""
+        size = self.screen_area_size()
+        if size is None or name not in getattr(self, "_built_screens", set()):
+            return False
+        try:
+            done = self.tabview.prerender(name, size)
+        except Exception as e:
+            log_cloud_error(f"تعذّر رسم شاشة ({name}) مسبقاً", e)
+            done = False
+        # يُسجَّل حتى لو تعذّر الرسم: لا إعادة محاولة بلا نهاية بالمقاس نفسه
+        self._rendered_size = getattr(self, "_rendered_size", {})
+        self._rendered_size[name] = size
+        return done
+
+    def warm_screens(self, delay=400):
+        """يبدأ تجهيز الشاشات في الخلفية من جديد (بعد الدخول وبعد كل تعديل بيانات)"""
+        job = getattr(self, "_warm_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._warm_job = self.after(delay, lambda: self._prebuild_screens(self.warm_order()))
+
+    def _prebuild_screens(self, names):
+        """يجهّز الشاشات المطلوبة تباعاً في الخلفية بلا إظهارها: يبني ما لم يُبنَ،
+        ويحدّث ما تغيّرت بياناته — شاشة واحدة في كل خطوة.
+
+        لا يجهّز شاشة والمستخدم يكتب أو ينقر: ينتظر هدوءاً قصيراً ثم يكمل —
+        فلا يحسّ المستخدم بأي توقّف تحت يده.
+        """
+        self._warm_job = None
+        names = [n for n in names if self.screen_needs_warm(n)]
         if not names:
             return
         if not getattr(self, "_input_watch", False):
@@ -4121,17 +4429,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.bind_all(seq, self._note_user_input, add="+")
                 except Exception:
                     pass
-        if time.monotonic() - getattr(self, "_last_user_input", 0.0) < 1.5:
-            self.after(700, lambda: self._prebuild_screens(names))
+        # وغطاء الانتقال من شاشة الدخول ما زال يتحرك: لا تقطيع لحركته
+        if (time.monotonic() - getattr(self, "_last_user_input", 0.0) < 1.5
+                or getattr(self, "_intro_cv", None) is not None):
+            self._warm_job = self.after(700, lambda: self._prebuild_screens(names))
             return
-        name, rest = names[0], names[1:]
+        # خطوة واحدة صغيرة في كل مرة (بناء، أو تحديث، أو رسم مسبق) — فأطول توقّف
+        # محتمل تحت يد المستخدم جزء من شاشة واحدة لا شاشة كاملة
+        name = names[0]
         try:
-            self.ensure_screen_built(name)
-            self.refresh_pending_screen(name)
+            if name not in getattr(self, "_built_screens", set()):
+                if not self.ensure_screen_built(name, background=True) and \
+                        name not in getattr(self, "_built_screens", set()):
+                    self._warm_failed = getattr(self, "_warm_failed", set()) | {name}
+            elif name in getattr(self, "_dirty_screens", set()):
+                self.refresh_pending_screen(name)
+            else:
+                self.prerender_screen(name)
         except Exception as e:
             log_cloud_error(f"تعذّر تجهيز شاشة ({name}) مسبقاً", e)
-        if rest:
-            self.after(120, lambda: self._prebuild_screens(rest))
+            self._warm_failed = getattr(self, "_warm_failed", set()) | {name}
+            names = names[1:]
+        if names:
+            self._warm_job = self.after(self.WARM_STEP_MS, lambda: self._prebuild_screens(names))
 
     def schedule_permission_refresh(self):
         self.after(30000, self.refresh_edit_permission)   # كل ٣٠ ثانية — ليصل فتح المدير للعميل بسرعة
@@ -4267,6 +4587,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 idx.setdefault(inv.get("الاسم"), []).append(inv)
             self._name_idx, self._name_idx_sig = idx, sig
         return self._name_idx
+
+    def invoices_by_name_period(self):
+        """الحركات مجمّعة بالاسم والفترة معاً: {(الاسم، الفترة): [حركاته فيها]}.
+
+        دفتر العامل في فترة (calculate_single_ledger) كان يمسح حركات العامل في
+        **كل** الفترات ليأخذ منها فترة واحدة، ولوحة المؤشرات تحسب دفتر كل عامل في
+        كل فترة (نحو ٩٠٠ دفتر). الفهرس يُبطَل بالشروط نفسها التي تُبطل فهرس
+        الأسماء، ويحمل كائنات الحركات نفسها بترتيبها الأصلي — فالنتيجة هي هي.
+        """
+        sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0))
+        if getattr(self, "_name_period_idx_sig", None) != sig:
+            idx = {}
+            for inv in self.invoices.values():
+                idx.setdefault((inv.get("الاسم"), self.inv_period(inv)), []).append(inv)
+            self._name_period_idx, self._name_period_idx_sig = idx, sig
+        return self._name_period_idx
 
     # ═══ السحابة الخفيفة: الرفع عند التغيير فقط ═══
     # يُفحص كل ١٠ ثوانٍ، لكن النسخة لا تُرفع إلا إن تغيّرت البيانات فعلاً (بصمة المحتوى)،
@@ -4926,6 +5263,278 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
         self.apply_design_system()
         self.recalculate_all()
+
+    # ══ زر «⬆️ تحديث»: تحديث البرنامج كاملاً من الحزمة المرسلة (inspect_update_package / plan_update) ══
+    def open_app_update(self):
+        """نافذة التحديث: اختيار الحزمة ← عرض ما سيحدث (الإصدار الحالي ← الجديد) ← «تحديث الآن»"""
+        old = getattr(self, "_update_win", None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.lift()
+                old.focus_force()
+                return
+        except Exception:
+            pass
+        win = ctk.CTkToplevel(self)
+        self._update_win = win
+        win.title("تحديث البرنامج")
+        win.geometry("760x600")
+        win.transient(self)
+        win.focus_force()
+        state = {"info": None, "plan": None, "busy": False}
+        frozen = bool(getattr(sys, "frozen", False))
+        kind = app_build_kind()
+
+        ctk.CTkLabel(win, text="⬆️ تحديث البرنامج إلى آخر إصدار", font=(UI_FONT, 20, "bold"),
+                     text_color=UI_TITLE).pack(pady=(18, 2))
+        ctk.CTkLabel(win, text=f"الإصدار الحالي: {APP_VERSION}  ·  "
+                               f"{'نسخة المدير' if IS_ADMIN_BUILD else 'نسخة العميل'}",
+                     font=(UI_FONT, 13), text_color=UI["muted"]).pack()
+        ctk.CTkLabel(win, text="اختر الحزمة التي وصلتك: jadeite_<الإصدار>.zip أو ملف Jadeite-…exe الجاهز.\n"
+                               "بياناتك لا تُمسّ: تُحفظ نسخة احتياطية منها أولاً، وتبقى في مجلدها على هذا الجهاز.",
+                     font=(UI_FONT, 12), justify="center").pack(pady=(10, 8))
+        lbl_file = ctk.CTkLabel(win, text="", font=(UI_FONT, 11), text_color=UI["muted"], wraplength=700)
+        lbl_plan = ctk.CTkLabel(win, text="", font=(UI_FONT, 14, "bold"), justify="center", wraplength=700)
+        var_clients = ctk.BooleanVar(value=True)
+        chk_clients = ctk.CTkCheckBox(win, text="بناء نسخة العملاء أيضاً (توضع بجانب برنامجك لتوزيعها)",
+                                      variable=var_clients, font=(UI_FONT, 12))
+        progress = ctk.CTkProgressBar(win, mode="indeterminate", width=520)
+        log = ctk.CTkTextbox(win, height=170, font=("Consolas", 11), wrap="word")
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side="bottom", pady=(6, 14))
+
+        def say(line):
+            try:
+                log.insert("end", line.rstrip() + "\n")
+                log.see("end")
+            except Exception:
+                pass
+
+        def set_busy(busy):
+            state["busy"] = busy
+            for b, on in ((btn_pick, not busy), (btn_go, not busy and bool(state["plan"] and state["plan"]["ok"])),
+                          (btn_close, not busy)):
+                try:
+                    b.configure(state="normal" if on else "disabled")
+                except Exception:
+                    pass
+            try:
+                if busy:
+                    progress.pack(pady=(4, 4), before=log)
+                    progress.start()
+                else:
+                    progress.stop()
+                    progress.pack_forget()
+            except Exception:
+                pass
+
+        def choose():
+            path = filedialog.askopenfilename(
+                parent=win, title="اختر حزمة التحديث",
+                filetypes=[("حزمة التحديث", "*.zip *.exe"), ("كل الملفات", "*.*")])
+            if not path:
+                return
+            lbl_file.configure(text=path)
+            lbl_file.pack(pady=(2, 0), after=btn_pick)
+            try:
+                info = inspect_update_package(path)
+            except Exception as e:
+                state["info"] = state["plan"] = None
+                lbl_plan.configure(text=f"✘ {e}", text_color=UI["danger"])
+                lbl_plan.pack(pady=(10, 4), after=lbl_file)
+                set_busy(False)
+                return
+            plan = plan_update(info, frozen, kind, APP_VERSION)
+            state["info"], state["plan"] = info, plan
+            lbl_plan.configure(text=("✔ " if plan["ok"] else "✘ ") + plan["text"],
+                               text_color=UI["success"] if plan["ok"] else UI["danger"])
+            lbl_plan.pack(pady=(10, 4), after=lbl_file)
+            if plan["ok"] and plan["mode"] == "build" and kind == "admin":
+                chk_clients.pack(pady=(2, 4), after=lbl_plan)
+            else:
+                chk_clients.pack_forget()
+            set_busy(False)
+
+        def go():
+            plan, info = state["plan"], state["info"]
+            if not plan or not plan["ok"] or state["busy"]:
+                return
+            if not messagebox.askyesno("تحديث البرنامج", f"{plan['text']}\n\nهل تريد المتابعة؟", parent=win):
+                return
+            log.pack(fill="both", expand=True, padx=18, pady=(4, 4))
+            set_busy(True)
+            say(f"• نسخة احتياطية من البيانات قبل التحديث…")
+            try:
+                self.perform_backup()
+                say("  ✔ تمت")
+            except Exception as e:
+                say(f"  (تعذّرت النسخة الاحتياطية: {e})")
+            try:
+                if plan["mode"] == "copy":
+                    n = apply_source_package(info, get_app_base_dir())
+                    say(f"✔ نُسخ {n} ملفاً من الإصدار {info['version']}")
+                    self._restart_after_update(win, info["version"])
+                elif plan["mode"] == "swap":
+                    self._swap_to_update(info, say, win)
+                else:
+                    kinds = [kind] + (["client"] if kind == "admin" and var_clients.get() else [])
+                    self._build_update(info, kinds, say, lambda ok: set_busy(False) if not ok else None, win)
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث البرنامج", e)
+                say(f"✘ {e}")
+                messagebox.showerror("تعذّر التحديث", f"تعذّر التحديث:\n{e}\n\nالبرنامج الحالي باقٍ كما هو.",
+                                     parent=win)
+                set_busy(False)
+
+        def close():
+            if not state["busy"]:
+                win.destroy()
+
+        btn_pick = ctk.CTkButton(win, text="📦 اختيار الحزمة…", width=220, height=42,
+                                 font=(UI_FONT, 15, "bold"), command=choose, **BUTTON_STYLES["primary"])
+        btn_pick.pack(pady=(4, 2))
+        btn_go = ctk.CTkButton(btns, text="⬆️ تحديث الآن", width=170, height=42, font=(UI_FONT, 15, "bold"),
+                               state="disabled", command=go, fg_color=UI["success"],
+                               hover_color=UI["success_hover"])
+        btn_go.pack(side="right", padx=6)
+        btn_close = ctk.CTkButton(btns, text="إغلاق", width=120, height=42, font=(UI_FONT, 14, "bold"),
+                                  command=close, **BUTTON_STYLES["secondary"])
+        btn_close.pack(side="right", padx=6)
+        win.protocol("WM_DELETE_WINDOW", close)
+        return win
+
+    def _restart_after_update(self, win, version):
+        """التشغيل من ملفات بايثون: يُفتح البرنامج الجديد ثم يُغلق الحالي"""
+        messagebox.showinfo("تم التحديث", f"✅ حُدّث البرنامج إلى الإصدار {version}.\nسيُفتح الآن من جديد.",
+                            parent=win)
+        subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:],
+                         cwd=get_app_base_dir())
+        self._exit_for_update()
+
+    def _swap_to_update(self, info, say, win, reveal=None, new_exe=None):
+        """نسخة exe: الملف الجديد يحلّ محلّ الحالي بعد إغلاقه (سكربت صغير ينتظر ثم يستبدل ثم يشغّل)"""
+        if os.name != "nt":
+            raise RuntimeError("استبدال ملف exe تلقائياً متاح على ويندوز وحده.")
+        work = _make_dir(os.path.join(APP_DATA_DIR, "Updates", info["version"]))
+        if new_exe is None:
+            if info["type"] == "exe":
+                new_exe = info["file"]
+            else:
+                with zipfile.ZipFile(info["file"]) as zf:
+                    safe_extract_zip(zf, work, prefix=info["member"], strip_prefix=False)
+                new_exe = os.path.join(work, *info["member"].split("/"))
+        if not os.path.isfile(new_exe) or os.path.getsize(new_exe) < 5 * 1024 * 1024:
+            raise RuntimeError("ملف البرنامج الجديد غير موجود أو ناقص.")
+        script = write_swap_script(work, os.getpid(), new_exe, sys.executable, reveal=reveal)
+        say("✔ البرنامج الجديد جاهز — يُغلق الحالي ويُفتح الجديد مكانه…")
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            raise RuntimeError(f"PowerShell غير موجود: ضع الملف مكان البرنامج يدوياً:\n{new_exe}")
+        subprocess.Popen([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                          "-File", script], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                         close_fds=True)
+        messagebox.showinfo("تحديث البرنامج", f"✅ الإصدار {info['version']} جاهز.\n"
+                                              "سيُغلق البرنامج ويُفتح الجديد خلال ثوانٍ.", parent=win)
+        self._exit_for_update()
+
+    def _build_update(self, info, kinds, say, on_finish, win):
+        """نسخة exe وحزمة المصدر: يُبنى exe الجديد ببايثون الجهاز (build_exe.py بكل فحوصه) في الخلفية
+        مع عرض ما يجري سطراً سطراً، ثم يحلّ محلّ الحالي. المدير يبني نسخة العملاء أيضاً لتوزيعها."""
+        python = find_build_python()
+        if not python:
+            on_finish(False)
+            messagebox.showwarning(
+                "يلزم بايثون مرة واحدة",
+                "لبناء نسخة exe من حزمة المصدر يلزم Python 3.12 أو أحدث على هذا الجهاز (مرة واحدة):\n"
+                "python.org ← Downloads، مع خيار «Add python.exe to PATH».\n\n"
+                "أو اختر ملف Jadeite-…exe الجاهز بدل حزمة المصدر.", parent=win)
+            return
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+
+        def post(fn, *a):
+            try:
+                self.after(0, lambda: fn(*a))
+            except Exception:
+                pass
+
+        def run(cmd, cwd):
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    encoding="utf-8", errors="replace", env=env, creationflags=flags)
+            for line in proc.stdout:
+                if line.strip():
+                    post(say, line)
+            return proc.wait()
+
+        def work():
+            try:
+                base = _make_dir(os.path.join(APP_DATA_DIR, "Updates"))
+                folder = os.path.join(base, info["version"])
+                shutil.rmtree(folder, ignore_errors=True)
+                os.makedirs(folder, exist_ok=True)
+                post(say, "• فك الحزمة…")
+                with zipfile.ZipFile(info["file"]) as zf:
+                    safe_extract_zip(zf, folder)
+                desk = os.path.join(folder, *info["prefix"].strip("/").split("/")) if info["prefix"] else folder
+                venv = os.path.join(base, "venv-build")
+                vpy = os.path.join(venv, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv, "bin", "python")
+                fresh = not os.path.exists(vpy)
+                if fresh:
+                    post(say, "• تجهيز بيئة البناء (أول مرة فقط — دقائق)…")
+                    if run(python + ["-m", "venv", venv], base) != 0:
+                        raise RuntimeError("تعذّر إنشاء بيئة البناء")
+                built = {}
+                for k in kinds:
+                    post(say, f"• بناء {'نسخة المدير' if k == 'admin' else 'نسخة العميل'}…")
+                    rc = run([vpy, "build_exe.py", k], desk)
+                    if rc != 0 and not fresh:
+                        post(say, "  (إعادة المحاولة بالمكتبات المثبّتة سابقاً)")
+                        rc = run([vpy, "build_exe.py", k, "--skip-install"], desk)
+                    if rc != 0:
+                        raise RuntimeError(f"فشل البناء — السطور أعلاه تذكر السبب. البرنامج الحالي باقٍ كما هو.")
+                    built[k] = os.path.join(desk, "dist", f"Jadeite-{k.title()}-{info['version']}"
+                                                          + (".exe" if os.name == "nt" else ""))
+                    if not os.path.isfile(built[k]):
+                        raise RuntimeError(f"لم يُنشأ {os.path.basename(built[k])}")
+                post(finish, built, None)
+            except Exception as e:
+                post(finish, None, e)
+
+        def finish(built, error):
+            if error is not None:
+                log_cloud_error("تعذّر بناء التحديث", error)
+                say(f"✘ {error}")
+                on_finish(False)
+                messagebox.showerror("تعذّر التحديث", f"{error}", parent=win)
+                return
+            reveal = None
+            if "client" in built and app_build_kind() == "admin":
+                # نسخة العملاء بجانب برنامج المدير لتوزيعها، وتُظهَر بعد فتح الجديد
+                reveal = os.path.join(os.path.dirname(sys.executable), os.path.basename(built["client"]))
+                try:
+                    shutil.copy2(built["client"], reveal)
+                    say(f"✔ نسخة العملاء: {reveal}")
+                except Exception as e:
+                    say(f"  (تعذّر نسخ نسخة العملاء بجانب البرنامج: {e} — موجودة في {built['client']})")
+                    reveal = built["client"]
+            try:
+                self._swap_to_update(dict(info, type="exe"), say, win, reveal=reveal,
+                                     new_exe=built[app_build_kind()])
+            except Exception as e:
+                log_cloud_error("تعذّر استبدال البرنامج بعد البناء", e)
+                say(f"✘ {e}")
+                on_finish(False)
+                messagebox.showerror("تعذّر التحديث", f"{e}", parent=win)
+
+        threading.Thread(target=work, name="JadeiteUpdateBuild", daemon=True).start()
+
+    def _exit_for_update(self):
+        """يُغلق البرنامج كلياً ليحلّ الجديد محلّه (يتوقف الميزان وسعر الذهب كالإغلاق العادي)"""
+        try:
+            self.on_app_closing()
+        except Exception:
+            pass
+        os._exit(0)
 
 
     def init_database(self):
@@ -5806,11 +6415,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         before: يقصر الحساب على الفترات السابقة لها (يكفي لرصيد أول المدة).
         """
-        by_period = {}
-        for inv in self.invoices.values():
-            period = self.inv_period(inv)
-            if period:
-                by_period.setdefault(period, []).append(inv)
+        # فهرس الفترات الجاهز (القوائم نفسها بترتيبها) بدل تجميع كل الحركات عند كل حساب
+        by_period = {p: invs for p, invs in self.invoices_by_period().items() if p}
         periods = {p for p, invs in by_period.items()
                    if any(i.get("settled_status") in COUNTED_STATUSES for i in invs)}
         if getattr(self, "current_display_month", None):
@@ -8162,15 +8768,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.lbl_gems_stones_balance = ctk.CTkLabel(treasury_display_frame, text="", font=(UI_FONT, 11))
         self.lbl_diamond_balance = ctk.CTkLabel(treasury_display_frame, text="", font=(UI_FONT, 11))
 
-        self.btn_theme = ctk.CTkButton(top_frame, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=36, corner_radius=10, font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
-        self.btn_theme.pack(side="right", padx=8, pady=6)
+        # عمود أدوات: «⬆️ تحديث» بعرضه كاملاً في الأعلى، وتحته «فاتح» و«بحث» جنباً إلى جنب
+        tools_col = ctk.CTkFrame(top_frame, fg_color="transparent")
+        tools_col.pack(side="right", padx=6, pady=4)
+        self.btn_app_update = ctk.CTkButton(
+            tools_col, text="⬆️ تحديث", height=30, corner_radius=10,
+            font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"),
+            fg_color=(UI["gold_soft"], "#2a2318"), border_width=1, border_color=(UI["gold_line"], "#6B5A22"),
+            text_color=(UI["ink"], "#F0CF6A"), hover_color=(UI["surface_alt"], "#232A33"),
+            command=self.open_app_update)
+        self.btn_app_update.pack(fill="x", pady=(0, 4))
+        HoverTip(self.btn_app_update, f"تحديث البرنامج كاملاً إلى آخر إصدار من الحزمة المرسلة — الحالي {APP_VERSION}")
+        tools_row = ctk.CTkFrame(tools_col, fg_color="transparent")
+        tools_row.pack()
+
+        self.btn_theme = ctk.CTkButton(tools_row, text=self.THEME_LABELS.get(self.current_theme, "🎨 المظهر"), width=108, height=32, corner_radius=10, font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent", border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"), hover_color=(UI["surface_alt"], "#232A33"), command=self.toggle_theme)
+        self.btn_theme.pack(side="right")
 
         btn_search_all = ctk.CTkButton(
-            top_frame, text="🔍 بحث", width=86, height=36, corner_radius=10,
+            tools_row, text="🔍 بحث", width=86, height=32, corner_radius=10,
             font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent",
             border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
             hover_color=(UI["surface_alt"], "#232A33"), command=self.open_global_search)
-        btn_search_all.pack(side="right", padx=4, pady=6)
+        btn_search_all.pack(side="right", padx=(0, 6))
         HoverTip(btn_search_all, "بحث شامل (Ctrl+F): حساب، رقم تشغيل، فاتورة مبيعات، رقم حركة")
 
         # تراجع عام عن آخر حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
@@ -9099,6 +9719,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.refresh_pending_screen(name)
             self.tabview.show(name)
         self.refresh_screen_info_bar()
+        # ظهرت بمقاسها الحقيقي: لا حاجة لرسمها مسبقاً ما دام المقاس نفسه
+        size = self.screen_area_size()
+        if size is not None:
+            self._rendered_size = getattr(self, "_rendered_size", {})
+            self._rendered_size[name] = size
 
     def show_home_screen(self):
         # العودة للقائمة الرئيسية تُرجع الشريط العام والشريط الجانبي معاً
@@ -9156,6 +9781,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 log_cloud_error(f"تعذّر تحديث ({name}) عبر {fn_name}", e)
         if hasattr(self, "_dirty_screens"):
             self._dirty_screens.discard(name)
+        # التحديث قد يُنشئ أدوات جديدة (جدول يُعاد بناؤه): تُرسم مسبقاً من جديد في الفراغ
+        getattr(self, "_rendered_size", {}).pop(name, None)
 
     def refresh_visible_screen(self):
         """يُحدّث الشاشة المفتوحة حالياً فقط — هذا ما يراه المستخدم فعلاً"""
@@ -9163,11 +9790,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if current:
             self.refresh_screen(current)
 
-    def ensure_screen_built(self, name):
-        """يبني أدوات الشاشة عند أول فتح لها فقط.
+    # الشاشات التي يملأ بانيها جداولها بنفسه (يستدعي كل دوال تحديثها في SCREEN_REFRESHERS):
+    # بعد بنائها لا تُحدَّث مرة ثانية فوراً — كانت لوحة المؤشرات تُحسب مرتين عند أول فتح.
+    # يتحقق test_instant_screens.py أن باني كل شاشة هنا يستدعي دوال تحديثها فعلاً.
+    BUILDERS_REFRESH_SELF = frozenset({
+        "الرصيد الافتتاحي", "الموردين", "صناديق المصنع", "التقرير الشهري",
+        "أرشيف الفواتير", "القيود اليومية", "شاشة الخسائر", "الحسابات", "ربح/خسارة الطقم",
+        "لوحة المؤشرات"})
 
-        يرجع True لو بُنيت الآن. الفشل لا يُسكت: تظهر رسالة واضحة بدل
-        شاشة فارغة بلا تفسير.
+    def ensure_screen_built(self, name, background=False):
+        """يبني أدوات الشاشة مرة واحدة (في الخلفية بعد الدخول، أو عند أول فتح لها).
+
+        يرجع True لو بُنيت الآن. الفشل لا يُسكت عند الفتح: تظهر رسالة واضحة بدل
+        شاشة فارغة بلا تفسير (وفي الخلفية يُسجَّل فقط، وتظهر الرسالة عند فتحها).
         """
         if name in getattr(self, "_built_screens", set()):
             return False
@@ -9175,24 +9810,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if builder is None:
             return False
 
-        try:
-            self.configure(cursor="watch")
-            self.update_idletasks()
-        except Exception:
-            pass
+        if not background:
+            try:
+                self.configure(cursor="watch")
+                self.update_idletasks()
+            except Exception:
+                pass
         try:
             builder()
             self._built_screens.add(name)
+            # بُنيت الآن بأحدث البيانات: لا حساب ثانٍ لها قبل أي تعديل جديد
+            if name in self.BUILDERS_REFRESH_SELF and hasattr(self, "_dirty_screens"):
+                self._dirty_screens.discard(name)
             return True
         except Exception as e:
             log_cloud_error(f"تعذّر بناء شاشة ({name})", e)
-            messagebox.showerror("خطأ", f"تعذّر فتح شاشة ({name}):\n{e}")
+            if not background:
+                messagebox.showerror("خطأ", f"تعذّر فتح شاشة ({name}):\n{e}")
             return False
         finally:
-            try:
-                self.configure(cursor="")
-            except Exception:
-                pass
+            if not background:
+                try:
+                    self.configure(cursor="")
+                except Exception:
+                    pass
 
     def refresh_pending_screen(self, name):
         """يُحدّث شاشة عند فتحها إن كانت بحاجة لذلك (تحديث كسول)"""
@@ -12349,8 +12990,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         m_check = target_month if target_month else self.current_display_month
 
         # invoices: حركات الفترة مجمّعة مسبقاً (يمررها دفتر الخزينة لتسريع الحساب)،
-        # وإلا حركات هذا الاسم وحده من الفهرس — لا مسح لكل الحركات
-        source = invoices if invoices is not None else self.invoices_by_name().get(name, ())
+        # وإلا حركات هذا الاسم في هذه الفترة وحدها من الفهرس — لا مسح لكل الحركات
+        # (الشرطان أدناه يبقيان كما هما، فالمصدر الأضيق لا يغيّر النتيجة)
+        if invoices is not None:
+            source = invoices
+        elif m_check:
+            source = self.invoices_by_name_period().get((name, m_check), ())
+        else:
+            source = self.invoices_by_name().get(name, ())
         for inv in source:
             if inv.get("التاريخ") and inv["الاسم"] == name and self.inv_in_period(inv, m_check):
                 if not include_settled and inv["settled_status"] != "ACTIVE":
@@ -12591,11 +13238,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.lbl_dash_production.configure(text=f"إنتاج المكينة (مفنش 4 للمصنعين): {total_mufanish_4:.2f} جم")
             self.lbl_dash_loss.configure(text=f"إجمالي فواقد الورشة: {total_losses:.2f} جم")
 
-        # تحديث الشاشة المعروضة فقط، وتأجيل البقية إلى لحظة فتحها.
+        # تحديث الشاشة المعروضة فقط، وتأجيل البقية إلى أول فراغ (أو لحظة فتحها).
         # الأرصدة أعلاه حُسبت كاملة، فالأرقام صحيحة دائماً — المؤجَّل هو
         # إعادة رسم الجداول غير الظاهرة فقط.
         self.mark_all_screens_dirty()
         self.refresh_visible_screen()
+        # والبقية تُحدَّث في الخلفية حين يهدأ المستخدم، فتفتح فوراً بلا حساب عند النقر
+        self.warm_screens()
 
 
     def sync_all_archives(self):
@@ -12909,7 +13558,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         الأحجار الخام لا تُحتسب — المعتمد محاسبياً هو ما بعد الخصم.
         """
         out = {}
-        for inv in self.invoices.values():
+        # حركات الفترة وحدها من فهرس الفترات (وكل الحركات بلا فترة) — الشروط كما هي
+        for inv in self.period_invoices(month):
             if inv.get("النوع") != "مبيعات فصوص وأحجار":
                 continue
             if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"):
@@ -13597,7 +14247,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_set_khayas_breakdown(self, month):
         """خياسات كل طقم (تلميع نهائي / بوليش / مركب) مفصولة برقم التشغيل"""
         out = {}
-        for inv in self.invoices.values():
+        # حركات الفترة وحدها من فهرس الفترات (وكل الحركات بلا فترة) — الشروط كما هي
+        for inv in self.period_invoices(month):
             if inv.get("النوع") != "خياس طقوم":
                 continue
             if inv.get("settled_status") not in SALE_READ_STATUSES:
@@ -18952,14 +19603,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]}
         return rows, totals
 
-    # صفحة A4 واحدة تتسع لهذا العدد على الأقل (مع الإجمالي)، والجدول يُكمَّل بصفوف فارغة حتى أسفل الورقة
-    SALES_SUMMARY_MIN_ROWS = 28
+    # صفوف الورقة الواحدة (مع الإجمالي): ٢٦ صفاً بالضبط تملأ الورقة حتى أسفلها، والجدول يُكمَّل بصفوف فارغة
+    SALES_SUMMARY_MIN_ROWS = 26
 
     def sales_summary_layout(self):
         """مقاسات صفحة فاتورة المبيعات (مم من أسفل الورقة): الترويسة في الأعلى، والجدول يأخذ الباقي حتى أسفل
-        الورقة (بلا توقيعات). cap_last = صفوف الصفحة الأخيرة (مع الإجمالي)، cap_full = صفوف الصفحة التابعة"""
+        الورقة (بلا توقيعات). cap_last = صفوف الصفحة الأخيرة (مع الإجمالي) = SALES_SUMMARY_MIN_ROWS،
+        وارتفاع الصف يُحسب ليملأ الجدول الورقة بهذا العدد بالضبط؛ cap_full = صفوف الصفحة التابعة"""
         PH = A4[1]
-        L = {"side": 8 * mm, "top": 7 * mm, "head_h": 11 * mm, "row_h": 7.25 * mm, "total_h": 9 * mm,
+        L = {"side": 8 * mm, "top": 7 * mm, "head_h": 11 * mm, "total_h": 9 * mm,
              "band_gap": 2.5 * mm, "band_h": 13 * mm, "info_gap": 2 * mm, "info_h": 7.5 * mm,
              "table_gap": 2.5 * mm, "foot_zone": 9 * mm}
         L["letter_top"] = PH - L["top"]
@@ -18967,14 +19619,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         L["info_top"] = L["band_top"] - L["band_h"] - L["info_gap"]
         L["table_top"] = L["info_top"] - L["info_h"] - L["table_gap"]
         body = L["table_top"] - L["head_h"]
-        L["cap_last"] = max(1, int((body - L["total_h"] - L["foot_zone"]) // L["row_h"]))
+        n = self.SALES_SUMMARY_MIN_ROWS
+        L["row_h"] = (body - L["total_h"] - L["foot_zone"]) / n      # ٢٦ صفاً + الإجمالي حتى أسفل الورقة
+        L["cap_last"] = n
         L["cap_full"] = max(1, int((body - L["foot_zone"]) // L["row_h"]))
         return L
 
     def draw_sales_summary_pages(self, c, rows_data, name, date_str):
         """فاتورة المبيعات الإجمالية — أول صفحة بعد الترحيل: الترويسة (بيانات المصنع والشعار الكبير)، ثم
-        «فاتورة مبيعات» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول يملأ الورقة
-        حتى أسفلها — ٢٨ صفاً على الأقل في ورقة A4 واحدة بخانات كبيرة وخط واضح، يُكمَّل بصفوف فارغة — وآخره
+        «بضاعة صادرة» بين رقم الفاتورة (يساراً) والتاريخ (يميناً)، ثم العميل وعدد الأطقم، ثم جدول يملأ الورقة
+        حتى أسفلها — ٢٦ صفاً في ورقة A4 واحدة بخانات كبيرة وخط واضح، يُكمَّل بصفوف فارغة — وآخره
         صف إجمالي لكل عمود (بلا توقيعات)؛ وصفحات تابعة إن زادت الأطقم عن الورقة"""
         from reportlab.lib.colors import Color
         PW, PH = A4
@@ -19054,7 +19708,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             txt(PW - M - side_w / 2, band_top - 4.4 * mm, "التاريخ", size=8.5, color=navy, align="center")
             txt(PW - M - side_w / 2, band_top - 10.6 * mm, f"{date_part}  {time_part}".strip(), size=12.5,
                 bold=True, color=navy, align="center")
-            title = "فاتورة مبيعات" if page_no == 1 else "فاتورة مبيعات (تابع)"
+            title = "بضاعة صادرة" if page_no == 1 else "بضاعة صادرة (تابع)"
             txt(PW / 2, band_top - 7.6 * mm, title, size=19 if page_no == 1 else 15, bold=True,
                 color=navy, align="center")
             c.saveState(); c.setStrokeColor(gold); c.setLineWidth(1.2)
@@ -19798,7 +20452,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if n_periods:
             periods = periods[-n_periods:]
         closing = {r["period"]: round(r["closing"], 2) for r in ledger}
-        comps = {p: self.treasury_period_components(p) for p in periods}
+        # بنود كل فترة من صفّها في الدفتر نفسه (الدفتر يبنيها بـ treasury_period_components
+        # من حركات الفترة نفسها) — كانت تُحسب مرة ثانية لكل فترة هنا
+        by_period = {r["period"]: r for r in ledger}
+
+        def comp_of(p):
+            return by_period[p] if p in by_period else self.treasury_period_components(p)
+
+        comps = {p: comp_of(p) for p in periods}
         month = self.current_display_month
         ratios = {}
         for sec in self.WORKER_SECTIONS:
@@ -19809,9 +20470,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if abs(cur) >= 0.005:
                 boxes.append((self.get_display_label(cat), round(cur, 2)))
         boxes.sort(key=lambda b: -abs(b[1]))
-        cur_comp = self.treasury_period_components(month)
+        cur_comp = comp_of(month)
         prev = [p for p in (r["period"] for r in ledger) if p < month]
-        prev_comp = self.treasury_period_components(prev[-1]) if prev else None
+        prev_comp = comp_of(prev[-1]) if prev else None
         return {
             "periods": periods,
             "treasury": [closing[p] for p in periods],
@@ -20713,8 +21374,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def get_recorded_periods(self):
         """الفترات التي سُجّلت فيها حركات فعلاً، الأحدث أولاً"""
-        periods = {self.inv_period(inv) for inv in self.invoices.values()
-                   if inv.get("settled_status") == "ACTIVE" and self.inv_period(inv)}
+        # من فهرس الفترات: فترة فيها حركة قائمة واحدة على الأقل (كانت تمسح كل الحركات
+        # عند كل قائمة فترات — ست مرات عند فتح شاشة الخسائر)
+        periods = {p for p, invs in self.invoices_by_period().items()
+                   if p and any(inv.get("settled_status") == "ACTIVE" for inv in invs)}
         periods.add(self.current_display_month)
         return sorted(periods, reverse=True)
 
@@ -21714,7 +22377,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         out_types = ("صادر ذهب", "مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار",
                      "مبيعات الماس", "قيد يومي مدين")
         madin = daen = 0.0
-        for inv in self.invoices.values():
+        # حركات هذا الاسم وحده من فهرس الأسماء (بترتيبها الأصلي) — الشروط كما هي
+        for inv in self.invoices_by_name().get(name, ()):
             if inv.get("settled_status") not in COUNTED_STATUSES: continue
             if inv.get("الاسم") != name: continue
             t = inv.get("النوع")

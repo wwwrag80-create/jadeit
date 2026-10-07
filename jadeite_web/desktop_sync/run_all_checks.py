@@ -91,6 +91,8 @@ CHECKS = [
     ("تذاكر طقوم المبيعات",     [PY, "test_sale_tickets.py", TARGET]),
     ("قالب فاتورة المبيعات",    [PY, "test_sales_invoice_template.py", TARGET]),
     ("ترقيم فواتير المبيعات",   [PY, "test_sale_invoice_numbering.py", TARGET]),
+    ("فتح الشاشات فوراً",        [PY, "test_instant_screens.py", TARGET]),
+    ("زر تحديث البرنامج",        [PY, "test_app_update.py", TARGET]),
     ("البحث الشامل والطباعة",   [PY, "test_ui_extras.py", TARGET]),
 ]
 

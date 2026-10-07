@@ -58,12 +58,20 @@ class App(mns["Base"]):
     current_treasury_balance = 950.0
     current_total_gold = 1010.0
 
-    def get_treasury_ledger(self):
-        return [{"period": p, "closing": 100.0 * (i + 1)} for i, p in enumerate(PERIODS)]
+    comp_calls = 0
 
-    def treasury_period_components(self, p):
+    def get_treasury_ledger(self):
+        # كالدفتر الحقيقي: صف كل فترة يحمل بنودها (treasury_period_components) مع رصيدها
+        return [dict(self.components(p), period=p, closing=100.0 * (i + 1)) for i, p in enumerate(PERIODS)]
+
+    @staticmethod
+    def components(p):
         i = PERIODS.index(p) + 1
         return {"sales": -10.0 * i, "inbound": 20.0 * i, "boxes": -1.0, "workers": -0.5 * i, "closed": 0.0}
+
+    def treasury_period_components(self, p):
+        App.comp_calls += 1
+        return self.components(p)
 
     def worker_performance_rows(self, sec, periods):
         return [], {"ratio": (2.0 if sec == "المصنعين" else 3.0) * int(periods[0][-1])}
@@ -90,6 +98,7 @@ assert k["sales"] == 90.0 and k["prev_sales"] == 80.0 and k["inbound"] == 180.0
 assert not any(x in k for x in ("open_jobs", "overdue_jobs", "open_gold")), "الطقوم المفتوحة أُزيلت من اللوحة"
 assert k["ratio"] == {"المصنعين": 18.0, "المركبين": 27.0}
 assert len(app.dashboard_data(None)["periods"]) == 9 and len(app.dashboard_data(12)["periods"]) == 9
+assert App.comp_calls == 0, "بنود الفترات تُقرأ من صفوف الدفتر نفسه — لا حساب ثانٍ لكل فترة"
 print("✔ اللوحة: الخزينة من دفترها، والمبيعات والوارد والخياس من مكوّنات الفترة، والنسب من أداء العمال، "
       "والصناديق من شاشة الخسائر — والمقارنة بالفترة السابقة")
 
