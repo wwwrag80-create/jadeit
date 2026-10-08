@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.68.3"
+APP_VERSION = "1.68.4"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -18019,7 +18019,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         fields_row.pack(fill="x", padx=10, pady=(4, 10))
         # الماس بعد الأحجار مباشرة
         labels = ["رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الماس", "الأحجار بعد الخصم",
-                  "خياس بوليش 2", "خياس البوليش", "خياس المركب"]
+                  "خياس بوليش 2", "خياس البوليش", "خياس المركب", "البيان"]
         n_cols = len(labels) + 2          # + نسبة الخصم + زر الإضافة
         for c in range(n_cols):
             fields_row.grid_columnconfigure(c, weight=1, uniform="sale_fields")
@@ -18043,7 +18043,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_row_number = ctk.CTkEntry(_row_holder, width=1)
         (self.sale_set_number, self.sale_gold, self.sale_gems, self.sale_stones,
          self.sale_diamond, self.sale_stones_discount, self.sale_khayas, self.sale_khayas_polish,
-         self.sale_khayas_assembler) = [add_field(i, t) for i, t in enumerate(labels)]
+         self.sale_khayas_assembler, self.sale_row_note) = [add_field(i, t) for i, t in enumerate(labels)]
+        self.sale_row_note.configure(justify="right")     # بيان الطقم: نص يدوي لكل رقم تشغيل
 
         # خياس المركب يُجلب تلقائياً من مراحل التصنيع بمجرد كتابة رقم التشغيل (بعد
         # توقّف الكتابة لحظة)، وفوراً عند مغادرة الخانة
@@ -18489,6 +18490,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.invoices[record["رقم الفاتورة"]] = record
             self.save_invoice_to_db(record["رقم الفاتورة"], record)
         for row in rows:
+            # بيان الطقم المكتوب في سطره (يدوياً عند «إضافة سطر») — وإلا بيان الفاتورة
+            row_note = str(row.get("البيان") or "").strip() or note
             gold_v = row.get("ذهب", 0.0)
             diamond_v = row.get("الماس", 0.0)
             gems_v = row.get("فصوص", 0.0)
@@ -18516,7 +18519,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.invoice_counter += 1
                     inv_data = {
                         "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name, "النوع": op_type,
-                        "الوزن": val, "البيان": self.sale_bayan(bayan, note), "settled_status": "ACTIVE", "trees_count": marker,
+                        "الوزن": val, "البيان": self.sale_bayan(bayan, row_note), "settled_status": "ACTIVE", "trees_count": marker,
                         "قبل": raw_ref, "بعد": 0.0, "set_number": set_num, "row_number": row_num,
                         "رقم الفاتورة اليدوي": manual_no
                     }
@@ -18528,7 +18531,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoice_counter += 1
                 polish_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                    "النوع": "خياس طقوم", "الوزن": khayas_polish_v, "البيان": self.sale_bayan("خياس بوليش", note),
+                    "النوع": "خياس طقوم", "الوزن": khayas_polish_v, "البيان": self.sale_bayan("خياس بوليش", row_note),
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_POLISH, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -18541,7 +18544,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoice_counter += 1
                 asm_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                    "النوع": "خياس طقوم", "الوزن": khayas_assembler_v, "البيان": self.sale_bayan("خياس المركب", note),
+                    "النوع": "خياس طقوم", "الوزن": khayas_assembler_v, "البيان": self.sale_bayan("خياس المركب", row_note),
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_ASSEMBLER,
                     "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
@@ -18554,7 +18557,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoice_counter += 1
                 net_data = {
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
-                    "النوع": "خياس طقوم", "الوزن": net_v, "البيان": self.sale_bayan("صافي الطقم", note),
+                    "النوع": "خياس طقوم", "الوزن": net_v, "البيان": self.sale_bayan("صافي الطقم", row_note),
                     "settled_status": MEMO_STATUS, "trees_count": KHAYAS_MARK_NET, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -18567,7 +18570,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
                     # البيان يطابق اسم الصندوق ليظهر واضحاً في كشف حساب الخزينة
                     "النوع": "خياس طقوم", "الوزن": khayas_v,
-                    "البيان": self.sale_bayan(self.POLISH2_SALE_BAYAN, note),
+                    "البيان": self.sale_bayan(self.POLISH2_SALE_BAYAN, row_note),
                     "settled_status": "ACTIVE", "trees_count": KHAYAS_MARK_FINAL, "قبل": 0.0, "بعد": 0.0,
                     "set_number": set_num, "row_number": row_num, "رقم الفاتورة اليدوي": manual_no
                 }
@@ -19443,8 +19446,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.pending_sale_rows.append({
             "row_number": row_num, "set_number": set_num, "ذهب": gold_v, "فصوص": gems_v, "أحجار": stones_v,
             "أحجار بعد الخصم": stones_discount_v, "الماس": diamond_v, "خياس": khayas_v,
-            "خياس البوليش": khayas_polish_v, "خياس المركب": khayas_assembler_v
+            "خياس البوليش": khayas_polish_v, "خياس المركب": khayas_assembler_v,
+            "البيان": self.sale_row_note.get().strip()
         })
+        self.sale_row_note.delete(0, 'end')
 
         self.sale_row_number.delete(0, 'end')
         self.sale_khayas.delete(0, 'end')
@@ -20631,7 +20636,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          "الوزن القائم": round(gold + gems + stones + diamond, 2),
                          "الوزن المقيد": round(gold + gems + stones_disc + diamond, 2),
                          # بيان الطقم كما في «العمليات» (لكل رقم تشغيل بيانه)
-                         "البيان": str(data.get("voucher") or "").strip()})
+                         "البيان": self.sale_note_of(data.get("voucher"))})
         totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]
                   if k not in self.SALES_SUMMARY_TEXT_COLS}
         return rows, totals

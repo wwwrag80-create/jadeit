@@ -34,7 +34,7 @@ def module_src(name):
 marks = {n.targets[0].id: n.value.value for n in tree.body
          if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "").startswith("KHAYAS_MARK_")}
 MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
-           "SALES_SUMMARY_SIGNATURES",
+           "SALES_SUMMARY_SIGNATURES", "SALE_NOTE_SEP", "sale_note_of",
            "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
            "sales_summary_layout", "draw_sales_summary_pages")
 ns = dict(marks, REPORTLAB_AVAILABLE=False)
@@ -76,7 +76,7 @@ assert "خياس" not in cols
 rows, totals = app.sales_summary_rows([d1, d2])
 assert rows[0] == {"set_number": "88001", "الذهب": 30.5, "الفصوص": 1.25, "الأحجار": 2.0, "الأحجار بعد الخصم": 1.4,
                    "الماس": 0.4, "خياس بوليش 2": 0.3, "الخياس": 0.47, "الوزن القائم": 34.15, "الوزن المقيد": 33.55,
-                   "البيان": str(d1.get("voucher") or "").strip()}, rows[0]
+                   "البيان": app.sale_note_of(d1.get("voucher"))}, rows[0]
 assert rows[1]["الخياس"] == 0.35 and rows[1]["الوزن القائم"] == 31.5
 assert "البيان" not in totals
 for k in cols[2:-1]:
