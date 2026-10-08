@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.68.1"
+APP_VERSION = "1.68.2"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -20610,7 +20610,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # أعمدة فاتورة المبيعات من اليمين؛ «الخياس» = بوليش 1 + بوليش 2 + المركب لرقم التشغيل
     SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
-                          "الخياس", "الوزن القائم", "الوزن المقيد")
+                          "خياس بوليش 2", "الخياس", "الوزن القائم", "الوزن المقيد")
 
     def sales_summary_rows(self, rows_data):
         """قيم جدول فاتورة المبيعات (أرقام) لكل رقم تشغيل، وصف الإجمالي = مجموع كل عمود"""
@@ -20625,6 +20625,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             rows.append({"set_number": str(data.get("set_number") or "-"),
                          "الذهب": round(gold, 2), "الفصوص": round(gems, 2), "الأحجار": round(stones, 2),
                          "الأحجار بعد الخصم": round(stones_disc, 2), "الماس": round(diamond, 2),
+                         "خياس بوليش 2": round(float(data.get("khayas") or 0.0), 2),
                          "الخياس": self.sale_khayas_total(data),
                          "الوزن القائم": round(gold + gems + stones + diamond, 2),
                          "الوزن المقيد": round(gold + gems + stones_disc + diamond, 2)})
@@ -20705,7 +20706,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         time_part = str(date_str or "")[11:16]
 
         cols = self.SALES_SUMMARY_COLS
-        ratios = (0.4, 1.0, 0.95, 0.9, 0.9, 0.95, 0.9, 0.9, 1.0, 1.0)
+        ratios = (0.4, 1.0, 0.95, 0.85, 0.85, 0.95, 0.8, 0.95, 0.85, 1.0, 1.0)
         table_w = PW - 2 * M
         col_ws = [table_w * r / sum(ratios) for r in ratios]
         lefts = [PW - M - sum(col_ws[:i + 1]) for i in range(len(cols))]   # الحافة اليسرى لكل عمود
