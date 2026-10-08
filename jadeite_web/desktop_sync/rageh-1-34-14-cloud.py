@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.68.2"
+APP_VERSION = "1.68.3"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -20610,7 +20610,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # أعمدة فاتورة المبيعات من اليمين؛ «الخياس» = بوليش 1 + بوليش 2 + المركب لرقم التشغيل
     SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
-                          "خياس بوليش 2", "الخياس", "الوزن القائم", "الوزن المقيد")
+                          "خياس بوليش 2", "الخياس", "الوزن القائم", "الوزن المقيد", "البيان")
+    SALES_SUMMARY_TEXT_COLS = ("البيان",)     # نص لا رقم: لا يدخل صف الإجمالي
 
     def sales_summary_rows(self, rows_data):
         """قيم جدول فاتورة المبيعات (أرقام) لكل رقم تشغيل، وصف الإجمالي = مجموع كل عمود"""
@@ -20628,8 +20629,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          "خياس بوليش 2": round(float(data.get("khayas") or 0.0), 2),
                          "الخياس": self.sale_khayas_total(data),
                          "الوزن القائم": round(gold + gems + stones + diamond, 2),
-                         "الوزن المقيد": round(gold + gems + stones_disc + diamond, 2)})
-        totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]}
+                         "الوزن المقيد": round(gold + gems + stones_disc + diamond, 2),
+                         # بيان الطقم كما في «العمليات» (لكل رقم تشغيل بيانه)
+                         "البيان": str(data.get("voucher") or "").strip()})
+        totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]
+                  if k not in self.SALES_SUMMARY_TEXT_COLS}
         return rows, totals
 
     # صفوف الورقة الواحدة (مع الإجمالي): ٢٦ صفاً بالضبط تملأ الورقة حتى خانتي التوقيع، والجدول يُكمَّل بصفوف فارغة
@@ -20706,7 +20710,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         time_part = str(date_str or "")[11:16]
 
         cols = self.SALES_SUMMARY_COLS
-        ratios = (0.4, 1.0, 0.95, 0.85, 0.85, 0.95, 0.8, 0.95, 0.85, 1.0, 1.0)
+        ratios = (0.35, 0.95, 0.9, 0.8, 0.8, 0.9, 0.75, 0.9, 0.8, 0.95, 0.95, 1.5)
         table_w = PW - 2 * M
         col_ws = [table_w * r / sum(ratios) for r in ratios]
         lefts = [PW - M - sum(col_ws[:i + 1]) for i in range(len(cols))]   # الحافة اليسرى لكل عمود
@@ -20784,7 +20788,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 if r_i < len(page_rows):
                     row = page_rows[r_i]
                     values = [str(first + r_i + 1), row["set_number"]] + [
-                        f"{row[k]:.2f}" if row[k] else "-" for k in cols[2:]]
+                        (row[k] or "-") if k in self.SALES_SUMMARY_TEXT_COLS
+                        else f"{row[k]:.2f}" if row[k] else "-" for k in cols[2:]]
                     for i, val in enumerate(values):
                         bold = cols[i] in ("رقم التشغيل", "الخياس", "الوزن المقيد")
                         size = fit_font_size(val, col_ws[i] - 1.6 * mm, 12.5, bold=bold, min_size=7)
@@ -20799,6 +20804,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 txt(lefts[1] + span_w / 2, vcenter_baseline(y, total_h, size), "الإجمالي", size=size, bold=True,
                     color=navy, align="center")
                 for i, k in enumerate(cols[2:], start=2):
+                    if k in self.SALES_SUMMARY_TEXT_COLS:
+                        continue
                     val = f"{totals[k]:.2f}"
                     size = fit_font_size(val, col_ws[i] - 1.6 * mm, 12.5, bold=True, min_size=7)
                     txt(cell_cx(i), vcenter_baseline(y, total_h, size), val, size=size, bold=True, color=navy,

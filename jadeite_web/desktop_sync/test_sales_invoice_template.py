@@ -33,7 +33,7 @@ def module_src(name):
 
 marks = {n.targets[0].id: n.value.value for n in tree.body
          if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "").startswith("KHAYAS_MARK_")}
-MEMBERS = ("SALES_SUMMARY_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
+MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
            "SALES_SUMMARY_SIGNATURES",
            "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
            "sales_summary_layout", "draw_sales_summary_pages")
@@ -71,13 +71,15 @@ print("✔ «الخياس» لرقم التشغيل 88001 = بوليش 1 (0.12) 
 
 cols = App.SALES_SUMMARY_COLS
 assert cols == ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس", "خياس بوليش 2",
-                "الخياس", "الوزن القائم", "الوزن المقيد"), cols
+                "الخياس", "الوزن القائم", "الوزن المقيد", "البيان"), cols
 assert "خياس" not in cols
 rows, totals = app.sales_summary_rows([d1, d2])
 assert rows[0] == {"set_number": "88001", "الذهب": 30.5, "الفصوص": 1.25, "الأحجار": 2.0, "الأحجار بعد الخصم": 1.4,
-                   "الماس": 0.4, "خياس بوليش 2": 0.3, "الخياس": 0.47, "الوزن القائم": 34.15, "الوزن المقيد": 33.55}, rows[0]
+                   "الماس": 0.4, "خياس بوليش 2": 0.3, "الخياس": 0.47, "الوزن القائم": 34.15, "الوزن المقيد": 33.55,
+                   "البيان": str(d1.get("voucher") or "").strip()}, rows[0]
 assert rows[1]["الخياس"] == 0.35 and rows[1]["الوزن القائم"] == 31.5
-for k in cols[2:]:
+assert "البيان" not in totals
+for k in cols[2:-1]:
     assert totals[k] == round(sum(r[k] for r in rows), 2), k
 assert totals["الخياس"] == 0.82 and totals["الذهب"] == 62.0
 print("✔ عمود «خياس» استُبدل بـ«الخياس» في موضعه، وصف الإجمالي = مجموع كل عمود (الخياس 0.82، الذهب 62.00)")
