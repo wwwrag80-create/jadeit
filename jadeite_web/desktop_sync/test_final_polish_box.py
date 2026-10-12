@@ -24,7 +24,8 @@ def seg(n):
 
 WANT = ["invoices_by_name", "invoices_by_period", "period_invoices", "get_sales_ops_khayas_total", "get_box_khayas_cumulative",
         "get_sale_invoice_groups", "get_stage_config", "get_box_account_name",
-        "get_all_stage_categories", "get_display_label", "get_account_label", "sale_note_of"]
+        "get_all_stage_categories", "get_display_label", "get_account_label", "sale_note_of",
+        "sale_key_of", "sale_kind_inferred"]
 chunks = [textwrap.dedent(seg(n)) for n in WANT]
 
 ns = dict(marks)
@@ -35,6 +36,9 @@ exec("class S:\n"
      '    ACCOUNT_LABELS = {"التلميع": "التلميع/البف", "التلميع/البف": "البوليش"}\n'
      '    SALE_NOTE_SEP = " — "\n'
      '    SALE_TYPES = ("مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس")\n'
+     '    SALE_KIND_GOLD, SALE_KIND_DIAMOND = "ذهب", "الماس"\n'
+     '    SALE_KINDS = (SALE_KIND_GOLD, SALE_KIND_DIAMOND)\n'
+     '    SALE_DIAMOND_TYPES = ("مبيعات الماس", "مبيعات ذهب مع الماس")\n'
      "    @staticmethod\n"
      "    def inv_period(inv):\n"
      '        p = (inv.get("period") or "").strip()\n'

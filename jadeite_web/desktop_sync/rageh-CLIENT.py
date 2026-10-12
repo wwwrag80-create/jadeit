@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.69.1"
+APP_VERSION = "1.70.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -6665,6 +6665,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if "period" not in columns:
                 # الفترة المحاسبية صراحةً، منفصلة عن تاريخ العملية الحقيقي
                 cursor.execute("ALTER TABLE invoices ADD COLUMN period TEXT DEFAULT ''")
+            if "sale_kind" not in columns:
+                # نوع عملية البيع (ذهب/الماس) على كل حركة من فاتورة المبيعات؛ فارغ للفواتير
+                # الأقدم ويُستنتج من محتواها (sale_kind_inferred)
+                cursor.execute("ALTER TABLE invoices ADD COLUMN sale_kind TEXT DEFAULT ''")
             # ═══════════════════════════════════════════════════════════
             #  ترحيل السطور المعلوماتية المسجّلة قبل هذا التحديث
             #
@@ -6934,11 +6938,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """يرجع True لو تم الحفظ فعلياً، أو False لو تم المنع (تعديل على فاتورة موجودة ومقفول عليها التعديل)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("""SELECT invoice_id, date_time, name, op_type, weight, before_w, after_w, note,
-                               settled_status, trees_count, set_number, row_number, manual_no, period FROM invoices WHERE invoice_id = ?""", (inv_id,))
+            cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices WHERE invoice_id = ?", (inv_id,))
             existing_row = cursor.fetchone()
             existing_manual = (existing_row[12] if existing_row and len(existing_row) > 12 and existing_row[12] else "")
             existing_period = (existing_row[13] if existing_row and len(existing_row) > 13 and existing_row[13] else "")
+            existing_kind = (existing_row[14] if existing_row and len(existing_row) > 14 and existing_row[14] else "")
             # داخل خطوة تراجع مفتوحة (حذف/إقفال): صورة الحركة قبل التغيير
             self._undo_note_row(inv_id, existing_row)
 
@@ -6959,13 +6963,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return False
 
             cursor.execute("""
-                INSERT OR REPLACE INTO invoices (invoice_id, date_time, name, op_type, weight, before_w, after_w, note, settled_status, trees_count, set_number, row_number, manual_no, period)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO invoices (invoice_id, date_time, name, op_type, weight, before_w, after_w, note, settled_status, trees_count, set_number, row_number, manual_no, period, sale_kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (inv_id, inv_data["التاريخ"], inv_data["الاسم"], inv_data["النوع"], 
                   inv_data["الوزن"], inv_data.get("قبل", 0.0), inv_data.get("بعد", 0.0), 
                   inv_data["البيان"], inv_data.get("settled_status", "ACTIVE"), inv_data.get("trees_count", 0.0), inv_data.get("set_number", ""), inv_data.get("row_number", ""),
                   inv_data.get("رقم الفاتورة اليدوي", existing_manual),
-                  inv_data.get("period") or existing_period or self.inv_period(inv_data)))
+                  inv_data.get("period") or existing_period or self.inv_period(inv_data),
+                  inv_data.get("sale_kind", existing_kind) or ""))
             conn.commit()
         self.mark_backup_dirty()
         return True
@@ -7036,12 +7041,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # الكاملة تتضخّم بعشرات الميغابايت مع آلاف الحركات).
     UNDO_LIMIT = 20
     INVOICE_COLUMNS = ("invoice_id, date_time, name, op_type, weight, before_w, after_w, note, "
-                       "settled_status, trees_count, set_number, row_number, manual_no, period")
+                       "settled_status, trees_count, set_number, row_number, manual_no, period, sale_kind")
 
     @staticmethod
     def invoice_from_row(row):
         """صف جدول الحركات ← حركة في الذاكرة (المصدر الواحد للتحويل عند التحميل والتراجع)"""
-        return {
+        inv = {
             "رقم الفاتورة": row[0], "التاريخ": row[1], "الاسم": row[2],
             "النوع": row[3], "الوزن": row[4], "قبل": row[5], "بعد": row[6], "البيان": row[7],
             "settled_status": row[8], "trees_count": row[9] if len(row) > 9 and row[9] else 0.0,
@@ -7051,6 +7056,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # الفترة المحاسبية صراحةً؛ وتُشتق من التاريخ لو كانت فارغة
             "period": (row[13] if len(row) > 13 and row[13] else str(row[1] or "")[:7]),
         }
+        # نوع عملية البيع (ذهب/الماس) لحركات فواتير المبيعات وحدها — كما تُنشأ في الذاكرة عند الترحيل
+        if len(row) > 14 and row[14]:
+            inv["sale_kind"] = row[14]
+        return inv
 
     def push_undo(self, label, auto=False):
         """يفتح خطوة تراجع باسمها. كل حركة تُحفظ أو تُحذف بعدها تُسجَّل صورتها
@@ -7190,7 +7199,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         القاعدة أولاً في معاملة واحدة (إما كل شيء أو لا شيء)، ثم الذاكرة من
         الصور نفسها — فتطابق الذاكرة ما يُحمَّل عند إعادة التشغيل تماماً.
         """
-        marks = ",".join("?" * 14)
+        marks = ",".join("?" * len(self.INVOICE_COLUMNS.split(",")))
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("BEGIN")
@@ -10315,7 +10324,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                             lambda x=sn: self.open_set_number_trace(x)))
             manual = (inv.get("رقم الفاتورة اليدوي") or "").strip()
             if manual and q in manual and inv.get("النوع") in self.SALE_TYPES:
-                key = (manual, inv.get("التاريخ"), inv.get("الاسم"))
+                key = self.sale_key_of(inv)
                 if key not in seen_sales:
                     seen_sales.add(key)
                     out.append(("فاتورة مبيعات", manual, f"{inv.get('الاسم', '')} — {str(inv.get('التاريخ', ''))[:10]}",
@@ -18040,14 +18049,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.pack(fill="x", padx=14, pady=(10, 2))
 
+        # المسافات مضبوطة ليتسع الصف كله (ومعه «نوع العملية») على شاشة اللابتوب الصغيرة
+        # دون أن ينضغط الاسم أو البيان
         def head_label(text):
             ctk.CTkLabel(head, text=text, font=(UI_FONT, 14, "bold"),
-                         text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(10, 4))
+                         text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(8, 3))
 
         head_label("التاريخ:")
-        self.sale_date = ctk.CTkEntry(head, font=(UI_FONT, 14), justify="center", width=120, height=34)
+        self.sale_date = ctk.CTkEntry(head, font=(UI_FONT, 14), justify="center", width=106, height=34)
         self.sale_date.insert(0, self.get_smart_default_date())
-        self.sale_date.pack(side="right", padx=4)
+        self.sale_date.pack(side="right", padx=3)
+
+        # نوع العملية قبل رقم الفاتورة: لكل نوع (ذهب/الماس) ترقيم فواتيره التلقائي، وشريطه
+        # المستقل في «المبيعات الصادرة»
+        head_label("نوع العملية:")
+        kind_box = ctk.CTkFrame(head, fg_color="transparent")
+        kind_box.pack(side="right", padx=3)
+        self.sale_kind_buttons = {}
+        for kind, text in ((self.SALE_KIND_GOLD, "🟡 ذهب"), (self.SALE_KIND_DIAMOND, "💎 الماس")):
+            b = ctk.CTkButton(kind_box, text=text, font=(UI_FONT, 13, "bold"), width=66, height=34,
+                              command=lambda k=kind: self.set_sale_kind(k))
+            b.pack(side="right", padx=1)
+            self.sale_kind_buttons[kind] = b
+        last_kind = load_ui_prefs().get("sale_kind")
+        self.set_sale_kind(last_kind if last_kind in self.SALE_KINDS else self.SALE_KIND_GOLD, initial=True)
 
         head_label("رقم الفاتورة:")
         self.sale_invoice_num = ctk.CTkEntry(head, font=(UI_FONT, 14, "bold"), justify="center", width=110,
@@ -18061,16 +18086,53 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         head_label("الاسم:")
         self.sale_name = ctk.CTkComboBox(head, values=self.get_supplier_name_values_no_mustarja(),
-                                         font=(UI_FONT, 14), justify="right", width=210, height=34)
+                                         font=(UI_FONT, 14), justify="right", width=190, height=34)
         self.sale_name.set("المصنع")
-        self.sale_name.pack(side="right", padx=4)
+        self.sale_name.pack(side="right", padx=3)
         self.bind_name_autocomplete(self.sale_name, self.get_supplier_name_values_no_mustarja)
 
-        # البيان بعد الاسم: يُحفظ مع الفاتورة ويظهر في «المبيعات الصادرة» و«المعلقات»
-        head_label("البيان:")
-        self.sale_note = ctk.CTkEntry(head, font=(UI_FONT, 14), justify="right", height=34,
+        # البيان بعد الاسم: يُحفظ مع الفاتورة ويظهر في «المبيعات الصادرة» و«المعلقات».
+        # يبقى في صف الرأس ما دام يتسع له بعرض مريح، وعلى الشاشة الأضيق ينزل إلى صف تحته
+        # بعرضه كاملاً — فلا ينضغط الاسم ولا يختفي البيان. الخانتان ابنتا البطاقة لتُرصّا
+        # في أيٍّ من الصفّين (in_)، وصف البيان قبلهما فلا يغطيهما
+        note_row = ctk.CTkFrame(card, fg_color="transparent")
+        note_lbl = ctk.CTkLabel(card, text="البيان:", font=(UI_FONT, 14, "bold"),
+                                text_color=(UI["primary"], "#9CC0F5"))
+        self.sale_note = ctk.CTkEntry(card, font=(UI_FONT, 14), justify="right", height=34, width=150,
                                       placeholder_text="بيان الفاتورة...")
-        self.sale_note.pack(side="right", padx=4, fill="x", expand=True)
+        note_place = {"wrapped": None}
+
+        def place_sale_note(_e=None):
+            note_widgets = (note_lbl, self.sale_note)
+            in_head = note_place["wrapped"] is False
+            need = head.winfo_reqwidth() + (0 if in_head else sum(w.winfo_reqwidth() for w in note_widgets) + 20)
+            wrap = head.winfo_width() < need
+            if wrap == note_place["wrapped"]:
+                return
+            note_place["wrapped"] = wrap
+            for w in note_widgets:
+                w.pack_forget()
+            if wrap:
+                note_row.pack(fill="x", padx=14, pady=(2, 2), after=head)
+            else:
+                note_row.pack_forget()
+            target = note_row if wrap else head
+            note_lbl.pack(in_=target, side="right", padx=(8, 3))
+            self.sale_note.pack(in_=target, side="right", padx=3, fill="x", expand=True)
+        self._place_sale_note = place_sale_note
+        place_sale_note()
+
+        def on_head_resize(_e=None):
+            # بعد استقرار التخطيط (عرض صف الرأس نفسه)، مرة واحدة لكل دفعة تغييرات
+            if not note_place.get("pending"):
+                note_place["pending"] = True
+
+                def run():
+                    note_place["pending"] = False
+                    place_sale_note()
+                self.after_idle(run)
+        # على إطار الصف نفسه (لا لوحة الرسم الداخلية): يصل بعرضه الحقيقي بعد كل تغيير
+        tk.Misc.bind(head, "<Configure>", on_head_resize, "+")
 
         # خانات السطر: شبكة أعمدة متساوية تتمدّد وتنكمش مع عرض الشاشة، فلا
         # تُقصّ الخانات على الشاشات الصغيرة ولا تتكدّس في الكبيرة. الترتيب من اليمين.
@@ -18285,6 +18347,56 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ---------- قسم «المبيعات الصادرة» (المفتاح «العمليات»): كل فاتورة مرحّلة في صف واحد ----------
     # =====================================================================
     SALE_TYPES = ("مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس")
+    # نوع عملية البيع («نوع العملية» قبل رقم الفاتورة): يُحفظ على كل حركات الفاتورة، ولكل نوع
+    # ترقيم فواتيره التلقائي وشريطه المستقل في «المبيعات الصادرة»
+    SALE_KIND_GOLD = "ذهب"
+    SALE_KIND_DIAMOND = "الماس"
+    SALE_KINDS = (SALE_KIND_GOLD, SALE_KIND_DIAMOND)
+    # فاتورة أقدم (قبل خانة النوع) فيها إحدى هاتين الحركتين ← مبيعات الماس، وإلا ذهب
+    SALE_DIAMOND_TYPES = ("مبيعات الماس", "مبيعات ذهب مع الماس")
+
+    def sale_kind_inferred(self, stored, types):
+        """نوع الفاتورة: المحفوظ مع حركاتها، وإلا (فاتورة سُجّلت قبل خانة النوع) الماس إن كان فيها
+        ماس وإلا ذهب"""
+        if stored in self.SALE_KINDS:
+            return stored
+        return self.SALE_KIND_DIAMOND if any(t in self.SALE_DIAMOND_TYPES for t in types) else self.SALE_KIND_GOLD
+
+    def sale_key_of(self, inv):
+        """مفتاح فاتورة المبيعات التي تنتمي إليها الحركة: (رقمها، تاريخها، اسمها، نوعها المحفوظ).
+        النوع في المفتاح: فاتورتا ذهب والماس بالرقم نفسه (لكلٍّ ترقيمه) لا تندمجان أبداً"""
+        return ((inv.get("رقم الفاتورة اليدوي", "") or ""), inv.get("التاريخ", ""), inv.get("الاسم", ""),
+                inv.get("sale_kind", "") or "")
+
+    def current_sale_kind(self):
+        """النوع المختار الآن في «إصدار مبيعات» (ذهب افتراضياً)"""
+        kind = getattr(self, "_sale_kind", None)
+        return kind if kind in self.SALE_KINDS else self.SALE_KIND_GOLD
+
+    def set_sale_kind(self, kind, initial=False):
+        """يختار نوع العملية في «إصدار مبيعات»: يميّز زرّه، ويضع رقم الفاتورة التالي من ترقيم هذا
+        النوع — ما لم يكن الرقم الظاهر مكتوباً يدوياً أو لفاتورة معلّقة مفتوحة فيبقى كما هو"""
+        if kind not in self.SALE_KINDS:
+            kind = self.SALE_KIND_GOLD
+        prev = self.current_sale_kind()
+        self._sale_kind = kind
+        buttons = getattr(self, "sale_kind_buttons", None)
+        if buttons:
+            self.style_segment_buttons(buttons, kind)
+        if initial or prev == kind:
+            return
+        save_ui_pref("sale_kind", kind)
+        entry = getattr(self, "sale_invoice_num", None)
+        if entry is None:
+            return
+        try:
+            shown = entry.get().strip()
+            # الرقم الظاهر هو الرقم التلقائي للنوع السابق ← الرقم التالي للنوع الجديد
+            if not shown or shown == self.next_sale_invoice_number(kind=prev):
+                entry.delete(0, "end")
+                self.fill_next_sale_invoice_number(force=True, kind=kind)
+        except Exception:
+            pass
     # بيان الفاتورة يُلحق ببيان كل حركة من حركاتها بعد دورها («مبيعات — بيانها»،
     # «خياس بوليش 2 — بيانها»): يظهر في كشوف الحساب، ويُقرأ منه عند التعديل
     SALE_NOTE_SEP = " — "
@@ -18319,12 +18431,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # تحمل تاريخ شهر ٩، وكانت تختفي من عمليات فترة ٨ بسببه
             if not self.inv_in_period(inv, month):
                 continue
-            key = (inv.get("رقم الفاتورة اليدوي", "") or "", dt, inv.get("الاسم", ""))
+            key = self.sale_key_of(inv)
             g = groups.setdefault(key, {
                 "manual_no": key[0], "date": dt, "name": key[2], "ids": [], "sets": set(),
                 "ذهب": 0.0, "فصوص": 0.0, "أحجار": 0.0, "أحجار بعد الخصم": 0.0, "الماس": 0.0, "خياس": 0.0,
-                "البيان": "", "first_id": inv.get("رقم الفاتورة", 0)})
+                "البيان": "", "first_id": inv.get("رقم الفاتورة", 0),
+                # النوع كما حُفظ (جزء من المفتاح)، وأنواع الحركات لاستنتاج نوع الفاتورة الأقدم
+                "kind_raw": key[3], "types": set()})
             g["ids"].append(inv.get("رقم الفاتورة", 0))
+            g["types"].add(t)
             if not g["البيان"]:
                 g["البيان"] = self.sale_note_of(inv.get("البيان"))
             if inv.get("set_number"):
@@ -18348,6 +18463,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 g["خياس"] = round(g["خياس"] + w, 2)
 
         result = list(groups.values())
+        for g in result:
+            g["kind"] = self.sale_kind_inferred(g["kind_raw"], g["types"])
+            g["key"] = (g["manual_no"], g["date"], g["name"], g["kind_raw"])
         result.sort(key=lambda g: (g["date"], g["first_id"]))
         return result
 
@@ -18369,6 +18487,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # يقارن خياس المركب المسجّل في كل الفواتير المرحّلة بكشف المركبين الآن
         ctk.CTkButton(head, text="🔍 تدقيق خياس المركب", font=(UI_FONT, 14, "bold"), width=185, height=34,
                       fg_color="#555555", hover_color="#333333", command=self.open_assembler_khayas_audit).pack(side="left", padx=5)
+
+        # شريطان: مبيعات الذهب ومبيعات الالماس — كل قسم بفواتيره وإجمالياته وحده
+        kind_bar = ctk.CTkFrame(parent, fg_color="transparent")
+        kind_bar.pack(fill="x", padx=20, pady=(2, 6))
+        self.sales_ops_kind_buttons = {}
+        for kind, icon in ((self.SALE_KIND_GOLD, "🟡"), (self.SALE_KIND_DIAMOND, "💎")):
+            b = ctk.CTkButton(kind_bar, text=f"{icon} مبيعات {kind}", font=(UI_FONT, 15, "bold"), width=190,
+                              height=38, command=lambda k=kind: self.switch_sales_ops_kind(k))
+            b.pack(side="right", padx=4)
+            self.sales_ops_kind_buttons[kind] = b
+        if getattr(self, "sales_ops_kind", None) not in self.SALE_KINDS:
+            self.sales_ops_kind = self.current_sale_kind()
 
         # إعداد تذاكر الطقوم لهذا الجهاز: إرفاقها بالفاتورة، ومحتوى الباركود الخطي (لبرنامج المسح الآخر)
         trow = ctk.CTkFrame(parent, fg_color="transparent")
@@ -18414,9 +18544,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkLabel(parent, text="اضغط مرتين على أي فاتورة لفتح نافذة تعديلها بكل سطورها",
                      font=(UI_FONT, 11), text_color="#aaaaaa").pack(pady=(0, 8))
 
+    def switch_sales_ops_kind(self, kind):
+        """شريط «مبيعات ذهب» أو «مبيعات الماس» في «المبيعات الصادرة»"""
+        self.sales_ops_kind = kind if kind in self.SALE_KINDS else self.SALE_KIND_GOLD
+        self.refresh_sales_ops_table()
+
     def refresh_sales_ops_table(self):
         if not hasattr(self, 'sales_ops_table_frame') or not self.sales_ops_table_frame:
             return
+        kind = getattr(self, "sales_ops_kind", None)
+        if kind not in self.SALE_KINDS:
+            kind = self.sales_ops_kind = self.SALE_KIND_GOLD
 
         # البيان بعد الاسم (بيان الفاتورة كما سُجّل في شاشة المبيعات)
         cols = ("رقم الفاتورة", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", "الأحجار بعد الخصم",
@@ -18429,7 +18567,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.sales_ops_map = {}
         tot = {k: 0.0 for k in ("ذهب", "فصوص", "أحجار بعد الخصم", "الماس", "خياس")}
-        groups = self.get_sale_invoice_groups(self.current_display_month)
+        all_groups = self.get_sale_invoice_groups(self.current_display_month)
+        # كل شريط بفواتير نوعه وحده، وعدد فواتير كل نوع على زرّه
+        groups = [g for g in all_groups if g["kind"] == kind]
+        buttons = getattr(self, "sales_ops_kind_buttons", {})
+        for k, b in buttons.items():
+            icon = "🟡" if k == self.SALE_KIND_GOLD else "💎"
+            try:
+                b.configure(text=f"{icon} مبيعات {k} ({sum(1 for g in all_groups if g['kind'] == k)})")
+            except Exception:
+                pass
+        self.style_segment_buttons(buttons, kind)
 
         for g in groups:
             for k in tot:
@@ -18443,11 +18591,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 f"{g['خياس']:.2f}" if g["خياس"] else "-",
                 len(g["sets"]) or 1,
             ))
-            self.sales_ops_map[item] = (g["manual_no"], g["date"], g["name"])
+            self.sales_ops_map[item] = g["key"]
 
         if groups:
             tree.insert("", "end", values=(
-                "إجمالي الشهر", "-", "-", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}",
+                f"إجمالي مبيعات {kind}", "-", "-", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}",
                 f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['الماس']:.2f}", f"{tot['خياس']:.2f}", len(groups)
             ), tags=("total_tag",))
 
@@ -18458,7 +18606,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if hasattr(self, 'lbl_sales_ops_totals'):
             self.lbl_sales_ops_totals.configure(
-                text=(f"إجماليات الفترة ({self.current_display_month}) — الذهب: {tot['ذهب']:.2f}  |  "
+                text=(f"إجماليات مبيعات {kind} للفترة ({self.current_display_month}) — {len(groups)} فاتورة — "
+                      f"الذهب: {tot['ذهب']:.2f}  |  "
                       f"الفصوص: {tot['فصوص']:.2f}  |  الأحجار بعد الخصم: {tot['أحجار بعد الخصم']:.2f}  |  "
                       f"الماس: {tot['الماس']:.2f}  |  الخياس: {tot['خياس']:.2f} جم"))
 
@@ -18479,8 +18628,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """كل حركات فاتورة مبيعات واحدة حسب مفتاحها (رقم يدوي + تاريخ + اسم).
 
         تشمل السطور المعلوماتية ليُعاد بناؤها عند التعديل، ولتُحذف مع الفاتورة
-        فلا تبقى سطور يتيمة بلا فاتورة."""
-        manual_no, date_str, name = key
+        فلا تبقى سطور يتيمة بلا فاتورة.
+        المفتاح (رقم، تاريخ، اسم، نوع محفوظ) — والمفتاح الثلاثي القديم بلا نوع يشمل النوعين."""
+        manual_no, date_str, name = key[:3]
+        kind = key[3] if len(key) > 3 else None
         recs = []
         for inv in self.invoices.values():
             if inv.get("settled_status") not in SALE_READ_STATUSES:
@@ -18491,6 +18642,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if (inv.get("رقم الفاتورة اليدوي", "") or "") != manual_no:
                 continue
             if inv.get("التاريخ") != date_str or inv.get("الاسم") != name:
+                continue
+            if kind is not None and (inv.get("sale_kind", "") or "") != kind:
                 continue
             recs.append(inv)
         return recs
@@ -18534,18 +18687,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     r["خياس"] = round(r["خياس"] + w, 2)
         return [rows[s] for s in order]
 
-    def post_sale_rows(self, rows, name, full_dt, manual_no, note="", period=None):
+    def post_sale_rows(self, rows, name, full_dt, manual_no, note="", period=None, kind=None):
         """يسجّل سطور فاتورة مبيعات كحركات محاسبية (نفس منطق الترحيل الأصلي، مصدر واحد موحّد
         يستخدمه الترحيل الجديد وتعديل الفاتورة المرحّلة معاً). يرجع قائمة (رقم التشغيل، التاريخ، الاسم).
 
         note: بيان الفاتورة — يُلحق ببيان كل حركة بعد دورها (sale_bayan).
         period: فترة الفاتورة الأصلية عند تعديلها — تبقى فيها ولا تنتقل للفترة المعروضة
-        (الترحيل الجديد بلا فترة يُختم بالفترة المعروضة كأي حركة)."""
+        (الترحيل الجديد بلا فترة يُختم بالفترة المعروضة كأي حركة).
+        kind: نوع العملية (ذهب/الماس) — يُحفظ على كل حركات الفاتورة."""
         committed_groups = []
 
         def store(record):
             if period:
                 record["period"] = period
+            if kind in self.SALE_KINDS:
+                record["sale_kind"] = kind
             self.invoices[record["رقم الفاتورة"]] = record
             self.save_invoice_to_db(record["رقم الفاتورة"], record)
         for row in rows:
@@ -18650,7 +18806,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def sale_invoice_groups(self, key, recs=None):
         """مجموعات فاتورة مبيعات للطباعة: (رقم التشغيل، التاريخ، الاسم) لكل سطر بترتيب إدخاله"""
-        _manual_no, date_str, name = key
+        date_str, name = key[1], key[2]
         recs = self.get_sale_invoice_records(key) if recs is None else recs
         sets = []
         for r in sorted(recs, key=lambda x: x.get("رقم الفاتورة", 0)):
@@ -18674,11 +18830,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         recs = self.get_sale_invoice_records(key)
         if not recs:
             return
-        manual_no, date_str, name = key
+        manual_no, date_str, name = key[:3]
+        kind = self.sale_kind_inferred(key[3] if len(key) > 3 else "", {r.get("النوع") for r in recs})
         tot_w = round(sum(r.get("الوزن", 0.0) for r in recs), 2)
         if not messagebox.askyesno(
                 "تأكيد حذف الفاتورة",
-                f"سيتم حذف فاتورة المبيعات رقم ({manual_no or '-'}) للعميل ({name})\n"
+                f"سيتم حذف فاتورة مبيعات {kind} رقم ({manual_no or '-'}) للعميل ({name})\n"
                 f"بتاريخ {date_str}، وعدد حركاتها {len(recs)} بإجمالي {tot_w:.2f} جم.\n\n"
                 "سيتم إعادة حساب الخزينة وكل الحسابات المرتبطة تلقائياً. هل تريد المتابعة؟"):
             return
@@ -18707,7 +18864,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not recs:
             messagebox.showwarning("تنبيه", "لم يتم العثور على حركات هذه الفاتورة.")
             return
-        old_manual_no, old_date, old_name = key
+        old_manual_no, old_date, old_name = key[:3]
+        # نوع الفاتورة يبقى كما هو بعد الحفظ (ويُصحَّح من خانته هنا إن اختير خطأً)
+        old_kind = self.sale_kind_inferred(next((r.get("sale_kind") for r in recs if r.get("sale_kind")), ""),
+                                           {r.get("النوع") for r in recs})
         # الفاتورة تبقى في فترتها الأصلية بعد الحفظ، حتى لو فُتحت من البحث أو التدقيق
         # وأنت على فترة أخرى (كانت تُعاد كتابتها بالفترة المعروضة فتنتقل إليها)
         old_period = self.inv_period(min(recs, key=lambda x: x.get("رقم الفاتورة", 0)))
@@ -18725,8 +18885,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(win, text="✏️ تعديل فاتورة مبيعات مرحّلة", font=(UI_FONT, 18, "bold"), text_color="#d4af37").pack(pady=(12, 6))
 
+        # نوع العملية في صفّه تحت العنوان، فيبقى لرأس الفاتورة (والبيان) عرضه كاملاً
+        kind_row = ctk.CTkFrame(win, fg_color="transparent")
+        kind_row.pack(fill="x", padx=18, pady=(0, 0))
+        ctk.CTkLabel(kind_row, text="نوع العملية:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4))
+        kind_box = ctk.CTkFrame(kind_row, fg_color="transparent")
+        kind_box.pack(side="right", padx=4)
+
         head = ctk.CTkFrame(win)
         head.pack(fill="x", padx=18, pady=6)
+
+        kind_state = {"kind": old_kind}
+        kind_buttons = {}
+
+        def pick_kind(k):
+            kind_state["kind"] = k
+            self.style_segment_buttons(kind_buttons, k)
+        for k, text in ((self.SALE_KIND_GOLD, "🟡 ذهب"), (self.SALE_KIND_DIAMOND, "💎 الماس")):
+            kind_buttons[k] = ctk.CTkButton(kind_box, text=text, font=(UI_FONT, 13, "bold"), width=78, height=32,
+                                            command=lambda k=k: pick_kind(k))
+            kind_buttons[k].pack(side="right", padx=1)
+        pick_kind(old_kind)
 
         ctk.CTkLabel(head, text="رقم الفاتورة:", font=(UI_FONT, 14, "bold"), text_color="#1f77b4").pack(side="right", padx=(10, 4), pady=10)
         ent_manual = ctk.CTkEntry(head, justify="center", width=110, height=34)
@@ -19003,7 +19182,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     return
 
             self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip(),
-                                period=old_period)
+                                period=old_period, kind=kind_state["kind"])
+            # الفاتورة تبقى ظاهرة في شريط نوعها في «المبيعات الصادرة»
+            self.sales_ops_kind = kind_state["kind"]
 
             self.register_operation_period(new_date)
             self.recalculate_all()
@@ -19193,7 +19374,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 continue
             if not self.inv_in_period(inv, month):
                 continue
-            key = (inv.get("رقم الفاتورة اليدوي", "") or "", inv.get("التاريخ", ""), inv.get("الاسم", ""))
+            key = self.sale_key_of(inv)
             by_key.setdefault(key, []).append(inv)
         found, checked = [], 0
         for key, recs in by_key.items():
@@ -19882,13 +20063,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("رقم الفاتورة مطلوب", "لازم تسجل رقم الفاتورة يدوياً قبل اعتماد الفاتورة.")
             self.sale_invoice_num.focus_set()
             return
-        sale_types_chk = ("مبيعات ذهب", "مبيعات ذهب مع الماس", "مبيعات فصوص وأحجار", "مبيعات الماس")
-        if any(inv.get("رقم الفاتورة اليدوي", "") == manual_no and inv.get("settled_status") == "ACTIVE"
-               and inv.get("النوع") in sale_types_chk for inv in self.invoices.values()):
-            if not messagebox.askyesno("رقم فاتورة مكرر", f"رقم الفاتورة ({manual_no}) مسجل من قبل بفاتورة مبيعات أخرى.\nهل تريد المتابعة برغم ذلك؟"):
+        # التكرار داخل ترقيم النوع نفسه: فاتورة ذهب وفاتورة الماس بالرقم نفسه مسموحتان (لكلٍّ ترقيمه)
+        kind = self.current_sale_kind()
+        if manual_no in self.posted_sale_invoice_numbers(kind):
+            if not messagebox.askyesno("رقم فاتورة مكرر", f"رقم الفاتورة ({manual_no}) مسجل من قبل بفاتورة مبيعات {kind} أخرى.\nهل تريد المتابعة برغم ذلك؟"):
                 return
 
-        if not messagebox.askyesno("تأكيد الاعتماد", f"هل أنت متأكد من اعتماد وترحيل هذه الفاتورة لـ ({name})؟\nسيتم تسجيل {len(self.pending_sale_rows)} سطر/أسطر ولا يمكن التراجع إلا بالتعديل أو الحذف لاحقاً."):
+        if not messagebox.askyesno("تأكيد الاعتماد", f"هل أنت متأكد من اعتماد وترحيل فاتورة مبيعات {kind} رقم ({manual_no}) لـ ({name})؟\nسيتم تسجيل {len(self.pending_sale_rows)} سطر/أسطر ولا يمكن التراجع إلا بالتعديل أو الحذف لاحقاً."):
             return
 
         date_val = self.read_entry_date(self.sale_date.get().strip() or self.get_smart_default_date())
@@ -19899,7 +20080,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         note = note_widget.get().strip() if note_widget is not None else ""
 
         # الترحيل يمر عبر الدالة الموحّدة نفسها المستخدمة في تعديل الفاتورة، لضمان تطابق المعالجة المحاسبية
-        committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note)
+        committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note, kind=kind)
+        self.sales_ops_kind = kind            # «المبيعات الصادرة» تُفتح على شريط نوعها
 
         # فاتورة كانت معلّقة ثم رُحّلت: أُثبتت في «المبيعات الصادرة» فتختفي من «المعلقات»
         suspended_id = getattr(self, "current_suspended_id", None)
@@ -19917,7 +20099,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.register_operation_period(date_val)
         self.recalculate_all()
 
-        self.lbl_sales_status.configure(text=f"✅ تم اعتماد وترحيل الفاتورة لـ ({name})")
+        self.lbl_sales_status.configure(text=f"✅ تم اعتماد وترحيل فاتورة مبيعات {kind} لـ ({name})")
         self.after(2500, lambda: self.lbl_sales_status.configure(text=""))
         self.refresh_pending_sales_table()
         self.refresh_sales_table()
@@ -19945,6 +20127,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     rows_json TEXT DEFAULT '[]', draft_json TEXT DEFAULT '{}',
                     created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '')"""
 
+    # مفتاح نوع العملية داخل مسودة المعلّقة (draft_json) — بلا عمود جديد في جدولها
+    SUSPENDED_KIND_KEY = "_sale_kind"
     # خانات السطر التي تُحفظ مع التعليق إن كُتب فيها ولم يُضف السطر بعد
     SALE_DRAFT_FIELDS = (("set_number", "sale_set_number"), ("ذهب", "sale_gold"), ("فصوص", "sale_gems"),
                          ("أحجار", "sale_stones"), ("الماس", "sale_diamond"),
@@ -19973,12 +20157,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 draft = json.loads(r[7] or "{}")
             except ValueError:
                 draft = {}
+            draft = draft if isinstance(draft, dict) else {}
+            rows = [x for x in rows if isinstance(x, dict)] if isinstance(rows, list) else []
+            # نوع العملية محفوظ مع المسودة؛ والمعلّقة الأقدم: الماس إن كان في سطورها ماس، وإلا ذهب
+            kind = draft.pop(self.SUSPENDED_KIND_KEY, "")
+            if kind not in self.SALE_KINDS:
+                kind = self.SALE_KIND_DIAMOND if any(self.safe_float(x.get("الماس")) > 0 for x in rows) \
+                    else self.SALE_KIND_GOLD
             out.append({"id": r[0], "date": r[1] or "", "manual_no": r[2] or "", "name": r[3] or "",
-                        "note": r[4] or "", "discount_pct": r[5] or "",
-                        "rows": [x for x in rows if isinstance(x, dict)] if isinstance(rows, list) else [],
-                        "draft": draft if isinstance(draft, dict) else {},
+                        "note": r[4] or "", "discount_pct": r[5] or "", "kind": kind,
+                        "rows": rows, "draft": draft,
                         "created_at": r[8] or "", "updated_at": r[9] or ""})
         return out
+
+    @staticmethod
+    def safe_float(value):
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def get_suspended_sale(self, rec_id):
         return next((r for r in self.list_suspended_sales() if r["id"] == rec_id), None)
@@ -19986,9 +20183,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def save_suspended_sale(self, data, rec_id=None):
         """يحفظ فاتورة معلّقة: تحديث المعلّقة نفسها إن كانت هي المفتوحة، وإلا جديدة. يرجع رقمها"""
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        draft = dict(data.get("draft", {}) or {})
+        if data.get("kind") in self.SALE_KINDS:
+            draft[self.SUSPENDED_KIND_KEY] = data["kind"]
         vals = (data.get("date", ""), data.get("manual_no", ""), data.get("name", ""), data.get("note", ""),
                 data.get("discount_pct", ""), json.dumps(data.get("rows", []), ensure_ascii=False),
-                json.dumps(data.get("draft", {}), ensure_ascii=False))
+                json.dumps(draft, ensure_ascii=False))
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(self.SUSPENDED_TABLE_SQL)
             if rec_id and conn.execute("SELECT 1 FROM suspended_sales WHERE id = ?", (rec_id,)).fetchone():
@@ -20038,6 +20238,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         draft = {k: text(attr) for k, attr in self.SALE_DRAFT_FIELDS}
         return {"date": text("sale_date"), "manual_no": text("sale_invoice_num"), "name": text("sale_name"),
                 "note": text("sale_note"), "discount_pct": text("sale_discount_pct"),
+                "kind": self.current_sale_kind(),
                 "rows": [dict(r) for r in getattr(self, "pending_sale_rows", [])],
                 "draft": {k: v for k, v in draft.items() if v}}
 
@@ -20054,6 +20255,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             except Exception:
                 pass
         put("sale_date", data.get("date") or self.get_smart_default_date())
+        # النوع قبل الرقم: الفاتورة تعود بنوعها ورقمها كما حُفظا
+        if data.get("kind") in self.SALE_KINDS:
+            self.set_sale_kind(data["kind"], initial=True)
         put("sale_invoice_num", data.get("manual_no", ""))
         put("sale_note", data.get("note", ""))
         try:
@@ -20078,10 +20282,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def clear_sale_form(self):
         """فاتورة جديدة فارغة (التاريخ ونسبة الخصم يبقيان كما هما) برقمها التلقائي التالي"""
         self.fill_sale_form({"date": self.sale_date.get().strip(), "name": "المصنع",
-                             "manual_no": self.next_sale_invoice_number()})
+                             "kind": self.current_sale_kind(), "manual_no": self.next_sale_invoice_number()})
 
-    # ═══ ترقيم فواتير المبيعات تلقائياً: رقم بداية يختاره المستخدم مرة ويُحفظ ═══
-    SALE_NO_START_KEY = "sale_invoice_start"
+    # ═══ ترقيم فواتير المبيعات تلقائياً: لكل نوع (ذهب/الماس) رقم بداية يُحفظ وسلسلة مستقلة ═══
+    SALE_NO_START_KEY = "sale_invoice_start"          # الذهب (المفتاح الأصلي قبل خانة النوع)
+    SALE_NO_START_KEYS = {"ذهب": "sale_invoice_start", "الماس": "sale_invoice_start_diamond"}
+    # نوع لم يُضبط ترقيمه بعد والترقيم التلقائي مستخدم في النوع الآخر: تلقائي من 1 (أي بعد أكبر
+    # رقم مستخدم في سلسلته) — فلكل نوع فواتيره التلقائية فوراً، ويُعدَّل بدايته من 🔢 متى شاء
+    SALE_NO_DEFAULT_START = "1"
 
     @staticmethod
     def split_invoice_number(text):
@@ -20089,42 +20297,67 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         m = re.match(r"^(.*?)(\d+)$", str(text or "").strip())
         return (m.group(1), int(m.group(2)), len(m.group(2))) if m else None
 
-    def sale_invoice_start(self):
-        """رقم البداية المحفوظ ("" = لا ترقيم تلقائي)"""
+    def sale_invoice_start_saved(self, kind=None):
+        """رقم البداية المحفوظ للنوع كما هو: None لم يُضبط بعد، و"" أُوقف ترقيمه التلقائي"""
+        key = self.SALE_NO_START_KEYS.get(kind or self.current_sale_kind(), self.SALE_NO_START_KEY)
         try:
-            return (self.get_setting(self.SALE_NO_START_KEY, "") or "").strip()
+            value = self.get_setting(key, None)
         except Exception:
-            return ""
+            return None
+        return None if value is None else str(value).strip()
 
-    def used_sale_invoice_numbers(self):
-        """أرقام فواتير المبيعات المستخدمة: المرحّلة والمعلّقة"""
-        used = {str(inv.get("رقم الفاتورة اليدوي") or "").strip() for inv in self.invoices.values()
-                if inv.get("النوع") in self.SALE_TYPES or inv.get("النوع") == "خياس طقوم"}
+    def sale_invoice_start(self, kind=None):
+        """رقم بداية ترقيم النوع ("" = لا ترقيم تلقائي: يُكتب الرقم يدوياً كما كان)"""
+        kind = kind or self.current_sale_kind()
+        saved = self.sale_invoice_start_saved(kind)
+        if saved is not None:
+            return saved
+        others = (self.sale_invoice_start_saved(k) for k in self.SALE_KINDS if k != kind)
+        return self.SALE_NO_DEFAULT_START if any(others) else ""
+
+    def posted_sale_invoice_numbers(self, kind=None):
+        """أرقام فواتير المبيعات المرحّلة (لنوع واحد، أو كلها بلا نوع) — والفاتورة الأقدم بنوعها المستنتج"""
+        groups = {}
+        for inv in self.invoices.values():
+            t = inv.get("النوع")
+            if t in self.SALE_TYPES or t == "خياس طقوم":
+                groups.setdefault(self.sale_key_of(inv), set()).add(t)
+        used = {str(key[0]).strip() for key, types in groups.items()
+                if kind is None or self.sale_kind_inferred(key[3], types) == kind}
+        used.discard("")
+        return used
+
+    def used_sale_invoice_numbers(self, kind=None):
+        """أرقام فواتير المبيعات المستخدمة في ترقيم النوع: المرحّلة والمعلّقة (بلا نوع: كل الأنواع)"""
+        used = self.posted_sale_invoice_numbers(kind)
         try:
-            used |= {str(r.get("manual_no") or "").strip() for r in self.list_suspended_sales()}
+            used |= {str(r.get("manual_no") or "").strip() for r in self.list_suspended_sales()
+                     if kind is None or r.get("kind", self.SALE_KIND_GOLD) == kind}
         except Exception:
             pass
         used.discard("")
         return used
 
-    def next_sale_invoice_number(self, start=None):
-        """رقم الفاتورة التالي من رقم البداية: بعد أكبر رقم مستخدم من السلسلة نفسها (البادئة نفسها ولا يقل
-        عن البداية)، فلا يتكرر رقم ولا يعود الترقيم للخلف. بلا رقم بداية: "" (الإدخال اليدوي كما كان)"""
-        parts = self.split_invoice_number(self.sale_invoice_start() if start is None else start)
+    def next_sale_invoice_number(self, start=None, kind=None):
+        """رقم الفاتورة التالي في ترقيم النوع (المختار الآن افتراضياً): بعد أكبر رقم مستخدم من سلسلة النوع
+        نفسها (البادئة نفسها ولا يقل عن البداية)، فلا يتكرر رقم ولا يعود الترقيم للخلف.
+        ترقيم موقوف: "" (الإدخال اليدوي كما كان)"""
+        kind = kind or self.current_sale_kind()
+        parts = self.split_invoice_number(self.sale_invoice_start(kind) if start is None else start)
         if not parts:
             return ""
         prefix, first, width = parts
         last = first - 1
-        for no in self.used_sale_invoice_numbers():
+        for no in self.used_sale_invoice_numbers(kind):
             used = self.split_invoice_number(no)
             if used and used[0] == prefix and used[1] >= first:
                 last = max(last, used[1])
         return f"{prefix}{str(last + 1).zfill(width)}"
 
-    def fill_next_sale_invoice_number(self, force=False):
-        """يضع الرقم التالي في خانة رقم الفاتورة إن كانت فارغة (أو دائماً مع force)، ويرجعه"""
+    def fill_next_sale_invoice_number(self, force=False, kind=None):
+        """يضع الرقم التالي للنوع في خانة رقم الفاتورة إن كانت فارغة (أو دائماً مع force)، ويرجعه"""
         entry = getattr(self, "sale_invoice_num", None)
-        nxt = self.next_sale_invoice_number()
+        nxt = self.next_sale_invoice_number(kind=kind)
         if entry is None or not nxt:
             return ""
         try:
@@ -20135,66 +20368,70 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return ""
         return nxt
 
-    def suggest_sale_invoice_start(self):
-        """اقتراح رقم البداية أول مرة: بعد أكبر رقم فاتورة رقمي مستخدم، وإلا 1"""
-        nums = [int(n) for n in self.used_sale_invoice_numbers() if n.isdigit()]
+    def suggest_sale_invoice_start(self, kind=None):
+        """اقتراح رقم البداية أول مرة: بعد أكبر رقم فاتورة رقمي مستخدم في النوع، وإلا 1"""
+        nums = [int(n) for n in self.used_sale_invoice_numbers(kind or self.current_sale_kind()) if n.isdigit()]
         return str(max(nums) + 1) if nums else "1"
 
-    def set_sale_invoice_start(self, value):
-        """يحفظ رقم البداية ("" يوقف الترقيم التلقائي). يرجع False إن لم ينتهِ برقم"""
+    def set_sale_invoice_start(self, value, kind=None):
+        """يحفظ رقم بداية النوع ("" يوقف ترقيمه التلقائي). يرجع False إن لم ينتهِ برقم"""
         value = str(value or "").strip()
         if value and not self.split_invoice_number(value):
             return False
-        self.set_setting(self.SALE_NO_START_KEY, value)
+        self.set_setting(self.SALE_NO_START_KEYS.get(kind or self.current_sale_kind(), self.SALE_NO_START_KEY),
+                         value)
         return True
 
     def open_sale_invoice_start_dialog(self):
-        """نافذة «رقم البداية»: يُكتب مرة ويُحفظ، ثم تأخذ كل فاتورة جديدة الرقم التالي تلقائياً"""
+        """نافذة «رقم البداية» لنوع العملية المختار (ذهب/الماس): يُكتب مرة ويُحفظ، ثم تأخذ كل فاتورة
+        جديدة من هذا النوع الرقم التالي تلقائياً — ولكل نوع ترقيمه المستقل"""
+        kind = self.current_sale_kind()
         win = ctk.CTkToplevel(self)
-        win.title("ترقيم فواتير المبيعات")
-        win.geometry("540x340")
+        win.title(f"ترقيم فواتير مبيعات {kind}")
+        win.geometry("560x360")
         win.transient(self)
         win.grab_set()
         win.focus_force()
-        ctk.CTkLabel(win, text="🔢 ترقيم فواتير المبيعات تلقائياً", font=(UI_FONT, 18, "bold"),
+        ctk.CTkLabel(win, text=f"🔢 ترقيم فواتير مبيعات {kind} تلقائياً", font=(UI_FONT, 18, "bold"),
                      text_color="#d4af37").pack(pady=(16, 4))
         ctk.CTkLabel(win, text="اكتب الرقم الذي يبدأ منه الترقيم (مثل 1001 أو F-0001) واحفظه —\n"
-                               "ثم تأخذ كل فاتورة جديدة الرقم التالي تلقائياً، ولا يتكرر رقم مستخدم",
-                     font=(UI_FONT, 12), text_color="#8b8f95", justify="center", wraplength=500).pack(pady=(0, 12))
+                               f"ثم تأخذ كل فاتورة {kind} جديدة الرقم التالي تلقائياً، ولا يتكرر رقم مستخدم.\n"
+                               "لكل نوع ترقيمه: اختر النوع من «نوع العملية» لضبط ترقيمه",
+                     font=(UI_FONT, 12), text_color="#8b8f95", justify="center", wraplength=520).pack(pady=(0, 12))
         row = ctk.CTkFrame(win, fg_color="transparent")
         row.pack(pady=4)
         ctk.CTkLabel(row, text="يبدأ من:", font=(UI_FONT, 14, "bold")).pack(side="right", padx=6)
         ent = ctk.CTkEntry(row, justify="center", font=(UI_FONT, 16, "bold"), width=170, height=38)
-        ent.insert(0, self.sale_invoice_start() or self.suggest_sale_invoice_start())
+        ent.insert(0, self.sale_invoice_start_saved(kind) or self.suggest_sale_invoice_start(kind))
         ent.pack(side="right", padx=6)
         lbl_next = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"), text_color=(UI["primary"], "#9CC0F5"))
         lbl_next.pack(pady=(10, 4))
 
         def preview(_e=None):
-            nxt = self.next_sale_invoice_number(ent.get())
-            lbl_next.configure(text=f"الفاتورة التالية: {nxt}" if nxt else "يجب أن ينتهي الرقم بأرقام (مثل 1001)")
+            nxt = self.next_sale_invoice_number(ent.get(), kind=kind)
+            lbl_next.configure(text=f"فاتورة {kind} التالية: {nxt}" if nxt else "يجب أن ينتهي الرقم بأرقام (مثل 1001)")
 
         def save():
-            if not self.set_sale_invoice_start(ent.get()):
+            if not self.set_sale_invoice_start(ent.get(), kind=kind):
                 messagebox.showwarning("رقم غير صالح", "رقم البداية يجب أن ينتهي بأرقام (مثل 1001 أو F-0001).",
                                        parent=win)
                 return
             if not getattr(self, "current_suspended_id", None):
-                self.fill_next_sale_invoice_number(force=True)
+                self.fill_next_sale_invoice_number(force=True, kind=kind)
             win.destroy()
-            self.toast(f"✅ الترقيم التلقائي: الفاتورة التالية {self.next_sale_invoice_number()}", "success")
+            self.toast(f"✅ ترقيم فواتير {kind}: الفاتورة التالية {self.next_sale_invoice_number(kind=kind)}", "success")
 
         def stop():
-            self.set_sale_invoice_start("")
+            self.set_sale_invoice_start("", kind=kind)
             win.destroy()
-            self.toast("أُوقف الترقيم التلقائي — يُكتب رقم الفاتورة يدوياً", "info")
+            self.toast(f"أُوقف ترقيم فواتير {kind} التلقائي — يُكتب رقم الفاتورة يدوياً", "info")
 
         ent.bind("<KeyRelease>", preview)
         ent.bind("<Return>", lambda _e: save())
         preview()
         ctk.CTkButton(win, text="💾 حفظ", font=(UI_FONT, 15, "bold"), fg_color="#1e8449", hover_color="#145a32",
                       width=170, height=40, command=save).pack(pady=(10, 6))
-        if self.sale_invoice_start():
+        if self.sale_invoice_start(kind):
             ctk.CTkButton(win, text="إيقاف الترقيم التلقائي", font=(UI_FONT, 12), fg_color="#555555",
                           hover_color="#333333", width=170, height=32, command=stop).pack()
         ent.focus_set()
@@ -20342,7 +20579,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def refresh_suspended_sales_table(self):
         if not getattr(self, "suspended_table_frame", None):
             return
-        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", "الأحجار بعد الخصم",
+        cols = ("رقم الفاتورة", "النوع", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", "الأحجار بعد الخصم",
                 "الماس", "خياس", "عدد الأسطر", "آخر تعديل")
         tree, _t, reused = self.reuse_or_create_tree(self.suspended_table_frame, cols, height=13)
         self.suspended_tree = tree
@@ -20365,13 +20602,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 grand[k] = round(grand[k] + t[k], 2)
             mark = "📂 " if rec["id"] == current else ""
             iid = tree.insert("", "end", values=(
-                mark + (rec["manual_no"] or "-"), rec["date"] or "-", rec["name"] or "-", rec["note"] or "-",
+                mark + (rec["manual_no"] or "-"), rec.get("kind") or "-", rec["date"] or "-", rec["name"] or "-",
+                rec["note"] or "-",
                 fmt(t["ذهب"]), fmt(t["فصوص"]), fmt(t["أحجار بعد الخصم"]), fmt(t["الماس"]), fmt(t["خياس"]),
                 len(rec["rows"]), rec["updated_at"][:16] or "-"))
             self.suspended_map[iid] = rec["id"]
         if recs:
             tree.insert("", "end", values=(
-                "إجمالي المعلقات", "-", "-", "-", f"{grand['ذهب']:.2f}", f"{grand['فصوص']:.2f}",
+                "إجمالي المعلقات", "-", "-", "-", "-", f"{grand['ذهب']:.2f}", f"{grand['فصوص']:.2f}",
                 f"{grand['أحجار بعد الخصم']:.2f}", f"{grand['الماس']:.2f}", f"{grand['خياس']:.2f}",
                 sum(len(r["rows"]) for r in recs), "-"), tags=("total_tag",))
 
@@ -21380,7 +21618,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # مُسح الطقم بعد بيعه: فاتورة بيعه وتذكرة البيع مباشرة من هنا
         sale = self.set_sale_move(moves)
         if sale is not None:
-            sale_key = (sale.get("رقم الفاتورة اليدوي") or "", sale.get("التاريخ"), sale.get("الاسم"))
+            sale_key = self.sale_key_of(sale)
             ctk.CTkButton(btns, text="🧾 فاتورة البيع", width=150, height=40, font=(UI_FONT, 14, "bold"),
                           command=lambda: self.preview_invoice_groups(self.sale_invoice_groups(sale_key)),
                           **BUTTON_STYLES["secondary"]).pack(side="left", padx=6)
@@ -23735,7 +23973,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return
             t = inv.get("النوع", "")
             if t in self.SALE_TYPES or t == "خياس طقوم":
-                key = ((inv.get("رقم الفاتورة اليدوي", "") or ""), inv.get("التاريخ", ""), inv.get("الاسم", ""))
+                key = self.sale_key_of(inv)
                 win.destroy()
                 self.open_sale_invoice_editor(key)
             else:
@@ -23769,7 +24007,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def open_edit_invoice_ui(self, inv_id, is_archived=False, arch_meta=None):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT invoice_id, date_time, name, op_type, weight, before_w, after_w, note, settled_status, trees_count, set_number, row_number, manual_no FROM invoices WHERE invoice_id = ?", (inv_id,))
+            cursor.execute("SELECT invoice_id, date_time, name, op_type, weight, before_w, after_w, note, settled_status, trees_count, set_number, row_number, manual_no, sale_kind FROM invoices WHERE invoice_id = ?", (inv_id,))
             row = cursor.fetchone()
 
         if not row: return
@@ -23779,13 +24017,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "settled_status": row[8], "trees_count": row[9] if len(row)>9 and row[9] else 0.0,
             "set_number": row[10] if len(row) > 10 and row[10] else "",
             "row_number": row[11] if len(row) > 11 and row[11] else "",
-            "رقم الفاتورة اليدوي": row[12] if len(row) > 12 and row[12] else ""
+            "رقم الفاتورة اليدوي": row[12] if len(row) > 12 and row[12] else "",
+            "sale_kind": row[13] if len(row) > 13 and row[13] else ""
         }
 
         # حركة من فاتورة مبيعات ← نافذة الفاتورة كاملة: تعديل سطر واحد منها هنا كان يترك سطور
         # الصافي والخياسات المحفوظة معها على قيمها القديمة
         if inv["النوع"] in self.SALE_TYPES or inv["النوع"] == "خياس طقوم":
-            key = (inv["رقم الفاتورة اليدوي"] or "", inv["التاريخ"], inv["الاسم"])
+            key = self.sale_key_of(inv)
             if self.get_sale_invoice_records(key):
                 self.open_sale_invoice_editor(key)
                 return

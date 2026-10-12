@@ -34,7 +34,7 @@ def body(name):
 ns = {"datetime": datetime, "sys": sys, "re": __import__("re"), "IS_ADMIN_BUILD": False}
 MEMBERS = ["_SET_DIGITS", "_SCANNED_WEIGHT", "normalize_set_number", "scanned_set_number", "TRACE_STATUSES", "JOURNAL_TYPES", "SALE_TYPES",
            "SEARCH_LIMIT", "global_search", "open_account_statement_for", "table_title", "print_tree",
-           "sale_invoice_groups", "_SHORTCUT_DIGITS", "_on_ctrl_number_key"]
+           "sale_invoice_groups", "_SHORTCUT_DIGITS", "_on_ctrl_number_key", "sale_key_of"]
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
 
 
@@ -53,7 +53,7 @@ class App(ns["Base"]):
                               "رقم الفاتورة اليدوي": manual, "التاريخ": dt, "settled_status": status}
 
     def get_sale_invoice_records(self, key):
-        return [i for i in self.invoices.values() if (i["رقم الفاتورة اليدوي"], i["التاريخ"], i["الاسم"]) == key]
+        return [i for i in self.invoices.values() if self.sale_key_of(i)[:len(key)] == tuple(key)]
 
     def open_set_number_trace(self, x=None): self.calls.append(("trace", x))
     def preview_invoice_groups(self, groups): self.calls.append(("preview", groups))

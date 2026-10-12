@@ -186,7 +186,7 @@ TMP = tempfile.mkdtemp(prefix="loss_recovery_")
 SCHEMA = """CREATE TABLE invoices (invoice_id INTEGER PRIMARY KEY, date_time TEXT, name TEXT, op_type TEXT,
             weight REAL, before_w REAL, after_w REAL, note TEXT, settled_status TEXT DEFAULT 'ACTIVE',
             trees_count REAL DEFAULT 0, set_number TEXT DEFAULT '', row_number TEXT DEFAULT '',
-            manual_no TEXT DEFAULT '', period TEXT DEFAULT '')"""
+            manual_no TEXT DEFAULT '', period TEXT DEFAULT '', sale_kind TEXT DEFAULT '')"""
 
 
 def new_app(admin=False):

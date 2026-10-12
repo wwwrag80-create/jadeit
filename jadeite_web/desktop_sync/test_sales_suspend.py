@@ -66,8 +66,12 @@ METHODS = [
     # ترقيم الفواتير تلقائياً (الدفعة ٣٠): الفاتورة الجديدة بعد التعليق أو الترحيل تأخذ الرقم التالي
     "split_invoice_number", "sale_invoice_start", "used_sale_invoice_numbers", "next_sale_invoice_number",
     "fill_next_sale_invoice_number", "set_sale_invoice_start",
+    # نوع العملية (ذهب/الماس): ترقيم لكل نوع، ومفتاح الفاتورة بنوعها، والمعلّقة بنوعها
+    "sale_kind_inferred", "sale_key_of", "current_sale_kind", "set_sale_kind", "safe_float",
+    "sale_invoice_start_saved", "posted_sale_invoice_numbers",
 ]
-ATTRS = ["SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SALE_NO_START_KEY", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
+ATTRS = ["INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
+         "SALE_NO_START_KEYS", "SALE_NO_DEFAULT_START", "SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SALE_NO_START_KEY", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 
 EXTRA = '''
@@ -173,7 +177,7 @@ TMP = tempfile.mkdtemp(prefix="sales_suspend_")
 SCHEMA = """CREATE TABLE invoices (invoice_id INTEGER PRIMARY KEY, date_time TEXT, name TEXT, op_type TEXT,
             weight REAL, before_w REAL, after_w REAL, note TEXT, settled_status TEXT DEFAULT 'ACTIVE',
             trees_count REAL DEFAULT 0, set_number TEXT DEFAULT '', row_number TEXT DEFAULT '',
-            manual_no TEXT DEFAULT '', period TEXT DEFAULT '')"""
+            manual_no TEXT DEFAULT '', period TEXT DEFAULT '', sale_kind TEXT DEFAULT '')"""
 FORM = ("sale_date", "sale_invoice_num", "sale_name", "sale_note", "sale_discount_pct", "sale_set_number",
         "sale_gold", "sale_gems", "sale_stones", "sale_diamond", "sale_stones_discount", "sale_khayas",
         "sale_khayas_polish", "sale_khayas_assembler", "lbl_sales_status", "lbl_suspended_open")
@@ -367,7 +371,10 @@ for gone in ("في قسم المبيعات", "جدول العمليات", "تن�
 print("✔ أقسام شاشة المبيعات: «إصدار مبيعات» ثم «المبيعات الصادرة» ثم «المعلقات» — والرسائل بالأسماء الجديدة")
 assert 'text="⏸️ تعليق الفاتورة"' in build and "command=self.suspend_sale_invoice" in build
 assert build.index("btn_commit.pack(side=\"right\"") < build.index("self.btn_suspend_sale.pack(side=\"right\"")
-assert 'head_label("البيان:")' in build and build.index('head_label("الاسم:")') < build.index('head_label("البيان:")')
+# البيان بعد الاسم: في صف الرأس، أو في صف تحته حين يضيق العرض (بعد إضافة «نوع العملية»)
+assert 'text="البيان:"' in build and build.index('head_label("الاسم:")') < build.index('text="البيان:"')
+assert "tk.Misc.bind(head, \"<Configure>\", on_head_resize, \"+\")" in build
+assert 'note_lbl.pack(in_=target, side="right"' in build and "self.sale_note.pack(in_=target" in build
 sw = seg("switch_sales_subtab")
 assert 'key == "المعلقات"' in sw and "self.refresh_suspended_sales_table()" in sw
 rs = seg("refresh_suspended_sales_table")
@@ -421,6 +428,84 @@ pend = seg("refresh_pending_sales_table")
 assert pend.index("tree.column(act, width=96") < pend.index("self.fit_columns_to_content(tree, \"pending_sales\"")
 print("✔ القياس بخط الجدول الحقيقي، والعناوين تُختصر عند الضيق، وعمود الأزرار ثابت قبل التوزيع")
 
+# ═══ ٩) نوع العملية (ذهب/الماس): الترحيل بنوعه، وفاتورتان بالرقم نفسه لا تندمجان، والمعلّقة بنوعها ═══
+G, D = "ذهب", "الماس"
+k = new_app()
+DT = "2026-09-22 10:00:00"
+k.post_sale_rows([row("9001", gold=10, khayas=0.4, polish=0.1)], "مورد 1", DT, "1", kind=G)
+k.post_sale_rows([row("9002", gold=3, diamond=0.5)], "مورد 1", DT, "1", kind=D)
+with sqlite3.connect(k.db_path) as conn:
+    stored = conn.execute("select sale_kind, count(*) from invoices group by sale_kind order by sale_kind").fetchall()
+assert stored == [(D, 2), (G, 4)], stored        # كل حركات الفاتورة بنوعها (المعلوماتية أيضاً)
+gs = k.get_sale_invoice_groups(M9)
+assert sorted((g["manual_no"], g["kind"], g["ذهب"], g["الماس"]) for g in gs) == [("1", D, 3.0, 0.5), ("1", G, 10.0, 0.0)], gs
+gold_key = next(g["key"] for g in gs if g["kind"] == G)
+assert gold_key == ("1", DT, "مورد 1", G)
+recs = k.get_sale_invoice_records(gold_key)
+assert len(recs) == 4 and {r["sale_kind"] for r in recs} == {G}
+assert len(k.get_sale_invoice_records(("1", DT, "مورد 1"))) == 6          # المفتاح القديم بلا نوع: النوعان
+print("✔ الترحيل يحفظ النوع على كل حركات الفاتورة؛ وفاتورتا ذهب والماس بالرقم والتاريخ والاسم نفسها منفصلتان")
+
+# فاتورة أقدم بلا نوع محفوظ: نوعها من محتواها
+k.post_sale_rows([row("9003", gold=1, diamond=0.2)], "مورد 2", DT, "L-1")
+k.post_sale_rows([row("9004", gold=2)], "مورد 2", DT, "L-2")
+old_kinds = {g["manual_no"]: (g["kind"], g["kind_raw"]) for g in k.get_sale_invoice_groups(M9)}
+assert old_kinds["L-1"] == (D, "") and old_kinds["L-2"] == (G, ""), old_kinds
+print("✔ الفاتورة الأقدم (قبل خانة النوع): فيها ماس ← «مبيعات الماس»، وإلا ← «مبيعات ذهب»")
+
+# التكرار داخل النوع وحده
+k.sale_invoice_num.v, k.sale_name.v = "2", "مورد 2"
+k._sale_kind = D
+k.pending_sale_rows = [row("9005", diamond=0.7)]
+before = len(msgs)
+k.commit_sale_invoice()
+assert "رقم فاتورة مكرر" not in msgs[before:] and "تأكيد الاعتماد" in msgs[before:]
+assert {i["sale_kind"] for i in k.invoices.values() if i["set_number"] == "9005"} == {D}
+k.sale_invoice_num.v, k.sale_name.v = "1", "مورد 2"
+k._sale_kind = G
+k.pending_sale_rows = [row("9006", gold=1)]
+FakeBox.answers["رقم فاتورة مكرر"] = False
+before = len(msgs)
+k.commit_sale_invoice()
+assert "رقم فاتورة مكرر" in msgs[before:] and not any(i["set_number"] == "9006" for i in k.invoices.values())
+FakeBox.answers.pop("رقم فاتورة مكرر")
+k.sale_invoice_num.v = "1"
+k._sale_kind = D
+before = len(msgs)
+k.commit_sale_invoice()                  # الماس رقم 1 مستخدم ← تنبيه التكرار في نوعه
+assert "رقم فاتورة مكرر" in msgs[before:]
+print("✔ تنبيه «رقم فاتورة مكرر» داخل النوع نفسه فقط: ذهب 1 والماس 2 مسموحان معاً")
+
+# المعلّقة تُحفظ بنوعها وتعود به
+s2 = new_app()
+s2._sale_kind = D
+s2.sale_invoice_num.v = "D-5"
+s2.pending_sale_rows = [row("9100", gold=2, diamond=0.3)]
+rid = s2.suspend_sale_invoice()
+rec = s2.get_suspended_sale(rid)
+assert rec["kind"] == D and "_sale_kind" not in rec["draft"], rec
+with sqlite3.connect(s2.db_path) as conn:
+    assert '"_sale_kind": "الماس"' in conn.execute("select draft_json from suspended_sales").fetchone()[0]
+s2._sale_kind = G
+s2.open_suspended_sale(rid)
+assert s2.current_sale_kind() == D and s2.sale_invoice_num.v == "D-5"
+with sqlite3.connect(s2.db_path) as conn:          # معلّقة أقدم بلا نوع: من سطورها
+    conn.execute("insert into suspended_sales (manual_no, rows_json, draft_json) values (?, ?, '{}')",
+                 ("OLD-D", json.dumps([row("1", gold=1, diamond=0.1)], ensure_ascii=False)))
+    conn.execute("insert into suspended_sales (manual_no, rows_json, draft_json) values (?, ?, '{}')",
+                 ("OLD-G", json.dumps([row("2", gold=1)], ensure_ascii=False)))
+kinds = {r["manual_no"]: r["kind"] for r in s2.list_suspended_sales()}
+assert kinds == {"D-5": D, "OLD-D": D, "OLD-G": G}, kinds
+assert "\"النوع\"" in rs and 'rec.get("kind")' in rs
+print("✔ المعلّقة تُحفظ بنوعها وتُفتح به (ورقمها كما هو)؛ والمعلّقة الأقدم بنوعها من سطورها؛ وعمود «النوع» في المعلقات")
+
+# «المبيعات الصادرة»: شريطان، ونافذة التعديل تحفظ النوع
+ops_ui = seg("build_sales_ops_ui")
+assert "self.sales_ops_kind_buttons[kind] = b" in ops_ui and "self.switch_sales_ops_kind(k)" in ops_ui
+assert 'groups = [g for g in all_groups if g["kind"] == kind]' in ops and 'self.sales_ops_map[item] = g["key"]' in ops
+assert 'kind=kind_state["kind"]' in editor and "pick_kind(old_kind)" in editor
+print("✔ «المبيعات الصادرة»: شريط «مبيعات ذهب» وشريط «مبيعات الماس» كلٌّ بفواتيره؛ ونافذة التعديل تحفظ نوع الفاتورة")
+
 assert not errors, errors
 shutil.rmtree(TMP, ignore_errors=True)
-print("\n✅ المبيعات: البيان، المعلقات، التنقل، وتناسق الأعمدة — كلها سليمة")
+print("\n✅ المبيعات: البيان، المعلقات، التنقل، تناسق الأعمدة، ونوع العملية (ذهب/الماس) — كلها سليمة")
