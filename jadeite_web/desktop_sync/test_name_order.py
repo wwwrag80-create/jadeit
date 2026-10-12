@@ -54,10 +54,13 @@ gsv = seg("get_stage_name_values")
 assert "self.rtl(v) for v in values" in gsv
 print("✔ أقسام الكاستنج والتلميع والبف تعرض الأسماء باتجاه مثبّت")
 
-for fn, name in (("submit_polish_op", '"التلميع"'), ("submit_polish_buff_op", '"التلميع/البف"')):
-    b = seg(fn)
-    assert f"name = {name}" in b and "_name.get()" not in b, fn
-print("✔ التلميع وبوليش 1 بلا خانة اسم: الحركات باسم القسم نفسه (لا اسم من قائمة)")
+b = seg("submit_polish_op")
+assert 'name = "التلميع"' in b and "_name.get()" not in b
+# بوليش 1: الاسم من «العملية» (فاقد ← اسم القسم، ليزر ← «ليزر البوليش») لا من قائمة
+b = seg("submit_polish_buff_op")
+assert 'name = self.LASER_NAME if laser_op else "التلميع/البف"' in b and "_name.get()" not in b
+assert 'laser_op = self.get_polish_buff_operation() == "ليزر"' in b
+print("✔ التلميع وبوليش 1 بلا خانة اسم: الحركات باسم القسم نفسه (والليزر باسمه من «العملية») — لا اسم من قائمة")
 assert "self.get_cast_operation()" in seg("submit_casting_op")
 print("✔ الكاستنج: خانة «العملية» (فاقد/مسترجع) مكان الاسم")
 

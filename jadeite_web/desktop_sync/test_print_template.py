@@ -40,7 +40,7 @@ assert reads == ["set_number"], reads
 assert tpl.count("self.set_voucher_values(data)") == 1
 print("✔ القالب لا يقرأ من بيانات الطقم إلا رقم التشغيل، وقيمه الخمس من set_voucher_values وحدها")
 
-assert 'cell(290, 172, 460, 218, str(data.get("set_number")' in tpl
+assert 'cell(left + 17 * MM, t0 + 6 * MM, left + 66 * MM, t1 - 6 * MM, str(data.get("set_number") or ""), WHITE' in tpl
 print("✔ رقم التشغيل في الخانة البيضاء بجوار NO أعلى السند")
 
 assert 'f"{value:.2f}"' in tpl and "fit_font_size(label" in tpl
@@ -55,8 +55,60 @@ for part in ("مصنع جاديت", "NO:", ":DATE", ":NAME", "رقم المود�
 print("✔ كل أقسام النموذج الورقي مرسومة: التصنيع، البوليش، التركيب، بوليش 2 («التلميع النهائي» سابقاً)، جدول القطع ١–١٨، "
       "الإجماليات، التوقيعات")
 
-# ═══ ٤) مقاس الصفحة: صورة النموذج ١٤٥٠ بكسل = عرض A4 ═══
-assert "VOUCHER_PX_W = 1450.0" in src and "k = PW / self.VOUCHER_PX_W" in tpl
-print("✔ إحداثيات القالب من صورة النموذج نفسها مُحجّمة إلى صفحة A4")
+# ═══ ٤) الصفحة كاملة: هامش متساوٍ، وعمودان بعرض واحد ينتهيان على سطر واحد فوق التوقيعات ═══
+import sys, types
+layout_fn = method("set_voucher_layout")
+exec(compile(ast.Module(body=[layout_fn], type_ignores=[]), "set_voucher_layout", "exec"), ns)
+fake = types.SimpleNamespace(VOUCHER_MARGIN_MM=10.0)
+L = ns["set_voucher_layout"](fake)
+MM, PW, PH, M = L["MM"], L["PW"], L["PH"], L["M"]
+close = lambda a, b: abs(a - b) < 0.01
+assert close(M, 10 * MM) and close(L["left"], M) and close(PW - L["right"], M) and close(L["head"][0], M)
+(cl0, cl1), (cr0, cr1) = L["col_left"], L["col_right"]
+assert close(cl0, M) and close(cr1, PW - M) and close(cl1 - cl0, cr1 - cr0) and close(cr0 - cl1, 6 * MM)
+span = L["body_bottom"] - L["body_top"]
+assert close(20 * L["r"] + 4 * L["v"] + 4 * L["g"], span), "المراحل تنتهي على سطر نهاية العمودين"
+assert close(8 * L["r"] + 18 * L["p"] + 2 * L["g"], span), "جدول القطع والإجماليات تنتهي على السطر نفسه"
+assert close(L["body_bottom"] + 20 * MM + M, PH) and close(L["sig_line"], PH - M - 9 * MM)
+assert 7 * MM < L["r"] < 8.5 * MM and 7 * MM < L["p"] < 8.5 * MM and L["v"] > 9 * MM, (L["r"] / MM, L["p"] / MM)
+print(f"✔ هامش 10 مم من الجهات الأربع؛ عمودان بعرض {(cl1 - cl0) / MM:.0f} مم ينتهيان معاً فوق التوقيعات؛ "
+      f"الصف {L['r'] / MM:.1f} مم، وصف القطعة {L['p'] / MM:.1f} مم، وخانة الكتابة {L['v'] / MM:.1f} مم")
 
-print("\n✅ قالب سند رقم التشغيل مطابق للنموذج الورقي المرفق")
+# الرسم الفعلي على لوحة وهمية: كل الخانات داخل الهوامش، ويملأ الصفحة طولاً وعرضاً
+rects, lines = [], []
+
+
+class Canvas:
+    def rect(self, x, y, w, h, **k): rects.append((x, y, x + w, y + h))
+    def line(self, x0, y0, x1, y1): lines.append((x0, y0, x1, y1))
+    def __getattr__(self, name): return lambda *a, **k: None
+
+
+if "reportlab.lib.colors" not in sys.modules:
+    try:
+        import reportlab.lib.colors  # noqa: F401
+    except ImportError:              # فحص CI بلا reportlab: لون بديل يكفي للرسم الوهمي
+        mod = types.ModuleType("reportlab.lib.colors"); mod.Color = lambda *a: a
+        sys.modules.update({"reportlab": types.ModuleType("reportlab"), "reportlab.lib": types.ModuleType("reportlab.lib"),
+                            "reportlab.lib.colors": mod})
+draw_fn = method("draw_set_voucher_page")
+ns.update(re=re, ar=lambda t: t, fit_font_size=lambda *a, **k: a[2], _ARABIC_FONT_NAME="f", _ARABIC_FONT_BOLD_NAME="b")
+exec(compile(ast.Module(body=[draw_fn], type_ignores=[]), "draw_set_voucher_page", "exec"), ns)
+fake.set_voucher_layout = lambda: ns["set_voucher_layout"](fake)
+fake.set_voucher_values = lambda d: ns["set_voucher_values"](fake, d)
+fake.pdf_logo = lambda: None
+fake.get_display_label = lambda k: "بوليش 2"
+ns["draw_set_voucher_page"](fake, Canvas(), {"set_number": "88001", "gold": 35.25})
+xs = [v for r_ in rects for v in (r_[0], r_[2])]
+ys = [v for r_ in rects for v in (r_[1], r_[3])]
+assert close(min(xs), M) and close(max(xs), PW - M) and close(max(ys), PH - M), (min(xs), max(xs), max(ys))
+bottom = PH - L["body_bottom"]
+assert close(min(ys), bottom), (min(ys), bottom)
+left_bottom = min(r_[1] for r_ in rects if r_[2] <= cl1 + 0.01)
+right_bottom = min(r_[1] for r_ in rects if r_[0] >= cr0 - 0.01)
+assert close(left_bottom, bottom) and close(right_bottom, bottom), (left_bottom, right_bottom, bottom)
+sig = [ln for ln in lines if close(ln[1], PH - L["sig_line"])]
+assert len(sig) == 3 and close(min(min(x0, x1) for x0, _y, x1, _y2 in sig), M + ((PW - 2 * M) / 3) / 2 - 28 * MM)
+print("✔ الرسم الفعلي: كل الخانات داخل الهوامش وتصل إليها من الجهات الأربع، والعمودان ينتهيان معاً، والتوقيعات الثلاثة أسفلها")
+
+print("\n✅ قالب سند رقم التشغيل: أقسام النموذج الورقي كلها على صفحة A4 كاملة ومرتبة")

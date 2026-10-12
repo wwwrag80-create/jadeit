@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.68.4"
+APP_VERSION = "1.69.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -6840,14 +6840,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         changed = []
         try:
             madin_type, qabd_type, _rec = self.get_stage_config("التلميع/البف")
-            extra = self.stage_row_extra(qabd_type)
         except Exception:
             return 0
-        if not extra:
-            return 0
-        want, other = (madin_type, qabd_type) if extra[2] > 0 else (qabd_type, madin_type)
+        want, other = madin_type, qabd_type          # الليزر صرفٌ دائماً
         for inv in self.invoices.values():
-            if inv.get("الاسم") == extra[0] and inv.get("النوع") == other:
+            if inv.get("الاسم") == self.LASER_NAME and inv.get("النوع") == other:
                 inv["النوع"] = want
                 changed.append(inv)
         if not changed:
@@ -8879,19 +8876,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # وقبضاً للكاستنج نفسه بهذين الاسمين، فيزيد صرفها الفاقد الحالي ويُخصم قبضها منه:
     CAST_RETURN_NAME = "مسترجع الفاقد"      # عملية «مسترجع» (بلا صف): صرفها وقبضها
     TREE_RETURN_NAME = "مسترجع الأشجار"     # مسترجع أشجار الصف: قبض من فاقد صفه
-    # الليزر في «بوليش 1»: مثل الصرف تماماً (صرف تلميع بف) يُضاف إلى فاقد صفه، ويُسجَّل
-    # بهذا الاسم ليظهر في عموده الخاص (كان قبضاً في 1.46.0 — migrate_row_extras يصحّحه)
+    # الليزر في «بوليش 1»: عملية مستقلة («العملية»: فاقد / ليزر) مثل الصرف تماماً — صرفٌ للقسم
+    # («صرف تلميع بف») يُضاف إلى فاقد بوليش 1، يُسجَّل بهذا الاسم وله كشفه. (كان خانةً بجانب
+    # الصرف والقبض حتى 1.68، وقبضاً في 1.46.0 — migrate_row_extras يصحّحه)
     LASER_NAME = "ليزر البوليش"
+    POLISH_OPERATIONS = ("فاقد", "ليزر")
+    POLISH_MODE_FIELDS = {"فاقد": ("row_num", "sarf", "qabd"), "ليزر": ("row_num", "sarf")}
 
     def stage_row_extra(self, qabd_type, recover_name=None):
         """الحركة الثانية المرتبطة بصفوف قسم: (اسم حركتها، عنوان خانتها وعمودها، أثرها) أو None.
           • الكاستنج ← «مسترجع الأشجار» (في الشاشة التي تعرض المسترجع): قبضٌ، أثره −1
-          • بوليش 1  ← «الليزر»: صرفٌ، أثره +1
-        الأثر على الخياس والفاقد الحالي للقسم: الخياس = الصرف − القبض + الأثر × قيمتها."""
+        الأثر على الخياس والفاقد الحالي للقسم: الخياس = الصرف − القبض + الأثر × قيمتها.
+        (الليزر في «بوليش 1» لم يعد حركة ثانية للصف: عملية مستقلة بصفوفها — op «ليزر»)"""
         if qabd_type == "قبض كاستنج":
             return (self.TREE_RETURN_NAME, "مسترجع الأشجار", -1) if recover_name else None
-        if qabd_type == "قبض تلميع بف":
-            return (self.LASER_NAME, "الليزر", 1)
         return None
 
     def is_row_recovery(self, inv, recover_name):
@@ -8912,10 +8910,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
           • «فاقد»   — صرف وقبض القسم بصفوفها (رقم الصف)، ومعها «مسترجع الأشجار» لصفها.
           • «مسترجع» — عمليات المسترجع بلا صف، كل عملية صف مستقل بعد صفوف الفاقد:
                        صرفها تحت الصرف، وقبضها تحت القبض.
+          • «ليزر»   — (بوليش 1) الليزر بصفه: صرفٌ تحت الصرف يُضاف إلى الخياس، صفاً مستقلاً.
         الخياس = الصرف − القبض − مسترجع الأشجار: كلها من الفاقد الحالي نفسه، ولا صلة لأيٍّ
-        منها بحساب «مسترجع» المرحلة. والليزر في «بوليش 1» مثل مسترجع الأشجار تماماً
-        (الحركة الثانية للصف — stage_row_extra) تُجمع في الخانة نفسها g["مسترجع"]، لكنه صرفٌ
-        يُضاف إلى الخياس (أثره +1) لا قبضٌ يُخصم منه.
+        منها بحساب «مسترجع» المرحلة.
         """
         recs = [inv for inv in self.period_invoices(self.current_display_month)
                 if inv.get("settled_status") == "ACTIVE" and inv.get("النوع") in (madin_type, qabd_type)]
@@ -8939,13 +8936,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 key = ("", inv["الاسم"], inv["رقم الفاتورة"])      # كل عملية مسترجع صف مستقل
             elif tree:
                 key = next((k for k in grouped if len(k) == 2 and k[0] == key[0]), key)
+            laser = inv.get("الاسم") == self.LASER_NAME
             if key not in grouped:
                 grouped[key] = {"ids": [], "مدين": 0.0, "دائن": 0.0, "مسترجع": 0.0,
                                 "dt": inv["التاريخ"], "البيان": "", "أشجار": 0.0,
-                                "op": "مسترجع" if rec_op else "فاقد"}
+                                "op": "مسترجع" if rec_op else "ليزر" if laser else "فاقد"}
             g = grouped[key]
             g["ids"].append(inv["رقم الفاتورة"])
             note = (inv.get("البيان") or "").strip()
+            if laser:
+                # «ليزر البوليش» وحده لا يُكرَّر في عمود البيان، وما كتبه المستخدم بعده يظهر
+                note = note.split(" — ", 1)[1].strip() if " — " in note else (
+                    "" if note == self.LASER_NAME else note)
             # الجمع (وليس الاستبدال) حتى لا تُهمل أي حركة مسجّلة فعلياً بنفس رقم الصف
             if tree:
                 g["مسترجع"] = round(g["مسترجع"] + inv["الوزن"], 2)
@@ -8970,7 +8972,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def render_stage_ops_table(self, table_frame, madin_type, qabd_type, height=11,
                                with_trees=False, on_edit=None, totals_label=None,
                                section=None, show_name=False, on_detail=None, on_refresh=None,
-                               recover_name=None, op_filter=None):
+                               recover_name=None, op_filter=None, op_column=False):
         """محرك موحّد لجداول شاشات العمليات:
         (الصف / [العملية] / صرف / قبض / [مسترجع الأشجار] / الخياس [+ الأشجار] / البيان)
         مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته.
@@ -8978,11 +8980,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         recover_name (الكاستنج): عمود «العملية» (فاقد/مسترجع) و«مسترجع الأشجار».
         الخياس = الصرف − القبض − مسترجع الأشجار (كلها من الفاقد الحالي نفسه).
         وفي «بوليش 1» عمود «الليزر» مكانه: الخياس = الصرف − القبض − الليزر.
-        op_filter: «مسترجع» ← عمليات المسترجع وحدها؛ غير ذلك ← كل العمليات.
+        op_filter: «مسترجع» أو «ليزر» ← تلك العمليات وحدها؛ غير ذلك ← كل العمليات.
+        op_column (بوليش 1): عمود «العملية» (فاقد/ليزر) — كشف الفاقد يجمع العمليتين، وكشف الليزر وحده.
         """
-        # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج مكانه «العملية»
-        name_col = ("الاسم",) if (show_name and not recover_name) else ()
-        op_col = ("العملية",) if recover_name else ()
+        # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج وبوليش 1 مكانه «العملية»
+        op_column = bool(op_column or recover_name)
+        name_col = ("الاسم",) if (show_name and not op_column) else ()
+        op_col = ("العملية",) if op_column else ()
         extra = self.stage_row_extra(qabd_type, recover_name)
         rec_col = (extra[1],) if extra else ()
         if with_trees:
@@ -9004,11 +9008,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # الإجمالي في شجرة ثابتة أسفل الجدول: يبقى أمام المستخدم أثناء التمرير
         # بدل الاضطرار للنزول لآخر الصفوف لرؤيته
         rows_map = {}
-        tot_madin = tot_daen = tot_trees = tot_rec = 0.0
+        tot_madin = tot_daen = tot_trees = tot_rec = tot_laser = 0.0
         rows = self.collect_stage_ops_rows(madin_type, qabd_type, recover_name)
-        if op_filter == "مسترجع":
-            # عمليات المسترجع وحدها، والإجماليات لها وحدها
-            rows = [r for r in rows if r[2].get("op") == "مسترجع"]
+        if op_filter in ("مسترجع", "ليزر"):
+            # تلك العمليات وحدها، والإجماليات لها وحدها
+            rows = [r for r in rows if r[2].get("op") == op_filter]
         # أثر الحركة الثانية: مسترجع الأشجار قبضٌ (−1)، والليزر صرفٌ (+1)
         extra_sign = extra[2] if extra else -1
         for row_num, name, g in rows:
@@ -9018,16 +9022,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tot_daen = round(tot_daen + g["دائن"], 2)
             tot_rec = round(tot_rec + g["مسترجع"], 2)
             tot_trees += g["أشجار"]
+            if g.get("op") == "ليزر":
+                tot_laser = round(tot_laser + g["مدين"], 2)
             is_rec_row = g.get("op") == "مسترجع"
             row_label = row_num if row_num else ("-" if is_rec_row else "بدون ترقيم")
             # التلوين حسب إعداد القسم نفسه: الأحمر فقط لو كان الخياس سالباً
             # (أي أن القبض أكبر من الصرف) والزر مفعّل في هذا القسم.
             tags = ("red_tag",) if (color_negative and khayas < 0) else ()
             vals = [row_label]
-            if recover_name:
+            if op_column:
                 op_label = g.get("op", "فاقد")
-                # حركات قديمة سُجّلت بأسماء (قبل خانة العملية) تُذكر أسماؤها
-                if op_label == "فاقد" and name and name not in ("كاستنج", recover_name, self.TREE_RETURN_NAME):
+                # حركات قديمة في الكاستنج سُجّلت بأسماء (قبل خانة العملية) تُذكر أسماؤها
+                if recover_name and op_label == "فاقد" and name and name not in (
+                        "كاستنج", recover_name, self.TREE_RETURN_NAME):
                     op_label = f"فاقد ({name})"
                 vals.append(op_label)
             elif show_name:
@@ -9047,7 +9054,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         tot_khayas = round(tot_madin - tot_daen + extra_sign * tot_rec, 2)
         if rows_map:
-            tvals = ["إجمالي الشهر"] + (["-"] if (recover_name or show_name) else []) + [
+            tvals = ["إجمالي الشهر"] + (["-"] if (op_column or show_name) else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
                      [f"{tot_rec:.2f}"] if extra else []) + [f"{tot_khayas:.2f}"]
             if with_trees:
@@ -9063,12 +9070,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         if totals_label is not None:
             txt = f"الإجماليات — صرف: {tot_madin:.2f}  |  قبض: {tot_daen:.2f}"
+            if tot_laser and op_filter != "ليزر":
+                # بوليش 1: الليزر صرفٌ من الصرف أعلاه، والخياس فاقد العمليتين معاً
+                txt = (f"الإجماليات — صرف: {tot_madin:.2f} (منها الليزر {tot_laser:.2f})  |  "
+                       f"قبض: {tot_daen:.2f}")
             if extra:
                 txt += f"  |  {extra[1]}: {tot_rec:.2f}"
             txt += f"  |  الخياس: {tot_khayas:.2f} جم"
             if with_trees:
                 per_tree = round(tot_khayas / tot_trees, 2) if tot_trees > 0 else 0.0
                 txt += f"  |  عدد الأشجار: {tot_trees:g}  |  خياس كل شجرة: {per_tree:.2f}"
+            if op_filter == "ليزر":
+                txt = f"إجمالي الليزر: {tot_madin:.2f} جم — صرفٌ يُضاف إلى فاقد بوليش 1"
             totals_label.configure(text=txt)
 
         # الضغط المزدوج يعرض تفاصيل العملية. التعديل يبقى متاحاً من زره المخصّص،
@@ -9159,7 +9172,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       command=win.destroy).pack(pady=12)
 
     def open_stage_op_edit_dialog(self, ids, madin_type, qabd_type, title, with_trees=False, status_text="",
-                                  recover_name=None):
+                                  recover_name=None, sarf_label=None, qabd_enabled=True):
         """نافذة تعديل موحّدة لأي حركة في شاشات العمليات (صرف/قبض/مسترجع الأشجار/عدد الأشجار/البيان)"""
         if not self.check_edit_permission():
             return
@@ -9199,15 +9212,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         frm = ctk.CTkFrame(win)
         frm.pack(fill="x", padx=20, pady=10)
 
-        ctk.CTkLabel(frm, text="الصرف (مدين):", font=(UI_FONT, 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
+        ctk.CTkLabel(frm, text=sarf_label or "الصرف (مدين):", font=(UI_FONT, 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
         ent_sarf = ctk.CTkEntry(frm, justify="center", width=130)
         ent_sarf.insert(0, f"{sarf_inv['الوزن']:g}" if sarf_inv else "0")
         ent_sarf.grid(row=0, column=0, padx=10, pady=8)
 
-        ctk.CTkLabel(frm, text="القبض (دائن):", font=(UI_FONT, 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
         ent_qabd = ctk.CTkEntry(frm, justify="center", width=130)
         ent_qabd.insert(0, f"{qabd_inv['الوزن']:g}" if qabd_inv else "0")
-        ent_qabd.grid(row=1, column=0, padx=10, pady=8)
+        if qabd_enabled:        # صف الليزر في بوليش 1: صرفٌ وحده، بلا قبض
+            ctk.CTkLabel(frm, text="القبض (دائن):", font=(UI_FONT, 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
+            ent_qabd.grid(row=1, column=0, padx=10, pady=8)
 
         ent_trees = None
         if with_trees:
@@ -9348,7 +9362,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showinfo("تم", "تم تحديث الحركة بنجاح.")
 
         # التنقّل بين الخانات: Enter و↑ ↓، وEnter في آخر خانة يحفظ مباشرة
-        _nav = [e for e in (ent_sarf, ent_qabd, ent_rec,
+        _nav = [e for e in (ent_sarf, ent_qabd if qabd_enabled else None, ent_rec,
                             ent_trees if with_trees else None,
                             ent_row_no, ent_set_no, ent_date, ent_note) if e is not None]
         self.bind_vertical_navigation(_nav, on_last=lambda: save_edit(), window=win)
@@ -12510,32 +12524,46 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ------------------ شاشة «بوليش 1» (التلميع/البف) ------------------
     # ---------------------------------------------------------------
     def build_polish_buff_ui(self, parent):
-        # بلا خانة اسم (بطلب العميل)، و«الليزر» بعد القبض: مثل القبض يُخصم من الصرف
+        # بلا خانة اسم (بطلب العميل)، و«العملية» مكانها مثل الكاستنج: «فاقد» (رقم الصف والصرف
+        # والقبض) أو «ليزر» (رقم الصف والصرف) — الليزر صرفٌ يُضاف إلى فاقد بوليش 1، ولكلٍّ كشفه
         label = self.get_display_label("التلميع/البف")
         p = self.build_stage_panel(
             parent, key="pbuff", title=f"كشف حركة {label}",
-            fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض"), ("laser", "الليزر")],
+            operations=self.POLISH_OPERATIONS, mode_fields=self.POLISH_MODE_FIELDS,
+            on_operation_change=lambda _mode=None: self.refresh_polish_buff_table(),
+            fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض")],
             submit_text="ترحيل 💾", submit_cmd=self.submit_polish_buff_op,
             on_edit=self.edit_selected_polish_buff_row, on_delete=self.delete_selected_polish_buff_row,
             neg_section="التلميع/البف", neg_refresh=self.refresh_polish_buff_table,
             view=lambda: self.view_treeview_fullscreen(self.pbuff_tree, f"عرض كامل — {label}"))
         self.pbuff_date, self.pbuff_note = p["date"], p["note"]
+        self.pbuff_op = p["op"]
+        self.pbuff_title_lbl = p["title"]
         f = p["fields"]
         self.pbuff_row_num, self.pbuff_sarf, self.pbuff_qabd = f["row_num"], f["sarf"], f["qabd"]
-        self.pbuff_laser = f["laser"]
         self.pbuff_table_frame = p["table_frame"]
         self.pbuff_tree = None
         self.pbuff_table_rows_map = {}
         self.pbuff_totals_lbl = p["totals"]
 
-    def submit_polish_buff_op(self):
-        """ترحيل حركة «بوليش 1»: الصرف، والقبض، والليزر لصف واحد.
+    def get_polish_buff_operation(self):
+        """العملية المختارة في «بوليش 1»: «فاقد» (الافتراضي) أو «ليزر»"""
+        widget = getattr(self, "pbuff_op", None)
+        try:
+            value = widget.get() if widget is not None else ""
+        except Exception:
+            value = ""
+        return value if value in self.POLISH_OPERATIONS else self.POLISH_OPERATIONS[0]
 
-        الليزر صرفٌ للقسم («صرف تلميع بف») باسم «ليزر البوليش» على رقم الصف نفسه:
-        يُضاف إلى الخياس والفاقد الحالي ويخرج من الخزينة كأي صرف، ويظهر في عموده.
+    def submit_polish_buff_op(self):
+        """ترحيل حركة «بوليش 1» لصف واحد، حسب «العملية»:
+          • فاقد ← الصرف والقبض باسم القسم.
+          • ليزر ← الصرف وحده باسم «ليزر البوليش»: صرفٌ للقسم («صرف تلميع بف») يُضاف إلى الخياس
+                   والفاقد الحالي لبوليش 1 ويخرج من الخزينة كأي صرف، ويظهر في كشف الليزر.
         """
+        laser_op = self.get_polish_buff_operation() == "ليزر"
         date_val = self.pbuff_date.get().strip()
-        name = "التلميع/البف"
+        name = self.LASER_NAME if laser_op else "التلميع/البف"
         note = self.pbuff_note.get().strip()
         row_num = self.pbuff_row_num.get().strip()
         date_val = self.read_entry_date(date_val)
@@ -12546,55 +12574,56 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
 
         sarf_v = self._read_weight(self.pbuff_sarf)
-        qabd_v = self._read_weight(self.pbuff_qabd)
-        laser_v = self._read_weight(getattr(self, "pbuff_laser", None))
-        if sarf_v is None or qabd_v is None or laser_v is None:
+        qabd_v = 0.0 if laser_op else self._read_weight(self.pbuff_qabd)
+        if sarf_v is None or qabd_v is None:
             messagebox.showwarning("تنبيه", "الرجاء إدخال أوزان صحيحة.")
             return
-        if sarf_v < 0 or qabd_v < 0 or laser_v < 0:
+        if sarf_v < 0 or qabd_v < 0:
             messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.")
             return
-        if sarf_v <= 0 and qabd_v <= 0 and laser_v <= 0:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أو الليزر أولاً.")
+        if sarf_v <= 0 and qabd_v <= 0:
+            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة صرف الليزر أولاً." if laser_op
+                                   else "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
             return
 
         def is_laser(inv):
             return inv.get("الاسم") == self.LASER_NAME
 
         skipped = []
-        # الليزر صرفٌ أيضاً، فلا يُعدّ صرفاً للصف نفسه (ولا العكس)
-        if sarf_v > 0 and self.stage_row_taken(
-                row_num, lambda i: i.get("النوع") == "صرف تلميع بف" and not is_laser(i)):
-            skipped.append("الصرف")
-            sarf_v = 0.0
-        if qabd_v > 0 and self.stage_row_taken(
-                row_num, lambda i: i.get("النوع") == "قبض تلميع بف" and not is_laser(i)):
-            skipped.append("القبض")
-            qabd_v = 0.0
-        if laser_v > 0 and self.stage_row_taken(
-                row_num, lambda i: i.get("النوع") in ("صرف تلميع بف", "قبض تلميع بف") and is_laser(i)):
-            skipped.append("الليزر")
-            laser_v = 0.0
+        # الليزر صرفٌ أيضاً، فلا يُعدّ صرفاً لصف الفاقد نفسه (ولا العكس)
+        if laser_op:
+            if self.stage_row_taken(
+                    row_num, lambda i: i.get("النوع") in ("صرف تلميع بف", "قبض تلميع بف") and is_laser(i)):
+                skipped.append("الليزر")
+                sarf_v = 0.0
+        else:
+            if sarf_v > 0 and self.stage_row_taken(
+                    row_num, lambda i: i.get("النوع") == "صرف تلميع بف" and not is_laser(i)):
+                skipped.append("الصرف")
+                sarf_v = 0.0
+            if qabd_v > 0 and self.stage_row_taken(
+                    row_num, lambda i: i.get("النوع") == "قبض تلميع بف" and not is_laser(i)):
+                skipped.append("القبض")
+                qabd_v = 0.0
         if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
             return
-        if sarf_v <= 0 and qabd_v <= 0 and laser_v <= 0:
+        if sarf_v <= 0 and qabd_v <= 0:
             return
 
-        if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل حركة {self.get_display_label('التلميع/البف')}؟"):
+        op_text = "الليزر" if laser_op else "الفاقد"
+        if not messagebox.askyesno("تأكيد الترحيل",
+                                   f"هل أنت متأكد من ترحيل حركة {self.get_display_label('التلميع/البف')} ({op_text})؟"):
             return
 
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
-        lines = [(sarf_v, "صرف تلميع بف", name, note),
-                 (qabd_v, "قبض تلميع بف", name, note),
-                 (laser_v, "صرف تلميع بف", self.LASER_NAME,
-                  f"{self.LASER_NAME} — {note}" if note else self.LASER_NAME)]
+        bayan = (f"{self.LASER_NAME} — {note}" if note else self.LASER_NAME) if laser_op else note
         saved_any = False
-        for value, op_type, who, bayan in lines:
+        for value, op_type in ((sarf_v, "صرف تلميع بف"), (qabd_v, "قبض تلميع بف")):
             if value <= 0:
                 continue
             self.invoice_counter += 1
             inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": who,
+                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_dt, "الاسم": name,
                 "النوع": op_type, "الوزن": value, "البيان": bayan, "settled_status": "ACTIVE",
                 "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
             }
@@ -12606,12 +12635,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.register_operation_period(date_val)
             self.recalculate_all()
 
-            for entry in (self.pbuff_sarf, self.pbuff_qabd, getattr(self, "pbuff_laser", None),
-                          self.pbuff_note, self.pbuff_row_num):
-                if entry is not None:
-                    entry.delete(0, 'end')
+            for entry in (self.pbuff_sarf, self.pbuff_qabd, self.pbuff_note, self.pbuff_row_num):
+                entry.delete(0, 'end')
 
-            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {self.get_display_label('التلميع/البف')} — الصف ({row_num})")
+            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {self.get_display_label('التلميع/البف')} "
+                                              f"({op_text}) — الصف ({row_num})")
             self.after(2500, lambda: self.lbl_op_status.configure(text=""))
             self.after(60, lambda: self.pbuff_row_num.focus_set())
             self.refresh_polish_buff_table()
@@ -12619,12 +12647,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def refresh_polish_buff_table(self):
         if not hasattr(self, 'pbuff_table_frame') or not self.pbuff_table_frame:
             return
+        operation = self.get_polish_buff_operation()
+        label = self.get_display_label("التلميع/البف")
+        title_lbl = getattr(self, "pbuff_title_lbl", None)
+        if title_lbl is not None:
+            title_lbl.configure(text=f"كشف حركة {label} — الليزر" if operation == "ليزر"
+                                else f"كشف حركة {label} — الفاقد والليزر")
         self.pbuff_tree, self.pbuff_table_rows_map = self.render_stage_ops_table(
             self.pbuff_table_frame, "صرف تلميع بف", "قبض تلميع بف", height=11, section="التلميع/البف",
-            show_name=False, on_refresh=self.refresh_polish_buff_table,
+            # «فاقد»: العمليتان معاً (الخياس = فاقد بوليش 1 كاملاً)، «ليزر»: الليزر وحده
+            show_name=False, op_column=True, op_filter=operation, on_refresh=self.refresh_polish_buff_table,
             on_detail=lambda: self.show_selected_stage_details(
-                self.pbuff_tree, self.pbuff_table_rows_map,
-                f"تفاصيل حركة {self.get_display_label('التلميع/البف')}"),
+                self.pbuff_tree, self.pbuff_table_rows_map, f"تفاصيل حركة {label}"),
             on_edit=self.edit_selected_polish_buff_row,
             totals_label=getattr(self, 'pbuff_totals_lbl', None))
 
@@ -12659,9 +12693,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ids = self.pbuff_table_rows_map.get(sel[0])
         if not ids:
             return
+        # صف الليزر: صرفه وحده (لا قبض للّيزر)
+        laser = all(self.invoices.get(i, {}).get("الاسم") == self.LASER_NAME for i in ids)
+        label = self.get_display_label("التلميع/البف")
         self.open_stage_op_edit_dialog(ids, "صرف تلميع بف", "قبض تلميع بف",
-                                       f"تعديل حركة {self.get_display_label('التلميع/البف')}",
-                                       status_text=f"✏️ تم تعديل حركة {self.get_display_label('التلميع/البف')}")
+                                       f"تعديل الليزر — {label}" if laser else f"تعديل حركة {label}",
+                                       status_text=f"✏️ تم تعديل حركة {label}",
+                                       sarf_label="الليزر (صرف):" if laser else None, qabd_enabled=not laser)
 
     def update_op_names(self, cat):
         names = self.categories.get(cat, [])
@@ -20404,8 +20442,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 seen[sn] = inv_no
         return [sn for sn, _ in sorted(seen.items(), key=lambda kv: kv[1])]
 
-    # ═══ سند رقم التشغيل: قالب المصنع الورقي نفسه (صورته ١٤٥٠×٢٠٤٨ = صفحة A4) ═══
-    VOUCHER_PX_W = 1450.0
+    # ═══ سند رقم التشغيل: أقسام قالب المصنع الورقي نفسها، مرتّبة على صفحة A4 كاملة ═══
+    VOUCHER_MARGIN_MM = 10.0         # هامش متساوٍ من الجهات الأربع (يطبعه أي طابعة كاملاً)
 
     def set_voucher_values(self, data):
         """قيم «الوزن النهائي» في سند رقم التشغيل — كما في النموذج الورقي:
@@ -20417,127 +20455,171 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ("ناقص احجار", round(stones, 2)), ("ناقص الماس", round(diamond, 2)),
                 ("الوزن الصافي", round(gold, 2))]
 
+    def set_voucher_layout(self):
+        """مواضع أقسام سند رقم التشغيل على صفحة A4 كاملة — بالنقاط، وy من أعلى الصفحة.
+
+        هامش متساوٍ من كل جهة؛ الرأس وسطرا البيانات بعرض الصفحة؛ ثم عمودان بعرض واحد (جدول القطع يميناً
+        والمراحل يساراً) يبدآن معاً وينتهيان على السطر نفسه فوق التوقيعات — فتملأ الأقسام الورقة كلها:
+          • المراحل: ٢٠ صفاً (r) + ٤ صفوف كتابة أعلى (v = 1.3r) + ٤ فواصل (g)
+          • القطع:   ٨ صفوف (r) + ١٨ صف قطعة (p) + فاصلان (g)
+        """
+        MM = 72 / 25.4
+        PW, PH = 595.2756, 841.8898                          # A4
+        M = self.VOUCHER_MARGIN_MM * MM
+        head = (M, M + 24 * MM)
+        info_h = 9 * MM
+        info = ((head[1] + 2 * MM, head[1] + 2 * MM + info_h), (head[1] + 2 * MM + info_h, head[1] + 2 * MM + 2 * info_h))
+        body_top = info[1][1] + 5 * MM
+        body_bottom = PH - M - 20 * MM                        # تحته التوقيعات
+        gap_cols, g = 6 * MM, 4.5 * MM
+        col_w = (PW - 2 * M - gap_cols) / 2
+        span = body_bottom - body_top
+        r = (span - 4 * g) / (20 + 4 * 1.3)
+        p = (span - 8 * r - 2 * g) / 18
+        return {"MM": MM, "PW": PW, "PH": PH, "M": M, "left": M, "right": PW - M,
+                "head": head, "info": info, "body_top": body_top, "body_bottom": body_bottom,
+                "col_right": (PW - M - col_w, PW - M), "col_left": (M, M + col_w),
+                "r": r, "v": 1.3 * r, "p": p, "g": g, "sig_line": PH - M - 9 * MM}
+
     def draw_set_voucher_page(self, c, data):
-        """سند رقم التشغيل بقالب المصنع الورقي حرفياً (التصنيع، البوليش، التركيب، بوليش 2 —
-        «التلميع النهائي» سابقاً، جدول القطع ١–١٨، الإجماليات، التوقيعات). لا يُعبّأ منه إلا رقم التشغيل في خانة NO
-        وجدول «الوزن النهائي»؛ وبقية الخانات فارغة للتعبئة اليدوية."""
+        """سند رقم التشغيل بأقسام قالب المصنع الورقي (التصنيع، البوليش، التركيب، بوليش 2 —
+        «التلميع النهائي» سابقاً، جدول القطع ١–١٨، الإجماليات، التوقيعات) على صفحة A4 كاملة (set_voucher_layout).
+        لا يُعبّأ منه إلا رقم التشغيل في خانة NO وجدول «الوزن النهائي»؛ وبقية الخانات فارغة للتعبئة اليدوية."""
         from reportlab.lib.colors import Color
-        PW, PH = A4
-        k = PW / self.VOUCHER_PX_W
-        HEAD, LABEL = Color(0.80, 0.80, 0.80), Color(0.86, 0.86, 0.86)
+        L = self.set_voucher_layout()
+        PH, MM, r, v, p, g = L["PH"], L["MM"], L["r"], L["v"], L["p"], L["g"]
+        HEAD, LABEL, WHITE = Color(0.80, 0.80, 0.80), Color(0.86, 0.86, 0.86), Color(1, 1, 1)
 
-        def X(px):
-            return px * k
-
-        def Y(py):
-            return PH - py * k
-
-        def box(x0, y0, x1, y1, fill=None, lw=0.9):
+        def box(x0, t0, x1, t1, fill=None, lw=0.9):
             c.setLineWidth(lw)
             if fill is not None:
                 c.setFillColor(fill)
-            c.rect(X(x0), Y(y1), (x1 - x0) * k, (y1 - y0) * k, fill=1 if fill is not None else 0, stroke=1)
+            c.rect(x0, PH - t1, x1 - x0, t1 - t0, fill=1 if fill is not None else 0, stroke=1)
             c.setFillColorRGB(0, 0, 0)
 
-        def text(px, py, s, size=11, bold=True, align="center"):
+        def text(x, t, s, size=11, bold=True, align="center"):
             c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
             s = str(s)
             s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
-            base = Y(py) - size * 0.36
-            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](X(px), base, s)
+            base = PH - t - size * 0.36
+            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](x, base, s)
 
-        def cell(x0, y0, x1, y1, label="", fill=None, size=11.5, align="center", bold=True):
-            box(x0, y0, x1, y1, fill)
+        def cell(x0, t0, x1, t1, label="", fill=None, size=11.5, align="center", bold=True):
+            box(x0, t0, x1, t1, fill)
             if label != "":
-                px = {"center": (x0 + x1) / 2, "right": x1 - 14, "left": x0 + 14}[align]
-                fit = fit_font_size(label, (x1 - x0) * k - 8, size, bold=bold, min_size=7)   # النص داخل خانته دائماً
-                text(px, (y0 + y1) / 2, label, fit, bold, align)
+                x = {"center": (x0 + x1) / 2, "right": x1 - 2.5 * MM, "left": x0 + 2.5 * MM}[align]
+                fit = fit_font_size(label, (x1 - x0) - 3 * MM, size, bold=bold, min_size=7)   # النص داخل خانته دائماً
+                text(x, (t0 + t1) / 2, label, fit, bold, align)
 
-        # ── الرأس: مصنع جاديت + NO، وشعار المصنع في يمينه ──
-        box(193, 95, 1315, 248, HEAD, lw=1.2)
-        text(755, 148, "مصنع جاديت", 21)
+        def pair(x0, x1, t0, t1, label, rows_fill=None, value="", split=0.5, size=11.5):
+            """صف «عنوان | قيمة»: العنوان في النصف الأيمن (رمادي) والقيمة في الأيسر"""
+            mid = x1 - (x1 - x0) * split
+            cell(mid, t0, x1, t1, label, LABEL, size=size)
+            cell(x0, t0, mid, t1, value, rows_fill, size=size + 1)
+
+        left, right = L["left"], L["right"]
+        # ── الرأس: مصنع جاديت في الوسط، وشعار المصنع يميناً، ورقم التشغيل (NO) يساراً ──
+        t0, t1 = L["head"]
+        box(left, t0, right, t1, HEAD, lw=1.4)
+        text((left + right) / 2, (t0 + t1) / 2, "مصنع جاديت", 24)
         logo = self.pdf_logo()
         if logo:
-            lh = 132 * k
-            c.drawImage(logo[0], X(1298) - lh * logo[1], Y(238), width=lh * logo[1], height=lh, mask="auto",
-                        preserveAspectRatio=True)
-        text(212, 195, "NO:", 14, align="left")
-        cell(290, 172, 460, 218, str(data.get("set_number") or ""), Color(1, 1, 1), size=15)
-        # ── بيانات السند ──
-        for x0, x1, label, fill in ((193, 338, "/      /", None), (338, 437, ":DATE", LABEL), (437, 607, "", None),
-                                    (607, 755, ":NAME", LABEL), (755, 852, "", None),
-                                    (852, 998, "رقم الموديل:", LABEL), (998, 1170, "", None),
-                                    (1170, 1315, "اسم العميل:", LABEL)):
-            cell(x0, 248, x1, 295, label, fill, size=9)
-        for x0, x1, label, fill in ((778, 875, "", None), (875, 998, "النوع:", LABEL), (998, 1170, "", None),
-                                    (1170, 1315, "اسم المركب:", LABEL)):
-            cell(x0, 295, x1, 348, label, fill, size=9)
+            lh = (t1 - t0) - 4 * MM
+            c.drawImage(logo[0], right - 3 * MM - lh * logo[1], PH - t1 + 2 * MM, width=lh * logo[1], height=lh,
+                        mask="auto", preserveAspectRatio=True)
+        text(left + 4 * MM, (t0 + t1) / 2, "NO:", 15, align="left")
+        cell(left + 17 * MM, t0 + 6 * MM, left + 66 * MM, t1 - 6 * MM, str(data.get("set_number") or ""), WHITE, size=17)
+        # ── بيانات السند: سطران بعرض الصفحة ──
+        (a0, a1), (b0, b1) = L["info"]
+        quarter = (right - left) / 4
+        for i, (label, value) in enumerate((("اسم العميل:", ""), ("رقم الموديل:", ""), (":NAME", ""),
+                                            (":DATE", "/      /"))):
+            x1 = right - i * quarter
+            cell(x1 - 24 * MM, a0, x1, a1, label, LABEL, size=10.5)
+            cell(x1 - quarter, a0, x1 - 24 * MM, a1, value, None, size=10.5)
+        half = (right - left) / 2
+        for i, label in enumerate(("اسم المركب:", "النوع:")):
+            x1 = right - i * half
+            cell(x1 - 24 * MM, b0, x1, b1, label, LABEL, size=10.5)
+            cell(x1 - half, b0, x1 - 24 * MM, b1, "", None)
 
         # ── العمود الأيسر: أقسام المراحل ──
-        three = ((558, 728), (387, 558), (240, 387))
+        lx0, lx1 = L["col_left"]
+        third = (lx1 - lx0) / 3
+        three = tuple((lx1 - (i + 1) * third, lx1 - i * third) for i in range(3))     # من اليمين
 
         def stage(top, title, heads):
-            cell(240, top, 728, top + 47, title, HEAD, size=12.5)
+            cell(lx0, top, lx1, top + r, title, HEAD, size=13)
             for (x0, x1), h in zip(three, heads):
-                cell(x0, top + 47, x1, top + 95, h, LABEL, size=11.5)
-                cell(x0, top + 95, x1, top + 143)
-            return top + 143
+                cell(x0, top + r, x1, top + 2 * r, h, LABEL, size=11.5)
+                cell(x0, top + 2 * r, x1, top + 2 * r + v)
+            return top + 2 * r + v
 
-        stage(297, "التصنيع", ("0.08%", "0.04%", "خياس"))
-        stage(465, "البوليش", ("قبل", "بعد", "خياس"))
-        y = stage(637, "التركيب", ("قبل", "بعد", "خياس"))
-        for label, value_fill in (("فصوص", None), ("احجار", None), ("الماس", None)):
-            cell(481, y, 728, y + 48, label, LABEL)
-            cell(240, y, 481, y + 48, "%" if label == "احجار" else "", value_fill, align="right")
-            y += 48
-        c.setLineWidth(1.4)
-        c.line(X(240), Y(y + 3), X(728), Y(y + 3))
-        y += 6
+        t = stage(L["body_top"], "التصنيع", ("0.08%", "0.04%", "خياس")) + g
+        t = stage(t, "البوليش", ("قبل", "بعد", "خياس")) + g
+        t = stage(t, "التركيب", ("قبل", "بعد", "خياس"))
+        for label in ("فصوص", "احجار", "الماس"):
+            mid = (lx0 + lx1) / 2
+            cell(mid, t, lx1, t + r, label, LABEL)
+            cell(lx0, t, mid, t + r, "%" if label == "احجار" else "", None, align="right")
+            t += r
         for label, value_fill in (("الوزن بعد", LABEL), ("السلسال", None), ("الوزن الأجمالي:", None)):
-            cell(481, y, 728, y + 48, label, LABEL)
-            cell(240, y, 481, y + 48, "", value_fill)
-            y += 48
-        stage(1135, self.get_display_label("خياس الطقوم"), ("قبل", "بعد", "خياس"))
-
+            pair(lx0, lx1, t, t + r, label, value_fill)
+            t += r
+        c.setLineWidth(1.8)
+        c.line(lx0, PH - (t - 3 * r), lx1, PH - (t - 3 * r))         # فاصل بين الأحجار والأوزان
+        t = stage(t + g, self.get_display_label("خياس الطقوم"), ("قبل", "بعد", "خياس")) + g
         # الوزن النهائي — الجدول الوحيد المعبّأ
-        cell(235, 1305, 724, 1355, "الوزن النهائي", HEAD, size=12.5)
-        y = 1355
+        cell(lx0, t, lx1, t + r, "الوزن النهائي", HEAD, size=13)
+        t += r
         for label, value in self.set_voucher_values(data):
-            cell(478, y, 724, y + 48, label, LABEL)
-            cell(235, y, 478, y + 48, f"{value:.2f}", None, size=12.5)
-            y += 48
+            pair(lx0, lx1, t, t + r, label, value=f"{value:.2f}", size=12)
+            t += r
 
-        # ── العمود الأيمن: جدول القطع ١–١٨ ──
-        cols = ((1265, 1313, ""), (1143, 1265, "العدد"), (1046, 1143, "المقاس"), (972, 1046, "النوع"),
-                (850, 972, "الوزن"), (778, 850, "البيان"))
-        for x0, x1, h in cols:
-            cell(x0, 348, x1, 397, h, LABEL, size=9)
-        row_h = (1283 - 397) / 18
-        for i in range(18):
-            y0 = 397 + i * row_h
-            for x0, x1, _h in cols:
-                cell(x0, y0, x1, y0 + row_h, str(i + 1) if x0 == 1265 else "", size=9.5)
-        cell(772, 1283, 1310, 1333, "الاجمالي", HEAD, size=12.5)
-        for x0, x1, label, fill in ((1188, 1310, "فصوص:", LABEL), (1040, 1188, "", None),
-                                    (918, 1040, "احجار:", LABEL), (772, 918, "", None)):
-            cell(x0, 1333, x1, 1383, label, fill, size=11.5)
-        cell(797, 1408, 1285, 1457, "الأجمالي", HEAD, size=12.5)
-        y = 1457
+        # ── العمود الأيمن: جدول القطع ١–١٨، ثم الإجماليات ──
+        rx0, rx1 = L["col_right"]
+        widths = (9, 17, 15, 15, 17)                                  # #، العدد، المقاس، النوع، الوزن (مم)
+        edges = [rx1]
+        for w_ in widths:
+            edges.append(edges[-1] - w_ * MM)
+        edges.append(rx0)                                            # البيان: ما بقي
+        heads = ("", "العدد", "المقاس", "النوع", "الوزن", "البيان")
+        t = L["body_top"]
+        for i, h in enumerate(heads):
+            cell(edges[i + 1], t, edges[i], t + r, h, LABEL, size=10.5)
+        t += r
+        for row in range(18):
+            for i in range(len(heads)):
+                cell(edges[i + 1], t, edges[i], t + p, str(row + 1) if i == 0 else "", size=10.5)
+            t += p
+        t += g
+        cell(rx0, t, rx1, t + r, "الاجمالي", HEAD, size=13)
+        t += r
+        rhalf = (rx1 - rx0) / 2
+        for i, label in enumerate(("فصوص:", "احجار:")):
+            x1 = rx1 - i * rhalf
+            cell(x1 - 20 * MM, t, x1, t + r, label, LABEL)
+            cell(x1 - rhalf, t, x1 - 20 * MM, t + r)
+        t += r + g
+        cell(rx0, t, rx1, t + r, "الأجمالي", HEAD, size=13)
+        t += r
         for label in ("الوزن الصافي", "فصوص", "الاحجار %", "الوزن المقيد"):
             if label == "الاحجار %":
-                cell(1138, y, 1285, y + 48, label, LABEL)
-                cell(1040, y, 1138, y + 48, "", LABEL)
+                mid = rx1 - rhalf
+                cell(mid + rhalf * 0.4, t, rx1, t + r, label, LABEL)
+                cell(mid, t, mid + rhalf * 0.4, t + r, "", LABEL)
+                cell(rx0, t, mid, t + r)
             else:
-                cell(1040, y, 1285, y + 48, label, LABEL)
-            cell(797, y, 1040, y + 48)
-            y += 48
+                pair(rx0, rx1, t, t + r, label)
+            t += r
 
-        # ── التوقيعات ──
+        # ── التوقيعات: ثلاثة بعرض الصفحة أسفلها ──
         c.setLineWidth(0.9)
-        for x0, x1, label in ((992, 1212, "توقيع المدير"), (650, 870, "توقيع المحاسب"),
-                              (285, 505, "توقيع مدير الانتاج")):
-            c.line(X(x0), Y(1697), X(x1), Y(1697))
-            text((x0 + x1) / 2, 1722, label, 10.5)
+        third_w = (right - left) / 3
+        for i, label in enumerate(("توقيع المدير", "توقيع المحاسب", "توقيع مدير الانتاج")):
+            cx = right - (i + 0.5) * third_w
+            c.line(cx - 28 * MM, PH - L["sig_line"], cx + 28 * MM, PH - L["sig_line"])
+            text(cx, L["sig_line"] + 5 * MM, label, 11.5)
 
     # ═══ ترويسة المطبوعات: بيانات المصنع (كما في ورقة الترويسة المعتمدة) والشعار ═══
     LETTERHEAD_AR = ("مصنع جاديت للتصنيع", "المملكة العربية السعودية", "الرياض - صناعية الموسى",

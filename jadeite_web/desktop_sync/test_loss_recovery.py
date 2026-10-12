@@ -72,7 +72,7 @@ METHODS = [
     "submit_casting_recovery_op", "collect_stage_ops_rows", "render_stage_ops_table",
     "is_row_recovery", "is_recovery_op", "row_sort_key", "stage_row_extra",
     # بوليش ١ (الليزر) والتلميع — بلا خانة اسم، وأسماء الحسابات الثابتة
-    "submit_polish_buff_op", "submit_polish_op", "stage_row_taken", "get_account_label", "migrate_row_extras", "read_entry_date",
+    "submit_polish_buff_op", "get_polish_buff_operation", "submit_polish_op", "stage_row_taken", "get_account_label", "migrate_row_extras", "read_entry_date",
     # كشف الحساب والتراجع عن الإقفال
     "is_debit_nature_account", "get_account_ledger_rows", "_account_ledger_rows_all",
     "get_box_closing_entries",
@@ -82,7 +82,7 @@ METHODS = [
 ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
          "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "TREE_RETURN_NAME",
-         "LASER_NAME", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL",
+         "LASER_NAME", "POLISH_OPERATIONS", "POLISH_MODE_FIELDS", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL",
          "POLISH2_OLD_ACCOUNTS", "POLISH2_OLD_BAYAN", "POLISH2_SALE_BAYAN", "SALE_NOTE_SEP"]
 
 EXTRA = '''
@@ -685,14 +685,14 @@ coa = seg("refresh_chart_of_accounts")
 assert "add_leaf(stage, self.get_box_loss_account(cat))" in coa and "add_leaf(stage, recovery)" in coa
 print("✔ شاشة الوارد لا تُنشئ أي قيد؛ ولوحات الخسائر تفتح كشف كل حساب؛ والشجرة: المرحلة ← فاقدها ومسترجعها")
 
-# ═══ ١١) «بوليش 1»: الليزر مثل الصرف يُضاف إلى الفاقد، ولا خانة اسم ═══
+# ═══ ١١) «بوليش 1»: «العملية» فاقد / ليزر (مثل الكاستنج) — الليزر صرفٌ يُضاف إلى الفاقد، ولكلٍّ كشفه ═══
 P1 = "التلميع/البف"
 
 
-def polish1(app, month, row, sarf="", qabd="", laser="", note=""):
+def polish1(app, month, row, sarf="", qabd="", op="فاقد", note=""):
     app.current_display_month = month
     app.pbuff_date, app.pbuff_note, app.pbuff_row_num = W(f"{month}-16"), W(note), W(row)
-    app.pbuff_sarf, app.pbuff_qabd, app.pbuff_laser = W(sarf), W(qabd), W(laser)
+    app.pbuff_sarf, app.pbuff_qabd, app.pbuff_op = W(sarf), W(qabd), W(op)
     app.submit_polish_buff_op()
 
 
@@ -706,45 +706,56 @@ assert (f.get_display_label("خياس الطقوم"), f.get_box_account_name("خ
 print("✔ القسم يُعرض «بوليش 1»، وحساباته كما هي: «البوليش» و«فاقد البوليش» و«مسترجع البوليش»؛ "
       "و«خياس التلميع النهائي» صار «بوليش 2» وحساباته «بوليش 2» و«فاقد بوليش 2» و«مسترجع بوليش 2»")
 
-polish1(f, M9, "41", sarf="20", qabd="18", laser="0.5", note="طقم")
+assert f.POLISH_OPERATIONS == ("فاقد", "ليزر")
+assert f.POLISH_MODE_FIELDS == {"فاقد": ("row_num", "sarf", "qabd"), "ليزر": ("row_num", "sarf")}
+polish1(f, M9, "41", sarf="20", qabd="18", note="طقم")
+polish1(f, M9, "41", sarf="0.5", op="ليزر", note="طقم")
 got = sorted((i["الاسم"], i["النوع"], i["الوزن"], i["row_number"], i["البيان"]) for i in f.invoices.values())
 assert got == sorted([(P1, "صرف تلميع بف", 20.0, "41", "طقم"), (P1, "قبض تلميع بف", 18.0, "41", "طقم"),
                       ("ليزر البوليش", "صرف تلميع بف", 0.5, "41", "ليزر البوليش — طقم")]), got
 with sqlite3.connect(f.db_path) as conn:
     assert conn.execute("select count(*) from invoices where op_type = 'صرف تلميع بف'").fetchone()[0] == 2
-print("✔ الليزر يُسجَّل صرفاً للقسم («صرف تلميع بف») على رقم الصف نفسه، باسمه ليظهر في عموده")
+print("✔ عملية «ليزر»: خانة الصرف تُسجَّل صرفاً للقسم («صرف تلميع بف») باسم «ليزر البوليش» على رقم الصف")
 
 assert summary(f, P1, M9)[0] == 2.5, summary(f, P1, M9)
 sets = f.get_treasury_type_sets()
 p1 = list(f.invoices.values())
 assert all(f.treasury_bucket(i, sets)[0] == "boxes" for i in p1)
 assert round(sum(f.treasury_bucket(i, sets)[1] for i in p1), 2) == -2.5
-print("✔ الفاقد الحالي = صرف 20 + ليزر 0.5 − قبض 18 = 2.5، والخزينة −2.5 (كالصرف تماماً)")
+print("✔ فاقد بوليش 1 = فاقد (صرف 20 − قبض 18) + ليزر 0.5 = 2.5، والخزينة −2.5 (الليزر كالصرف تماماً)")
 
 rows = f.collect_stage_ops_rows("صرف تلميع بف", "قبض تلميع بف")
-assert len(rows) == 1 and rows[0][0] == "41", rows
-g = rows[0][2]
-assert (g["مدين"], g["دائن"], g["مسترجع"], g["البيان"]) == (20.0, 18.0, 0.5, "طقم"), g
-f.render_stage_ops_table(None, "صرف تلميع بف", "قبض تلميع بف", section=P1, totals_label=W())
-assert f._tree.cols == ("الصف", "صرف", "قبض", "الليزر", "الخياس", "البيان"), f._tree.cols
-assert f._tree.rows[0] == {"الصف": "41", "صرف": "20.00", "قبض": "18.00", "الليزر": "0.50",
-                           "الخياس": "2.50", "البيان": "طقم"}, f._tree.rows[0]
-assert f._tree.rows[-1]["الليزر"] == "0.50" and f._tree.rows[-1]["الخياس"] == "2.50"
-print("✔ الجدول: الصف | صرف | قبض | الليزر | الخياس | البيان — الليزر في صفه، والخياس بعد إضافته")
+assert [(r[0], r[2]["op"], r[2]["مدين"], r[2]["دائن"], r[2]["البيان"]) for r in rows] == \
+       [("41", "فاقد", 20.0, 18.0, "طقم"), ("41", "ليزر", 0.5, 0.0, "طقم")], rows
+lbl = W()
+f.render_stage_ops_table(None, "صرف تلميع بف", "قبض تلميع بف", section=P1, totals_label=lbl,
+                         op_column=True, op_filter="فاقد")
+assert f._tree.cols == ("الصف", "العملية", "صرف", "قبض", "الخياس", "البيان"), f._tree.cols
+assert f._tree.rows[0] == {"الصف": "41", "العملية": "فاقد", "صرف": "20.00", "قبض": "18.00",
+                           "الخياس": "2.00", "البيان": "طقم"}, f._tree.rows[0]
+assert f._tree.rows[1] == {"الصف": "41", "العملية": "ليزر", "صرف": "0.50", "قبض": "-",
+                           "الخياس": "0.50", "البيان": "طقم"}, f._tree.rows[1]
+assert f._tree.rows[-1]["صرف"] == "20.50" and f._tree.rows[-1]["الخياس"] == "2.50"
+assert "منها الليزر 0.50" in lbl.get() and "الخياس: 2.50" in lbl.get(), lbl.get()
+f.render_stage_ops_table(None, "صرف تلميع بف", "قبض تلميع بف", section=P1, totals_label=lbl,
+                         op_column=True, op_filter="ليزر")
+assert [r["العملية"] for r in f._tree.rows[:-1]] == ["ليزر"] and f._tree.rows[-1]["الخياس"] == "0.50"
+assert lbl.get().startswith("إجمالي الليزر: 0.50")
+print("✔ كشف «فاقد»: العمليتان بعمود «العملية» والخياس فاقد بوليش 1 كاملاً (2.50)؛ وكشف «ليزر»: الليزر وحده (0.50)")
 
 # الليزر وحده لصف؛ والصرف لصفٍّ فيه ليزر ليس تكراراً (الليزر لا يُعدّ صرف الصف)
-polish1(f, M9, "42", laser="0.3")
+polish1(f, M9, "42", sarf="0.3", op="ليزر")
 polish1(f, M9, "42", sarf="6")
 assert sorted((i["الاسم"], i["النوع"]) for i in f.invoices.values() if i["row_number"] == "42") == \
        [(P1, "صرف تلميع بف"), ("ليزر البوليش", "صرف تلميع بف")]
 before = len(f.invoices)
-polish1(f, M9, "41", laser="0.2")
+polish1(f, M9, "41", sarf="0.2", op="ليزر")
 assert len(f.invoices) == before and msgs[-1] == "عملية مكررة", msgs[-1]
 polish1(f, M9, "41", sarf="1")
 assert len(f.invoices) == before
-polish1(f, M9, "43", sarf="5", laser="-1")
+polish1(f, M9, "43", sarf="-1", op="ليزر")
 assert len(f.invoices) == before and msgs[-1] == "تنبيه"
-print("✔ الليزر وحده مقبول؛ والصرف لصفٍّ فيه ليزر ليس تكراراً؛ والخانة المسجّلة لصفها لا تتكرر؛ والسالب مرفوض")
+print("✔ الليزر وحده مقبول؛ والصرف لصفٍّ فيه ليزر ليس تكراراً؛ والعملية المسجّلة لصفها لا تتكرر؛ والسالب مرفوض")
 
 # ما سُجّل قبضاً في 1.46.0 يُصحَّح إلى صرف عند الفتح (في الذاكرة والقاعدة)، مرة واحدة
 old = add(f, "ليزر البوليش", "قبض تلميع بف", 0.4, M9, row="44")
@@ -758,11 +769,21 @@ assert summary(f, P1, M9)[0] == round(2.5 + 6.3 + 10 + 0.4, 2)
 assert "self.migrate_row_extras()" in seg("load_data_from_db")
 print("✔ ليزر سُجّل قبضاً في الإصدار السابق يُصحَّح صرفاً عند الفتح (يُحفظ في القاعدة، وتكراره لا يغيّر شيئاً)")
 
+# عملية «ليزر» لا تُسجّل قبضاً ولو كُتب في خانة القبض المخفية
+n = len(f.invoices)
+polish1(f, M9, "45", sarf="0.7", qabd="3", op="ليزر")
+new = [i for i in f.invoices.values() if i["row_number"] == "45"]
+assert len(f.invoices) == n + 1 and [(i["الاسم"], i["النوع"], i["الوزن"]) for i in new] == \
+       [("ليزر البوليش", "صرف تلميع بف", 0.7)]
+edit = seg("edit_selected_polish_buff_row")
+assert "qabd_enabled=not laser" in edit and 'sarf_label="الليزر (صرف):" if laser' in edit
+print("✔ عملية «ليزر» صرفٌ وحده (لا قبض)، وتعديل صف الليزر بخانة الليزر وحدها")
+
 # الكاستنج لم يتأثر: مسترجع الأشجار قبضٌ في عموده كما كان
 assert f.stage_row_extra("قبض كاستنج", CAST_REC) == ("مسترجع الأشجار", "مسترجع الأشجار", -1)
-assert f.stage_row_extra("قبض تلميع بف") == ("ليزر البوليش", "الليزر", 1)
+assert f.stage_row_extra("قبض تلميع بف") is None
 assert f.stage_row_extra("قبض كاستنج") is None and f.stage_row_extra("قبض تلميع") is None
-print("✔ الكاستنج كما هو (مسترجع الأشجار قبض)، والتلميع بلا حركة ثانية")
+print("✔ الكاستنج كما هو (مسترجع الأشجار قبض)، والليزر لم يعد عموداً بجانب صف الفاقد")
 
 # التلميع: بلا خانة اسم — الحركات باسم القسم
 t = new_app()
@@ -773,7 +794,9 @@ t.submit_polish_op()
 assert {i["الاسم"] for i in t.invoices.values()} == {"التلميع"} and len(t.invoices) == 2
 for ui in ("build_polish_ui", "build_polish_buff_ui"):
     assert "name_values" not in seg(ui), ui
-assert '("laser", "الليزر")' in seg("build_polish_buff_ui")
+ui = seg("build_polish_buff_ui")
+assert "operations=self.POLISH_OPERATIONS" in ui and "mode_fields=self.POLISH_MODE_FIELDS" in ui
+assert '"laser"' not in ui, "خانة الليزر حُذفت: الليزر عملية في «العملية»"
 for fn in ("submit_polish_op", "submit_polish_buff_op"):
     assert "_name.get()" not in seg(fn), fn
 print("✔ التلميع وبوليش 1 بلا خانة اسم: الحركات باسم القسم نفسه")
