@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.69.0"
+APP_VERSION = "1.69.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -664,17 +664,37 @@ def inspect_update_package(path):
     name = os.path.basename(path or "")
     if not path or not os.path.isfile(path):
         raise ValueError("الملف غير موجود.")
-    if name.lower().endswith(HOT_UPDATE_EXT):
-        return read_jup_package(path)
-    if name.lower().endswith(".exe"):
+    # النوع من محتوى الملف لا من اسمه: الواتساب وغيره يغيّرون الاسم والامتداد (حزمة ‎.jup هي zip في
+    # داخلها، فتصل «….jup.zip» أو «… (1).zip» أو بلا امتداد أو «.bin»)
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError as e:
+        raise ValueError(f"تعذّر فتح الملف: {e}")
+    is_zip = zipfile.is_zipfile(path)
+    if head[:2] == b"MZ":
         m = UPDATE_EXE_RE.search(name)
         if not m:
-            raise ValueError("اسم ملف exe لا يحمل اسم البرنامج وإصداره (مثل Jadeite-Client-1.66.0.exe).")
+            raise ValueError("ملف exe وصل باسم لا يحمل اسم البرنامج وإصداره (مثل Jadeite-Client-1.66.0.exe) — "
+                             "أعد تسميته بذلك، أو أرسل حزمة ‎.jup السريعة بدلاً منه.")
         return {"type": "exe", "version": m.group(2), "build": m.group(1).lower(), "file": path}
-    if not zipfile.is_zipfile(path):
-        raise ValueError("الملف ليس حزمة zip ولا ملف exe.")
+    if not is_zip:
+        if name.lower().endswith(HOT_UPDATE_EXT) or head[:2] == b"PK":
+            raise ValueError("الملف وصل ناقصاً أو تالفاً (ربما لم يكتمل تنزيله) — "
+                             "أعد تنزيله كاملاً من الواتساب أو أعد إرساله، ثم اختره من جديد.")
+        raise ValueError("الملف ليس حزمة تحديث جاديت (لا ‎.jup ولا zip ولا exe).")
     with zipfile.ZipFile(path) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
+        if "manifest.json" in names:
+            return read_jup_package(path)            # حزمة سريعة أياً كان اسمها
+        # حزمة سريعة داخل zip (من ضغط الملف قبل إرساله): تُفك إلى مجلد التحديثات وتُقرأ هي
+        inner = [n for n in names if n.lower().endswith(HOT_UPDATE_EXT) and _jup_safe_name(n)]
+        if len(inner) == 1 and not any(n.endswith(UPDATE_SOURCE_NAME) for n in names):
+            folder = _make_dir(os.path.join(APP_DATA_DIR, "Updates", "received"))
+            target = os.path.join(folder, os.path.basename(inner[0]))
+            with zf.open(inner[0]) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+            return read_jup_package(target)
         sources = sorted((n for n in names if n == UPDATE_SOURCE_NAME or n.endswith("/" + UPDATE_SOURCE_NAME)),
                          key=len)
         if sources:
@@ -6274,10 +6294,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             notes_box.pack(fill="both", expand=True, padx=14, pady=(0, 12))
 
         def choose():
+            # كل الملفات أولاً: الحزمة تُعرف من محتواها، والواتساب قد يغيّر اسمها أو امتدادها
             path = filedialog.askopenfilename(
-                parent=win, title="اختر حزمة التحديث",
-                filetypes=[("حزم التحديث (.jup .exe .zip)", "*.jup *.exe *.zip"),
-                           ("حزمة سريعة .jup", "*.jup"), ("كل الملفات", "*.*")])
+                parent=win, title="اختر حزمة التحديث (كما وصلت — من الواتساب أو غيره)",
+                filetypes=[("كل الملفات — الحزمة تُعرف من محتواها", "*.*"),
+                           ("حزم التحديث (.jup .exe .zip)", "*.jup *.exe *.zip")])
             if not path:
                 return
             lbl_file.configure(text=path)

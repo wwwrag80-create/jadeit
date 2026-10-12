@@ -39,8 +39,10 @@ g = {"os": os, "re": re, "json": json, "hashlib": hashlib, "zipfile": zipfile, "
 for name in ("HOT_RUNTIME", "HOT_UPDATE_EXT", "HOT_LOCAL_MODULES", "JUP_FORMAT", "hot_update_root", "_hot_vt",
              "read_hot_pointer", "write_hot_pointer", "run_hot_update_if_newer", "clean_relaunch_env",
              "version_tuple", "app_build_kind", "_jup_safe_name", "read_jup_package", "jup_notes_since",
-             "extract_jup_files", "install_hot_package", "rollback_hot_update", "embedded_runtime", "plan_update"):
+             "extract_jup_files", "install_hot_package", "rollback_hot_update", "embedded_runtime", "plan_update",
+             "UPDATE_SOURCE_NAME", "UPDATE_EXE_RE", "_make_dir", "inspect_update_package"):
     exec(module_src(name), g)
+g["APP_DATA_DIR"] = APPDATA
 assert g["HOT_RUNTIME"] == 1 and g["HOT_UPDATE_EXT"] == ".jup"
 
 
@@ -66,6 +68,46 @@ try:
     p = make_jup("1.67.1", GOOD)
     info = g["read_jup_package"](p)
     assert info["type"] == "jup" and info["version"] == "1.67.1" and info["build"] == KIND and info["runtime"] == 1
+
+    # ═══ ١-أ) الحزمة كما تصل من الواتساب: الاسم والامتداد يتغيّران، والمحتوى نفسه ═══
+    insp = g["inspect_update_package"]
+    raw = open(p, "rb").read()
+    wa = os.path.join(tmp, "whatsapp")
+    os.makedirs(wa)
+    for received in ("Jadeite-Client-1.67.1.jup.zip", "Jadeite-Client-1.67.1 (1).zip", "Jadeite-Client-1.67.1",
+                     "DOC-20261012-WA0003.bin", "Jadeite-Client-1.67.1 (2).jup", "حزمة التحديث.dat"):
+        q = os.path.join(wa, received)
+        open(q, "wb").write(raw)
+        got = insp(q)
+        assert got["type"] == "jup" and got["version"] == "1.67.1" and got["files"] == info["files"], received
+    # ضُغطت قبل الإرسال: الحزمة داخل zip تُستخرج وتُقرأ
+    zipped = os.path.join(wa, "jup-inside.zip")
+    with zipfile.ZipFile(zipped, "w") as zf:
+        zf.write(p, "Jadeite-Client-1.67.1.jup")
+    got = insp(zipped)
+    assert got["type"] == "jup" and got["version"] == "1.67.1" and os.path.isfile(got["file"])
+    assert os.path.dirname(got["file"]) == os.path.join(APPDATA, "Updates", "received")
+    g["extract_jup_files"](got, os.path.join(tmp, "from-zip"))          # البصمات سليمة بعد الاستخراج
+    # تنزيل لم يكتمل: رسالة واضحة بإعادة التنزيل
+    half = os.path.join(wa, "Jadeite-Client-1.67.1 (3).jup")
+    open(half, "wb").write(raw[: len(raw) // 2])
+    try:
+        insp(half)
+        raise AssertionError("قُبلت حزمة ناقصة")
+    except ValueError as e:
+        assert "ناقصاً" in str(e) and "أعد تنزيله" in str(e), e
+    junk = os.path.join(wa, "صورة.jpg")
+    open(junk, "wb").write(b"\xff\xd8\xff\xe0 not a package")
+    try:
+        insp(junk)
+        raise AssertionError("قُبل ملف ليس حزمة")
+    except ValueError as e:
+        assert "ليس حزمة تحديث" in str(e), e
+    dlg = body("open_app_update")
+    assert dlg.index('("كل الملفات — الحزمة تُعرف من محتواها", "*.*")') < dlg.index('"*.jup *.exe *.zip"'), \
+        "نافذة الاختيار تعرض كل الملفات أولاً (الواتساب يغيّر الامتداد)"
+    print("✔ الحزمة كما تصل من الواتساب تُقبل: ‎.jup.zip، «(1)»، بلا امتداد، ‎.bin، ‎.dat، أو مضغوطة داخل zip — "
+          "تُعرف من محتواها؛ والناقصة تطلب إعادة التنزيل، وما ليس حزمة يُرفض")
     assert g["jup_notes_since"](info, "1.66.2") == [("1.67.1", ["جديد 1.67.1"])]
     assert [v for v, _ in g["jup_notes_since"](info, "1.60.0")] == ["1.67.1", "1.66.2"]
     P = g["plan_update"]
