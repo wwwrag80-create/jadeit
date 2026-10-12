@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.70.0"
+APP_VERSION = "1.70.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -406,10 +406,56 @@ LOGS_DIR = _make_dir(os.path.join(APP_DATA_DIR, "Logs"))
 ADMIN_MIRROR_DIR = os.path.join(APP_DATA_DIR, "AdminMirror")
 
 
+# نسخة المدير: الملف الذي تُفتح منه مرآة كل حساب في هذه الجلسة — الأصلي، أو ملف جديد بجواره إن
+# كان الأصلي مقفولاً (نافذة أخرى للحساب نفسه، برنامج مدير آخر مفتوح، أو مضاد الفيروسات)
+_ADMIN_MIRROR_ACTIVE = {}
+
+
 def client_db_path(client_id):
     """قاعدة الحساب على هذا الجهاز: نسخة العميل في Data كما كانت دائماً، ونسخة المدير في AdminMirror"""
+    if IS_ADMIN_BUILD:
+        active = _ADMIN_MIRROR_ACTIVE.get(str(client_id))
+        if active:
+            return active
     folder = _make_dir(ADMIN_MIRROR_DIR) if IS_ADMIN_BUILD else DATA_DIR
     return os.path.join(folder, f"client_data_{client_id}.db")
+
+
+def install_admin_mirror(tmp, client_id, dst):
+    """يضع نسخة العميل المنزّلة (tmp) مكان مرآته ويرجع المسار الذي تُفتح منه.
+
+    إن رفض ويندوز الاستبدال لأن المرآة السابقة مفتوحة (نافذة أخرى للحساب نفسه، أو برنامج مدير
+    آخر ما زال يعمل، أو مضاد الفيروسات) لا يُمنع الدخول: تُوضع النسخة في ملف جديد بجوارها
+    وتُفتح منه — والمرآة الأخرى تبقى لصاحبها. ملفات المرآة البديلة القديمة تُحذف متى تحرّرت."""
+    try:
+        replace_db_file(tmp, dst)
+        final = dst
+    except PermissionError as e:
+        log_cloud_error("مرآة العميل مفتوحة في نافذة أو برنامج آخر — تُفتح النسخة من ملف جديد", e)
+        stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+        final = os.path.join(os.path.dirname(dst) or _make_dir(ADMIN_MIRROR_DIR),
+                             f"client_data_{client_id}__{stamp}.db")
+        replace_db_file(tmp, final)          # ملف جديد لا يفتحه أحد
+    _ADMIN_MIRROR_ACTIVE[str(client_id)] = final
+    cleanup_admin_mirror_files(client_id, keep=final)
+    return final
+
+
+def cleanup_admin_mirror_files(client_id, keep):
+    """يحذف ملفات المرآة البديلة القديمة لهذا الحساب (المفتوح منها يُترك للمرة القادمة)"""
+    folder = os.path.dirname(keep)
+    pattern = re.compile(rf"^(client_data_{re.escape(str(client_id))}__\d+\.db)(-wal|-shm|-journal)?$")
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        m = pattern.match(name)
+        if m and os.path.join(folder, m.group(1)) != keep:
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
 
 
 def client_backup_dir(client_id):
@@ -1935,12 +1981,12 @@ def load_client_mirror(client_id, db_path):
     mark_mirror_source(tmp)
     reset_local_cache(db_path)
     try:
-        replace_db_file(tmp, db_path)
-    except PermissionError as e:
-        log_cloud_error("تعذّر وضع نسخة العميل مكان النسخة السابقة", e)
+        # المرآة السابقة مفتوحة (نافذة أخرى للحساب نفسه أو برنامج مدير آخر): ملف جديد بجوارها
+        install_admin_mirror(tmp, client_id, db_path)
+    except OSError as e:
+        log_cloud_error("تعذّر حفظ نسخة العميل على هذا الجهاز", e)
         _remove_db_files(tmp)
-        return False, ("ملف نسخة العميل على هذا الجهاز مستخدم الآن (نافذة أخرى لحساب العميل نفسه مفتوحة؟).\n"
-                       "أغلقها ثم أعد المحاولة.")
+        return False, "تعذّر حفظ نسخة العميل على هذا الجهاز (تحقق من المساحة الفارغة على القرص) ثم أعد المحاولة."
     return True, None
 
 
@@ -5729,7 +5775,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             month = self.current_display_month
             mark_mirror_source(tmp_path)
             reset_local_cache(self.db_path)
-            replace_db_file(tmp_path, self.db_path)
+            # إن كانت المرآة الحالية مقفولة لحظتها: النسخة الجديدة في ملف بجوارها ويُكمل منه
+            self.db_path = install_admin_mirror(tmp_path, self.client_id, self.db_path)
             self.init_database()
             self.load_data_from_db()
             # الفترة التي يتصفّحها المدير تبقى كما هي

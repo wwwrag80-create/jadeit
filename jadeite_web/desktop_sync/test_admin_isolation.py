@@ -8,7 +8,7 @@
 السبب: البرنامجان على جهاز واحد ومرآة المدير كانت **ملف العميل نفسه** في Data — مفتوح في
 برنامج العميل فيُرفض استبداله، وإلا استبدله المدير بنسخة السحابة أو حذفه إن تعذّر التنزيل.
 """
-import ast, base64, contextlib, io, lzma, os, sqlite3, sys, tempfile, textwrap, types, zlib
+import ast, base64, contextlib, datetime, io, lzma, os, re, sqlite3, sys, tempfile, textwrap, types, zlib
 
 TARGET = sys.argv[1] if len(sys.argv) > 1 else "rageh-1-34-14-cloud.py"
 src = io.open(TARGET, encoding="utf-8").read()
@@ -35,9 +35,10 @@ errors = []
 ns = {"os": os, "sqlite3": sqlite3, "contextlib": __import__("contextlib"), "gc": __import__("gc"),
       "time": types.SimpleNamespace(sleep=lambda s: None), "base64": base64, "zlib": zlib, "lzma": lzma,
       "APP_DATA_DIR": APP, "DATA_DIR": os.path.join(APP, "Data"), "BACKUPS_DIR": os.path.join(APP, "Backups"),
-      "log_cloud_error": lambda *a: errors.append(a)}
+      "log_cloud_error": lambda *a: errors.append(a), "re": re, "datetime": datetime}
 os.makedirs(ns["DATA_DIR"]); os.makedirs(ns["BACKUPS_DIR"])
-for name in ("_make_dir", "ADMIN_MIRROR_DIR", "client_db_path", "client_backup_dir", "replace_db_file",
+for name in ("_make_dir", "ADMIN_MIRROR_DIR", "_ADMIN_MIRROR_ACTIVE", "client_db_path", "install_admin_mirror",
+             "cleanup_admin_mirror_files", "client_backup_dir", "replace_db_file",
              "_remove_db_files", "reset_local_cache", "is_sqlite_db_healthy", "MIRROR_META_SOURCE",
              "mark_mirror_source", "BACKUP_DOWNLOAD_PROBLEMS", "load_client_mirror"):
     exec(module_src(name), ns)
@@ -119,15 +120,74 @@ ok, why = ns["load_client_mirror"]("A1", ns["client_db_path"]("A1"))
 assert ok and len(calls) == 3
 print("✔ الملف مشغول لحظياً (مضاد فيروسات أو اتصال لم يُغلق): يُعاد الاستبدال تلقائياً فينجح")
 
-ns["os"].replace = lambda a, b: (_ for _ in ()).throw(PermissionError(5, "Access is denied"))
+# ═══ ٤) المرآة مفتوحة في نافذة أو برنامج مدير آخر (مقفولة دائماً): يُفتح الحساب من ملف جديد ═══
+base = admin_db
+locked = {base}
+
+
+def locked_replace(a, b):
+    if b in locked:
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+    return real_replace(a, b)
+
+
+real_remove = os.remove
+
+
+def locked_remove(path):
+    # ويندوز: الملف المفتوح (وملفا -wal/-shm له) لا يُحذف كما لا يُستبدل
+    if any(path == x or path.startswith(x + "-") for x in locked):
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+    return real_remove(path)
+
+
+ns["os"].replace = locked_replace
+ns["os"].remove = locked_remove
 errors.clear()
 ok, why = ns["load_client_mirror"]("A1", ns["client_db_path"]("A1"))
-assert not ok and "مستخدم الآن" in why and "WinError" not in why and errors
-assert not os.path.exists(ns["client_db_path"]("A1") + ".mirror_tmp")
-print("✔ وإن بقي مشغولاً: رسالة واضحة («مستخدم الآن… أغلقها ثم أعد المحاولة») بدل [WinError 5]، ولا ملفات مؤقتة")
-ns["os"] = os
+first = ns["client_db_path"]("A1")
+assert ok and why is None, why
+assert first != base and os.path.dirname(first) == os.path.dirname(base)
+assert os.path.basename(first).startswith("client_data_A1__") and first.endswith(".db")
+with contextlib.closing(sqlite3.connect(first)) as con:
+    assert con.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 40
+assert os.path.exists(base) and errors          # المرآة الأخرى باقية لصاحبها، والسبب مسجَّل
+assert not [n for n in os.listdir(os.path.dirname(base)) if n.endswith((".mirror_tmp", ".mirror_new"))]
+print("✔ المرآة مفتوحة في نافذة أو برنامج آخر: لا خطأ — نسخة العميل (40 حركة) في ملف جديد بجوارها، والبرنامج "
+      "يُفتح منه (client_db_path)، والمرآة الأخرى لا تُمسّ")
 
-# ═══ ٤) كل المسارات في البرنامج من الدالتين ═══
+# دخول ثانٍ والملف البديل نفسه مفتوح أيضاً: ملف ثالث، والمفتوح يبقى لصاحبه
+locked.add(first)
+open(first + "-wal", "wb").close()
+ok, why = ns["load_client_mirror"]("A1", ns["client_db_path"]("A1"))
+second = ns["client_db_path"]("A1")
+assert ok and second not in (base, first) and os.path.exists(first) and os.path.exists(first + "-wal")
+# أُغلقت النوافذ الأخرى: الدخول التالي يعود للملف الأصلي، وتُحذف البدائل كلها — لا تراكم ملفات
+locked.clear()
+ns["_ADMIN_MIRROR_ACTIVE"].clear()
+ok, why = ns["load_client_mirror"]("A1", ns["client_db_path"]("A1"))
+assert ok and ns["client_db_path"]("A1") == base
+left = sorted(n for n in os.listdir(os.path.dirname(base)) if n.startswith("client_data_A1__"))
+assert left == [], left
+print("✔ وإن كان البديل نفسه مفتوحاً: ملف آخر؛ وحين تُغلق النوافذ الأخرى يعود للملف الأصلي وتُحذف البدائل")
+
+# التحديث التلقائي داخل البرنامج (كل دقيقة) على الطريقة نفسها
+apply_src = method("GoldSystemApp", "_apply_admin_mirror")
+assert "self.db_path = install_admin_mirror(tmp_path, self.client_id, self.db_path)" in apply_src
+print("✔ التحديث التلقائي من العميل يضع النسخة الجديدة بالطريقة نفسها (ولا يتوقف إن قُفل الملف لحظتها)")
+
+# لا يمكن الكتابة إطلاقاً (القرص ممتلئ مثلاً): رسالة واضحة بلا «WinError» ولا ملفات مؤقتة
+ns["os"].replace = lambda a, b: (_ for _ in ()).throw(PermissionError(5, "Access is denied"))
+ns["os"].remove = real_remove
+errors.clear()
+ok, why = ns["load_client_mirror"]("A1", ns["client_db_path"]("A1"))
+assert not ok and "تعذّر حفظ نسخة العميل" in why and "WinError" not in why and errors
+assert not [n for n in os.listdir(os.path.dirname(base)) if n.endswith(".mirror_tmp")]
+print("✔ وإن تعذّرت الكتابة كلياً: رسالة واضحة بدل [WinError]، ولا ملفات مؤقتة")
+ns["os"] = os
+ns["_ADMIN_MIRROR_ACTIVE"].clear()
+
+# ═══ ٥) كل المسارات في البرنامج من الدالتين ═══
 init = method("GoldSystemApp", "__init__")
 assert "self.db_path = client_db_path(client_id) if client_id else old_generic_path" in init
 assert "self.backup_dir = client_backup_dir(client_id)" in init
@@ -144,7 +204,7 @@ for _n in _ast.parse(src).body:
             _funcs.append((_m.name, "\n".join(_lines[_m.lineno - 1:_m.end_lineno])))
 _direct = {name for name, seg in _funcs if "os.replace(" in seg}
 assert _direct <= {"replace_db_file", "write_hot_pointer", "install_hot_package"}, _direct
-assert "replace_db_file(tmp_path, self.db_path)" in src
+assert "replace_db_file(tmp, dst)" in src and "replace_db_file(tmp, final)" in src
 if "class AdminPanel" in src:
     assert "db_path = client_db_path(client_id)" in method("AdminPanel", "open_as_client")
 assert "db_path = client_db_path(client_id)" in method("LoginWindow", "try_login")
