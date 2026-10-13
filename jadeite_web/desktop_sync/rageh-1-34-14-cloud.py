@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.74.0"
+APP_VERSION = "1.75.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -6975,11 +6975,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return len(changed)
 
     def migrate_analysis_name(self):
-        """حركات عملية «التحليل» المسجّلة باسمها القديم («مسترجع الفاقد») تأخذ اسمها الجديد («تحليل الكاستنج»)
+        """حركات عملية «صب وتحليل» المسجّلة بأسمائها القديمة («مسترجع الفاقد»، «تحليل الكاستنج») تأخذ اسمها الجديد
         فيظهر بالاسم نفسه في الخزينة وكشوف الحساب والتفاصيل. الاسم وحده يتغيّر: صرفها وقبضها للكاستنج كما هما،
         فلا يتغيّر رقمٌ ولا رصيد. نسخة العميل تحفظ التصحيح في قاعدتها (فيُرفع للسحابة)، ونسخة المدير في الذاكرة."""
         changed = [inv for inv in self.invoices.values()
-                   if inv.get("الاسم") == self.CAST_RETURN_OLD_NAME and inv.get("النوع") in ("صرف كاستنج", "قبض كاستنج")]
+                   if inv.get("الاسم") in self.CAST_RETURN_OLD_NAMES and inv.get("النوع") in ("صرف كاستنج", "قبض كاستنج")]
         if not changed:
             return 0
         for inv in changed:
@@ -6993,7 +6993,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     conn.commit()
                 self.mark_backup_dirty()
             except Exception as e:
-                log_cloud_error("تعذّر حفظ الاسم الجديد لحركات التحليل", e)
+                log_cloud_error("تعذّر حفظ الاسم الجديد لحركات صب وتحليل", e)
         return len(changed)
 
     def migrate_row_extras(self):
@@ -7493,6 +7493,32 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if label not in self.categories.get("نسب_خصم_احجار", []):
             self.categories.setdefault("نسب_خصم_احجار", []).append(label)
             self.save_name_to_db(label, "نسب_خصم_احجار")
+
+    def sale_discount_ratio(self, row=None):
+        """نسبة خصم الأحجار لسطر مبيعات (0.30 = ٣٠٪): نسبة السطر نفسه كما سُجّل (الأحجار بعد الخصم ÷ الأحجار،
+        وإلى أقرب نسبة من قائمة النسب إن قاربتها)، وإلا النسبة المختارة في شاشة المبيعات، وإلا آخر نسبة"""
+        try:
+            raw = float((row or {}).get("أحجار") or 0)
+            disc = float((row or {}).get("أحجار بعد الخصم") or 0)
+        except (TypeError, ValueError):
+            raw = disc = 0.0
+        if raw > 0 and disc > 0:
+            pct = disc / raw * 100
+            for p in self.get_discount_percentages():
+                try:
+                    if abs(float(p) - pct) <= 0.6:
+                        return float(p) / 100
+                except (TypeError, ValueError):
+                    continue
+            return round(pct, 2) / 100
+        for source in (lambda: self.sale_discount_pct.get(), self.get_last_discount_percentage):
+            try:
+                pct = float(str(source()).replace("%", "").strip())
+                if 0 <= pct <= 100:
+                    return pct / 100
+            except Exception:
+                continue
+        return 0.30
 
     def get_last_discount_percentage(self):
         return self.get_setting("last_discount_pct", self.get_discount_percentages()[0])
@@ -9088,9 +9114,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # «المسترجع» في شاشة الكاستنج رجوعٌ من الفاقد الحالي نفسه — لا صلة له بحساب
     # «مسترجع كاستنج» (ذاك لما يُستلم من شاشة الوارد إلى حسابه). تُسجَّل حركاته صرفاً
     # وقبضاً للكاستنج نفسه بهذين الاسمين، فيزيد صرفها الفاقد الحالي ويُخصم قبضها منه:
-    CAST_RETURN_NAME = "تحليل الكاستنج"     # عملية «التحليل» («مسترجع» سابقاً): اسم حركات صرفها وقبضها
-    CAST_RETURN_OLD_NAME = "مسترجع الفاقد"   # اسمها حتى 1.73 — migrate_analysis_name يحوّله
-    CAST_ANALYSIS = "التحليل"               # اسم العملية في الكاستنج وفي الجداول والسندات
+    CAST_RETURN_NAME = "صب وتحليل"          # عملية «صب وتحليل» («مسترجع» ثم «التحليل» سابقاً): اسم حركات صرفها وقبضها
+    CAST_RETURN_OLD_NAMES = ("مسترجع الفاقد", "تحليل الكاستنج")   # أسماؤها حتى 1.74 — migrate_analysis_name يحوّلها
+    CAST_ANALYSIS = "صب وتحليل"             # اسم العملية في الكاستنج وفي الجداول والسندات
     TREE_RETURN_NAME = "مسترجع الأشجار"     # مسترجع أشجار الصف: قبض من فاقد صفه
     # الليزر في «بوليش 1»: عملية مستقلة («العملية»: فاقد / ليزر) مثل الصرف تماماً — صرفٌ للقسم
     # («صرف تلميع بف») يُضاف إلى فاقد بوليش 1، يُسجَّل بهذا الاسم وله كشفه. (كان خانةً بجانب
@@ -9115,7 +9141,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     and (inv.get("row_number", "") or ""))
 
     def is_recovery_op(self, inv, madin_type, recover_name):
-        """عملية «التحليل» في الكاستنج («مسترجع» سابقاً): صرفها يزيد الفاقد الحالي وقبضها يُخصم منه.
+        """عملية «صب وتحليل» في الكاستنج («مسترجع» سابقاً): صرفها يزيد الفاقد الحالي وقبضها يُخصم منه.
         تُعرف باسمها المخزّن وحده: الجديدة برقم صف (صرفها وقبضها صفٌّ واحد)، والقديمة بلا صف"""
         return bool(recover_name and inv.get("الاسم") == self.CAST_RETURN_NAME)
 
@@ -9124,7 +9150,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         لكل صف (g["op"]):
           • «فاقد»   — صرف وقبض القسم بصفوفها (رقم الصف)، ومعها «مسترجع الأشجار» لصفها.
-          • «التحليل» — عمليات التحليل («المسترجع» سابقاً) بعد صفوف الفاقد: برقم صفّها (صرفها وقبضها
+          • «صب وتحليل» — عملياتها («المسترجع» سابقاً) بعد صفوف الفاقد: برقم صفّها (صرفها وقبضها
                        في صف واحد)، والقديمة بلا صف كل عملية صف مستقل — صرفها تحت الصرف وقبضها تحت القبض.
           • «ليزر»   — (بوليش 1) الليزر بصفه: صرفٌ تحت الصرف يُضاف إلى الخياس، صفاً مستقلاً.
         الخياس = الصرف − القبض − مسترجع الأشجار: كلها من الفاقد الحالي نفسه، ولا صلة لأيٍّ
@@ -9195,10 +9221,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         (الصف / [العملية] / صرف / قبض / [مسترجع الأشجار] / الخياس [+ الأشجار] / البيان)
         مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته.
 
-        recover_name (الكاستنج): عمود «العملية» (فاقد/التحليل) و«مسترجع الأشجار».
+        recover_name (الكاستنج): عمود «العملية» (فاقد/صب وتحليل) و«مسترجع الأشجار».
         الخياس = الصرف − القبض − مسترجع الأشجار (كلها من الفاقد الحالي نفسه).
         وفي «بوليش 1» عمود «الليزر» مكانه: الخياس = الصرف − القبض − الليزر.
-        op_filter: «التحليل» أو «ليزر» ← تلك العمليات وحدها؛ غير ذلك ← كل العمليات.
+        op_filter: «صب وتحليل» أو «ليزر» ← تلك العمليات وحدها؛ غير ذلك ← كل العمليات.
         op_column (بوليش 1): عمود «العملية» (فاقد/ليزر) — كشف الفاقد يجمع العمليتين، وكشف الليزر وحده.
         """
         # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج وبوليش 1 مكانه «العملية»
@@ -12735,16 +12761,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.open_stage_op_edit_dialog(ids, madin_type, qabd_type, f"تعديل حركة {stage_name}",
                                        status_text=f"✏️ تم تعديل حركة {stage_name}")
 
-    # عمليتا الكاستنج مكان خانة الاسم، وخانات كل عملية («التحليل» — «مسترجع» سابقاً — برقم صف وصرف وقبض)
-    CAST_OPERATIONS = ("فاقد", "التحليل")
+    # عمليتا الكاستنج مكان خانة الاسم، وخانات كل عملية («صب وتحليل» — «مسترجع» سابقاً — برقم صف وصرف وقبض)
+    CAST_OPERATIONS = ("فاقد", "صب وتحليل")
     CAST_MODE_FIELDS = {"فاقد": ("row_num", "sarf", "qabd", "recover", "trees"),
-                        "التحليل": ("row_num", "sarf", "qabd")}
+                        "صب وتحليل": ("row_num", "sarf", "qabd")}
 
     def build_casting_ui(self, parent):
         label = self.get_display_label("الكاستنج")
         p = self.build_stage_panel(
             parent, key="cast", title=f"كشف حركة {label}",
-            # «العملية» مكان الاسم: فاقد (خانات الصف كلها) أو التحليل (رقم الصف والصرف والقبض)
+            # «العملية» مكان الاسم: فاقد (خانات الصف كلها) أو صب وتحليل (رقم الصف والصرف والقبض)
             operations=self.CAST_OPERATIONS, mode_fields=self.CAST_MODE_FIELDS,
             on_operation_change=self.on_cast_operation_change,
             # مسترجع الأشجار بعد القبض مباشرة (خانةً وعموداً)
@@ -12754,8 +12780,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             on_edit=self.edit_selected_casting_row, on_delete=self.delete_selected_casting_row,
             neg_section="الكاستنج", neg_refresh=self.refresh_casting_table,
             view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"),
-            extra_buttons=[("🖨️ سند التحليل", self.print_selected_analysis_voucher,
-                            "سند صف التحليل المحدد: «تحليل» للصرف و«سند قبض» للقبض")])
+            extra_buttons=[("🖨️ معاينة الصرف", lambda: self.preview_selected_analysis("صرف كاستنج"),
+                            "سند الصرف وحده لصف «صب وتحليل» المحدد — صفحة مستقلة"),
+                           ("🖨️ معاينة القبض", lambda: self.preview_selected_analysis("قبض كاستنج"),
+                            "سند القبض وحده لصف «صب وتحليل» المحدد — صفحة مستقلة")])
         self.cast_date, self.cast_note = p["date"], p["note"]
         self.cast_op = p["op"]
         self.cast_title_lbl = p["title"]
@@ -12768,7 +12796,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.cast_totals_lbl = p["totals"]
 
     def get_cast_operation(self):
-        """العملية المختارة في الكاستنج: «فاقد» (الافتراضي) أو «التحليل»"""
+        """العملية المختارة في الكاستنج: «فاقد» (الافتراضي) أو «صب وتحليل»"""
         widget = getattr(self, "cast_op", None)
         try:
             value = widget.get() if widget is not None else ""
@@ -12777,7 +12805,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return value if value in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
 
     def on_cast_operation_change(self, _mode=None):
-        """تبديل العملية: الجدول يعرض كل العمليات (فاقد) أو عمليات التحليل وحدها"""
+        """تبديل العملية: الجدول يعرض كل العمليات (فاقد) أو عمليات صب وتحليل وحدها"""
         self.refresh_casting_table()
 
     @staticmethod
@@ -12895,7 +12923,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after(60, lambda: self.cast_row_num.focus_set())
 
     def submit_casting_recovery_op(self):
-        """عملية «التحليل» في الكاستنج («مسترجع» سابقاً) برقم صفها: رجوعٌ من الفاقد الحالي نفسه.
+        """عملية «صب وتحليل» في الكاستنج («مسترجع» سابقاً) برقم صفها: رجوعٌ من الفاقد الحالي نفسه.
           • الصرف ← صرف للكاستنج يزيد فاقده الحالي كأي صرف، ويظهر تحت الصرف.
           • القبض ← قبض للكاستنج يُخصم من فاقده الحالي، ويظهر تحت القبض.
         صرف الصف وقبضه يُسجَّل كلٌّ منهما مرة واحدة (والآخر يُكمَل لاحقاً على الرقم نفسه)، وبعد الترحيل
@@ -12908,7 +12936,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not date_val:
             return
         if not row_num:
-            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم صف التحليل أولاً قبل الترحيل.")
+            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم صف «صب وتحليل» أولاً قبل الترحيل.")
             return
         sarf_v = self._read_weight(self.cast_sarf)
         qabd_v = self._read_weight(self.cast_qabd)
@@ -12921,7 +12949,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sarf_v <= 0 and qabd_v <= 0:
             messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
             return
-        # صرف صف التحليل وقبضه يُسجَّل كلٌّ منهما مرة واحدة في الفترة
+        # صرف صف «صب وتحليل» وقبضه يُسجَّل كلٌّ منهما مرة واحدة في الفترة
         month = self.current_display_month
         row_n = self.norm_row_no(row_num)
 
@@ -12937,7 +12965,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             skipped.append("القبض")
             qabd_v = 0.0
         if skipped and not messagebox.askyesno(
-                "عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل في صف التحليل ({row_num}).\n"
+                "عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل في صف «صب وتحليل» ({row_num}).\n"
                 "لتغيير قيمة موجودة عدّلها من الجدول (✏️ تعديل).\n\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
             return
         if sarf_v <= 0 and qabd_v <= 0:
@@ -12947,7 +12975,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lines.append(f"• صرف {sarf_v:.2f} جم — يزيد الفاقد الحالي للكاستنج")
         if qabd_v > 0:
             lines.append(f"• قبض {qabd_v:.2f} جم — يُخصم من الفاقد الحالي للكاستنج")
-        if not messagebox.askyesno("تأكيد ترحيل التحليل", f"ترحيل عملية التحليل للكاستنج — الصف ({row_num}):\n\n"
+        if not messagebox.askyesno(f"تأكيد ترحيل {self.CAST_ANALYSIS}", f"ترحيل عملية {self.CAST_ANALYSIS} للكاستنج — الصف ({row_num}):\n\n"
                                    + "\n".join(lines) + "\n\nهل تريد المتابعة؟"):
             return
 
@@ -12972,16 +13000,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.recalculate_all()
         for entry in (self.cast_sarf, self.cast_qabd, self.cast_note, self.cast_row_num):
             entry.delete(0, 'end')
-        self.lbl_op_status.configure(text=f"✅ تم ترحيل عملية التحليل — الصف ({row_num})")
+        self.lbl_op_status.configure(text=f"✅ تم ترحيل عملية {self.CAST_ANALYSIS} — الصف ({row_num})")
         self.after(2500, lambda: self.lbl_op_status.configure(text=""))
         self.refresh_casting_table()
         if messagebox.askyesno("طباعة السند", "هل تريد طباعة السند؟\n"
-                               "(«تحليل» للصرف و«سند قبض» للقبض — بالقيمة المُدخلة)"):
+                               "(سند صرف للصرف، وسند قبض للقبض — كلٌّ في صفحته بالقيمة المُدخلة)"):
             self.print_analysis_vouchers(posted)
         self.after(60, lambda: self.cast_row_num.focus_set())
 
     def analysis_ids_of_selected(self):
-        """حركات صف التحليل المحدد في جدول الكاستنج (فارغة إن لم يكن الصف صف تحليل)"""
+        """حركات صف «صب وتحليل» المحدد في جدول الكاستنج (فارغة لغيره)"""
         tree = getattr(self, "cast_tree", None)
         sel = tree.selection() if tree else ()
         ids = self.cast_table_rows_map.get(sel[0], []) if sel else []
@@ -12989,143 +13017,140 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return [i for i in ids if i in self.invoices
                 and self.is_recovery_op(self.invoices[i], "صرف كاستنج", recover_name)]
 
-    def print_selected_analysis_voucher(self):
+    def preview_selected_analysis(self, op_type):
+        """زر «معاينة الصرف» / «معاينة القبض»: سند تلك العملية وحدها لصف «صب وتحليل» المحدد"""
         ids = self.analysis_ids_of_selected()
         if not ids:
-            messagebox.showwarning("تنبيه", "حدّد صف تحليل من جدول الكاستنج أولاً (العملية: التحليل).")
+            messagebox.showwarning("تنبيه", f"حدّد صف «{self.CAST_ANALYSIS}» من جدول الكاستنج أولاً.")
             return None
-        return self.print_analysis_vouchers(ids)
+        match = [i for i in ids if self.invoices[i].get("النوع") == op_type]
+        if not match:
+            kind = "صرف" if op_type == "صرف كاستنج" else "قبض"
+            messagebox.showinfo("لا يوجد", f"لا {kind} مسجّل في صف «{self.CAST_ANALYSIS}» المحدد بعد.")
+            return None
+        return self.print_analysis_voucher(max(match))
 
     def print_analysis_vouchers(self, ids):
-        """سندات عملية التحليل في الكاستنج: «تحليل» للصرف و«سند قبض» للقبض — سندان في كل صفحة A4
-        (نصفها لكل سند بخط قصّ بينهما)، بالقيمة المُدخلة. يرجع مسار الملف."""
+        """بعد الترحيل: سند لكل عملية مُرحَّلة — سند الصرف وحده وسند القبض وحده، كلٌّ في ملفه وصفحته"""
+        return [p for p in (self.print_analysis_voucher(i) for i in sorted(
+            ids, key=lambda i: (0 if self.invoices.get(i, {}).get("النوع") == "صرف كاستنج" else 1, i))) if p]
+
+    def print_analysis_voucher(self, inv_id):
+        """سند عملية واحدة من «صب وتحليل» (صرف أو قبض) على صفحة A4 مستقلة — معاينة PDF. يرجع مسار الملف"""
         if not REPORTLAB_AVAILABLE:
             messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً.")
             return None
-        invs = [self.invoices[i] for i in ids if i in self.invoices]
-        invs.sort(key=lambda x: (0 if x.get("النوع") == "صرف كاستنج" else 1, x.get("رقم الفاتورة", 0)))
-        if not invs:
-            messagebox.showwarning("تنبيه", "لم تعد حركات هذا الصف موجودة.")
+        inv = self.invoices.get(inv_id)
+        if not inv:
+            messagebox.showwarning("تنبيه", "لم تعد هذه الحركة موجودة.")
             return None
-        out_path = os.path.join(INVOICES_DIR, f"analysis_voucher_{invs[0]['رقم الفاتورة']}_"
+        kind = "sarf" if inv.get("النوع") == "صرف كاستنج" else "qabd"
+        out_path = os.path.join(INVOICES_DIR, f"cast_{kind}_voucher_{inv_id}_"
                                               f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
         try:
             c = pdf_canvas.Canvas(out_path, pagesize=A4)
-            for i, inv in enumerate(invs):
-                if i and i % 2 == 0:
-                    c.showPage()
-                self.draw_analysis_voucher(c, inv, half=i % 2)
+            self.draw_analysis_voucher(c, inv)
             c.showPage()
             c.save()
         except Exception as e:
-            messagebox.showerror("خطأ", f"تعذّر إنشاء سند التحليل:\n{e}")
+            messagebox.showerror("خطأ", f"تعذّر إنشاء السند:\n{e}")
             return None
         self.last_generated_invoice_pdf = out_path
         self._open_file(out_path)
         return out_path
 
     def analysis_voucher_fields(self, inv):
-        """محتوى سند التحليل لحركة: (العنوان، الوصف، [(عنوان، قيمة)…]، الوزن، البيان)"""
+        """محتوى سند «صب وتحليل» لحركة: (العنوان، الوصف، [(عنوان، قيمة)…]، الوزن، البيان)"""
         receipt = inv.get("النوع") != "صرف كاستنج"
-        title = "سند قبض" if receipt else "تحليل"
-        section = self.get_display_label("الكاستنج")
-        sub = f"قبض من التحليل — قسم {section}" if receipt else f"صرف للتحليل — قسم {section}"
+        title = "سند قبض" if receipt else "سند صرف"
+        sub = f"{self.CAST_ANALYSIS} — قسم {self.get_display_label('الكاستنج')}"
         dt = str(inv.get("التاريخ") or "")
         info = [("رقم السند:", str(inv.get("رقم الفاتورة", ""))), ("التاريخ:", dt[:10] or "-"),
                 ("رقم الصف:", (inv.get("row_number") or "").strip() or "-"), ("الفترة:", self.inv_period(inv) or "-")]
         return title, sub, info, round(inv.get("الوزن", 0.0) or 0.0, 2), (inv.get("البيان") or "").strip()
 
-    def draw_analysis_voucher(self, c, inv, half=0):
-        """سند تحليل/قبض واحد في نصف صفحة A4 (half: ٠ الأعلى، ١ الأسفل): ترويسة المصنع والشعار، والعنوان
-        في شارة بالوسط، وبيانات السند، والوزن بخط كبير، والبيان، والتوقيعات."""
+    def draw_analysis_voucher(self, c, inv):
+        """سند صرف أو سند قبض لعملية «صب وتحليل» على صفحة A4 كاملة وحده: ترويسة المصنع، والعنوان في شارة،
+        ورقم السند والتاريخ ورقم الصف والفترة، والوزن بخط كبير، والبيان، والتوقيعات"""
         from reportlab.lib.colors import Color
         PW, PH = A4
-        M = 10 * mm
-        navy, gold = Color(0.15, 0.15, 0.55), Color(0.80, 0.64, 0.22)
-        soft, line = Color(0.94, 0.95, 0.98), Color(0.55, 0.58, 0.66)
-        top = PH - M - half * (PH / 2)              # أعلى السند (من أسفل الصفحة)
-        H = PH / 2 - 2 * M
-        x0, x1 = M, PW - M
+        M = 14 * mm
+        navy = Color(0.15, 0.15, 0.55)
+        soft, line, ink = Color(0.94, 0.95, 0.98), Color(0.55, 0.58, 0.66), Color(0.10, 0.11, 0.14)
         title, sub, info, weight, note = self.analysis_voucher_fields(inv)
+        receipt = title == "سند قبض"
 
-        def y(off_mm):
-            return top - off_mm * mm
-
-        def txt(x, yy, s, size=11, bold=True, align="center", color=None):
-            c.setFillColor(color or Color(0.10, 0.11, 0.14))
+        def txt(x, yc, s, size=12, bold=True, align="center", color=None):
+            """نص يتوسّط خطّه الأفقي yc"""
+            c.setFillColor(color or ink)
             c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
             s = str(s)
             s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
-            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](x, yy, s)
+            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](
+                x, yc - size * 0.36, s)
 
-        # الإطار
-        c.setStrokeColor(navy)
-        c.setLineWidth(1.3)
-        c.roundRect(x0, top - H, x1 - x0, H, 4 * mm, stroke=1, fill=0)
-        # الترويسة: اسم المصنع يميناً، والشعار يساراً، والعنوان في شارة بالوسط
-        txt(x1 - 6 * mm, y(10), "مصنع جاديت للتصنيع", 15, color=navy, align="right")
-        txt(x1 - 6 * mm, y(16), "الرياض - صناعية الموسى", 9.5, bold=False, align="right")
-        logo = self.pdf_logo()
-        if logo:
-            lh = 17 * mm
-            c.drawImage(logo[0], x0 + 6 * mm, y(20), width=lh * logo[1], height=lh, mask="auto",
-                        preserveAspectRatio=True)
-        pill_w, pill_h = 62 * mm, 13 * mm
-        cx = (x0 + x1) / 2
+        top = self.draw_standard_letterhead(c, M)
+
+        def y(off_mm):
+            return top - off_mm * mm
+        x0, x1, cx = M, PW - M, PW / 2
+        # العنوان في شارة بالوسط ووصفه تحته
+        pill_w, pill_h = 92 * mm, 17 * mm
         c.setFillColor(navy)
-        c.roundRect(cx - pill_w / 2, y(18), pill_w, pill_h, 3 * mm, stroke=0, fill=1)
-        txt(cx, y(13.6), title, 21, color=Color(1, 1, 1))
-        txt(cx, y(23.5), sub, 10.5, bold=False, color=Color(0.30, 0.32, 0.38))
-        c.setStrokeColor(gold)
-        c.setLineWidth(1.2)
-        c.line(x0 + 5 * mm, y(27), x1 - 5 * mm, y(27))
+        c.roundRect(cx - pill_w / 2, y(23), pill_w, pill_h, 4 * mm, stroke=0, fill=1)
+        txt(cx, y(14.5), title, 26, color=Color(1, 1, 1))
+        txt(cx, y(30), sub, 13, bold=False, color=Color(0.30, 0.32, 0.38))
         # بيانات السند: صفّان × خانتان
-        gx0, gx1 = x0 + 8 * mm, x1 - 8 * mm
-        col_w = (gx1 - gx0) / 2
-        lab_w = 27 * mm
+        col_gap = 6 * mm
+        col_w = (x1 - x0 - col_gap) / 2
+        lab_w = 30 * mm
         for k, (label, value) in enumerate(info):
             row, col = divmod(k, 2)
-            right = gx1 - col * col_w
-            t0 = 31 + row * 11
+            right = x1 - col * (col_w + col_gap)
+            t0 = 40 + row * 15
             c.setStrokeColor(line)
-            c.setLineWidth(0.7)
+            c.setLineWidth(0.8)
             c.setFillColor(soft)
-            c.rect(right - lab_w, y(t0 + 9), lab_w, 9 * mm, stroke=1, fill=1)
-            c.rect(right - col_w + 2 * mm, y(t0 + 9), col_w - 2 * mm - lab_w, 9 * mm, stroke=1, fill=0)
-            txt(right - 2.5 * mm, y(t0 + 6), label, 11, align="right")
-            txt(right - lab_w - (col_w - 2 * mm - lab_w) / 2, y(t0 + 6), value, 12.5)
+            c.rect(right - lab_w, y(t0 + 12), lab_w, 12 * mm, stroke=1, fill=1)
+            c.rect(right - col_w, y(t0 + 12), col_w - lab_w, 12 * mm, stroke=1, fill=0)
+            txt(right - 3 * mm, y(t0 + 6), label, 13, align="right")
+            txt(right - lab_w - (col_w - lab_w) / 2, y(t0 + 6), value, 15)
         # الوزن بخط كبير
-        bt = 57
         c.setStrokeColor(navy)
-        c.setLineWidth(1.1)
+        c.setLineWidth(1.4)
         c.setFillColor(soft)
-        c.roundRect(gx0, y(bt + 24), gx1 - gx0, 24 * mm, 3 * mm, stroke=1, fill=1)
-        kind = "القبض" if title == "سند قبض" else "الصرف"
-        txt(gx1 - 5 * mm, y(bt + 13.5), f"وزن {kind} (جم):", 14, align="right", color=navy)
-        txt((gx0 + gx1) / 2 - 10 * mm, y(bt + 15.5), f"{weight:.2f}", 30, color=navy)
-        # البيان
+        c.roundRect(x0, y(118), x1 - x0, 42 * mm, 4 * mm, stroke=1, fill=1)
+        txt(x1 - 8 * mm, y(97), f"وزن {'القبض' if receipt else 'الصرف'} (جم):", 19, align="right", color=navy)
+        txt(cx - 20 * mm, y(97), f"{weight:.2f}", 46, color=navy)
+        # البيان: سطور تلتفّ داخل خانته
+        txt(x1 - 2 * mm, y(128), "البيان:", 14, align="right")
         c.setStrokeColor(line)
-        c.setLineWidth(0.7)
-        txt(gx1 - 2 * mm, y(bt + 33), "البيان:", 11.5, align="right")
-        c.line(gx0, y(bt + 34), gx1 - 20 * mm, y(bt + 34))
-        if note:
-            fit = fit_font_size(note, gx1 - gx0 - 24 * mm, 11.5, bold=False, min_size=7)
-            txt(gx1 - 22 * mm, y(bt + 33), note, fit, bold=False, align="right")
-        # التوقيعات
-        third = (gx1 - gx0) / 3
+        c.setLineWidth(0.8)
+        c.rect(x0, y(166), x1 - x0, 32 * mm, stroke=1, fill=0)
+        width = (x1 - x0) - 10 * mm
+        lines, cur = [], ""
+        for word in note.split():
+            cand = f"{cur} {word}".strip()
+            if cur and c.stringWidth(ar(cand), _ARABIC_FONT_NAME, 13) > width:
+                lines.append(cur)
+                cur = word
+            else:
+                cur = cand
+        if cur:
+            lines.append(cur)
+        for k, ln in enumerate(lines[:4]):
+            txt(x1 - 5 * mm, y(140 + k * 7), ln, 13, bold=False, align="right")
+        # التوقيعات أسفل الصفحة، ووقت الطباعة
+        third = (x1 - x0) / 3
         for k, label in enumerate(("المسلِّم", "المستلِم", "المحاسب")):
-            sx = gx1 - (k + 0.5) * third
+            sx = x1 - (k + 0.5) * third
             c.setStrokeColor(line)
-            c.line(sx - 22 * mm, y(H / mm - 9), sx + 22 * mm, y(H / mm - 9))
-            txt(sx, y(H / mm - 4.5), label, 11)
+            c.setLineWidth(0.9)
+            c.line(sx - 26 * mm, 46 * mm, sx + 26 * mm, 46 * mm)
+            txt(sx, 40 * mm, label, 13)
+        txt(x0, 16 * mm, f"طُبع: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", 9, bold=False,
+            align="left", color=Color(0.45, 0.47, 0.52))
         c.setFillColorRGB(0, 0, 0)
-        if half == 0:                                   # خط القصّ في منتصف الصفحة
-            c.saveState()
-            c.setStrokeColor(line)
-            c.setDash(4, 3)
-            c.setLineWidth(0.6)
-            c.line(M, PH / 2, PW - M, PH / 2)
-            c.restoreState()
 
     def refresh_casting_table(self):
         if not hasattr(self, 'cast_table_frame') or not self.cast_table_frame:
@@ -13138,7 +13163,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                 if operation == self.CAST_ANALYSIS else f"كشف حركة {label} — كل العمليات")
         self.cast_tree, self.cast_table_rows_map = self.render_stage_ops_table(
             self.cast_table_frame, "صرف كاستنج", "قبض كاستنج", height=11, with_trees=True,
-            # «فاقد»: كل العمليات، «التحليل»: عمليات التحليل وحدها
+            # «فاقد»: كل العمليات، «صب وتحليل»: عملياتها وحدها
             section="الكاستنج", op_filter=operation,
             on_refresh=self.refresh_casting_table,
             recover_name=self.get_stage_config("الكاستنج")[2],
@@ -13183,7 +13208,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     and self.is_recovery_op(self.invoices[i], "صرف كاستنج", recover_name)]
         if analysis:
             # صف تحليل برقمه: نافذة الصف نفسها (رقم الصف والصرف والقبض) بلا خانات الأشجار، ورقمه بين
-            # صفوف التحليل وحدها؛ والتحليل القديم بلا صف: نافذة وزنه وتاريخه وبيانه
+            # صفوف «صب وتحليل» وحدها؛ والقديم بلا صف: نافذة وزنه وتاريخه وبيانه
             if all((self.invoices[i].get("row_number") or "").strip() for i in analysis):
                 return self.open_stage_op_edit_dialog(analysis, "صرف كاستنج", "قبض كاستنج",
                                                       f"تعديل عملية {self.CAST_ANALYSIS}",
@@ -20031,6 +20056,32 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "وُضع الصحيح في الخانة: (حفظ تعديلات الفاتورة) يعتمده"), text_color=alert)
 
         entries["set_number"].bind("<FocusOut>", fetch_assembler, add="+")
+        # «الأحجار بعد الخصم» تُحسب تلقائياً مع كل تعديل في «الأحجار» (كما في شاشة المبيعات): بنسبة خصم السطر
+        # نفسه كما سُجّل، أو النسبة الحالية لسطر جديد — وتعديلها يدوياً بعد ذلك يبقى ممكناً
+        disc_state = {"ratio": 0.30, "last": ""}
+        lbl_disc = ctk.CTkLabel(fields_row, text="", font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"))
+        lbl_disc.grid(row=2, column=0, columnspan=n_fields, sticky="e", padx=8, pady=(0, 4))
+
+        def set_disc_ratio(row=None):
+            disc_state["ratio"] = self.sale_discount_ratio(row)
+            disc_state["last"] = entries["أحجار"].get().strip()
+            lbl_disc.configure(text=f"نسبة خصم الأحجار: {disc_state['ratio'] * 100:g}% — «الأحجار بعد الخصم» "
+                                    "تُحسب تلقائياً مع تعديل الأحجار")
+
+        def on_stones(_e=None):
+            text = entries["أحجار"].get().strip()
+            if text == disc_state["last"]:
+                return                      # تنقّل بالأسهم داخل الخانة: لا يُمسح خصمٌ عُدّل يدوياً
+            disc_state["last"] = text
+            try:
+                raw = float(text or 0)
+            except ValueError:
+                return
+            entries["أحجار بعد الخصم"].delete(0, "end")
+            if raw > 0:
+                entries["أحجار بعد الخصم"].insert(0, f"{round(raw * disc_state['ratio'], 2):g}")
+        entries["أحجار"].bind("<KeyRelease>", on_stones, add="+")
+        set_disc_ratio()
         # تحت خانة «خياس بوليش 2»: الوزن قبل البوليش وبعده — كما في شاشة المبيعات
         self.attach_polish2_hint(entries["خياس"], win,
                                  [entries[k] for k in ("ذهب", "فصوص", "أحجار", "الماس")])
@@ -20092,6 +20143,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ent.delete(0, 'end')
             # السطر الجديد يأخذ أصغر رقم صف شاغر (سطر محذوف يعود برقمه ومكانه)
             entries["row_number"].insert(0, self.next_free_sale_row_number(edit_rows))
+            set_disc_ratio()
             selected_idx["i"] = None
             lbl_state.configure(text="")
             lbl_asm.configure(text="")
@@ -20156,6 +20208,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ent.delete(0, 'end')
                 val = r.get(k, "")
                 ent.insert(0, str(val or "") if k in ("set_number", "row_number", "البيان") else (f"{val:g}" if val else ""))
+            set_disc_ratio(r)
             selected_idx["i"] = idx
             lbl_state.configure(text=f"✏️ يتم الآن تعديل السطر رقم ({r.get('row_number') or idx + 1}) — "
                                      "(حفظ السطر) أو Enter في آخر خانة؛ و(حفظ تعديلات الفاتورة) يحفظه أيضاً")

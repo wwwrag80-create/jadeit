@@ -44,4 +44,30 @@ generic = member("attach_before_after_hint")
 assert '"<FocusIn>", show' in generic and '"<FocusOut>", hide' in generic
 assert "self.attach_polish2_hint(self.sale_khayas, tab," in member("build_sales_tab")
 print("✔ تحت «خياس بوليش 2»: قبل = الخياس + الذهب + الفصوص + الأحجار + الماس، وبعد = الذهب + الفصوص + الأحجار + الماس")
+# «الأحجار بعد الخصم» تُحسب تلقائياً مع تعديل «الأحجار»: بنسبة السطر نفسه، وإلا النسبة الحالية
+ns2 = {}
+exec("class D:\n" + textwrap.indent(member("sale_discount_ratio"), "    "), ns2)
+
+
+class Pct:
+    def __init__(self, v): self.v = v
+    def get(self): return self.v
+
+
+d = ns2["D"]()
+d.get_discount_percentages = lambda: ["30", "25"]
+d.get_last_discount_percentage = lambda: "30"
+d.sale_discount_pct = Pct("25%")
+assert d.sale_discount_ratio({"أحجار": 3.0, "أحجار بعد الخصم": 0.9}) == 0.30
+assert d.sale_discount_ratio({"أحجار": 2.03, "أحجار بعد الخصم": 0.61}) == 0.30, "تقريب لأقرب نسبة معروفة"
+assert d.sale_discount_ratio({"أحجار": 4.0, "أحجار بعد الخصم": 0.8}) == 0.20, "نسبة خاصة بالسطر تبقى كما هي"
+assert d.sale_discount_ratio({"أحجار": 0, "أحجار بعد الخصم": 0}) == 0.25, "سطر جديد: النسبة المختارة في المبيعات"
+d.sale_discount_pct = Pct("abc")
+assert d.sale_discount_ratio() == 0.30, "وإلا آخر نسبة مستخدمة"
+ed = member("open_sale_invoice_editor")
+assert 'entries["أحجار"].bind("<KeyRelease>", on_stones, add="+")' in ed
+assert "round(raw * disc_state['ratio'], 2)" in ed and "set_disc_ratio(r)" in ed and ed.count("set_disc_ratio()") >= 2
+assert 'if text == disc_state["last"]:' in ed
+print("✔ تعديل الأحجار في الفاتورة المرحّلة يحسب «الأحجار بعد الخصم» تلقائياً بنسبة السطر (30% ← 2.03 × 30% …) "
+      "أو النسبة الحالية لسطر جديد، والتنقّل بالأسهم لا يمسح خصماً عُدّل يدوياً")
 print("\n✅ تعديل فواتير المبيعات الصادرة سليم")

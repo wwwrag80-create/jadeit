@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-1.74: «تتبع رقم التشغيل» في مراحل التصنيع، وخياس البوليش في المبيعات، وسند رقم التشغيل المحمّل، وعملية «التحليل».
+1.74: «تتبع رقم التشغيل» في مراحل التصنيع، وخياس البوليش في المبيعات، وسند رقم التشغيل المحمّل، وعملية «صب وتحليل».
 
   • بعد البوليش  = صرف رقم التشغيل في قسم المركبين — من صفّه نفسه كما في كشف المركبين (لا غيره).
   • قبل البوليش  = يُكتب يدوياً لكل رقم (إعداد يُرفع مع النسخة، وخطوة تراجع).
   • خياس البوليش = قبل − بعد ← خانة «خياس البوليش» في المبيعات، والنافذة تحتها، وقالب رقم التشغيل.
   • القالب: ٠٫٠٤٪ = قبل البوليش؛ البوليش والتركيب (صرف/قبض المركبين)؛ الوزن بعد؛ السلسال؛ الإجمالي؛ بوليش 2.
-  • الكاستنج: «المسترجع» صار «التحليل» برقم صف، وسنداه «تحليل» للصرف و«سند قبض» للقبض.
+  • الكاستنج: «المسترجع» صار «صب وتحليل» برقم صف، وسند صرف وحده وسند قبض وحده (كلٌّ في صفحته).
 لا شيء من التتبع حركةٌ أو خياس: الخزينة والصناديق لا تتأثر.
 """
 import ast, io, os, sqlite3, sys, tempfile, textwrap
@@ -34,7 +34,7 @@ def module_value(name):
 
 
 MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEFORE_PREFIX", "CAST_RETURN_NAME",
-           "CAST_RETURN_OLD_NAME", "migrate_analysis_name",
+           "CAST_RETURN_OLD_NAMES", "migrate_analysis_name",
            "CAST_ANALYSIS", "BOX_DISPLAY_OVERRIDES", "UNDO_LIMIT", "INVOICE_COLUMNS",
            "normalize_set_number", "inv_period", "inv_in_period", "assembler_set_index", "polish_before_map",
            "set_polish_before", "set_tracking_values", "sale_polish_by_set", "set_track_sale_status",
@@ -235,13 +235,14 @@ print("✔ الوزن بعد 44.40 = المركب بعد + الماس + الأح
       "السلسال = الفرق؛ بوليش 2 = 41.75/41.15/0.60؛ المقيد 39.05")
 print("✔ رقمٌ لم يُبع بعد: البوليش والتركيب من التتبع، وخانات البيع فارغة (لا أصفار مضلّلة)")
 
-# ═══ ٦) الكاستنج: «التحليل» وسنداه ═══
-assert a.CAST_RETURN_NAME == "تحليل الكاستنج" and a.CAST_ANALYSIS == "التحليل"
-assert a.is_recovery_op({"الاسم": "تحليل الكاستنج", "row_number": "3"}, "صرف كاستنج", "مسترجع كاستنج")
-assert a.is_recovery_op({"الاسم": "تحليل الكاستنج", "row_number": ""}, "صرف كاستنج", "مسترجع كاستنج")
+# ═══ ٦) الكاستنج: «صب وتحليل» وسنداه ═══
+assert a.CAST_RETURN_NAME == "صب وتحليل" and a.CAST_ANALYSIS == "صب وتحليل"
+assert a.CAST_RETURN_OLD_NAMES == ("مسترجع الفاقد", "تحليل الكاستنج")
+assert a.is_recovery_op({"الاسم": "صب وتحليل", "row_number": "3"}, "صرف كاستنج", "مسترجع كاستنج")
+assert a.is_recovery_op({"الاسم": "صب وتحليل", "row_number": ""}, "صرف كاستنج", "مسترجع كاستنج")
 # الاسم القديم «مسترجع الفاقد» يتحوّل (في الذاكرة والقاعدة)، والوزن والنوع والصف كما هي
 old1 = a.add("مسترجع الفاقد", "صرف كاستنج", 6.0)
-old2 = a.add("مسترجع الفاقد", "قبض كاستنج", 5.5, row="4")
+old2 = a.add("تحليل الكاستنج", "قبض كاستنج", 5.5, row="4")                    # اسم 1.74
 other = a.add("مسترجع الفاقد", "وارد ذهب (عيار 18)", 1.0)          # ليس من الكاستنج: لا يُمسّ
 with sqlite3.connect(path) as c:
     for i in (old1, old2, other):
@@ -250,27 +251,35 @@ with sqlite3.connect(path) as c:
                   (i, inv_["التاريخ"], inv_["الاسم"], inv_["النوع"], inv_["الوزن"], inv_["row_number"]))
 assert a.migrate_analysis_name() == 2 and a.migrate_analysis_name() == 0
 assert [(a.invoices[i]["الاسم"], a.invoices[i]["الوزن"], a.invoices[i]["row_number"]) for i in (old1, old2)] == \
-    [("تحليل الكاستنج", 6.0, ""), ("تحليل الكاستنج", 5.5, "4")]
+    [("صب وتحليل", 6.0, ""), ("صب وتحليل", 5.5, "4")]
 assert a.invoices[other]["الاسم"] == "مسترجع الفاقد"
 with sqlite3.connect(path) as c:
-    assert c.execute("SELECT name FROM invoices WHERE invoice_id = ?", (old2,)).fetchone()[0] == "تحليل الكاستنج"
+    assert c.execute("SELECT name FROM invoices WHERE invoice_id = ?", (old2,)).fetchone()[0] == "صب وتحليل"
     assert c.execute("SELECT name FROM invoices WHERE invoice_id = ?", (other,)).fetchone()[0] == "مسترجع الفاقد"
-print("✔ حركات التحليل القديمة («مسترجع الفاقد») تأخذ اسمها الجديد «تحليل الكاستنج» — الاسم وحده، والأوزان كما هي")
+print("✔ الحركات القديمة («مسترجع الفاقد» و«تحليل الكاستنج») تأخذ اسمها الجديد «صب وتحليل» — الاسم وحده، "
+      "والأوزان كما هي")
 assert not a.is_recovery_op({"الاسم": "كاستنج", "row_number": "3"}, "صرف كاستنج", "مسترجع كاستنج")
 iss = {"رقم الفاتورة": 51, "النوع": "صرف كاستنج", "الوزن": 10.0, "التاريخ": "2026-09-20 09:00:00",
        "row_number": "3", "البيان": "عينة الفرن", "period": "2026-09"}
 title, sub, info, weight, note = a.analysis_voucher_fields(iss)
-assert (title, weight, note) == ("تحليل", 10.0, "عينة الفرن") and "صرف للتحليل" in sub
+assert (title, weight, note) == ("سند صرف", 10.0, "عينة الفرن") and sub.startswith("صب وتحليل — قسم")
 assert info == [("رقم السند:", "51"), ("التاريخ:", "2026-09-20"), ("رقم الصف:", "3"), ("الفترة:", "2026-09")]
 title, sub, _info, weight, _n = a.analysis_voucher_fields(dict(iss, **{"النوع": "قبض كاستنج", "الوزن": 9.8}))
-assert (title, weight) == ("سند قبض", 9.8) and "قبض من التحليل" in sub
+assert (title, weight) == ("سند قبض", 9.8) and sub.startswith("صب وتحليل")
+pv = member("print_analysis_voucher")
+assert "self.draw_analysis_voucher(c, inv)" in pv and pv.count("c.showPage()") == 1, "سند واحد في صفحته وملفه"
+assert "self.print_analysis_voucher(i)" in member("print_analysis_vouchers")
+cast_ui = member("build_casting_ui")
+assert '"🖨️ معاينة الصرف", lambda: self.preview_selected_analysis("صرف كاستنج")' in cast_ui
+assert '"🖨️ معاينة القبض", lambda: self.preview_selected_analysis("قبض كاستنج")' in cast_ui
 cast = member("submit_casting_recovery_op")
 assert 'messagebox.showwarning("رقم الصف مطلوب"' in cast and '"row_number": row_num' in cast
 assert 'askyesno("طباعة السند"' in cast and "self.print_analysis_vouchers(posted)" in cast
 assert cast.index("self.recalculate_all()") < cast.index('askyesno("طباعة السند"')
 collect = member("collect_stage_ops_rows")
 assert 'and grouped[k]["op"] == "فاقد"' in collect, "مسترجع الأشجار يُلحق بصف الفاقد لا بصف تحليل برقمه"
-print("✔ «التحليل» برقم صف (إلزامي) — صرفه وقبضه صفٌّ واحد — والسند بعد الترحيل: «تحليل» للصرف و«سند قبض» للقبض")
+print("✔ «صب وتحليل» برقم صف (إلزامي) — صرفه وقبضه صفٌّ واحد — والسند بعد الترحيل: «سند صرف» وحده و«سند قبض» وحده، "
+      "كلٌّ في صفحته، وزرّا «معاينة الصرف» و«معاينة القبض»")
 
 # ═══ ٧) الواجهة: اللوحة في شريط الأقسام، والكتابة في الجدول، والربط بالمبيعات وبالقالب ═══
 assert 'stage_defs.append((self.SET_TRACK_KEY, f"🔎 {self.SET_TRACK_KEY}"))' in member("refresh_stage_buttons")

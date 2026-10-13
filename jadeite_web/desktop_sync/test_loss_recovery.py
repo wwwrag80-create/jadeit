@@ -81,7 +81,7 @@ METHODS = [
 ]
 ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
-         "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "CAST_RETURN_OLD_NAME", "TREE_RETURN_NAME", "CAST_ANALYSIS",
+         "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "CAST_RETURN_OLD_NAMES", "TREE_RETURN_NAME", "CAST_ANALYSIS",
          "LASER_NAME", "POLISH_OPERATIONS", "POLISH_MODE_FIELDS", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL",
          "POLISH2_OLD_ACCOUNTS", "POLISH2_OLD_BAYAN", "POLISH2_SALE_BAYAN", "SALE_NOTE_SEP"]
 
@@ -239,9 +239,9 @@ def cast_loss(app, month, row, sarf="", qabd="", recover="", trees="", note=""):
 
 
 def cast_recovery(app, month, row, sarf="", qabd="", note=""):
-    """عملية «التحليل» («مسترجع» سابقاً) برقم صفها"""
+    """عملية «صب وتحليل» («مسترجع» سابقاً) برقم صفها"""
     app.current_display_month = month
-    app.cast_op = W("التحليل")
+    app.cast_op = W("صب وتحليل")
     app.cast_date, app.cast_note, app.cast_row_num = W(f"{month}-20"), W(note), W(row)
     app.cast_sarf, app.cast_qabd = W(sarf), W(qabd)
     app.submit_casting_op()
@@ -295,7 +295,7 @@ assert all(a.is_debit_nature_account(n) for n in losses + [LOSSES])
 assert not a.is_debit_nature_account(CAST_REC) and not a.is_debit_nature_account(CAST_BOX)
 print("✔ حسابات الفاقد في كشف الحساب وخانتي القيد اليومي؛ رصيدها مدين − دائن (والمسترجع دائن − مدين)")
 
-# ═══ ٢) الكاستنج: عمليتا «فاقد» و«التحليل» («مسترجع» سابقاً) — مثال فترة ٨ ═══
+# ═══ ٢) الكاستنج: عمليتا «فاقد» و«صب وتحليل» («مسترجع» سابقاً) — مثال فترة ٨ ═══
 cast_loss(a, M8, "1", sarf="100", qabd="95", recover="1", trees="4", note="شجرة")
 # صف التحليل برقم الصف نفسه (١) لا يختلط بصف الفاقد ١: صرفه أولاً ثم قبضه يُكمَل على صفه
 cast_recovery(a, M8, "1", sarf="10", note="غبار الفرن")
@@ -315,14 +315,14 @@ m8 = [i for i in a.invoices.values() if i["period"] == M8]
 assert sorted((i["الاسم"], i["النوع"], i["الوزن"], i["row_number"]) for i in m8) == sorted([
     ("كاستنج", "صرف كاستنج", 100.0, "1"), ("كاستنج", "قبض كاستنج", 95.0, "1"),
     ("مسترجع الأشجار", "قبض كاستنج", 1.0, "1"),                   # مسترجع الأشجار: قبض من فاقد الصف
-    ("تحليل الكاستنج", "صرف كاستنج", 10.0, "1"), ("تحليل الكاستنج", "قبض كاستنج", 8.0, "1")])
+    ("صب وتحليل", "صرف كاستنج", 10.0, "1"), ("صب وتحليل", "قبض كاستنج", 8.0, "1")])
 assert not journal_legs(a), "لا قيد إقفال يُنشأ من الترحيل"
 assert not any(i["الاسم"] == CAST_REC for i in m8)
-print("✔ «التحليل» برقم صفه ومسترجع الأشجار: صرفٌ وقبضٌ للكاستنج نفسه — لا شيء لحساب «مسترجع كاستنج» ولا إقفال")
+print("✔ «صب وتحليل» برقم صفه ومسترجع الأشجار: صرفٌ وقبضٌ للكاستنج نفسه — لا شيء لحساب «مسترجع كاستنج» ولا إقفال")
 print("✔ صرف صف التحليل وقبضه كلٌّ مرة واحدة (المكرر يُتجاهل)، ورقم الصف إلزامي، وبعد الترحيل يُعرض «طباعة السند»")
 
 assert summary(a, CAST, M8) == (6.0, 0.0, 0.0, 0.0), summary(a, CAST, M8)
-print("✔ الفاقد الحالي لفترة ٨ = صرف 100 + صرف التحليل 10 − قبض 95 − مسترجع الأشجار 1 − قبض التحليل 8 = 6")
+print("✔ الفاقد الحالي لفترة ٨ = صرف 100 + صرف التحليل 10 − قبض 95 − مسترجع الأشجار 1 − قبض صب وتحليل 8 = 6")
 
 sets = a.get_treasury_type_sets()
 assert all(a.treasury_bucket(i, sets)[0] == "boxes" for i in m8)
@@ -330,10 +330,10 @@ treasury = round(sum(a.treasury_bucket(i, sets)[1] for i in m8), 2)
 assert treasury == -6.0, treasury
 print("✔ الخزينة: خرج 110 وعاد 104 = −6 = الفاقد الحالي (كلها حركات الكاستنج، لا «وارد»)")
 
-# الجدول: «فاقد» يعرض كل العمليات، و«التحليل» عملياته وحدها — صف التحليل ١ صفٌّ واحد بصرفه وقبضه
+# الجدول: «فاقد» يعرض كل العمليات، و«صب وتحليل» عملياته وحدها — صف التحليل ١ صفٌّ واحد بصرفه وقبضه
 a.current_display_month = M8
 rows = a.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", CAST_REC)
-assert [(r, g["op"]) for r, _n, g in rows] == [("1", "فاقد"), ("1", "التحليل")]
+assert [(r, g["op"]) for r, _n, g in rows] == [("1", "فاقد"), ("1", "صب وتحليل")]
 assert (rows[0][2]["مدين"], rows[0][2]["دائن"], rows[0][2]["مسترجع"]) == (100.0, 95.0, 1.0)
 assert (rows[1][2]["مدين"], rows[1][2]["دائن"], rows[1][2]["مسترجع"]) == (10.0, 8.0, 0.0), \
     "مسترجع الأشجار يُلحق بصف الفاقد لا بصف التحليل ذي الرقم نفسه"
@@ -341,17 +341,17 @@ tot = W()
 a.render_stage_ops_table(None, "صرف كاستنج", "قبض كاستنج", with_trees=True, recover_name=CAST_REC,
                          op_filter="فاقد", section=CAST, totals_label=tot)
 data = [r for r in a._tree.rows if r["الصف"] != "إجمالي الشهر"]
-assert [r["العملية"] for r in data] == ["فاقد", "التحليل"], [r["العملية"] for r in data]
+assert [r["العملية"] for r in data] == ["فاقد", "صب وتحليل"], [r["العملية"] for r in data]
 assert "صرف: 110.00" in tot.v and "قبض: 103.00" in tot.v and "مسترجع الأشجار: 1.00" in tot.v, tot.v
 assert "الخياس: 6.00" in tot.v and "الصافي" not in tot.v, tot.v
 assert [r["الخياس"] for r in data] == ["4.00", "2.00"], [r["الخياس"] for r in data]
 a.render_stage_ops_table(None, "صرف كاستنج", "قبض كاستنج", with_trees=True, recover_name=CAST_REC,
-                         op_filter="التحليل", section=CAST, totals_label=tot)
+                         op_filter="صب وتحليل", section=CAST, totals_label=tot)
 data = [r for r in a._tree.rows if r["الصف"] != "إجمالي الشهر"]
-assert [(r["العملية"], r["الصف"]) for r in data] == [("التحليل", "1")], data
+assert [(r["العملية"], r["الصف"]) for r in data] == [("صب وتحليل", "1")], data
 assert "صرف: 10.00" in tot.v and "قبض: 8.00" in tot.v and "الخياس: 2.00" in tot.v, tot.v
 print("✔ الجدول: «فاقد» يعرض كل العمليات — صف التحليل برقمه بصرفه وقبضه، ومسترجع الأشجار يُخصم من خياس صفه")
-print("✔ و«التحليل» يعرض عملياته وحدها برقم صفها")
+print("✔ و«صب وتحليل» يعرض عملياته وحدها برقم صفها")
 
 # ═══ ٣) الإقفال بالزر وحده ← حساب «فاقد الكاستنج» ═══
 a.current_display_month = M9
@@ -464,7 +464,7 @@ print("✔ «حساب الخسائر» = إجمالي فاقد كل المراح
 
 rows = a.get_account_ledger_rows(CAST_BOX, M8, M8)
 assert any(r["البيان"] == "غبار الفرن" and r["مدين"] == 10.0 for r in rows)
-assert any(r["البيان"] == "قبض التحليل" and r["دائن"] == 8.0 for r in rows)
+assert any(r["البيان"] == "قبض صب وتحليل" and r["دائن"] == 8.0 for r in rows)
 assert any(r["البيان"] == "مسترجع الأشجار" and r["دائن"] == 1.0 for r in rows)
 assert balance(rows, False) == 0.0          # فترة ٨ مقفلة بالكامل
 print("✔ كشف «الكاستنج» لفترة ٨ يعرض صرف المسترجع وقبضه ومسترجع الأشجار مع حركاته، ورصيده صفر بعد الإقفال")
@@ -625,7 +625,7 @@ for admin in (False, True):
     assert m.migrate_casting_returns() == 3
     t, r, i = m.invoices[tree_id], m.invoices[op_rec], m.invoices[op_iss]
     assert (t["الاسم"], t["النوع"], t["row_number"]) == ("مسترجع الأشجار", "قبض كاستنج", "3")
-    assert (r["الاسم"], r["النوع"]) == ("تحليل الكاستنج", "قبض كاستنج") and i["الاسم"] == "تحليل الكاستنج"
+    assert (r["الاسم"], r["النوع"]) == ("صب وتحليل", "قبض كاستنج") and i["الاسم"] == "صب وتحليل"
     assert m.invoices[screen]["الاسم"] == CAST_REC and m.invoices[screen]["النوع"] == "وارد ذهب (عيار 18)"
     assert m.invoices[opening]["الاسم"] == CAST_REC
     after = summary(m, CAST, M8)
@@ -634,7 +634,7 @@ for admin in (False, True):
     rows = m.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", CAST_REC)
     fa = next(g for _r, _n, g in rows if g["op"] == "فاقد")
     assert (fa["مدين"], fa["دائن"], fa["مسترجع"], fa["البيان"]) == (50.0, 44.0, 1.5, "غبار")
-    assert sorted((g["مدين"], g["دائن"]) for _r, _n, g in rows if g["op"] == "التحليل") == [(0.0, 2.0), (0.5, 0.0)]
+    assert sorted((g["مدين"], g["دائن"]) for _r, _n, g in rows if g["op"] == "صب وتحليل") == [(0.0, 2.0), (0.5, 0.0)]
     with sqlite3.connect(m.db_path) as conn:
         stored = conn.execute("SELECT name, op_type FROM invoices WHERE invoice_id = ?", (tree_id,)).fetchone()
     assert stored == (("مسترجع الأشجار", "قبض كاستنج") if not admin else (CAST_REC, "وارد ذهب (عيار 18)")), stored
@@ -667,13 +667,13 @@ print("✔ الفاقد الحالي بعد الإقفال يُعرض 0.00 لا 
 
 # ═══ ١٠) الواجهة ═══
 e = new_app()
-e.cast_op = W("التحليل")
-assert e.get_cast_operation() == "التحليل"
+e.cast_op = W("صب وتحليل")
+assert e.get_cast_operation() == "صب وتحليل"
 e.cast_op = W("شيء آخر")
 assert e.get_cast_operation() == "فاقد"
 del e.cast_op
 assert e.get_cast_operation() == "فاقد"
-assert e.CAST_OPERATIONS == ("فاقد", "التحليل") and tuple(e.CAST_MODE_FIELDS["التحليل"]) == ("row_num", "sarf", "qabd")
+assert e.CAST_OPERATIONS == ("فاقد", "صب وتحليل") and tuple(e.CAST_MODE_FIELDS["صب وتحليل"]) == ("row_num", "sarf", "qabd")
 assert set(e.CAST_MODE_FIELDS["فاقد"]) == {"row_num", "sarf", "qabd", "recover", "trees"}
 cast_ui = seg("build_casting_ui")
 assert "operations=self.CAST_OPERATIONS" in cast_ui and "name_values" not in cast_ui
@@ -681,9 +681,9 @@ panel = seg("build_stage_panel")
 assert 'specs.append(("op", "العملية", 2))' in panel and "CTkSegmentedButton" in panel
 assert "grid_remove()" in panel and "on_operation_change(mode)" in panel
 assert "op_filter=operation" in seg("refresh_casting_table")
-print("✔ الكاستنج: خانة «العملية» (فاقد/التحليل) مكان الاسم؛ «التحليل» يُظهر رقم الصف والصرف والقبض ويصفّي الجدول")
+print("✔ الكاستنج: خانة «العملية» (فاقد/التحليل) مكان الاسم؛ «صب وتحليل» يُظهر رقم الصف والصرف والقبض ويصفّي الجدول")
 
-e.cast_op = W("التحليل")
+e.cast_op = W("صب وتحليل")
 e.cast_date, e.cast_note, e.cast_sarf, e.cast_qabd = W("2026-09-02"), W(""), W("-3"), W("")
 e.cast_row_num = W("2")
 before = len(e.invoices)
@@ -692,7 +692,7 @@ assert len(e.invoices) == before and msgs[-1] == "تنبيه"
 e.cast_sarf = W("abc")
 e.submit_casting_op()
 assert len(e.invoices) == before
-print("✔ «التحليل» يرفض القيم السالبة وغير الرقمية ولا يرحّل شيئاً")
+print("✔ «صب وتحليل» يرفض القيم السالبة وغير الرقمية ولا يرحّل شيئاً")
 
 assert "قيد يومي" not in seg("submit_inbound") and LOSSES not in seg("submit_inbound")
 assert "self.neutralize_auto_recovery_closings()" in seg("load_data_from_db")
