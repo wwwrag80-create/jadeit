@@ -37,7 +37,7 @@ MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LE
            "SALES_SUMMARY_SIGNATURES", "SALE_NOTE_SEP", "sale_note_of",
            "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
            "sales_summary_layout", "draw_sales_summary_pages")
-ns = dict(marks, REPORTLAB_AVAILABLE=False)
+ns = dict(marks, REPORTLAB_AVAILABLE=False, SALE_READ_STATUSES=("ACTIVE", "SETTLED_INOUT", "MEMO"))
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 App = ns["App"]
 

@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.72.0"
+APP_VERSION = "1.73.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -18514,6 +18514,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_gold.bind("<KeyRelease>", recompute_sale_totals)
         self.sale_gems.bind("<KeyRelease>", recompute_sale_totals)
         self.sale_diamond.bind("<KeyRelease>", recompute_sale_totals)
+        # أثناء الكتابة في «خياس بوليش 2»: نافذة صغيرة تحت الخانة بالوزن قبل البوليش وبعده
+        self.attach_polish2_hint(self.sale_khayas, tab,
+                                 [self.sale_gold, self.sale_gems, self.sale_stones, self.sale_diamond])
 
         # التنقل بزر Enter بين **كل** الخانات (من التاريخ حتى آخر خانة)، وإضافة
         # السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة). الفاتورة المعلّقة
@@ -18588,6 +18591,53 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_pending_sales_table()
         self.refresh_sales_table()
         self.update_suspended_count()
+
+    def attach_polish2_hint(self, khayas_entry, host, parts):
+        """نافذة صغيرة تحت خانة «خياس بوليش 2» ما دامت الخانة نشطة، بخانتين:
+        قبل = خياس بوليش 2 المكتوب + الذهب + الفصوص + الأحجار + الماس، وبعد = الذهب + الفصوص + الأحجار + الماس.
+        تتحدّث مع كل حرف وتختفي بمغادرة الخانة. يرجع دالة الحساب (قبل، بعد)."""
+        box = ctk.CTkFrame(host, corner_radius=10, fg_color=(UI["surface"], "#1D232B"),
+                           border_width=1, border_color=(UI["primary"], "#9CC0F5"))
+        cells = {}
+        for key in ("قبل", "بعد"):
+            cell = ctk.CTkFrame(box, corner_radius=8, fg_color=(UI["surface_alt"], "#232A33"))
+            cell.pack(side="right", padx=4, pady=4)
+            ctk.CTkLabel(cell, text=key, font=(UI_FONT, 11, "bold"),
+                         text_color=(UI["muted"], "#9AA4B2")).pack(padx=10, pady=(3, 0))
+            cells[key] = ctk.CTkLabel(cell, text="0.00", font=(UI_FONT, 15, "bold"), text_color=UI_TITLE)
+            cells[key].pack(padx=10, pady=(0, 3))
+
+        def num(entry):
+            try:
+                return float(str(entry.get()).strip() or 0)
+            except (ValueError, tk.TclError):
+                return 0.0
+
+        def values():
+            after = round(sum(num(e) for e in parts), 2)
+            return round(after + num(khayas_entry), 2), after
+
+        def update(_e=None):
+            before, after = values()
+            cells["قبل"].configure(text=f"{before:.2f}")
+            cells["بعد"].configure(text=f"{after:.2f}")
+
+        def show(_e=None):
+            update()
+            try:
+                box.place(in_=khayas_entry, relx=0.5, rely=1.0, y=4, anchor="n")
+                box.lift()
+            except tk.TclError:
+                pass
+
+        def hide(_e=None):
+            box.place_forget()
+        khayas_entry.bind("<FocusIn>", show, add="+")
+        khayas_entry.bind("<FocusOut>", hide, add="+")
+        for entry in [khayas_entry] + list(parts):
+            entry.bind("<KeyRelease>", update, add="+")
+        khayas_entry._polish2_hint = (box, cells, values)
+        return values
 
     def switch_sales_subtab(self, key):
         """التنقل بين «إصدار مبيعات» (الإدخال)، و«المبيعات الصادرة» (الفواتير المرحّلة — المفتاح «العمليات»)،
@@ -18919,13 +18969,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         order = []
         for inv in sorted(recs, key=lambda x: x.get("رقم الفاتورة", 0)):
             set_num = inv.get("set_number", "") or ""
-            if set_num not in rows:
-                rows[set_num] = {"set_number": set_num, "row_number": inv.get("row_number", "") or "",
+            # سطر بلا رقم تشغيل يُعرف برقم صفّه، فلا تندمج سطور بلا رقم في سطر واحد
+            row_key = set_num or ("#", inv.get("row_number", "") or "")
+            if row_key not in rows:
+                rows[row_key] = {"set_number": set_num, "row_number": inv.get("row_number", "") or "",
                                  "ذهب": 0.0, "فصوص": 0.0, "أحجار": 0.0, "أحجار بعد الخصم": 0.0,
                                  "الماس": 0.0, "خياس": 0.0, "خياس البوليش": 0.0,
                                  "خياس المركب": 0.0, "البيان": ""}
-                order.append(set_num)
-            r = rows[set_num]
+                order.append(row_key)
+            r = rows[row_key]
             # بيان السطر كما حُفظ مع حركاته («مبيعات — بيانه»)
             if not r["البيان"]:
                 r["البيان"] = self.sale_note_of(inv.get("البيان"))
@@ -18953,7 +19005,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     r["خياس المركب"] = round(r["خياس المركب"] + w, 2)
                 else:
                     r["خياس"] = round(r["خياس"] + w, 2)
-        return [rows[s] for s in order]
+        return sorted((rows[s] for s in order), key=self.sale_row_order)
+
+    @classmethod
+    def sale_row_order(cls, row):
+        """ترتيب سطور الفاتورة برقم الصف ١، ٢، ٣… (الأرقام الهندية كاللاتينية)؛ سطر بلا رقم بعدها بترتيبه"""
+        txt = cls.normalize_set_number((row or {}).get("row_number", ""))
+        return (0, int(txt)) if txt.isdigit() else (1, 0)
+
+    @classmethod
+    def next_free_sale_row_number(cls, rows):
+        """أصغر رقم صف غير مستخدم: سطر حُذف ثم أُعيد تسجيله يأخذ رقمه ومكانه"""
+        used = {int(t) for t in (cls.normalize_set_number(r.get("row_number", "")) for r in rows) if t.isdigit()}
+        n = 1
+        while n in used:
+            n += 1
+        return str(n)
 
     def post_sale_rows(self, rows, name, full_dt, manual_no, note="", period=None, kind=None):
         """يسجّل سطور فاتورة مبيعات كحركات محاسبية (نفس منطق الترحيل الأصلي، مصدر واحد موحّد
@@ -19275,6 +19342,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                         "قبل الحفظ"), text_color=alert)
 
         entries["set_number"].bind("<FocusOut>", fetch_assembler, add="+")
+        # تحت خانة «خياس بوليش 2»: الوزن قبل البوليش وبعده — كما في شاشة المبيعات
+        self.attach_polish2_hint(entries["خياس"], win,
+                                 [entries[k] for k in ("ذهب", "فصوص", "أحجار", "الماس")])
 
         btns_row = ctk.CTkFrame(win, fg_color="transparent")
         btns_row.pack(fill="x", padx=18, pady=(2, 4))
@@ -19288,10 +19358,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rows_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
 
         selected_idx = {"i": None}
+        # صورة الخانات عند آخر تحميل/تفريغ: ما تغيّر بعدها تعديلٌ لم يُحفظ بعد في السطر
+        field_state = {"snap": None}
+
+        def field_values():
+            return {k: e.get().strip() for k, e in entries.items()}
+
+        def mark_clean():
+            field_state["snap"] = field_values()
+
+        def has_pending():
+            """في الخانات سطر مكتوب أو تعديل لم يُضغط له (حفظ السطر)"""
+            cur = field_values()
+            return cur != field_state["snap"] and any(v for k, v in cur.items() if k != "row_number")
 
         def read_fields():
             vals = {"set_number": entries["set_number"].get().strip(),
-                    "row_number": entries["row_number"].get().strip(),
+                    "row_number": self.normalize_set_number(entries["row_number"].get())
+                    or self.next_free_sale_row_number(
+                        [r for i, r in enumerate(edit_rows) if i != selected_idx["i"]]),
                     "البيان": entries["البيان"].get().strip()}
             for k in ("ذهب", "فصوص", "أحجار", "أحجار بعد الخصم", "الماس", "خياس",
                       "خياس البوليش", "خياس المركب"):
@@ -19314,10 +19399,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def clear_fields():
             for ent in entries.values():
                 ent.delete(0, 'end')
+            # السطر الجديد يأخذ أصغر رقم صف شاغر (سطر محذوف يعود برقمه ومكانه)
+            entries["row_number"].insert(0, self.next_free_sale_row_number(edit_rows))
             selected_idx["i"] = None
             lbl_state.configure(text="")
             lbl_asm.configure(text="")
             asm_state["set"] = ""
+            mark_clean()
 
         def refresh_rows_tree():
             for item in rows_tree.get_children():
@@ -19364,13 +19452,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             idx = get_sel_index()
             if idx is None:
                 return
+            if has_pending():
+                if selected_idx["i"] == idx:
+                    return          # السطر نفسه محمّل وفيه تعديل لم يُحفظ: يبقى كما كُتب
+                # تعديل السطر السابق لا يضيع بالانتقال لسطر آخر: يُحفظ أولاً
+                target = edit_rows[idx]
+                if not save_row():
+                    return
+                idx = next(i for i, r in enumerate(edit_rows) if r is target)
             r = edit_rows[idx]
             for k, ent in entries.items():
                 ent.delete(0, 'end')
                 val = r.get(k, "")
                 ent.insert(0, str(val or "") if k in ("set_number", "row_number", "البيان") else (f"{val:g}" if val else ""))
             selected_idx["i"] = idx
-            lbl_state.configure(text=f"✏️ يتم الآن تعديل السطر رقم ({idx + 1}) — اضغط (حفظ السطر) بعد التعديل")
+            lbl_state.configure(text=f"✏️ يتم الآن تعديل السطر رقم ({r.get('row_number') or idx + 1}) — "
+                                     "(حفظ السطر) أو Enter في آخر خانة؛ و(حفظ تعديلات الفاتورة) يحفظه أيضاً")
+            mark_clean()
             check_loaded_assembler(r)
 
         def save_row():
@@ -19384,6 +19482,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 edit_rows.append(vals)
             else:
                 edit_rows[selected_idx["i"]] = vals
+            # السطور دائماً بترتيب رقم الصف ١، ٢، ٣… مهما كان ترتيب إضافتها
+            edit_rows.sort(key=self.sale_row_order)
             clear_fields()
             refresh_rows_tree()
             return True
@@ -19409,6 +19509,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         rows_tree.bind("<Double-1>", lambda e: load_row_to_fields())
         refresh_rows_tree()
+        clear_fields()
 
         # التنقل: Enter للخانة التالية (وفي آخر خانة يُحفظ السطر ويعود التركيز لأول
         # خانة لسطر جديد)، والأسهم يمين/يسار بين الخانات — من رقم الفاتورة حتى آخر خانة
@@ -19426,6 +19527,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.after(120, lambda: entries["row_number"].focus_set())
 
         def save_invoice_changes():
+            # آخر تعديل/إضافة في الخانات يُعتمد مع الفاتورة (كان يضيع إن لم يُضغط «حفظ السطر»)
+            if has_pending() and not save_row():
+                return
             new_manual = ent_manual.get().strip()
             new_date = ent_date.get().strip()
             new_name = cmb_name.get().strip()
@@ -19447,9 +19551,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "وسيتم تحديث الخزينة وصندوق بوليش 2 وكل الحسابات المرتبطة تلقائياً.\n\nهل تريد المتابعة؟", parent=win):
                 return
 
-            # وقت الفاتورة يبقى كما هو ما دام اليوم لم يتغيّر، حتى لا يتغيّر ترتيبها المحاسبي بلا داعٍ
+            # توقيت الفاتورة لا يتغيّر بالتعديل (حتى لو صُحّح يومها): تتغيّر بياناتها وحدها
             old_time = old_date[11:] if len(old_date) > 11 else datetime.datetime.now().strftime('%H:%M:%S')
-            new_full_dt = f"{new_date} {old_time}" if new_date == old_date[:10] else f"{new_date} {datetime.datetime.now().strftime('%H:%M:%S')}"
+            new_full_dt = f"{new_date[:10]} {old_time}"
+            edit_rows.sort(key=self.sale_row_order)
 
             # حذف الحركات القديمة ثم إعادة كتابتها بالكامل — يضمن تطابق الحسابات مع الفاتورة بعد التعديل
             # (الحذف وإعادة الكتابة خطوة تراجع واحدة تعيد الفاتورة كما كانت)
@@ -20939,6 +21044,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if inv.get("set_number") != set_number: continue
             if inv.get("التاريخ") != date_str: continue
             if inv.get("الاسم") != name: continue
+            if inv.get("settled_status") not in SALE_READ_STATUSES: continue
             t = inv.get("النوع")
             if t in ("مبيعات ذهب", "مبيعات ذهب مع الماس"):
                 data["gold"] += inv["الوزن"]
