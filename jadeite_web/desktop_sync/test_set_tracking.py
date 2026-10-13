@@ -39,6 +39,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "normalize_set_number", "inv_period", "inv_in_period", "assembler_set_index", "polish_before_map",
            "set_polish_before", "set_tracking_values", "sale_polish_by_set", "set_track_sale_status",
            "set_number_sort_key", "set_track_rows", "set_voucher_sections", "polish_hint_values",
+           "assembler_hint_values", "polish_before_confirm_text",
            "autofill_polish_khayas", "get_setting", "set_setting", "push_undo", "_close_undo_step",
            "apply_undo_step", "undo_step_label", "invoice_from_row", "is_recovery_op", "get_display_label",
            "analysis_voucher_fields", "set_track_row_values", "set_track_row_tags")
@@ -213,6 +214,34 @@ a.add("سالم", "صرف ذهب", 12.0, row="5", set_no="7005")
 assert a.polish_hint_values("7005") == (None, 12.0, "لا «قبل البوليش» لهذا الرقم — سجّله في «تتبع رقم التشغيل»")
 print("✔ النافذة تحت «خياس البوليش»: قبل 42.75 وبعد 42.00، وتنبيه إن نقص «قبل» أو خالف المكتوبُ التتبعَ")
 
+# 1.76: تحت «خياس المركب»: قبل = صرف المركّب، وبعد = القبض منه، وخياس = الفرق — من صفوف الرقم في المركبين
+assert a.assembler_hint_values("") == (None, None, None, "اكتب رقم التشغيل أولاً")
+assert a.assembler_hint_values("٧٠٠١") == (42.0, 38.5, 3.5, "")
+assert a.assembler_hint_values("7003") == (15.0, 4.5, 10.5, ""), "رقمٌ في صفّين: من صفّيه معاً"
+assert a.assembler_hint_values("7002") == (25.0, None, None, "لم يُقبض من المركّب بعد")
+assert a.assembler_hint_values("9999") == (None, None, None, "رقم التشغيل 9999 غير موجود في قسم المركبين")
+a.add("خالد", "قبض ذهب", 3.0, row="7", set_no="7007")
+assert a.assembler_hint_values("7007") == (None, 3.0, None, "لا صرف لهذا الرقم في قسم المركبين")
+a.add("خالد", "صرف ذهب", 5.0, row="6", set_no="7006")
+a.add("خالد", "قبض ذهب", 5.5, row="6")
+assert a.assembler_hint_values("7006") == (5.0, 5.5, -0.5, "القبض أكبر من الصرف — راجعه في قسم المركبين")
+print("✔ النافذة تحت «خياس المركب»: قبل (الصرف) 42.00 وبعد (القبض) 38.50 وخياس 3.50، "
+      "وتنبيه إن لم يُقبض بعد أو لا صرف أو القبض أكبر")
+
+# 1.76: رسالة التأكيد قبل حفظ «قبل البوليش» من لوحة التتبع
+title, msg = a.polish_before_confirm_text("٧٠٠١", 43.0)
+assert title == "تأكيد «قبل البوليش»" and "رقم التشغيل: 7001" in msg and "القيمة الحالية: 42.75" in msg
+assert "قبل البوليش: 43.00" in msg and "بعد البوليش: 42.00" in msg and "خياس البوليش: 1.00" in msg
+assert msg.endswith("حفظ القيمة؟   — Enter للتأكيد") and "سالباً" not in msg
+_t, msg = a.polish_before_confirm_text("7001", 41.0)
+assert "خياس البوليش: -1.00" in msg and "سيكون خياس البوليش سالباً" in msg
+title, msg = a.polish_before_confirm_text("7001", None)
+assert title == "تأكيد مسح «قبل البوليش»" and msg.endswith("مسح «قبل البوليش» لهذا الرقم؟")
+_t, msg = a.polish_before_confirm_text("7005", 13.0)
+assert "القيمة الحالية" not in msg and "خياس البوليش: 1.00" in msg
+print("✔ رسالة التأكيد: الرقم والقيمة الحالية والجديدة وبعد البوليش والخياس الناتج (وتنبيه إن كان سالباً)، "
+      "ومسح القيمة بتأكيد أيضاً")
+
 # ═══ ٥) سند رقم التشغيل محمّلاً ═══
 sale = {"set_number": "7001", "gold": 35.25, "gems": 2.5, "stones": 3.0, "stones_discount": "0.90", "diamond": 0.4,
         "khayas": 0.6, "invoice_no": 12, "name": "المصنع", "date": "2026-09-10 10:00:00", "kind": ""}
@@ -289,14 +318,24 @@ ui = member("build_set_track_ui")
 for key in ('("<Return>", 1)', '("<KP_Enter>", 1)', '("<Down>", 1)', '("<Up>", -1)'):
     assert key in ui, key
 assert 'if not getattr(self, "view_only", False):' in ui and "self.set_polish_before(key, value)" in ui
-assert '"<FocusOut>", lambda e: commit(interactive=False)' in ui and "tree.configure(yscrollcommand=on_scroll)" in ui
+assert 'editor.bind("<FocusOut>", on_focus_out, add="+")' in ui and "tree.configure(yscrollcommand=on_scroll)" in ui
+# 1.76: لا حفظ بلا تأكيد — الرسالة قبل الحفظ (Enter يؤكّد)، ومغادرة الخانة لا تحفظ
+commit_src = ui[ui.index("def commit("):ui.index("def on_focus_out(")]
+assert "messagebox.askyesno(title, msg, default=messagebox.YES" in commit_src
+assert commit_src.index("self.polish_before_confirm_text(key, value)") < commit_src.index("self.set_polish_before(key, value)")
+focus_src = ui[ui.index("def on_focus_out("):ui.index("def move(")]
+assert "set_polish_before" not in focus_src and "commit(" not in focus_src and "لم يُحفظ بعد" in focus_src
 assert "self.attach_polish_hint(self.sale_khayas_polish, tab, self.sale_set_number)" in member("build_sales_tab")
+assert "self.attach_assembler_hint(self.sale_khayas_assembler, tab, self.sale_set_number)" in member("build_sales_tab")
+assert 'keys=("قبل", "بعد", "خياس")' in member("attach_assembler_hint")
 editor = member("open_sale_invoice_editor")
 assert 'self.attach_polish_hint(entries["خياس البوليش"], win, entries["set_number"])' in editor
+assert 'self.attach_assembler_hint(entries["خياس المركب"], win, entries["set_number"])' in editor
 assert "خياس البوليش المسجّل" in editor and 'self.set_tracking_values(set_no)["polish_khayas"]' in editor
 assert "self.autofill_polish_khayas(key)" in member("autofill_assembler_khayas")
 assert "self.set_tracking_values(" in member("set_voucher_sections")
-print("✔ لوحة «🔎 تتبع رقم التشغيل» في شريط الأقسام؛ «قبل البوليش» يُكتب في خانته (Enter/↓ للتالي و↑ للسابق)، "
-      "ولا كتابة في حساب العميل لدى المدير")
+print("✔ لوحة «🔎 تتبع رقم التشغيل» في شريط الأقسام؛ «قبل البوليش» يُكتب في خانته، وEnter ← رسالة تأكيد "
+      "وEnter يؤكّد ثم الصف التالي (↑ للسابق)، ومغادرة الخانة لا تحفظ؛ ولا كتابة في حساب العميل لدى المدير")
+print("✔ «خياس المركب» في المبيعات ونافذة تعديل الفاتورة: نافذة قبل/بعد/خياس تحت الخانة")
 print("✔ المبيعات ونافذة تعديل الفاتورة تجلبان خياس البوليش وتنبّهان إن خالف المسجّلُ التتبعَ؛ والقالب منه")
 print("\n✅ تتبع رقم التشغيل وخياس البوليش والقالب والتحليل — كل رقم بقيمه الصحيحة")

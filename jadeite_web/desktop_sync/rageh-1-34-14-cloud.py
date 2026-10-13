@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.75.0"
+APP_VERSION = "1.76.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -11858,8 +11858,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def build_set_track_ui(self, parent):
         """لوحة «تتبع رقم التشغيل»: لكل رقم تشغيل في قسم المركبين —
           • بعد البوليش  = صرفه في قسم المركبين (من صفّه نفسه، مع ذكر الصف والعامل والفترة).
-          • قبل البوليش  = يُكتب يدوياً في خانته داخل الجدول: حدّد الصف واكتب، وEnter للصف التالي،
-                           والأسهم ↑ ↓ بين الصفوف — ويُحفظ فوراً (خطوة تراجع).
+          • قبل البوليش  = يُكتب يدوياً في خانته داخل الجدول: حدّد الصف واكتب، ثم Enter ← رسالة تأكيد
+                           (Enter يؤكّد) فيُحفظ (خطوة تراجع) وينتقل للصف التالي؛ والأسهم ↑ ↓ بين الصفوف بالتأكيد نفسه.
+                           مغادرة الخانة بلا تأكيد لا تحفظ شيئاً.
           • خياس البوليش = قبل − بعد — ومنه تُملأ خانة «خياس البوليش» في المبيعات وقالب رقم التشغيل.
         لا تُعدّ خياساً ولا تؤثر على الخزينة؛ و«في المبيعات» يطابق المسجّل في فاتورة البيع بالتتبع."""
         card = ctk.CTkFrame(parent, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
@@ -11888,8 +11889,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       command=lambda: self.open_set_number_trace(self.set_track_selected() or None),
                       **BUTTON_STYLES["secondary"]).pack(side="left", padx=3)
         ctk.CTkLabel(card, text=("للعرض والربط فقط — لا يُعدّ خياساً ولا يؤثر على الخزينة.   «بعد البوليش» = صرف رقم التشغيل "
-                                 "في قسم المركبين،  و«قبل البوليش» تكتبه أنت: حدّد الصف واكتب ثم Enter للصف التالي "
-                                 "(↑ ↓ بين الصفوف)،  و«خياس البوليش» = قبل − بعد — ومنه تُملأ خانة خياس البوليش في "
+                                 "في قسم المركبين،  و«قبل البوليش» تكتبه أنت: حدّد الصف واكتب ثم Enter ← رسالة تأكيد "
+                                 "وEnter يؤكّد الحفظ وينتقل للصف التالي (↑ ↓ بين الصفوف)،  و«خياس البوليش» = قبل − بعد "
+                                 "— ومنه تُملأ خانة خياس البوليش في "
                                  "المبيعات وقالب رقم التشغيل."),
                      font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"), wraplength=1250, justify="right",
                      anchor="e").pack(fill="x", padx=14, pady=(0, 8))
@@ -11952,13 +11954,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if why:
                 self.toast(why, "warn")
 
+        def pending_text():
+            return (editor.get().strip().translate(self._SET_DIGITS)
+                    .replace("٫", ".").replace(",", ".").replace("،", "."))
+
         def commit(interactive=True):
-            """يحفظ ما كُتب للرقم المحرَّر. يرجع True إن صحّ (حُفظ أو لم يتغيّر).
-            interactive=False (مغادرة الخانة أو النقر على صف آخر): القيمة غير الصحيحة تُرفض بتنبيه صغير."""
+            """يحفظ ما كُتب للرقم المحرَّر **بعد رسالة تأكيد** (Enter يؤكّد). يرجع True إن جاز الانتقال
+            (حُفظ، أو لم يتغيّر، أو أُلغي التغيير).
+            interactive=True  (Enter أو ↑ ↓): «لا» يُبقي الكتابة في خانتها لتصحيحها.
+            interactive=False (النقر على صف آخر): «لا» يُلغي الكتابة، والقيمة غير الصحيحة تُرفض بتنبيه صغير."""
             if editor is None or st["busy"] or st["key"] is None:
                 return True
-            text = (editor.get().strip().translate(self._SET_DIGITS)
-                    .replace("٫", ".").replace(",", ".").replace("،", "."))
+            text = pending_text()
             if text == st["orig"]:
                 return True
             key = st["key"]
@@ -11976,15 +11983,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                             return False
                         revert(f"لم يُحفظ «قبل البوليش» للرقم {key}: القيمة غير صحيحة")
                         return True
-                    after = self.set_tracking_values(key)["polish_after"]
-                    if after is not None and value < after:
-                        msg = (f"«قبل البوليش» ({value:.2f}) أقل من «بعد البوليش» ({after:.2f}) للرقم {key} — "
-                               "سيكون خياس البوليش سالباً.\n\nهل الرقم صحيح؟")
-                        if not interactive:
-                            revert(f"لم يُحفظ «قبل البوليش» للرقم {key}: أقل من بعد البوليش")
-                            return True
-                        if not messagebox.askyesno("تأكيد", msg):
-                            return False
+                # لا حفظ بلا تأكيد: الرسالة بالقيمة الجديدة وبعد البوليش والخياس الناتج (وتنبيه إن كان سالباً)
+                title, msg = self.polish_before_confirm_text(key, value)
+                if not messagebox.askyesno(title, msg, default=messagebox.YES, parent=tree.winfo_toplevel()):
+                    if interactive:
+                        return False
+                    revert(f"لم يُحفظ «قبل البوليش» للرقم {key}")
+                    return True
                 if not self.set_polish_before(key, value):
                     revert()
                     return not interactive
@@ -11994,11 +11999,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             finally:
                 st["busy"] = False
 
+        def on_focus_out(_e=None):
+            """مغادرة الخانة إلى مكان آخر لا تحفظ (الحفظ بالتأكيد فقط): تبقى الكتابة في خانتها، وتذكير صغير"""
+            if editor is None or st["busy"] or st["key"] is None:
+                return
+
+            def remind():
+                if st["busy"] or st["key"] is None or pending_text() == st["orig"]:
+                    return
+                try:
+                    focused = self.focus_get()
+                except (KeyError, tk.TclError):
+                    focused = None
+                if focused in (editor, tree):
+                    return
+                self.toast(f"«قبل البوليش» للرقم {st['key']} لم يُحفظ بعد — Enter في خانته للتأكيد", "warn")
+            self.after(250, remind)
+
         def move(step):
             if editor is None:
                 return "break"
             if not commit():
                 editor.focus_set()
+                editor.select_range(0, "end")
                 return "break"
             items = [i for i in tree.get_children() if i in self.set_track_items]
             if not items:
@@ -12034,7 +12057,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for seq, step in (("<Return>", 1), ("<KP_Enter>", 1), ("<Down>", 1), ("<Up>", -1)):
                 editor.bind(seq, lambda e, s=step: move(s))
             editor.bind("<Escape>", lambda e: (revert(), "break")[1])
-            editor.bind("<FocusOut>", lambda e: commit(interactive=False), add="+")
+            editor.bind("<FocusOut>", on_focus_out, add="+")
             # تمرير الجدول (العجلة أو الشريط): الخانة تتبع صفّها
             try:
                 scroll_cmd = tree.tk.splitlist(tree.cget("yscrollcommand"))
@@ -19162,6 +19185,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                  [self.sale_gold, self.sale_gems, self.sale_stones, self.sale_diamond])
         # وتحت «خياس البوليش»: قبل البوليش وبعده لرقم التشغيل من «تتبع رقم التشغيل»
         self.attach_polish_hint(self.sale_khayas_polish, tab, self.sale_set_number)
+        # وتحت «خياس المركب»: قبل (صرف المركّب) وبعد (القبض) وخياس (الفرق) لرقم التشغيل
+        self.attach_assembler_hint(self.sale_khayas_assembler, tab, self.sale_set_number)
 
         # التنقل بزر Enter بين **كل** الخانات (من التاريخ حتى آخر خانة)، وإضافة
         # السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة). الفاتورة المعلّقة
@@ -19237,16 +19262,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_sales_table()
         self.update_suspended_count()
 
-    def attach_before_after_hint(self, entry, host, compute, triggers=()):
-        """نافذة صغيرة تحت خانة ما دامت الخانة نشطة: خانتا «قبل» و«بعد»، وسطر تنبيه عند الحاجة.
-        compute() ← (قبل، بعد، تنبيه): رقمان (أو None حيث لا قيمة) ونص التنبيه أو "".
-        تتحدّث مع كل حرف في الخانة وفي triggers، وتختفي بمغادرة الخانة."""
+    def attach_before_after_hint(self, entry, host, compute, triggers=(), keys=("قبل", "بعد")):
+        """نافذة صغيرة تحت خانة ما دامت الخانة نشطة: خانات keys («قبل» و«بعد»، وقد تُضاف «خياس»)،
+        وسطر تنبيه عند الحاجة. compute() ← قيمة لكل خانة بترتيب keys (رقم أو None حيث لا قيمة)
+        ثم نص التنبيه أو "". تتحدّث مع كل حرف في الخانة وفي triggers، وتختفي بمغادرة الخانة."""
         box = ctk.CTkFrame(host, corner_radius=10, fg_color=(UI["surface"], "#1D232B"),
                            border_width=1, border_color=(UI["primary"], "#9CC0F5"))
         row = ctk.CTkFrame(box, fg_color="transparent")
         row.pack(padx=2, pady=(2, 0))
         cells = {}
-        for key in ("قبل", "بعد"):
+        for key in keys:
             cell = ctk.CTkFrame(row, corner_radius=8, fg_color=(UI["surface_alt"], "#232A33"))
             cell.pack(side="right", padx=4, pady=4)
             ctk.CTkLabel(cell, text=key, font=(UI_FONT, 11, "bold"),
@@ -19261,12 +19286,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if not shown["on"]:
                 return
             try:
-                before, after, note = compute()
+                *values, note = compute()
             except Exception as e:
                 log_cloud_error("تعذّر حساب نافذة قبل/بعد", e)
                 return
-            cells["قبل"].configure(text="-" if before is None else f"{before:.2f}")
-            cells["بعد"].configure(text="-" if after is None else f"{after:.2f}")
+            for key, value in zip(keys, values):
+                cells[key].configure(text="-" if value is None else f"{value:.2f}")
             if note:
                 warn.configure(text=note)
                 warn.pack(padx=6, pady=(0, 5))
@@ -19337,6 +19362,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return self.attach_before_after_hint(
             polish_entry, host, lambda: self.polish_hint_values(set_entry.get(), polish_entry.get()),
             triggers=[set_entry])
+
+    def assembler_hint_values(self, set_text):
+        """التركيب لرقم التشغيل من قسم المركبين (كما في «تتبع رقم التشغيل»): (قبل، بعد، خياس، تنبيه)
+          قبل = الصرف للمركّب، وبعد = القبض منه، وخياس = قبل − بعد. للعرض فقط: خانة «خياس المركب»
+          نفسها تبقى بحسابها المعتمد (مسموح ٨ بالألف من القبض)."""
+        key = self.normalize_set_number(set_text)
+        if not key:
+            return None, None, None, "اكتب رقم التشغيل أولاً"
+        v = self.set_tracking_values(key)
+        before, after, khayas = v["asm_before"], v["asm_after"], v["asm_khayas"]
+        if not v["rows"]:
+            return None, None, None, f"رقم التشغيل {key} غير موجود في قسم المركبين"
+        if before is None:
+            return before, after, khayas, "لا صرف لهذا الرقم في قسم المركبين"
+        if after is None:
+            return before, after, khayas, "لم يُقبض من المركّب بعد"
+        if khayas < 0:
+            return before, after, khayas, "القبض أكبر من الصرف — راجعه في قسم المركبين"
+        return before, after, khayas, ""
+
+    def attach_assembler_hint(self, assembler_entry, host, set_entry):
+        """تحت خانة «خياس المركب» ما دامت نشطة: قبل (الصرف) وبعد (القبض) وخياس (الفرق) لرقم التشغيل المكتوب"""
+        return self.attach_before_after_hint(
+            assembler_entry, host, lambda: self.assembler_hint_values(set_entry.get()),
+            triggers=[set_entry], keys=("قبل", "بعد", "خياس"))
 
     def switch_sales_subtab(self, key):
         """التنقل بين «إصدار مبيعات» (الإدخال)، و«المبيعات الصادرة» (الفواتير المرحّلة — المفتاح «العمليات»)،
@@ -20087,6 +20137,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                  [entries[k] for k in ("ذهب", "فصوص", "أحجار", "الماس")])
         # وتحت «خياس البوليش»: قبل البوليش وبعده لرقم التشغيل من «تتبع رقم التشغيل»
         self.attach_polish_hint(entries["خياس البوليش"], win, entries["set_number"])
+        # وتحت «خياس المركب»: قبل (صرف المركّب) وبعد (القبض) وخياس (الفرق)
+        self.attach_assembler_hint(entries["خياس المركب"], win, entries["set_number"])
 
         btns_row = ctk.CTkFrame(win, fg_color="transparent")
         btns_row.pack(fill="x", padx=18, pady=(2, 4))
@@ -20589,6 +20641,27 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.set_setting(skey, new)
         self._polish_before_cache = None
         return True
+
+    def polish_before_confirm_text(self, set_number, value):
+        """نص رسالة التأكيد قبل حفظ «قبل البوليش» من لوحة التتبع: (العنوان، النص).
+        value=None: مسح القيمة المسجّلة. تُذكر القيمة السابقة إن وُجدت، وبعد البوليش والخياس الناتج،
+        وتنبيه إن كان «قبل» أقل من «بعد» (خياس سالب)."""
+        key = self.normalize_set_number(set_number)
+        v = self.set_tracking_values(key)
+        old, after = v["polish_before"], v["polish_after"]
+        lines = [f"رقم التشغيل: {key}"]
+        if old is not None:
+            lines.append(f"القيمة الحالية: {old:.2f}")
+        if value is None:
+            lines += ["", "مسح «قبل البوليش» لهذا الرقم؟"]
+            return "تأكيد مسح «قبل البوليش»", "\n".join(lines)
+        lines.append(f"قبل البوليش: {value:.2f}")
+        if after is not None:
+            lines += [f"بعد البوليش: {after:.2f}", f"خياس البوليش: {round(value - after, 2):.2f}"]
+            if value < after:
+                lines += ["", "⚠️ «قبل البوليش» أقل من «بعد البوليش» — سيكون خياس البوليش سالباً."]
+        lines += ["", "حفظ القيمة؟   — Enter للتأكيد"]
+        return "تأكيد «قبل البوليش»", "\n".join(lines)
 
     def set_tracking_values(self, set_number, index=None, before_map=None):
         """قيم رقم التشغيل في «تتبع رقم التشغيل» — None حيث لا قيمة مسجّلة (خانة فارغة لا صفر مضلّل):
