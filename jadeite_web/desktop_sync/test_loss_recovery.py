@@ -87,6 +87,8 @@ ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_
 
 EXTRA = '''
 def check_edit_permission(self): return True
+def deleted_account_names(self): return frozenset()
+def revive_deleted_accounts(self, names): pass
 def recalculate_all(self): self.recalcs += 1
 def refresh_losses_tab(self): pass
 def refresh_casting_table(self): pass

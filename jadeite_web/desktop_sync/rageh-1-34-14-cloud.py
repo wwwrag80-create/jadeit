@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.71.0"
+APP_VERSION = "1.72.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4669,11 +4669,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.client_name = client_name
         self.supabase = supabase_client
         self.is_admin_session = is_admin_session
+        # برنامج المدير: حساب العميل للعرض فقط — نسخة جهاز العميل كما هي، بلا إضافة ولا تعديل ولا حذف
+        self.view_only = bool(IS_ADMIN_BUILD and client_id)
+        if self.view_only:
+            self._install_view_only_guards()
         # صلاحية التعديل: المدير/الجلسة المحلية بدون عميل = مسموح دائماً، العميل العادي حسب ما فتحه المدير له
         self.can_edit = True if (is_admin_session or not client_id) else bool(initial_can_edit)
 
         # تم تغيير مسمى النظام + ضبط حجم الشاشة تلقائياً حسب دقة جهاز المستخدم (بدل الحجم الثابت)
         title_suffix = f" - {client_name}" if client_name else ""
+        if self.view_only:
+            title_suffix += " (للعرض فقط)"
         self.title(f"نظام قسم التصنيع - الإصدار المحاسبي المتكامل{title_suffix}")
         apply_app_icon(self)
         self.update_idletasks()
@@ -5443,6 +5449,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def check_edit_permission(self, silent=False):
         """يُستدعى قبل أي *تعديل* على حركة مسجّلة — يمنعه لو أقفل المدير التعديل على هذا الحساب.
         ملاحظة: الحذف وتسجيل الحركات الجديدة يظلّان مسموحين دائماً."""
+        if getattr(self, "view_only", False):
+            self.view_only_blocked(silent=silent)
+            return False
         if not self.is_edit_locked():
             return True
         if not silent:
@@ -5458,16 +5467,77 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return False
 
     def check_delete_permission(self):
-        """الحذف مسموح دائماً — قفل المدير يخص التعديل فقط"""
+        """الحذف مسموح دائماً — قفل المدير يخص التعديل فقط (وحساب العميل في برنامج المدير للعرض فقط)"""
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return False
         return True
+
+    # ═══ برنامج المدير: حساب العميل للعرض فقط ═══
+    # الإجراءات التي تغيّر البيانات: تُستبدل في وضع العرض برسالة «للعرض فقط» قبل أن تبدأ
+    VIEW_ONLY_ACTIONS = (
+        "submit_generic_stage_op", "submit_casting_op", "submit_casting_loss_op", "submit_casting_recovery_op",
+        "submit_polish_op", "submit_polish_buff_op", "submit_unified_op", "submit_inbound", "submit_journal_entry",
+        "commit_sale_invoice", "suspend_sale_invoice", "stage_sale_row", "set_opening_balance",
+        "delete_selected_opening_row", "edit_selected_opening_row",
+        "delete_selected_generic_stage_row", "edit_selected_generic_stage_row", "delete_selected_casting_row",
+        "edit_selected_casting_row", "delete_selected_polish_row", "edit_selected_polish_row",
+        "delete_selected_polish_buff_row", "edit_selected_polish_buff_row",
+        "rename_op_ledger_set_number", "reassign_op_ledger_row", "op_ledger_edit_selected", "op_ledger_delete_selected",
+        "reopen_khayas_box_dialog", "close_split_khayas_box", "close_khayas_box", "delete_khayas_box_dialog",
+        "bulk_settle_current_category", "delete_selected_worker_ui", "add_new_name_dialog", "add_supplier_dialog",
+        "open_add_account_dialog", "delete_selected_account", "edit_selected_account_statement_row",
+        "delete_selected_sale_invoice", "edit_selected_sale_invoice", "open_sale_invoice_editor",
+        "open_add_discount_pct_dialog", "open_sale_invoice_start_dialog", "delete_selected_suspended_sale",
+        "edit_selected_inout_row", "delete_selected_inout_row", "open_edit_invoice_ui",
+        "undo_last_action", "reset_system_data_action")
+
+    def _install_view_only_guards(self):
+        for name in self.VIEW_ONLY_ACTIONS:
+            if callable(getattr(type(self), name, None)):
+                setattr(self, name, lambda *a, **k: self.view_only_blocked())
+
+    def view_only_blocked(self, silent=False):
+        """وضع العرض (حساب العميل في برنامج المدير): يمنع التغيير برسالة واضحة (مرة لكل ضغطة)"""
+        if not getattr(self, "view_only", False):
+            return False
+        now = time.monotonic()
+        if not silent and now - getattr(self, "_view_only_warned_at", 0.0) > 1.5:
+            self._view_only_warned_at = now
+            try:
+                messagebox.showinfo(
+                    "للعرض فقط",
+                    "👁️ حساب العميل في برنامج المدير للعرض فقط:\n"
+                    "لا إضافة ولا تعديل ولا حذف — ما تراه هو بيانات جهاز العميل كما هي، ويتحدّث تلقائياً منه.")
+            except Exception:
+                pass
+        return True
+
+    def _view_only_restore(self):
+        """بعد حفظ مرفوض في وضع العرض: الذاكرة تعود كما في نسخة العميل (لا أثر لأي محاولة)"""
+        if getattr(self, "_view_only_restore_pending", False):
+            return
+        self._view_only_restore_pending = True
+
+        def run():
+            self._view_only_restore_pending = False
+            try:
+                self.load_data_from_db()
+                self.recalculate_all()
+            except Exception as e:
+                log_cloud_error("تعذّر إعادة عرض نسخة العميل", e)
+        try:
+            self.after_idle(run)
+        except Exception:
+            self._view_only_restore_pending = False
 
     def update_edit_status_ui(self):
         """يحدّث مؤشر حالة التعديل أعلى الشاشة ليعرف المستخدم فوراً إن كان التعديل مفتوحاً أو مقفولاً"""
         if not hasattr(self, 'lbl_edit_status'):
             return
         if IS_ADMIN_BUILD and self.client_id:
-            # نسخة المدير: مرآة لجهاز العميل — ما يُعدَّل هنا لا يصله ويُستبدل بنسخته التالية
-            self.lbl_edit_status.configure(text="👁️ مرآة جهاز العميل", text_color=UI["primary"])
+            # نسخة المدير: مرآة لجهاز العميل للعرض فقط — لا إضافة ولا تعديل ولا حذف
+            self.lbl_edit_status.configure(text="👁️ للعرض فقط — مرآة جهاز العميل", text_color=UI["primary"])
         elif not self.client_id or self.is_admin_session:
             self.lbl_edit_status.configure(text="🔓 التعديل: مفتوح (جلسة مدير)", text_color="#2ecc71")
         elif self.can_edit:
@@ -6762,6 +6832,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def load_data_from_db(self):
         # بيانات أُعيد تحميلها (استعادة نسخة مثلاً): خطوات التراجع السابقة لم تعد تخصّها
         self._undo_stack, self._undo_open = [], None
+        self._deleted_accounts = None          # قائمة الحسابات المحذوفة من القاعدة المحمّلة
         self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
         self.invoices = {}
         self.opening_balance = 0.0
@@ -6983,6 +7054,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def save_invoice_to_db(self, inv_id, inv_data):
         """يرجع True لو تم الحفظ فعلياً، أو False لو تم المنع (تعديل على فاتورة موجودة ومقفول عليها التعديل)"""
+        if getattr(self, "view_only", False):
+            # حساب العميل في برنامج المدير للعرض فقط: لا يُكتب شيء، والذاكرة تعود كنسخة العميل
+            self.view_only_blocked()
+            self._view_only_restore()
+            return False
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices WHERE invoice_id = ?", (inv_id,))
@@ -7154,7 +7230,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if getattr(self, "_undo_open", None) is step:
             self._undo_open = None
         # خطوة لم يُسجَّل فيها شيء (مُنع الحذف مثلاً) لا تبقى في المكدس
-        if not (step["rows"] or step["names"] or step["cats"]) and step in getattr(self, "_undo_stack", []):
+        if not (step["rows"] or step["names"] or step["cats"] or step.get("settings")) \
+                and step in getattr(self, "_undo_stack", []):
             self._undo_stack.remove(step)
         self.update_undo_buttons()
 
@@ -7278,6 +7355,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                     row)
                 for name, cat, _idx in step["names"]:
                     cur.execute("INSERT OR IGNORE INTO names (name, category) VALUES (?, ?)", (name, cat))
+                # إعدادات سُجّلت قيمتها السابقة في الخطوة (قائمة الحسابات المحذوفة مثلاً)
+                for key, old in step.get("settings", {}).items():
+                    if old is None:
+                        cur.execute("DELETE FROM settings WHERE key = ?", (key,))
+                    else:
+                        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, old))
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -7287,6 +7370,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoices.pop(inv_id, None)
             else:
                 self.invoices[inv_id] = self.invoice_from_row(row)
+        if step.get("settings"):
+            self._deleted_accounts = None
         for cat in step["cats"]:
             self.categories.setdefault(cat, [])
         for name, cat, idx in reversed(step["names"]):
@@ -7298,6 +7383,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def save_name_to_db(self, name, category):
         # إضافة اسم/عامل/مورد جديد = عملية طبيعية يومية، مسموحة دائماً بدون الحاجة لإذن المدير
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            self._view_only_restore()
+            return
+        # اسم حُذف حسابه سابقاً ثم أُضيف من جديد: يعود ظاهراً ومعه حركاته المحفوظة
+        self.revive_deleted_accounts([name])
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             try:
@@ -7315,7 +7406,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return row[0] if row else default
 
     def set_setting(self, key, value):
-        # إعدادات عامة للنظام (مش "فاتورة أو رقم مُثبت") — مسموحة دائماً
+        # إعدادات عامة للنظام (مش "فاتورة أو رقم مُثبت") — مسموحة دائماً (إلا في وضع العرض: بلا رسالة)
+        if getattr(self, "view_only", False):
+            return
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
             conn.commit()
@@ -16676,6 +16769,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.lbl_prod_total = prod_tile(1, big=True)
         self.lbl_prod_gold_diamond = prod_tile(0)
 
+        # صف ثانٍ: إنتاج الذهب (لوحة الذهب + ذهب لوحة الألماس) وإنتاج الألماس (ألماس لوحته)
+        tiles2 = ctk.CTkFrame(prod_panel, fg_color="transparent")
+        tiles2.pack(fill="x", padx=12, pady=(0, 4))
+        for col in range(2):
+            tiles2.grid_columnconfigure(col, weight=1, uniform="prod2")
+
+        def prod_tile2(col):
+            tile = ctk.CTkFrame(tiles2, corner_radius=12, fg_color="#1B2B47")
+            tile.grid(row=0, column=col, sticky="nsew", padx=6, pady=6)
+            lbl = ctk.CTkLabel(tile, text="", text_color="#F1E3B0",
+                               font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"))
+            lbl.pack(padx=12, pady=12)
+            return lbl
+
+        self.lbl_prod_gold = prod_tile2(1)
+        self.lbl_prod_diamond = prod_tile2(0)
+
         self.lbl_prod_ratios = ctk.CTkLabel(prod_panel, text="", text_color="#7EE2B0",
                                             font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"))
         self.lbl_prod_ratios.pack(pady=(2, 12))
@@ -16733,6 +16843,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         gold_sales = sales["ذهب"]
         return {"sales": sales, "incoming": incoming, "gold_linked": gold_linked, "diamond": diamond,
                 "prod_gold_stones": prod_gold_stones, "prod_gold_diamond": prod_gold_diamond,
+                # إنتاج الذهب = مبيعات لوحة الذهب + مبيعات الذهب في لوحة الألماس، وإنتاج الألماس = ألماس لوحته
+                "prod_gold": round(gold_sales + gold_linked, 2), "prod_diamond": diamond,
                 "prod_total": round(prod_gold_stones + prod_gold_diamond, 2),
                 "ratio_stones": round((sales["فصوص وأحجار"] / gold_sales) * 100, 2) if gold_sales else 0.0,
                 "ratio_diamond": round((diamond / gold_sales) * 100, 2) if gold_sales else 0.0}
@@ -16792,6 +16904,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.lbl_prod_gold_diamond.configure(text=f"📊 إنتاج (الذهب + الألماس): {tot['prod_gold_diamond']:.2f}")
         if hasattr(self, 'lbl_prod_total'):
             self.lbl_prod_total.configure(text=f"🏆 إجمالي الإنتاج: {tot['prod_total']:.2f}")
+        if hasattr(self, 'lbl_prod_gold'):
+            self.lbl_prod_gold.configure(text=f"🥇 إنتاج الذهب: {tot['prod_gold']:.2f}")
+        if hasattr(self, 'lbl_prod_diamond'):
+            self.lbl_prod_diamond.configure(text=f"💎 إنتاج الألماس: {tot['prod_diamond']:.2f}")
         if hasattr(self, 'lbl_prod_ratios'):
             self.lbl_prod_ratios.configure(text=f"⚖️ نسبة (الفصوص + الأحجار) / الذهب: {tot['ratio_stones']:.2f}%    |    "
                                                 f"نسبة الألماس / الذهب: {tot['ratio_diamond']:.2f}%")
@@ -16856,6 +16972,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             f"📊 إنتاج (الذهب + فصوص وأحجار): {prod_gold_stones:.2f}",
             f"📊 إنتاج (الذهب + الألماس): {prod_gold_diamond:.2f}",
             f"🏆 إجمالي الإنتاج: {prod_total:.2f}",
+            f"🥇 إنتاج الذهب: {tot['prod_gold']:.2f}    |    💎 إنتاج الألماس: {tot['prod_diamond']:.2f}",
             f"⚖️ نسبة (الفصوص + الأحجار)/الذهب: {ratio_stones:.2f}%    |    نسبة الألماس/الذهب: {ratio_diamond:.2f}%",
         ]
         bar_h = 12 * mm
@@ -16901,7 +17018,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 if nm and nm not in names:
                     extra_names.add(nm)
         names += sorted(extra_names)
-        return names
+        # حساب حُذف من شجرة الحسابات لا يظهر في أي قائمة (حركاته باقية في الدفاتر)
+        deleted = self.deleted_account_names()
+        return [n for n in names if n not in deleted] if deleted else names
 
     # حسابات رصيدها = مدين − دائن (الخزينة والمواد)، وبقية الحسابات دائن − مدين
     MADIN_DAEN_ACCOUNTS = frozenset({"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار"})
@@ -17479,7 +17598,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def get_supplier_name_values(self):
         """قائمة أسماء الموردين: المصنع + أسماء المسترجعات (كل اسم يخص صندوقه، بما فيها الأقسام الديناميكية) + الموردون المسجلون"""
         fixed = ["المصنع"] + self.get_all_mustarja_names()
-        others = [n for n in self.categories.get("الموردين", []) if n not in fixed]
+        deleted = self.deleted_account_names()
+        others = [n for n in self.categories.get("الموردين", []) if n not in fixed and n not in deleted]
         return fixed + others
 
     def get_supplier_name_values_no_mustarja(self):
@@ -20347,6 +20467,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def save_suspended_sale(self, data, rec_id=None):
         """يحفظ فاتورة معلّقة: تحديث المعلّقة نفسها إن كانت هي المفتوحة، وإلا جديدة. يرجع رقمها"""
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return rec_id
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         draft = dict(data.get("draft", {}) or {})
         if data.get("kind") in self.SALE_KINDS:
@@ -20370,6 +20493,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return rec_id
 
     def delete_suspended_sale(self, rec_id):
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return False
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("DELETE FROM suspended_sales WHERE id = ?", (rec_id,))
@@ -22624,6 +22750,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                   "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": entry_ref}
         self.invoices[self.invoice_counter] = inv_to
         self.save_invoice_to_db(self.invoice_counter, inv_to)
+        # قيد جديد على حساب محذوف من الشجرة (اختير تأكيده): الحساب يعود ظاهراً بحركاته
+        self.revive_deleted_accounts((from_name, to_name))
 
         self.je_from_name.set("")
         self.je_to_name.set("")
@@ -23362,6 +23490,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkButton(btn_row, text="↺ تحديث الشجرة", font=(UI_FONT, 13, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=self.refresh_chart_of_accounts).pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="➕ إضافة حساب", font=(UI_FONT, 13, "bold"), fg_color="#1f77b4", hover_color="#144d75", width=140, height=38, command=self.open_add_account_dialog).pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="🗑️ حذف صندوق خياس", font=(UI_FONT, 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a", width=170, height=38, command=self.delete_khayas_box_dialog).pack(side="left", padx=5)
+        # حذف حساب أو حساب فرعي: يختفي من كل الشاشات، وحركاته تبقى محفوظة كما هي
+        ctk.CTkButton(btn_row, text="🗑️ حذف الحساب المحدد", font=(UI_FONT, 13, "bold"), fg_color="#8b0000",
+                      hover_color="#a52a2a", width=170, height=38, command=self.delete_selected_account).pack(side="left", padx=5)
 
         self.refresh_chart_of_accounts()
 
@@ -23507,6 +23638,122 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             msg += f"\n\nتنبيه: تعذّر حذف {blocked} حركة (التعديل مقفول من المدير)."
         messagebox.showinfo("تم الحذف", msg)
 
+    # ═══ حذف حساب من شجرة الحسابات: يختفي من كل الشاشات، وحركاته تبقى محفوظة ═══
+    DELETED_ACCOUNTS_KEY = "deleted_accounts"
+
+    def deleted_account_names(self):
+        """الحسابات المحذوفة من الشجرة (تُخفى من كل القوائم والشاشات؛ حركاتها باقية)"""
+        cached = getattr(self, "_deleted_accounts", None)
+        if cached is not None:
+            return cached
+        try:
+            raw = self.get_setting(self.DELETED_ACCOUNTS_KEY, "") or ""
+            data = json.loads(raw) if raw else []
+        except Exception:
+            data = []
+        names = frozenset(str(n) for n in data if str(n).strip()) if isinstance(data, list) else frozenset()
+        self._deleted_accounts = names
+        return names
+
+    def _store_deleted_accounts(self, names):
+        self.set_setting(self.DELETED_ACCOUNTS_KEY, json.dumps(sorted(names), ensure_ascii=False))
+        self._deleted_accounts = None
+
+    def revive_deleted_accounts(self, names):
+        """حساب محذوف أُعيد استخدامه (أُضيف من جديد أو رُحّل عليه قيد جديد): يعود ظاهراً بحركاته المحفوظة.
+        القائمة السابقة تُسجَّل في خطوة التراجع المفتوحة، فالتراجع عن العملية نفسها يُخفيه من جديد"""
+        deleted = self.deleted_account_names()
+        revived = deleted & set(names)
+        if not revived:
+            return
+        step = getattr(self, "_undo_open", None)
+        if step is not None and step in getattr(self, "_undo_stack", []):
+            step.setdefault("settings", {}).setdefault(
+                self.DELETED_ACCOUNTS_KEY, self.get_setting(self.DELETED_ACCOUNTS_KEY, None))
+        self._store_deleted_accounts(deleted - revived)
+
+    def system_account_names(self):
+        """حسابات أساسية لا تُحذف من الشجرة: منطق النظام قائم عليها (الخزينة والمواد والمبيعات والخسائر
+        والرصيد الافتتاحي والمصنع، وحسابات صناديق الخياس وفواقدها ومسترجعاتها)"""
+        names = {"حساب الخزينة", "حساب الذهب", "حساب الألماس", "حساب فصوص وأحجار", "حساب الخسائر",
+                 "المبيعات", self.OPENING_ACCOUNT, "المصنع"}
+        for cat in self.get_khayas_box_categories() + list(self.get_all_stage_categories()):
+            names.add(self.get_box_account_name(cat))
+        names |= set(self.get_all_loss_accounts()) | set(self.get_all_mustarja_names())
+        return names
+
+    def delete_selected_account(self):
+        """زر «حذف الحساب المحدد» في شجرة الحسابات"""
+        tree = getattr(self, "coa_tree", None)
+        sel = tree.selection() if tree else ()
+        if not sel:
+            messagebox.showwarning("تنبيه", "حدّد الحساب المراد حذفه من الشجرة أولاً.")
+            return
+        item = sel[0]
+        if "leaf" not in tree.item(item, "tags"):
+            messagebox.showwarning("تنبيه", "اختر حساباً من داخل الفرع (لا عنوان الفرع نفسه).")
+            return
+        name = tree.item(item, "text")
+        if name in self.system_account_names():
+            boxes = {self.get_box_account_name(c) for c in self.get_khayas_box_categories()}
+            if name in boxes:
+                messagebox.showinfo("صندوق خياس", "صناديق الخياس تُحذف من زر «🗑️ حذف صندوق خياس».")
+            else:
+                messagebox.showinfo("حساب أساسي", f"({name}) حساب أساسي في النظام تقوم عليه الحسابات — لا يُحذف.")
+            return
+        n = sum(1 for inv in self.invoices.values() if inv.get("الاسم") == name)
+        moves = f"حركاته ({n}) تبقى محفوظة في الدفاتر كما هي، ولا يتغيّر أي رصيد." if n else "ليس له حركات."
+        if not messagebox.askyesno(
+                "حذف الحساب",
+                f"حذف الحساب ({name})؟\n\n"
+                "يختفي من شجرة الحسابات ومن كل الشاشات وقوائم الأسماء (الموردين، الوارد، المبيعات، القيود "
+                f"اليومية، كشف الحساب، البحث).\n{moves}\n\n"
+                "وللتراجع: ↩️ تراجع (Ctrl+Z) — أو أضف حساباً بالاسم نفسه فيعود بحركاته."):
+            return
+        self.delete_account(name)
+
+    def delete_account(self, name):
+        """يحذف الحساب من الشجرة وكل الشاشات، وحركاته تبقى محفوظة (خطوة تراجع واحدة)"""
+        step = self.push_undo(f"حذف الحساب ({name})")
+        if step is not None:
+            step.setdefault("settings", {}).setdefault(
+                self.DELETED_ACCOUNTS_KEY, self.get_setting(self.DELETED_ACCOUNTS_KEY, None))
+        # من قوائم الأسماء (الموردين والحسابات المضافة) — الحركات لا تُمسّ
+        for cat in ("الموردين", "حسابات إضافية"):
+            if name in self.categories.get(cat, []):
+                self.delete_worker_from_db(name, cat, keep_transactions=True)
+        self._store_deleted_accounts(set(self.deleted_account_names()) | {name})
+        # الأرصدة لا تتغيّر (الحركات باقية)، لكن الشاشات المفتوحة تُرسم من جديد بلا الاسم المحذوف
+        self.recalculate_all()
+        self.refresh_account_name_lists()
+        self.toast(f"🗑️ حُذف الحساب ({name}) — حركاته باقية في الدفاتر", "success")
+
+    def refresh_account_name_lists(self):
+        """تحديث الشجرة وقوائم الأسماء في الشاشات المبنية بعد حذف حساب أو إعادته"""
+        for fn in ("refresh_chart_of_accounts", "refresh_suppliers_table"):
+            if hasattr(self, fn):
+                try:
+                    getattr(self, fn)()
+                except Exception as e:
+                    log_cloud_error(f"تعذّر تحديث {fn} بعد حذف الحساب", e)
+        combos = (("sale_name", self.get_supplier_name_values_no_mustarja),
+                  ("in_supplier", self.get_supplier_name_values),
+                  ("opening_name", self.get_supplier_name_values_no_mustarja),
+                  ("kh_account_name", self.get_account_statement_options),
+                  ("je_from_name", self.get_journal_entry_account_options),
+                  ("je_to_name", self.get_journal_entry_account_options))
+        deleted = self.deleted_account_names()
+        for attr, getter in combos:
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            try:
+                combo.configure(values=getter())
+                if combo.get() in deleted:          # الاسم المحذوف لا يبقى مختاراً في خانة
+                    combo.set("")
+            except Exception:
+                continue
+
     def open_add_account_dialog(self):
         # تحديد الفرع المختار حالياً بالشجرة (إن وجد) لمعرفة نوع الحساب المطلوب إضافته
         selected_branch = None
@@ -23623,13 +23870,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         g_sales = add_group("🧾 المبيعات")
         add_leaf(g_sales, "المبيعات")
 
-        # حسابات الموردين
+        # حسابات الموردين (والحساب المحذوف لا يظهر — حركاته باقية في الدفاتر)
+        deleted = self.deleted_account_names()
         g_suppliers = add_group("👥 حسابات الموردين")
         for acc in sorted(self.categories.get("الموردين", [])):
-            add_leaf(g_suppliers, acc)
+            if acc not in deleted:
+                add_leaf(g_suppliers, acc)
 
         # حسابات أُضيفت يدوياً من شجرة الحسابات
-        manual_accounts = sorted(self.categories.get("حسابات إضافية", []))
+        manual_accounts = sorted(n for n in self.categories.get("حسابات إضافية", []) if n not in deleted)
         if manual_accounts:
             g_manual = add_group("➕ حسابات مُضافة يدوياً")
             for acc in manual_accounts:
@@ -23650,7 +23899,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if inv.get("settled_status") != "ACTIVE": continue
             if inv.get("النوع") in ("قيد يومي مدين", "قيد يومي دائن"):
                 nm = inv.get("الاسم", "")
-                if nm and nm not in known_names:
+                if nm and nm not in known_names and nm not in deleted:
                     extra_names.add(nm)
         if extra_names:
             g_other = add_group("🔹 حسابات أخرى (من القيود اليومية)")

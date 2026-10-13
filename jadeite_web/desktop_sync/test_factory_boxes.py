@@ -84,13 +84,24 @@ for i in range(600):
     app.invoices[i] = inv
 
 # ═══ ١) شهر بعينه = الحساب القديم بـ«من الشهر إلى الشهر» ═══
+NEW_KEYS = ("prod_gold", "prod_diamond")
+
+
+def without_new(t):
+    return {k: v for k, v in t.items() if k not in NEW_KEYS}
+
+
 for m in MONTHS:
-    assert app.factory_boxes_totals(m) == old_totals(app.invoices, m, m), m
+    t = app.factory_boxes_totals(m)
+    assert without_new(t) == old_totals(app.invoices, m, m), m
+    # إنتاج الذهب = مبيعات لوحة الذهب + مبيعات الذهب في لوحة الألماس، وإنتاج الألماس = ألماس لوحته
+    assert t["prod_gold"] == round(t["sales"]["ذهب"] + t["gold_linked"], 2) and t["prod_diamond"] == t["diamond"], m
 print("✔ اختيار شهر: المبيعات والوارد والألماس والإنتاج ونسبه = الحساب السابق للشهر نفسه (" + "، ".join(MONTHS) + ")")
 
 # ═══ ٢) «الكل» = كل الأشهر ═══
 everything = app.factory_boxes_totals(app.LOSSES_ALL)
-assert everything == old_totals(app.invoices, "0000-00", "9999-99")
+assert without_new(everything) == old_totals(app.invoices, "0000-00", "9999-99")
+assert everything["prod_gold"] == round(everything["sales"]["ذهب"] + everything["gold_linked"], 2)
 for key in ("gold_linked", "diamond"):
     assert round(sum(app.factory_boxes_totals(m)[key] for m in MONTHS), 2) == everything[key]
 for box in ("ذهب", "فصوص وأحجار"):
@@ -102,7 +113,7 @@ print("✔ بلا اختيار: الفترة المعروضة كما كان")
 
 # ═══ ٣) «من شهر/إلى شهر» = الحساب القديم بالنطاق نفسه ═══
 for lo, hi in (("2026-07", "2026-08"), ("2026-08", "2026-09")):
-    assert app.factory_boxes_totals(lo, hi) == old_totals(app.invoices, lo, hi), (lo, hi)
+    assert without_new(app.factory_boxes_totals(lo, hi)) == old_totals(app.invoices, lo, hi), (lo, hi)
     assert app.factory_boxes_totals(hi, lo) == app.factory_boxes_totals(lo, hi)     # «من» بعد «إلى»
 assert app.factory_boxes_totals("2026-07", "2026-09") == everything                # النطاق كله = «الكل»
 assert app.factory_boxes_totals("2026-08", "2026-08") == app.factory_boxes_totals("2026-08")

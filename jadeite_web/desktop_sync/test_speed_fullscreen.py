@@ -89,7 +89,8 @@ assert list(app.invoices_by_name()) == ["جديد"]
 print("✔ إعادة التحميل (قاموس حركات جديد) تُعيد بناء الفهرس")
 
 save = seg("save_invoice_to_db")
-blocked = save[save.index("check_edit_permission"):save.index("return False")]
+i_chk = save.index("check_edit_permission")
+blocked = save[i_chk:save.index("return False", i_chk)]
 assert "_inv_version" in blocked
 print("✔ منع التعديل يعيد كائن الحركة الأصلي ويُبطل الفهرس معه")
 
