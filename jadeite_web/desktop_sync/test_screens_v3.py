@@ -185,7 +185,7 @@ assert r._pending_row_index("row2") == 2 and r._pending_row_index("total") is No
 print("✔ الحذف والتعديل يصيبان السطر الصحيح حتى مع العرض التنازلي، والحذف بتأكيد")
 fields = [k for _l, k in ast.literal_eval(class_attr_src("SALE_EDIT_FIELDS").split("=", 1)[1].strip())]
 assert fields == ["set_number", "ذهب", "فصوص", "أحجار", "الماس", "أحجار بعد الخصم", "خياس",
-                  "خياس البوليش", "خياس المركب"], fields
+                  "خياس البوليش", "خياس المركب", "البيان"], fields
 assert "new_row = dict(row)" in seg("edit_pending_sale_row")
 print("✔ نافذة التعديل الأفقية تعرض كل خانات الصف وتحفظها كلها (كانت تُسقط البوليش والمركب)")
 

@@ -18,7 +18,7 @@ NEEDED = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "normalize_set_number", "g
           "get_assembler_khayas_details", "assembler_khayas_index", "describe_assembler_khayas",
           "audit_sale_assembler_khayas", "autofill_assembler_khayas", "inv_period", "inv_in_period",
           "SALE_TYPES", "sale_records_to_rows", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS",
-          "SALE_DIAMOND_TYPES", "sale_kind_inferred", "sale_key_of")
+          "SALE_DIAMOND_TYPES", "sale_kind_inferred", "sale_key_of", "SALE_NOTE_SEP", "sale_note_of")
 
 
 def member_name(x):

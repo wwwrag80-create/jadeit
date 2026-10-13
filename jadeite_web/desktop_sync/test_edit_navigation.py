@@ -23,12 +23,20 @@ print("✔ ويتعرّف على الخانة الداخلية لـ CTkEntry ع�
 assert "if not widgets:" in nav
 print("✔ قائمة خانات فارغة لا تُسبب خطأ")
 
-# ═══ نافذة المصنعين/المركبين ═══
+# ═══ نوافذ تعديل صفوف الأقسام: أفقية مثل صف الإدخال (1.71) ═══
+fin = seg("finish_horizontal_edit_window")
+assert "self.bind_enter_navigation(entries, on_last=on_save)" in fin and "self.bind_arrow_navigation(entries)" in fin
+assert 'win.bind("<Escape>"' in fin and 'select_range(0, "end")' in fin and "focus_set()" in fin
+print("\n✔ نوافذ التعديل الأفقية: Enter للخانة التالية ثم الحفظ في آخر خانة، والأسهم ← → بين الخانات، وEsc للإلغاء")
+hb = seg("build_horizontal_edit_fields")
+assert "grid_columnconfigure(c, weight=1, uniform=" in hb and "col = cols - used - span" in hb
+print("✔ الخانات أفقية من اليمين لليسار، عنوان كل خانة فوقها، وتلتفّ لصف ثانٍ إن كثرت")
+
 row = seg("open_row_full_edit_dialog")
-assert "self.bind_vertical_navigation(nav_all, on_last=lambda: save_row(), window=win)" in row
-print("\n✔ نافذة تعديل صف المصنعين/المركبين: تنقّل رأسي + حفظ بـ Enter")
-assert "self.bind_arrow_navigation(nav_all)" in row
-print("✔ ومعه التنقّل الأفقي (يمين/يسار) كما كان")
+assert "self.build_horizontal_edit_fields(win, specs" in row
+assert "self.finish_horizontal_edit_window(win, all_entries, save_row" in row
+assert "bind_vertical_navigation" not in row
+print("✔ نافذة تعديل صف المصنعين/المركبين أفقية بكل خاناتها")
 
 fields = None
 for node in ast.walk(cls):
@@ -40,20 +48,13 @@ n_mfg = 3 + len(fields["المصنعين"]) + 1      # ترقيم + خانات +
 n_mer = 3 + len(fields["المركبين"]) + 1
 print(f"✔ عدد الخانات المتنقَّل بينها: المصنعين {n_mfg} | المركبين {n_mer}")
 
-# ═══ نافذة الكاستنج/التلميع/البف ═══
 stage = seg("open_stage_op_edit_dialog")
-assert "self.bind_vertical_navigation(_nav, on_last=lambda: save_edit(), window=win)" in stage
-print("✔ نافذة تعديل الكاستنج/التلميع/البف والأقسام المضافة: نفس التنقّل")
-assert "ent_trees if with_trees else None" in stage
-print("✔ وخانة عدد الأشجار تدخل التنقّل فقط حين تكون معروضة")
-
-i_last_entry = stage.rindex("ent_note = ctk.CTkEntry")
-i_nav = stage.index("bind_vertical_navigation")
-assert i_last_entry < i_nav
-print("✔ الربط يتم بعد إنشاء كل الخانات (وإلا فقدت بعضها التنقّل)")
-
-for b, label in ((row, "المصنعين/المركبين"), (stage, "الكاستنج/التلميع/البف")):
-    assert "focus_set()" in b, label
-print("✔ التركيز يبدأ في أول خانة فيعمل التنقّل فور الفتح")
+assert "self.build_horizontal_edit_fields(win, specs" in stage
+assert "self.finish_horizontal_edit_window(win, entries, save_edit, focus=ent_sarf)" in stage
+assert "if with_trees:" in stage and '("عدد الأشجار:"' in stage
+print("✔ نافذة تعديل الكاستنج/التلميع/بوليش 1 والأقسام المضافة: أفقية بالتنقّل نفسه، وعدد الأشجار حين يُعرض")
+rec = seg("open_recovery_op_edit_dialog")
+assert "self.finish_horizontal_edit_window(win, [ent_w, ent_date, ent_note], save_edit" in rec
+print("✔ ونافذة عملية «مسترجع» كذلك")
 
 print("\n✅ التنقّل يعمل في كل نوافذ تعديل الحركة")

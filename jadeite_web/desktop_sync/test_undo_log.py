@@ -87,7 +87,11 @@ app = App(path)
 ids = [app.post("أحمد", "صرف ذهب", 10.0), app.post("سالم", "صرف ذهب", 20.0),
        app.post("سالم", "قبض ذهب", 15.0), app.post("مورد", "وارد", 50.0)]
 app.end_click()
-assert not app.can_undo(), "الترحيل العادي لا يفتح خطوة تراجع"
+# التراجع خطوة بخطوة مثل إكسل: الإضافة نفسها خطوة (والضغطة الواحدة خطوة واحدة مهما كثرت حركاتها)
+assert len(app._undo_stack) == 1 and app.undo_step_label(app._undo_stack[-1]) == "إضافة 4 حركات"
+assert all(app._undo_stack[-1]["rows"][i] is None for i in ids)
+app._undo_stack.clear()
+print("✔ الترحيل خطوة تراجع واحدة («إضافة 4 حركات») — التراجع عنها يحذف ما أُضيف")
 
 
 def db_rows():
@@ -121,14 +125,28 @@ print("✔ حذف حركة يفتح خطوة تراجع تلقائياً، وا�
 app.delete_invoice_from_db(ids[1]); app.delete_invoice_from_db(ids[2])
 assert len(app._undo_stack) == 1 and app.undo_step_label(app._undo_stack[-1]) == "حذف 2 حركات"
 app.end_click()
-later = app.post("خالد", "صرف ذهب", 7.0)             # ضغطة لاحقة: ترحيل عادي
+later = app.post("خالد", "صرف ذهب", 7.0)             # ضغطة لاحقة: إضافة — خطوتها المستقلة
 app.end_click()
-assert later not in app._undo_stack[-1]["rows"], "ما بعد الضغطة لا يدخل في خطوتها"
+assert later not in app._undo_stack[-2]["rows"], "ما بعد الضغطة لا يدخل في خطوتها"
+assert app.undo_step_label(app._undo_stack[-1]) == "إضافة حركة" and app._undo_stack[-1]["rows"] == {later: None}
+# خطوة بخطوة: الأولى تحذف الإضافة الأخيرة وحدها، والثانية تعيد المحذوفتين
 app.apply_undo_step(app._undo_stack.pop())
-assert later in app.invoices and all(i in app.invoices for i in ids[1:3])
-assert [r for r in db_rows() if r[0] != later] == base_rows
-app.delete_invoice_from_db(later); app.end_click(); app._undo_stack.clear()
-print("✔ حذف قيد بطرفيه (أو صفّ بحركاته) في ضغطة واحدة = خطوة واحدة، والترحيل اللاحق يبقى")
+assert later not in app.invoices and all(i not in app.invoices for i in ids[1:3])
+app.apply_undo_step(app._undo_stack.pop())
+assert all(i in app.invoices for i in ids[1:3]) and db_rows() == base_rows and app.invoices == base_mem
+app._undo_stack.clear()
+print("✔ حذف قيد بطرفيه (أو صفّ بحركاته) في ضغطة واحدة = خطوة واحدة، والإضافة بعدها خطوة مستقلة — "
+      "والتراجع خطوة بخطوة")
+
+# ═══ ٢ب) تعديل حركة بلا خطوة صريحة: خطوة «تعديل» تلقائية تعيد القيمة السابقة ═══
+changed = dict(app.invoices[ids[0]], **{"الوزن": 12.5, "row_number": "11"})
+app.save_invoice_to_db(ids[0], changed)
+assert app.invoices[ids[0]] is changed, "الذاكرة تتبع المحفوظ ولو كان نسخة (dict(...))"
+app.end_click()
+assert app.undo_step_label(app._undo_stack[-1]) == "تعديل حركة (أحمد — صرف ذهب)"
+app.apply_undo_step(app._undo_stack.pop())
+assert db_rows() == base_rows and app.invoices == base_mem
+print("✔ تعديل حركة خطوة تراجع تلقائية («تعديل حركة») تعيدها بقيمتها ورقم صفها السابقين، والذاكرة تتبع المحفوظ")
 
 # ═══ ٣) خطوة صريحة (إقفال): ما يُنشأ داخلها يُحذف بالتراجع، وما يُعدَّل يعود ═══
 app.push_undo("إقفال المصنعين 2026-09")

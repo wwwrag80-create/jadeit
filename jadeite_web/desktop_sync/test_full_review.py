@@ -98,7 +98,7 @@ post = body("post_sale_rows")
 assert "period=None" in post and 'record["period"] = period' in post
 assert post.count("store(") == 6           # التعريف + خمس حركات (مبيعات، بوليش، مركب، صافي، خياس)
 stage = body("open_stage_op_edit_dialog")
-assert stage.count('"period": ref_period') == 2
+assert stage.count('"period": ref_period') == 1 and "upsert(rec_invs, new_rec, extra_type" in stage
 assert '"row_number": new_row_no, "period": month' in body("open_row_full_edit_dialog")
 assert '"row_number": ref_row, "period": ref_period' in window
 print("✔ فاتورة المبيعات تبقى في فترتها عند تعديلها من البحث/التدقيق، وكل حركة جديدة في نوافذ التعديل "

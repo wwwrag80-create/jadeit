@@ -69,8 +69,10 @@ METHODS = [
     # نوع العملية (ذهب/الماس): ترقيم لكل نوع، ومفتاح الفاتورة بنوعها، والمعلّقة بنوعها
     "sale_kind_inferred", "sale_key_of", "current_sale_kind", "set_sale_kind", "safe_float",
     "sale_invoice_start_saved", "posted_sale_invoice_numbers",
+    # كل ترحيل وتعديل خطوة تراجع (1.71)
+    "push_undo", "_close_undo_step", "update_undo_buttons", "can_undo", "undo_step_label",
 ]
-ATTRS = ["INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
+ATTRS = ["UNDO_LIMIT", "INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
          "SALE_NO_START_KEYS", "SALE_NO_DEFAULT_START", "SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SALE_NO_START_KEY", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 
@@ -87,6 +89,7 @@ def switch_sales_subtab(self, key): self.current_sales_subtab = key
 def get_smart_default_date(self): return "2026-09-01"
 def get_supplier_name_values_no_mustarja(self): return ["المصنع", "مورد 1", "مورد 2"]
 def after(self, ms, fn=None): pass
+def after_idle(self, fn): pass
 def remember_discount_pct(self): pass
 def get_setting(self, key, default=None): return getattr(self, "_settings", {}).get(key, default)
 def set_setting(self, key, value): self.__dict__.setdefault("_settings", {})[key] = str(value)
@@ -242,11 +245,20 @@ rows_back = a.sale_records_to_rows(a.get_sale_invoice_records(("F-1", "2026-09-2
 assert rows_back[0]["ذهب"] == 10 and rows_back[0]["خياس"] == 0.5 and rows_back[0]["خياس البوليش"] == 0.2
 print("✔ إعادة بناء سطور الفاتورة للتعديل لا تتأثر بالبيان")
 
+# بيان كل سطر (يُكتب عند «إضافة سطر») يعود مع سطره عند تعديل الفاتورة — كان يُستبدل ببيان الفاتورة
+a.post_sale_rows([dict(row("S7", gold=3), **{"البيان": "طقم العروس"}), row("S8", gold=2)],
+                 "مورد 1", "2026-09-23 10:00:00", "F-9", "طلبية")
+back = {r["set_number"]: r["البيان"] for r in
+        a.sale_records_to_rows(a.get_sale_invoice_records(("F-9", "2026-09-23 10:00:00", "مورد 1")))}
+assert back == {"S7": "طقم العروس", "S8": "طلبية"}, back
+print("✔ بيان كل سطر يعود مع سطره عند تعديل الفاتورة المرحّلة (طقم العروس)، والباقي ببيان الفاتورة")
+
 ops = seg("refresh_sales_ops_table")
 assert '"الاسم", "البيان", "الذهب"' in ops and 'g.get("البيان", "")' in ops
 assert 'self.fit_columns_to_content(tree, "sales_ops"' in ops
 editor = seg("open_sale_invoice_editor")
-assert "self.sale_note_of(" in editor and "ent_note.get().strip()" in editor
+assert "row_notes = [r.get(\"البيان\", \"\") for r in edit_rows]" in editor and "ent_note.get().strip()" in editor
+assert '("البيان", "البيان")' in editor and '"البيان": entries["البيان"].get().strip()' in editor
 # البيان يُمرَّر، والفاتورة تبقى في فترتها الأصلية عند الحفظ
 assert "self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip()," in editor
 assert "period=old_period" in editor

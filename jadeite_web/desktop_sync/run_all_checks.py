@@ -73,6 +73,7 @@ CHECKS = [
     ("مرآة المدير الحرفية",   [PY, "test_admin_snapshot.py", TARGET]),
     ("مظهر العميل من لوحة المدير", [PY, "test_admin_look.py", TARGET]),
     ("المدير لا يلمس ملفات العميل", [PY, "test_admin_isolation.py", TARGET]),
+    ("لا دمج للصفوف بالتعديل",  [PY, "test_row_move_guard.py", TARGET]),
     ("صناديق المصنع وكشف الحساب: من/إلى", [PY, "test_factory_boxes.py", TARGET]),
     ("أزرار أقسام الخياس",   [PY, "test_khayas_buttons.py", TARGET]),
     ("المبيعات: المعلقات والبيان", [PY, "test_sales_suspend.py", TARGET]),

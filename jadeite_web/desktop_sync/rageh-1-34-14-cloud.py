@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.70.1"
+APP_VERSION = "1.71.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -6990,8 +6990,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             existing_manual = (existing_row[12] if existing_row and len(existing_row) > 12 and existing_row[12] else "")
             existing_period = (existing_row[13] if existing_row and len(existing_row) > 13 and existing_row[13] else "")
             existing_kind = (existing_row[14] if existing_row and len(existing_row) > 14 and existing_row[14] else "")
-            # داخل خطوة تراجع مفتوحة (حذف/إقفال): صورة الحركة قبل التغيير
-            self._undo_note_row(inv_id, existing_row)
 
             # ختم الفترة المحاسبية مركزياً لكل الحركات:
             #   • حركة جديدة  → الفترة المعروضة وقت التسجيل
@@ -7009,6 +7007,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self._inv_version = getattr(self, "_inv_version", 0) + 1
                 return False
 
+            # التراجع خطوة بخطوة (مثل إكسل): كل إضافة أو تعديل خطوة — الضغطة الواحدة خطوة
+            # واحدة مهما كثرت حركاتها — وتُسجَّل صورة الحركة قبل التغيير (لا شيء = حركة جديدة)
+            if getattr(self, "_undo_open", None) is None:
+                self.push_undo("", auto=True)
+            self._undo_note_row(inv_id, existing_row)
+
             cursor.execute("""
                 INSERT OR REPLACE INTO invoices (invoice_id, date_time, name, op_type, weight, before_w, after_w, note, settled_status, trees_count, set_number, row_number, manual_no, period, sale_kind)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -7019,6 +7023,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                   inv_data.get("period") or existing_period or self.inv_period(inv_data),
                   inv_data.get("sale_kind", existing_kind) or ""))
             conn.commit()
+        # الذاكرة كالقاعدة دائماً: من يحفظ نسخة من الحركة (dict(...)) كانت تبقى الذاكرة على القديم،
+        # فيعرض الجدول القيمة السابقة حتى إعادة التشغيل («عدّلت ولم يتعدّل الصف»)
+        if self.invoices.get(inv_id) is not inv_data:
+            self.invoices[inv_id] = inv_data
+            self._inv_version = getattr(self, "_inv_version", 0) + 1
         self.mark_backup_dirty()
         return True
 
@@ -7086,7 +7095,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # سجل خفيف لكل خطوة: الصورة السابقة **من القاعدة** لكل حركة تُحفظ أو تُحذف
     # داخل الخطوة، والأسماء المحذوفة — لا نسخة كاملة من البيانات (كانت اللقطة
     # الكاملة تتضخّم بعشرات الميغابايت مع آلاف الحركات).
-    UNDO_LIMIT = 20
+    UNDO_LIMIT = 50
     INVOICE_COLUMNS = ("invoice_id, date_time, name, op_type, weight, before_w, after_w, note, "
                        "settled_status, trees_count, set_number, row_number, manual_no, period, sale_kind")
 
@@ -7156,6 +7165,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         if inv_id not in step["rows"]:
             step["rows"][inv_id] = tuple(row) if row else None
+            # ما يعرضه زر التراجع: إضافة أو تعديل أو حذف، واسم أول حركة في الخطوة
+            kind = "n_deleted" if deleted else "n_edited" if row else "n_added"
+            step[kind] = step.get(kind, 0) + 1
+            if row and not step.get("who"):
+                step["who"] = f"{row[2]} — {row[3]}"
         step["deleted" if deleted else "saved"] += 1
 
     def _undo_note_name(self, name, category):
@@ -7168,10 +7182,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def undo_step_label(self, step):
         if not step.get("auto"):
             return step["label"]
-        if step["saved"]:
-            return f"تعديل/حذف {len(step['rows'])} حركة"
-        n = step["deleted"]
-        return step["label"] if n <= 1 else f"حذف {n} حركات"
+        added, edited, deleted = step.get("n_added", 0), step.get("n_edited", 0), step.get("n_deleted", 0)
+        who = f" ({step['who']})" if step.get("who") and len(step["rows"]) == 1 else ""
+        if edited or (added and deleted):
+            return f"تعديل {len(step['rows'])} حركة{who}" if len(step["rows"]) > 1 else f"تعديل حركة{who}"
+        if added and not deleted:
+            return "إضافة حركة" if added == 1 else f"إضافة {added} حركات"
+        if deleted <= 1:
+            return step["label"] or f"حذف حركة{who}"
+        return f"حذف {deleted} حركات"
 
     def can_undo(self):
         return bool(getattr(self, "_undo_stack", []))
@@ -7196,7 +7215,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.update_undo_buttons()
 
     def _on_ctrl_z(self, event=None):
-        """Ctrl+Z خارج خانات الكتابة = تراجع عن آخر حذف أو إقفال"""
+        """Ctrl+Z خارج خانات الكتابة = تراجع عن آخر خطوة (إضافة أو تعديل أو حذف أو إقفال)"""
         try:
             focus = self.focus_get()
         except Exception:
@@ -9248,101 +9267,207 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=38,
                       command=win.destroy).pack(pady=12)
 
+    # ═══ نوافذ تعديل صفوف الأقسام: أفقية مثل صف الإدخال، ولا تُدمج الصفوف ═══
+    def norm_row_no(self, value):
+        """رقم الصف للمقارنة: بلا مسافات، والأرقام الهندية كالعربية (١٠ = 10)"""
+        return str(value or "").strip().translate(self._DATE_DIGITS)
+
+    def stage_row_number_taken(self, new_row, old_row, name, madin_type, qabd_type, period, own_ids,
+                               recover_name=None):
+        """هل رقم الصف الجديد مستخدم لصف آخر فيه حركات في القسم نفسه والفترة نفسها؟
+
+        صفوف الأقسام تُجمع برقمها (رقم الصف + الاسم): نقل صف إلى رقم مستخدم كان يدمج الصفّين
+        فتختلط بياناتهما ويختفي الصف المنقول — فيُمنع النقل."""
+        new_n = self.norm_row_no(new_row)
+        if not new_n or new_n == self.norm_row_no(old_row):
+            return False
+        extra = self.stage_row_extra(qabd_type, recover_name)
+        extra_name = extra[0] if extra else None
+        own = set(own_ids)
+        for inv in self.period_invoices(period):
+            if inv.get("رقم الفاتورة") in own or inv.get("settled_status") != "ACTIVE":
+                continue
+            if inv.get("النوع") not in (madin_type, qabd_type) or self.norm_row_no(inv.get("row_number")) != new_n:
+                continue
+            if inv.get("الاسم") == name or (extra_name and inv.get("الاسم") == extra_name):
+                return True
+        return False
+
+    def worker_row_number_taken(self, worker_name, new_row, old_row, period, own_ids):
+        """(المصنعين والمركبين) هل للعامل صف آخر بالرقم الجديد في الفترة نفسها؟"""
+        new_n = self.norm_row_no(new_row)
+        if not new_n or new_n == self.norm_row_no(old_row):
+            return False
+        own = set(own_ids)
+        return any(inv.get("الاسم") == worker_name and inv.get("settled_status") == "ACTIVE"
+                   and inv.get("رقم الفاتورة") not in own
+                   and self.norm_row_no(inv.get("row_number")) == new_n
+                   for inv in self.period_invoices(period))
+
+    def warn_row_number_taken(self, new_row, parent=None):
+        messagebox.showwarning(
+            "رقم الصف مستخدم",
+            f"رقم الصف ({new_row}) فيه بيانات لصف آخر.\n\n"
+            "لا يُنقل صف إلى رقم صف مستخدم، حتى لا تختلط بيانات الصفّين ويضيع أحدهما.\n"
+            f"اختر رقماً غير مستخدم، أو عدّل الصف ({new_row}) نفسه.", parent=parent)
+
+    def build_horizontal_edit_fields(self, parent, specs, per_row=8):
+        """خانات نافذة تعديل أفقية مثل صف الإدخال: عنوان كل خانة فوقها، من اليمين لليسار في أعمدة
+        متساوية، وتلتفّ لصف ثانٍ إن زادت عن per_row.
+        specs: [(العنوان، القيمة، نص؟، عرض بالأعمدة)] — يرجع الخانات بالترتيب نفسه."""
+        card = ctk.CTkFrame(parent, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+                            border_width=1, border_color=(UI["line"], "#2A313B"))
+        card.pack(fill="x", padx=18, pady=6)
+        cols = max(1, min(per_row, sum(max(1, s[3] if len(s) > 3 else 1) for s in specs)))
+        for c in range(cols):
+            card.grid_columnconfigure(c, weight=1, uniform="hedit")
+        entries, row, used = [], 0, 0
+        for spec in specs:
+            label, value, is_text = spec[0], spec[1], spec[2]
+            span = min(cols, max(1, spec[3] if len(spec) > 3 else 1))
+            if used + span > cols:
+                row, used = row + 1, 0
+            col = cols - used - span                  # من اليمين لليسار
+            # العنوان فوق خانته بلا نقطتين، ويلتفّ على سطرين قبل أن يُقصّ في عموده
+            ctk.CTkLabel(card, text=label.rstrip(":").strip(), font=(UI_FONT, 12, "bold"),
+                         wraplength=80 * span, justify="center",
+                         text_color=(UI["ink"], "#E5E7EB")).grid(row=2 * row, column=col, columnspan=span,
+                                                                  padx=5, pady=(10, 3), sticky="s")
+            ent = ctk.CTkEntry(card, justify="right" if is_text else "center", font=(UI_FONT, 15),
+                               width=88, height=38)
+            if value not in (None, ""):
+                ent.insert(0, str(value))
+            ent.grid(row=2 * row + 1, column=col, columnspan=span, padx=5, pady=(0, 12), sticky="ew")
+            entries.append(ent)
+            used += span
+        return entries
+
+    def finish_horizontal_edit_window(self, win, entries, on_save, focus=None, width=1100):
+        """أزرار الحفظ والإلغاء، وEnter للخانة التالية ثم الحفظ في آخر خانة، والأسهم يمين/يسار بين
+        الخانات، وEsc للإلغاء — ثم النافذة بعرض يتسع للخانات في منتصف النظام"""
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(fill="x", padx=18, pady=(4, 14))
+        btn_save = ctk.CTkButton(btns, text="💾 حفظ التعديلات", font=(UI_FONT, 15, "bold"), height=40, width=190,
+                                 fg_color=UI["success"], hover_color=UI["success_hover"], command=on_save)
+        btn_save.pack(side="right")
+        ctk.CTkButton(btns, text="إلغاء", font=(UI_FONT, 14, "bold"), height=40, width=110,
+                      fg_color=UI["neutral"], hover_color=UI["neutral_hover"],
+                      command=win.destroy).pack(side="right", padx=8)
+        ctk.CTkLabel(btns, text="Enter: الخانة التالية ثم الحفظ   ·   ← →: بين الخانات   ·   Esc: إلغاء",
+                     font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA3AF")).pack(side="left")
+        self.bind_enter_navigation(entries, on_last=on_save)
+        self.bind_arrow_navigation(entries)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.update_idletasks()
+        try:
+            s = float(ctk.ScalingTracker.get_window_scaling(self))
+        except Exception:
+            s = 1.0
+        w = min(int(width * s), self.winfo_width() - 40) if self.winfo_width() > 400 else int(width * s)
+        h = win.winfo_reqheight()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - h) // 3)
+        win.geometry(f"{int(w / s)}x{int(h / s)}+{x}+{y}")
+        try:
+            win.grab_set()
+            win.focus_force()
+        except Exception:
+            pass
+        target = focus or entries[0]
+        try:
+            target.focus_set()
+            getattr(target, "_entry", target).select_range(0, "end")
+        except Exception:
+            pass
+        return btn_save
+
     def open_stage_op_edit_dialog(self, ids, madin_type, qabd_type, title, with_trees=False, status_text="",
                                   recover_name=None, sarf_label=None, qabd_enabled=True):
-        """نافذة تعديل موحّدة لأي حركة في شاشات العمليات (صرف/قبض/مسترجع الأشجار/عدد الأشجار/البيان)"""
+        """نافذة تعديل موحّدة لصف في شاشات العمليات — أفقية مثل صف الإدخال: رقم الصف، والصرف والقبض
+        (ومسترجع الأشجار وعدد الأشجار)، ورقم التشغيل والتاريخ والبيان. Enter والأسهم بين الخانات، وEnter
+        في آخر خانة يحفظ.
+
+          • ما تعرضه الخانة = ما في الجدول: مجموع حركات النوع في الصف، والحفظ يجعلها حركة واحدة
+            بالقيمة المكتوبة (كانت تعرض أول حركة وحدها فيبقى في الصف ما لم يُعدَّل ويخالف ما كُتب).
+          • لا يُنقل الصف إلى رقم صف مستخدم في القسم نفسه (كان الصفّان يندمجان).
+          • الحفظ خطوة تراجع واحدة."""
         if not self.check_edit_permission():
             return
         invs = [self.invoices[i] for i in ids if i in self.invoices]
         if not invs:
             messagebox.showwarning("تنبيه", "الحركة المحددة لم تعد موجودة. حدّث الشاشة وحاول مجدداً.")
             return
-        # القبض الثاني للصف: مسترجع الأشجار (الكاستنج) أو الليزر (بوليش 1)
+        # القبض الثاني للصف: مسترجع الأشجار (الكاستنج)
         row_extra = self.stage_row_extra(qabd_type, recover_name)
-        rec_inv = next((i for i in invs if row_extra and i.get("الاسم") == row_extra[0]
-                        and (i.get("row_number", "") or "")), None)
+        rec_invs = [i for i in invs if row_extra and i.get("الاسم") == row_extra[0]
+                    and (i.get("row_number", "") or "")]
+        rec_ids = {i["رقم الفاتورة"] for i in rec_invs}
+        rest = [i for i in invs if i["رقم الفاتورة"] not in rec_ids]
         # بيانات الصف من حركة الصرف/القبض لا من القبض الثاني (له اسمه الخاص)
-        ref = next((i for i in invs if i is not rec_inv), invs[0])
+        ref = rest[0] if rest else invs[0]
         ref_dt = ref["التاريخ"]
         ref_name = ref["الاسم"]
         ref_row = ref.get("row_number", "") or ""
         # أي حركة جديدة تُضاف للصف بالتعديل تبقى في فترة الصف نفسها، لا الفترة المعروضة
         ref_period = self.inv_period(ref)
-        # الليزر صرفٌ أيضاً: لا يُخلط بصرف الصف نفسه
-        sarf_inv = next((i for i in invs if i["النوع"] == madin_type and i is not rec_inv), None)
-        # مسترجع الأشجار قبضٌ أيضاً: لا يُخلط بقبض الصف نفسه
-        qabd_inv = next((i for i in invs if i["النوع"] == qabd_type and i is not rec_inv), None)
-        base_inv = sarf_inv or qabd_inv
+        sarf_invs = [i for i in rest if i["النوع"] == madin_type]
+        qabd_invs = [i for i in rest if i["النوع"] == qabd_type]
+        main_ids = {i["رقم الفاتورة"] for i in sarf_invs + qabd_invs}
+        base_inv = (sarf_invs or qabd_invs or [None])[0]
         common_note = (base_inv.get("البيان") or "") if base_inv else ""
+        ref_set = (base_inv.get("set_number", "") or "") if base_inv else ""
         cur_trees = max([(i.get("trees_count", 0.0) or 0.0) for i in invs] or [0.0])
+
+        def total(lst):
+            return round(sum(i.get("الوزن", 0.0) or 0.0 for i in lst), 2)
+
+        def shown(v):
+            return f"{v:g}" if v else "0"
 
         win = ctk.CTkToplevel(self)
         win.title(title)
-        win.geometry("540x660" if (with_trees and row_extra) else "540x610" if (with_trees or row_extra) else "540x545")
+        win.resizable(True, False)
         win.transient(self)
-        win.grab_set()
-        win.focus_force()
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        head = ctk.CTkFrame(win, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(14, 4))
+        ctk.CTkLabel(head, text=f"✏️ تعديل حركة الصف ({ref_row or 'بدون ترقيم'}) — {ref_name}",
+                     font=(UI_FONT, 18, "bold"), text_color=UI_TITLE).pack(side="right")
+        if len(sarf_invs) > 1 or len(qabd_invs) > 1 or len(rec_invs) > 1:
+            # صف فيه أكثر من حركة للنوع نفسه (دُمج قبل هذا الإصلاح، أو أُضيف له مرتين): الخانة مجموعها
+            ctk.CTkLabel(head, text="ℹ️ في الصف أكثر من حركة للنوع نفسه — الخانة مجموعها، والحفظ يجعلها حركة واحدة",
+                         font=(UI_FONT, 12, "bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="left")
 
-        ctk.CTkLabel(win, text=f"تعديل حركة الصف ({ref_row or 'بدون ترقيم'}) — {ref_name}",
-                     font=(UI_FONT, 17, "bold"), text_color="#d4af37").pack(pady=10)
-
-        frm = ctk.CTkFrame(win)
-        frm.pack(fill="x", padx=20, pady=10)
-
-        ctk.CTkLabel(frm, text=sarf_label or "الصرف (مدين):", font=(UI_FONT, 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
-        ent_sarf = ctk.CTkEntry(frm, justify="center", width=130)
-        ent_sarf.insert(0, f"{sarf_inv['الوزن']:g}" if sarf_inv else "0")
-        ent_sarf.grid(row=0, column=0, padx=10, pady=8)
-
-        ent_qabd = ctk.CTkEntry(frm, justify="center", width=130)
-        ent_qabd.insert(0, f"{qabd_inv['الوزن']:g}" if qabd_inv else "0")
+        specs = [("رقم الصف:", ref_row, False), (sarf_label or "الصرف (مدين):", shown(total(sarf_invs)), False)]
         if qabd_enabled:        # صف الليزر في بوليش 1: صرفٌ وحده، بلا قبض
-            ctk.CTkLabel(frm, text="القبض (دائن):", font=(UI_FONT, 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
-            ent_qabd.grid(row=1, column=0, padx=10, pady=8)
-
-        ent_trees = None
-        if with_trees:
-            ctk.CTkLabel(frm, text="عدد الأشجار:", font=(UI_FONT, 15, "bold")).grid(row=3, column=1, padx=10, pady=8)
-            ent_trees = ctk.CTkEntry(frm, justify="center", width=130)
-            ent_trees.insert(0, f"{cur_trees:g}" if cur_trees else "")
-            ent_trees.grid(row=3, column=0, padx=10, pady=8)
-
-        ent_rec = None
+            specs.append(("القبض (دائن):", shown(total(qabd_invs)), False))
         if row_extra:
-            ctk.CTkLabel(frm, text=f"{row_extra[1]}:", font=(UI_FONT, 15, "bold")).grid(row=2, column=1, padx=10, pady=8)
-            ent_rec = ctk.CTkEntry(frm, justify="center", width=130)
-            ent_rec.insert(0, f"{rec_inv['الوزن']:g}" if rec_inv else "0")
-            ent_rec.grid(row=2, column=0, padx=10, pady=8)
+            specs.append((f"{row_extra[1]}:", shown(total(rec_invs)), False))
+        if with_trees:
+            specs.append(("عدد الأشجار:", f"{cur_trees:g}" if cur_trees else "", False))
+        specs += [("رقم التشغيل:", ref_set, False), ("التاريخ:", str(ref_dt)[:10], False),
+                  ("البيان:", common_note, True, 2)]
+        entries = self.build_horizontal_edit_fields(win, specs, per_row=10)
+        ent_row_no, ent_sarf = entries[0], entries[1]
+        pos = 2
+        ent_qabd = ent_rec = ent_trees = None
+        if qabd_enabled:
+            ent_qabd, pos = entries[pos], pos + 1
+        if row_extra:
+            ent_rec, pos = entries[pos], pos + 1
+        if with_trees:
+            ent_trees, pos = entries[pos], pos + 1
+        ent_set_no, ent_date, ent_note = entries[pos], entries[pos + 1], entries[pos + 2]
 
-        # حقول تعريف الحركة: قابلة للتعديل لتصحيح أي خطأ في الترقيم أو التاريخ
-        ref_set = (base_inv.get("set_number", "") or "") if base_inv else ""
-
-        ctk.CTkLabel(frm, text="رقم الصف:", font=(UI_FONT, 15, "bold")).grid(row=4, column=1, padx=10, pady=8)
-        ent_row_no = ctk.CTkEntry(frm, justify="center", width=130)
-        ent_row_no.insert(0, ref_row)
-        ent_row_no.grid(row=4, column=0, padx=10, pady=8)
-
-        ctk.CTkLabel(frm, text="رقم التشغيل:", font=(UI_FONT, 15, "bold")).grid(row=5, column=1, padx=10, pady=8)
-        ent_set_no = ctk.CTkEntry(frm, justify="center", width=130)
-        ent_set_no.insert(0, ref_set)
-        ent_set_no.grid(row=5, column=0, padx=10, pady=8)
-
-        ctk.CTkLabel(frm, text="التاريخ:", font=(UI_FONT, 15, "bold")).grid(row=6, column=1, padx=10, pady=8)
-        ent_date = ctk.CTkEntry(frm, justify="center", width=130)
-        ent_date.insert(0, str(ref_dt)[:10])
-        ent_date.grid(row=6, column=0, padx=10, pady=8)
-
-        ctk.CTkLabel(win, text="البيان:", font=(UI_FONT, 15, "bold")).pack(pady=(8, 0))
-        ent_note = ctk.CTkEntry(win, justify="right", width=380)
-        ent_note.insert(0, common_note)
-        ent_note.pack(pady=5)
+        def num(ent, default=0.0):
+            return round(float(ent.get().strip() or 0), 2) if ent is not None else default
 
         def save_edit():
             try:
-                new_sarf = round(float(ent_sarf.get().strip() or 0), 2)
-                new_qabd = round(float(ent_qabd.get().strip() or 0), 2)
-                new_trees = round(float(ent_trees.get().strip() or 0), 2) if ent_trees is not None else cur_trees
-                new_rec = round(float(ent_rec.get().strip() or 0), 2) if ent_rec is not None else 0.0
+                new_sarf = num(ent_sarf)
+                new_qabd = num(ent_qabd)
+                new_trees = num(ent_trees, cur_trees) if ent_trees is not None else cur_trees
+                new_rec = num(ent_rec)
             except ValueError:
                 messagebox.showerror("خطأ", "الرجاء إدخال أرقام صحيحة.", parent=win)
                 return
@@ -9360,31 +9485,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if len(new_date) < 10 or new_date[4] != "-":
                 messagebox.showerror("خطأ", "الرجاء إدخال التاريخ بالصيغة YYYY-MM-DD.", parent=win)
                 return
+            # لا يُنقل الصف إلى رقم صف مستخدم في القسم نفسه: كان الصفّان يندمجان فتختلط بياناتهما
+            if self.stage_row_number_taken(new_row_no, ref_row, ref_name, madin_type, qabd_type,
+                                           ref_period, [i["رقم الفاتورة"] for i in invs], recover_name):
+                self.warn_row_number_taken(new_row_no, parent=win)
+                ent_row_no.focus_set()
+                return
             # نُبقي وقت الحركة كما هو ما دام اليوم لم يتغيّر، فلا يتبدّل ترتيبها
             # المحاسبي بلا داعٍ داخل اليوم نفسه
             old_time = str(ref_dt)[11:] or datetime.datetime.now().strftime("%H:%M:%S")
             new_dt = f"{new_date} {old_time}"
 
+            # الحفظ كله خطوة تراجع واحدة (Ctrl+Z يعيد الصف كما كان)
+            self.push_undo(f"تعديل الصف ({ref_row or 'بدون ترقيم'}) — {ref_name}")
             any_blocked = False
 
-            def upsert(existing, value, op_type):
+            def upsert(existing_list, value, op_type, name=ref_name, note=new_note, set_no=new_set_no, trees=None):
+                """القيمة المكتوبة = النوع كله في الصف: حركة واحدة بها، وما زاد عليها يُحذف"""
                 nonlocal any_blocked
+                existing = existing_list[0] if existing_list else None
+                for dup in existing_list[1:]:
+                    if not self.delete_invoice_from_db(dup["رقم الفاتورة"]):
+                        any_blocked = True
+                trees = new_trees if trees is None else trees
                 if value > 0:
                     if existing:
-                        existing["الوزن"] = value
-                        existing["البيان"] = new_note
-                        existing["trees_count"] = new_trees
-                        existing["row_number"] = new_row_no
-                        existing["set_number"] = new_set_no
-                        existing["التاريخ"] = new_dt
+                        existing.update({"الوزن": value, "البيان": note, "trees_count": trees, "النوع": op_type,
+                                         "row_number": new_row_no, "set_number": set_no, "التاريخ": new_dt})
                         if not self.save_invoice_to_db(existing["رقم الفاتورة"], existing):
                             any_blocked = True
                     else:
                         self.invoice_counter += 1
-                        inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt, "الاسم": ref_name,
-                                    "النوع": op_type, "الوزن": value, "البيان": new_note, "settled_status": "ACTIVE",
-                                    "trees_count": new_trees, "قبل": 0.0, "بعد": 0.0,
-                                    "set_number": new_set_no, "row_number": new_row_no, "period": ref_period}
+                        inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt, "الاسم": name,
+                                    "النوع": op_type, "الوزن": value, "البيان": note, "settled_status": "ACTIVE",
+                                    "trees_count": trees, "قبل": 0.0, "بعد": 0.0,
+                                    "set_number": set_no, "row_number": new_row_no, "period": ref_period}
                         self.invoices[self.invoice_counter] = inv_data
                         if not self.save_invoice_to_db(self.invoice_counter, inv_data):
                             any_blocked = True
@@ -9392,36 +9527,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if not self.delete_invoice_from_db(existing["رقم الفاتورة"]):
                         any_blocked = True
 
-            upsert(sarf_inv, new_sarf, madin_type)
-            upsert(qabd_inv, new_qabd, qabd_type)
+            upsert(sarf_invs, new_sarf, madin_type)
+            upsert(qabd_invs, new_qabd, qabd_type)
 
             if row_extra:
-                # مسترجع الأشجار/الليزر: قبض من فاقد الصف نفسه (لا صلة له بحساب المسترجع)
+                # مسترجع الأشجار: قبض من فاقد الصف نفسه (لا صلة له بحساب المسترجع)
                 extra_type = madin_type if row_extra[2] > 0 else qabd_type
-                if new_rec > 0:
-                    if rec_inv:
-                        rec_inv.update({"الوزن": new_rec, "النوع": extra_type,
-                                        "row_number": new_row_no, "التاريخ": new_dt})
-                        if not self.save_invoice_to_db(rec_inv["رقم الفاتورة"], rec_inv):
-                            any_blocked = True
-                    else:
-                        self.invoice_counter += 1
-                        inv_data = {"رقم الفاتورة": self.invoice_counter, "التاريخ": new_dt,
-                                    "الاسم": row_extra[0], "النوع": extra_type, "الوزن": new_rec,
-                                    "البيان": row_extra[0], "settled_status": "ACTIVE", "trees_count": 0.0,
-                                    "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": new_row_no,
-                                    "period": ref_period}
-                        self.invoices[self.invoice_counter] = inv_data
-                        if not self.save_invoice_to_db(self.invoice_counter, inv_data):
-                            any_blocked = True
-                elif rec_inv:
-                    if not self.delete_invoice_from_db(rec_inv["رقم الفاتورة"]):
-                        any_blocked = True
+                rec_note = (rec_invs[0].get("البيان") if rec_invs else "") or row_extra[0]
+                upsert(rec_invs, new_rec, extra_type, name=row_extra[0], note=rec_note, set_no="", trees=0.0)
 
             # أي حركة أخرى في نفس الصف (غير الصرف والقبض) تتبع الترقيم الجديد
             # أيضاً، وإلا انفصلت عن صفها وظهرت كصف مستقل بعد التعديل
             for extra in invs:
-                if extra is sarf_inv or extra is qabd_inv or extra is rec_inv:
+                if extra["رقم الفاتورة"] in main_ids or extra["رقم الفاتورة"] in rec_ids:
+                    continue
+                if extra["رقم الفاتورة"] not in self.invoices:
                     continue
                 extra["row_number"] = new_row_no
                 extra["set_number"] = new_set_no
@@ -9436,20 +9556,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if status_text and hasattr(self, 'lbl_op_status'):
                 self.lbl_op_status.configure(text=status_text)
                 self.after(2500, lambda: self.lbl_op_status.configure(text=""))
-            messagebox.showinfo("تم", "تم تحديث الحركة بنجاح.")
+            self.toast("✅ تم تحديث الصف — وللتراجع: ↩️ تراجع (Ctrl+Z)", "success")
 
-        # التنقّل بين الخانات: Enter و↑ ↓، وEnter في آخر خانة يحفظ مباشرة
-        _nav = [e for e in (ent_sarf, ent_qabd if qabd_enabled else None, ent_rec,
-                            ent_trees if with_trees else None,
-                            ent_row_no, ent_set_no, ent_date, ent_note) if e is not None]
-        self.bind_vertical_navigation(_nav, on_last=lambda: save_edit(), window=win)
-        try:
-            _nav[0].focus_set()
-        except Exception:
-            pass
-
-        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
-                      hover_color="#27ae60", height=42, command=save_edit).pack(pady=15)
+        self.finish_horizontal_edit_window(win, entries, save_edit, focus=ent_sarf)
 
     # ترتيب الشاشات في الشريط الجانبي كما طلبه المستخدم
     SIDEBAR_PRIMARY = [
@@ -9899,7 +10008,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_search_all.pack(side="right", padx=(0, 6))
         HoverTip(btn_search_all, "بحث شامل (Ctrl+F): حساب، رقم تشغيل، فاتورة مبيعات، رقم حركة")
 
-        # تراجع عام عن آخر حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
+        # تراجع عام خطوة بخطوة: إضافة أو تعديل أو حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
         if not IS_ADMIN_BUILD:
             btn_global_undo = ctk.CTkButton(
                 top_frame, text="↩️ تراجع", width=96, height=36, corner_radius=10,
@@ -9908,7 +10017,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 hover_color=(UI["surface_alt"], "#232A33"), command=self.undo_last_action)
             btn_global_undo.pack(side="right", padx=4, pady=6)
             self.register_undo_button(btn_global_undo, compact=True)
-            HoverTip(btn_global_undo, "تراجع عن آخر حذف أو إقفال (Ctrl+Z) — آخر ٢٠ خطوة")
+            HoverTip(btn_global_undo, "تراجع خطوة بخطوة (Ctrl+Z) عن آخر إضافة أو تعديل أو حذف أو إقفال — آخر ٥٠ خطوة")
 
         # صف أدوات واحد: كل الأزرار جنباً إلى جنب أفقياً بلا تبعثر رأسي
         period_column = ctk.CTkFrame(top_frame, fg_color="transparent")
@@ -12387,26 +12496,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         win = ctk.CTkToplevel(self)
         win.title(title)
-        win.geometry("460x360")
+        win.resizable(True, False)
         win.transient(self)
-        win.grab_set()
-        win.focus_force()
-        ctk.CTkLabel(win, text=f"{title} — {kind}", font=(UI_FONT, 15, "bold"),
-                     text_color="#d4af37", wraplength=420).pack(pady=(14, 8))
-        frm = ctk.CTkFrame(win)
-        frm.pack(fill="x", padx=20, pady=6)
-        ctk.CTkLabel(frm, text="الوزن:", font=(UI_FONT, 15, "bold")).grid(row=0, column=1, padx=10, pady=8)
-        ent_w = ctk.CTkEntry(frm, justify="center", width=150)
-        ent_w.insert(0, f"{inv.get('الوزن', 0):g}")
-        ent_w.grid(row=0, column=0, padx=10, pady=8)
-        ctk.CTkLabel(frm, text="التاريخ:", font=(UI_FONT, 15, "bold")).grid(row=1, column=1, padx=10, pady=8)
-        ent_date = ctk.CTkEntry(frm, justify="center", width=150)
-        ent_date.insert(0, str(inv.get("التاريخ", ""))[:10])
-        ent_date.grid(row=1, column=0, padx=10, pady=8)
-        ctk.CTkLabel(win, text="البيان:", font=(UI_FONT, 15, "bold")).pack(pady=(6, 0))
-        ent_note = ctk.CTkEntry(win, justify="right", width=360)
-        ent_note.insert(0, inv.get("البيان") or "")
-        ent_note.pack(pady=5)
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        ctk.CTkLabel(win, text=f"✏️ {title} — {kind}", font=(UI_FONT, 17, "bold"),
+                     text_color=UI_TITLE).pack(anchor="e", padx=18, pady=(14, 4))
+        ent_w, ent_date, ent_note = self.build_horizontal_edit_fields(win, [
+            ("الوزن:", f"{inv.get('الوزن', 0):g}", False), ("التاريخ:", str(inv.get("التاريخ", ""))[:10], False),
+            ("البيان:", inv.get("البيان") or "", True, 3)], per_row=5)
 
         def save_edit():
             try:
@@ -12421,6 +12518,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if len(new_date) < 10 or new_date[4] != "-":
                 messagebox.showerror("خطأ", "الرجاء إدخال التاريخ بالصيغة YYYY-MM-DD.", parent=win)
                 return
+            self.push_undo(f"تعديل عملية مسترجع ({inv.get('الاسم', '')})")
             if new_w <= 0:
                 if not messagebox.askyesno("تأكيد", "الوزن صفر — ستُحذف هذه العملية.\nهل تريد المتابعة؟", parent=win):
                     return
@@ -12439,10 +12537,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.lbl_op_status.configure(text=status_text)
                 self.after(2500, lambda: self.lbl_op_status.configure(text=""))
 
-        self.bind_vertical_navigation([ent_w, ent_date, ent_note], on_last=lambda: save_edit(), window=win)
-        ent_w.focus_set()
-        ctk.CTkButton(win, text="حفظ التعديلات 💾", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
-                      hover_color="#27ae60", height=42, command=save_edit).pack(pady=12)
+        self.finish_horizontal_edit_window(win, [ent_w, ent_date, ent_note], save_edit, focus=ent_w, width=760)
 
     # ---------------------------------------------------------------
     # ------------------------- شاشة التلميع -------------------------
@@ -13520,6 +13615,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 messagebox.showwarning("تنبيه", "لم يعد لهذا الصف حركات مسجّلة.", parent=win)
                 win.destroy()
                 return
+            # للعامل الآخر صف بالرقم نفسه: النقل كان يدمج الصفّين فتختلط بياناتهما
+            if gkey and self.worker_row_number_taken(new_worker, gkey, "", self.current_display_month, target_ids):
+                messagebox.showwarning(
+                    "رقم الصف مستخدم",
+                    f"لدى ({new_worker}) صف بالرقم ({gkey}) فيه بيانات.\n\n"
+                    "لا تُنقل حركات الصف إليه حتى لا تختلط بيانات الصفّين — غيّر رقم الصف أولاً ثم انقله.",
+                    parent=win)
+                return
+            self.push_undo(f"نقل الصف ({gkey or 'بدون ترقيم'}) إلى ({new_worker})")
             blocked = False
             for inv_id in target_ids:
                 updated = dict(self.invoices[inv_id])
@@ -13579,11 +13683,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     }
 
     def open_row_full_edit_dialog(self, worker_name, cat, row_key):
-        """تعديل كل خانات صف واحد في كشف المصنعين/المركبين.
+        """تعديل كل خانات صف واحد في كشف المصنعين/المركبين — نافذة أفقية مثل صف الإدخال.
 
-        كل عملية في الصف لها حركة مستقلة في الدفاتر. النافذة تعرض قيمة كل
-        عملية، والحفظ: يُحدّث الموجود، ويُنشئ ما أُدخل جديداً، ويحذف ما صُفِّر —
-        فيبقى الصف مطابقاً لما يظهر في الجدول تماماً.
+        كل عملية في الصف لها حركة مستقلة في الدفاتر. الخانة تعرض مجموع حركات العملية في الصف
+        (كما في الجدول)، والحفظ: يُحدّث الموجود (حركة واحدة بالقيمة المكتوبة)، ويُنشئ ما أُدخل جديداً،
+        ويحذف ما صُفِّر — فيبقى الصف مطابقاً لما يظهر في الجدول تماماً. ولا يُنقل الصف إلى رقم صف
+        مستخدم للعامل نفسه (كان الصفّان يندمجان). الحفظ خطوة تراجع واحدة.
         """
         if not self.check_edit_permission():
             return
@@ -13612,59 +13717,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         by_type = {}
         for inv in row_invs:
-            by_type.setdefault(inv.get("النوع"), inv)
+            by_type.setdefault(inv.get("النوع"), []).append(inv)
+        merged = any(len(v) > 1 for t, v in by_type.items() if t in {f for f, _ in fields})
+
+        def shown(op_type):
+            lst = by_type.get(op_type) or []
+            if not lst:
+                return ""
+            if op_type == "العيار بعد الفحص":      # عيار لا وزن: لا يُجمع
+                return f"{lst[0]['الوزن']:g}"
+            return f"{round(sum(i.get('الوزن', 0.0) or 0.0 for i in lst), 2):g}"
 
         win = ctk.CTkToplevel(self)
         win.title(f"تعديل الصف ({row_key or 'بدون ترقيم'}) — {worker_name}")
-        win.geometry("560x680")
+        win.resizable(True, False)
         win.transient(self)
-        win.grab_set()
-        win.focus_force()
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        head = ctk.CTkFrame(win, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(14, 4))
+        ctk.CTkLabel(head, text=f"✏️ تعديل كل خانات الصف ({row_key or 'بدون ترقيم'}) — {worker_name} — {cat}",
+                     font=(UI_FONT, 18, "bold"), text_color=UI_TITLE).pack(side="right")
+        if merged:
+            ctk.CTkLabel(head, text="ℹ️ في الصف أكثر من حركة للعملية نفسها — الخانة مجموعها، والحفظ يجعلها حركة واحدة",
+                         font=(UI_FONT, 12, "bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="left")
 
-        ctk.CTkLabel(win, text=f"✏️ تعديل كل خانات الصف ({row_key or 'بدون ترقيم'})",
-                     font=(UI_FONT, 17, "bold"), text_color="#d4af37").pack(pady=(14, 2))
-        ctk.CTkLabel(win, text=f"{worker_name} — {cat}", font=(UI_FONT, 12),
-                     text_color="#8b8f95").pack(pady=(0, 8))
-
-        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=18, pady=4)
-
-        def add_row(label_text, value=""):
-            holder = ctk.CTkFrame(body, fg_color="transparent")
-            holder.pack(fill="x", pady=4)
-            ctk.CTkLabel(holder, text=label_text, font=(UI_FONT, 14, "bold"),
-                         width=160, anchor="e").pack(side="right", padx=8)
-            ent = ctk.CTkEntry(holder, justify="center", font=(UI_FONT, 14), width=150, height=34)
-            ent.insert(0, value)
-            ent.pack(side="right")
-            return ent
-
-        ent_row_no = add_row("رقم الصف", row_key)
-        ent_set_no = add_row("رقم التشغيل", cur_set)
-        ent_date = add_row("التاريخ", str(ref_dt)[:10])
-
-        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=8)
-
-        entries = {}
-        for op_type, label in fields:
-            existing = by_type.get(op_type)
-            val = f"{existing['الوزن']:g}" if existing else ""
-            entries[op_type] = add_row(label, val)
-
-        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=8)
-        ent_note = add_row("البيان", cur_note)
-
-        # التنقّل رأسي في نافذة التعديل: Enter و↑ ↓، وEnter في آخر خانة يحفظ
-        nav_all = ([ent_row_no, ent_set_no, ent_date]
-                   + [entries[t] for t, _ in fields] + [ent_note])
-        self.bind_vertical_navigation(nav_all, on_last=lambda: save_row(), window=win)
-        self.bind_arrow_navigation(nav_all)
-
-        # التركيز يبدأ في أول خانة، فالتنقّل يعمل فور فتح النافذة
-        try:
-            nav_all[0].focus_set()
-        except Exception:
-            pass
+        specs = ([("رقم الصف", row_key, False), ("رقم التشغيل", cur_set, False)]
+                 + [(label, shown(op_type), False) for op_type, label in fields]
+                 + [("التاريخ", str(ref_dt)[:10], False, 2), ("البيان", cur_note, True, 2)])
+        all_entries = self.build_horizontal_edit_fields(win, specs, per_row=99)
+        ent_row_no, ent_set_no = all_entries[0], all_entries[1]
+        entries = {op_type: all_entries[2 + i] for i, (op_type, _l) in enumerate(fields)}
+        ent_date, ent_note = all_entries[-2], all_entries[-1]
 
         def save_row():
             new_row_no = ent_row_no.get().strip()
@@ -13692,6 +13775,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     return
                 values[op_type] = v
 
+            # لا يُنقل الصف إلى رقم صف مستخدم للعامل نفسه: كان الصفّان يندمجان فتختلط بياناتهما
+            if self.worker_row_number_taken(worker_name, new_row_no, row_key, month,
+                                            [i["رقم الفاتورة"] for i in row_invs]):
+                self.warn_row_number_taken(new_row_no, parent=win)
+                ent_row_no.focus_set()
+                return
+
             if all(v <= 0 for v in values.values()):
                 if not messagebox.askyesno(
                         "تأكيد", "كل الخانات صفر — سيتم حذف حركات هذا الصف بالكامل.\n"
@@ -13702,10 +13792,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             old_time = str(ref_dt)[11:] or datetime.datetime.now().strftime("%H:%M:%S")
             new_dt = f"{new_date} {old_time}"
 
+            # الحفظ كله خطوة تراجع واحدة (Ctrl+Z يعيد الصف كما كان)
+            self.push_undo(f"تعديل الصف ({row_key or 'بدون ترقيم'}) — {worker_name}")
             blocked = False
             for op_type, _label in fields:
                 value = values[op_type]
-                existing = by_type.get(op_type)
+                existing_list = by_type.get(op_type) or []
+                existing = existing_list[0] if existing_list else None
+                # القيمة المكتوبة = العملية كلها في الصف: حركة واحدة بها، وما زاد يُحذف
+                for dup in existing_list[1:]:
+                    if not self.delete_invoice_from_db(dup["رقم الفاتورة"]):
+                        blocked = True
 
                 # العيار قد يكون صفراً بشكل مشروع، فلا يُحذف بسبب ذلك
                 keep_zero = (op_type == "العيار بعد الفحص")
@@ -13751,10 +13848,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return
             self.recalculate_all()
             win.destroy()
-            messagebox.showinfo("تم", "تم تحديث كل خانات الصف بنجاح.")
+            self.toast("✅ تم تحديث كل خانات الصف — وللتراجع: ↩️ تراجع (Ctrl+Z)", "success")
 
-        ctk.CTkButton(win, text="💾 حفظ التعديلات", font=(UI_FONT, 16, "bold"), fg_color="#2ecc71",
-                      hover_color="#27ae60", height=44, width=220, command=save_row).pack(pady=12)
+        self.finish_horizontal_edit_window(win, all_entries, save_row, focus=all_entries[2], width=1240)
 
     def op_ledger_edit_selected(self):
         if not self.check_edit_permission():
@@ -18302,10 +18398,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # التنقل بزر Enter بين **كل** الخانات (من التاريخ حتى آخر خانة)، وإضافة
         # السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة). الفاتورة المعلّقة
         # تُفتح في هذه الخانات نفسها، فالتنقل فيها هو هذا نفسه
+        # «البيان» آخر خانات السطر: Enter في خياس المركب ينقل إليه (بيان اختياري لرقم التشغيل)،
+        # وEnter فيه يضيف السطر — كان السطر يُضاف من خياس المركب قبل الوصول إلى البيان
         nav_fields = [self.sale_date, self.sale_invoice_num, self.sale_name, self.sale_note,
                       self.sale_set_number, self.sale_gold, self.sale_gems,
                       self.sale_stones, self.sale_diamond, self.sale_stones_discount, self.sale_khayas,
-                      self.sale_khayas_polish, self.sale_khayas_assembler]
+                      self.sale_khayas_polish, self.sale_khayas_assembler, self.sale_row_note]
         self.sale_nav_fields = nav_fields
         self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row)
 
@@ -18705,9 +18803,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 rows[set_num] = {"set_number": set_num, "row_number": inv.get("row_number", "") or "",
                                  "ذهب": 0.0, "فصوص": 0.0, "أحجار": 0.0, "أحجار بعد الخصم": 0.0,
                                  "الماس": 0.0, "خياس": 0.0, "خياس البوليش": 0.0,
-                                 "خياس المركب": 0.0}
+                                 "خياس المركب": 0.0, "البيان": ""}
                 order.append(set_num)
             r = rows[set_num]
+            # بيان السطر كما حُفظ مع حركاته («مبيعات — بيانه»)
+            if not r["البيان"]:
+                r["البيان"] = self.sale_note_of(inv.get("البيان"))
             if not r["row_number"] and inv.get("row_number"):
                 r["row_number"] = inv.get("row_number")
             t = inv.get("النوع")
@@ -18887,6 +18988,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "سيتم إعادة حساب الخزينة وكل الحسابات المرتبطة تلقائياً. هل تريد المتابعة؟"):
             return
 
+        self.push_undo(f"حذف فاتورة المبيعات ({manual_no or '-'})")
         blocked = False
         for r in list(recs):
             if not self.delete_invoice_from_db(r["رقم الفاتورة"]):
@@ -18895,7 +18997,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         self.recalculate_all()
         self.refresh_sales_ops_table()
-        messagebox.showinfo("تم الحذف", "تم حذف الفاتورة بالكامل وتحديث كل الأرصدة والحسابات.")
+        messagebox.showinfo("تم الحذف", "تم حذف الفاتورة بالكامل وتحديث كل الأرصدة والحسابات.\n"
+                                        "وللتراجع عن الحذف: ↩️ تراجع (Ctrl+Z).")
 
     def edit_selected_sale_invoice(self):
         key = self.get_selected_sale_invoice_key("تعديل")
@@ -18919,8 +19022,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # وأنت على فترة أخرى (كانت تُعاد كتابتها بالفترة المعروضة فتنتقل إليها)
         old_period = self.inv_period(min(recs, key=lambda x: x.get("رقم الفاتورة", 0)))
         edit_rows = self.sale_records_to_rows(recs)
-        old_note = next((n for n in (self.sale_note_of(r.get("البيان")) for r in
-                                     sorted(recs, key=lambda x: x.get("رقم الفاتورة", 0))) if n), "")
+        # بيان الفاتورة = البيان الذي تشترك فيه أكثر سطورها؛ وسطرٌ كُتب له بيان خاص (عند «إضافة سطر»)
+        # يبقى ببيانه — كان الحفظ يستبدل بيانات السطور كلها ببيان الفاتورة
+        row_notes = [r.get("البيان", "") for r in edit_rows]
+        old_note = max(set(row_notes), key=row_notes.count) if row_notes else ""
+        for r in edit_rows:
+            if r.get("البيان", "") == old_note:
+                r["البيان"] = ""
 
         win = ctk.CTkToplevel(self)
         win.title("تعديل فاتورة مبيعات مرحّلة")
@@ -18985,7 +19093,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         field_defs = [("رقم الصف", "row_number"), ("رقم التشغيل", "set_number"), ("الذهب", "ذهب"),
                       ("الفصوص", "فصوص"), ("الأحجار", "أحجار"), ("الماس", "الماس"),
                       ("الأحجار بعد الخصم", "أحجار بعد الخصم"), ("خياس بوليش 2", "خياس"),
-                      ("خياس البوليش", "خياس البوليش"), ("خياس المركب", "خياس المركب")]
+                      ("خياس البوليش", "خياس البوليش"), ("خياس المركب", "خياس المركب"), ("البيان", "البيان")]
         n_fields = len(field_defs)
         for c in range(n_fields):
             fields_row.grid_columnconfigure(c, weight=1, uniform="inv_edit_fields")
@@ -18993,7 +19101,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             col = n_fields - 1 - i                  # من اليمين لليسار
             ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=110).grid(
                 row=0, column=col, padx=4, pady=(8, 3), sticky="s")
-            ent = ctk.CTkEntry(fields_row, justify="center", font=(UI_FONT, 14), width=60, height=32)
+            ent = ctk.CTkEntry(fields_row, justify="right" if key_name == "البيان" else "center",
+                               font=(UI_FONT, 14), width=60, height=32)
             ent.grid(row=1, column=col, padx=4, pady=(0, 10), sticky="ew")
             entries[key_name] = ent
 
@@ -19054,7 +19163,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         table_frame.pack(fill="both", expand=True, padx=18, pady=(4, 4))
 
         cols = ("رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم",
-                "الماس", "خياس بوليش 2", "خياس البوليش", "الصافي")
+                "الماس", "خياس بوليش 2", "خياس البوليش", "الصافي", "البيان")
         rows_tree = self.create_standard_treeview(table_frame, cols, height=9)
         rows_tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
 
@@ -19062,7 +19171,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         def read_fields():
             vals = {"set_number": entries["set_number"].get().strip(),
-                    "row_number": entries["row_number"].get().strip()}
+                    "row_number": entries["row_number"].get().strip(),
+                    "البيان": entries["البيان"].get().strip()}
             for k in ("ذهب", "فصوص", "أحجار", "أحجار بعد الخصم", "الماس", "خياس",
                       "خياس البوليش", "خياس المركب"):
                 txt = entries[k].get().strip()
@@ -19109,13 +19219,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     f"{r.get('الماس', 0):.2f}" if r.get("الماس") else "-",
                     f"{r.get('خياس', 0):.2f}" if r.get("خياس") else "-",
                     f"{r.get('خياس البوليش', 0):.2f}" if r.get("خياس البوليش") else "-",
-                    f"{net_r:.2f}",
+                    f"{net_r:.2f}", r.get("البيان", "") or "-",
                 ))
             if edit_rows:
                 rows_tree.insert("", "end", values=(
                     "الإجمالي", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
                     f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['الماس']:.2f}", f"{tot['خياس']:.2f}",
-                    f"{tot['خياس البوليش']:.2f}", f"{tot_net:.2f}"), tags=("total_tag",))
+                    f"{tot['خياس البوليش']:.2f}", f"{tot_net:.2f}", "-"), tags=("total_tag",))
             # أعمدة الجدول بعرض النافذة تماماً (لا تجاوز ولا فراغ)
             self.fit_columns_to_content(rows_tree, "sale_invoice_editor", min_width=50, max_width=170)
 
@@ -19138,7 +19248,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for k, ent in entries.items():
                 ent.delete(0, 'end')
                 val = r.get(k, "")
-                ent.insert(0, str(val) if k in ("set_number", "row_number") else (f"{val:g}" if val else ""))
+                ent.insert(0, str(val or "") if k in ("set_number", "row_number", "البيان") else (f"{val:g}" if val else ""))
             selected_idx["i"] = idx
             lbl_state.configure(text=f"✏️ يتم الآن تعديل السطر رقم ({idx + 1}) — اضغط (حفظ السطر) بعد التعديل")
             check_loaded_assembler(r)
@@ -19222,6 +19332,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             new_full_dt = f"{new_date} {old_time}" if new_date == old_date[:10] else f"{new_date} {datetime.datetime.now().strftime('%H:%M:%S')}"
 
             # حذف الحركات القديمة ثم إعادة كتابتها بالكامل — يضمن تطابق الحسابات مع الفاتورة بعد التعديل
+            # (الحذف وإعادة الكتابة خطوة تراجع واحدة تعيد الفاتورة كما كانت)
+            self.push_undo(f"تعديل فاتورة المبيعات ({old_manual_no or '-'})")
             for r in list(self.get_sale_invoice_records(key)):
                 if not self.delete_invoice_from_db(r["رقم الفاتورة"]):
                     messagebox.showerror("تعذّر الحفظ", "تم منع حذف إحدى الحركات القديمة، وأُلغي التعديل حفاظاً على سلامة الحسابات.", parent=win)
@@ -19780,7 +19892,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # لا عمود «الصافي» هنا: يُحسب عند الترحيل ويظهر في شاشة ربح/خسارة الطقم.
         act = self.SALE_ACTION_COL
         cols = (act, "رقم الصف", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الماس",
-                "الأحجار بعد الخصم", "خياس بوليش 2", "بوليش", "مركب", "الوزن القائم", "الوزن المقيد")
+                "الأحجار بعد الخصم", "خياس بوليش 2", "بوليش", "مركب", "الوزن القائم", "الوزن المقيد", "البيان")
         self.pending_sales_tree, _t, reused = self.reuse_or_create_tree(
             self.pending_sales_table_frame, cols, height=16)
         tree = self.pending_sales_tree
@@ -19824,6 +19936,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 cell(row, "أحجار بعد الخصم"), cell(row, "خياس"), cell(row, "خياس البوليش"), cell(row, "خياس المركب"),
                 f"{standing:.2f}" if standing else "-",
                 f"{bound:.2f}" if bound else "-",
+                str(row.get("البيان") or "").strip() or "-",
             ))
 
         if self.pending_sale_rows:
@@ -19831,7 +19944,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "", "الإجمالي", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
                 f"{tot['الماس']:.2f}", f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['خياس']:.2f}",
                 f"{tot['خياس البوليش']:.2f}", f"{tot['خياس المركب']:.2f}",
-                f"{tot['القائم']:.2f}", f"{tot['المقيد']:.2f}"), tags=("total_tag",))
+                f"{tot['القائم']:.2f}", f"{tot['المقيد']:.2f}", "-"), tags=("total_tag",))
 
         self.apply_column_labels(tree, "pending_sales")
         # عمود الإجراءات بلا عنوان وبعرض ثابت يكفي الزرّين — يُضبط **قبل** توزيع
@@ -19926,7 +20039,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     SALE_EDIT_FIELDS = (("رقم التشغيل", "set_number"), ("الذهب", "ذهب"), ("الفصوص", "فصوص"),
                         ("الأحجار", "أحجار"), ("الماس", "الماس"), ("الأحجار بعد الخصم", "أحجار بعد الخصم"),
                         ("خياس بوليش 2", "خياس"), ("خياس البوليش", "خياس البوليش"),
-                        ("خياس المركب", "خياس المركب"))
+                        ("خياس المركب", "خياس المركب"), ("البيان", "البيان"))
+    SALE_EDIT_TEXT_KEYS = ("set_number", "البيان")
 
     def edit_pending_sale_row(self):
         """تعديل كل خانات سطر من الفاتورة الحالية في نافذة أفقية (مثل صف الإدخال نفسه).
@@ -19966,9 +20080,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             col = n - 1 - i                    # من اليمين لليسار
             ctk.CTkLabel(card, text=label, font=(UI_FONT, 13, "bold"), wraplength=120,
                          text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=col, padx=5, pady=(10, 3), sticky="s")
-            ent = ctk.CTkEntry(card, justify="center", font=(UI_FONT, 15), width=88, height=38)
+            ent = ctk.CTkEntry(card, justify="right" if key == "البيان" else "center", font=(UI_FONT, 15),
+                               width=88, height=38)
             val = row.get(key, "")
-            if key == "set_number":
+            if key in self.SALE_EDIT_TEXT_KEYS:
                 ent.insert(0, str(val or ""))
             else:
                 try:
@@ -20026,8 +20141,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def save_row(event=None):
             new_row = dict(row)
             new_row["set_number"] = entries["set_number"].get().strip()
+            new_row["البيان"] = entries["البيان"].get().strip()
             for _label, key in fields:
-                if key == "set_number":
+                if key in self.SALE_EDIT_TEXT_KEYS:
                     continue
                 try:
                     v = round(float(entries[key].get().strip() or 0), 2)
@@ -20127,6 +20243,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         note = note_widget.get().strip() if note_widget is not None else ""
 
         # الترحيل يمر عبر الدالة الموحّدة نفسها المستخدمة في تعديل الفاتورة، لضمان تطابق المعالجة المحاسبية
+        self.push_undo(f"ترحيل فاتورة مبيعات {kind} رقم ({manual_no})")
         committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note, kind=kind)
         self.sales_ops_kind = kind            # «المبيعات الصادرة» تُفتح على شريط نوعها
 
@@ -20180,7 +20297,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     SALE_DRAFT_FIELDS = (("set_number", "sale_set_number"), ("ذهب", "sale_gold"), ("فصوص", "sale_gems"),
                          ("أحجار", "sale_stones"), ("الماس", "sale_diamond"),
                          ("أحجار بعد الخصم", "sale_stones_discount"), ("خياس", "sale_khayas"),
-                         ("خياس البوليش", "sale_khayas_polish"), ("خياس المركب", "sale_khayas_assembler"))
+                         ("خياس البوليش", "sale_khayas_polish"), ("خياس المركب", "sale_khayas_assembler"),
+                         ("البيان", "sale_row_note"))
 
     def list_suspended_sales(self):
         """الفواتير المعلّقة، الأحدث تعديلاً أولاً.
