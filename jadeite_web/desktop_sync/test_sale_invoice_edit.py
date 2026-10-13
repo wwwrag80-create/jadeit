@@ -39,7 +39,9 @@ print("✔ آخر تعديل يُحفظ قبل إعادة كتابة الفات�
 
 hint = member("attach_polish2_hint")
 assert "after = round(sum(num(e) for e in parts), 2)" in hint and "round(after + num(khayas_entry), 2)" in hint
-assert '"<FocusIn>", show' in hint and '"<FocusOut>", hide' in hint
+assert "self.attach_before_after_hint(khayas_entry, host," in hint
+generic = member("attach_before_after_hint")
+assert '"<FocusIn>", show' in generic and '"<FocusOut>", hide' in generic
 assert "self.attach_polish2_hint(self.sale_khayas, tab," in member("build_sales_tab")
 print("✔ تحت «خياس بوليش 2»: قبل = الخياس + الذهب + الفصوص + الأحجار + الماس، وبعد = الذهب + الفصوص + الأحجار + الماس")
 print("\n✅ تعديل فواتير المبيعات الصادرة سليم")

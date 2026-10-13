@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.73.0"
+APP_VERSION = "1.74.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -6833,6 +6833,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # بيانات أُعيد تحميلها (استعادة نسخة مثلاً): خطوات التراجع السابقة لم تعد تخصّها
         self._undo_stack, self._undo_open = [], None
         self._deleted_accounts = None          # قائمة الحسابات المحذوفة من القاعدة المحمّلة
+        self._polish_before_cache = None       # «قبل البوليش» في تتبع رقم التشغيل
         self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
         self.invoices = {}
         self.opening_balance = 0.0
@@ -6866,6 +6867,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.migrate_polish2_names()
         self.neutralize_auto_recovery_closings()
         self.migrate_casting_returns()
+        self.migrate_analysis_name()
         self.migrate_row_extras()
 
     AUTO_RECOVERY_CLOSE_NOTE = "مسترجع — أُلغي: كان إقفالاً تلقائياً عند الوارد (الإقفال بالزر وحده)"
@@ -6970,6 +6972,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.mark_backup_dirty()
             except Exception as e:
                 log_cloud_error("تعذّر حفظ تصحيح حركات مسترجع الكاستنج", e)
+        return len(changed)
+
+    def migrate_analysis_name(self):
+        """حركات عملية «التحليل» المسجّلة باسمها القديم («مسترجع الفاقد») تأخذ اسمها الجديد («تحليل الكاستنج»)
+        فيظهر بالاسم نفسه في الخزينة وكشوف الحساب والتفاصيل. الاسم وحده يتغيّر: صرفها وقبضها للكاستنج كما هما،
+        فلا يتغيّر رقمٌ ولا رصيد. نسخة العميل تحفظ التصحيح في قاعدتها (فيُرفع للسحابة)، ونسخة المدير في الذاكرة."""
+        changed = [inv for inv in self.invoices.values()
+                   if inv.get("الاسم") == self.CAST_RETURN_OLD_NAME and inv.get("النوع") in ("صرف كاستنج", "قبض كاستنج")]
+        if not changed:
+            return 0
+        for inv in changed:
+            inv["الاسم"] = self.CAST_RETURN_NAME
+        self._inv_version = getattr(self, "_inv_version", 0) + 1
+        if not IS_ADMIN_BUILD and getattr(self, "db_path", None):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.executemany("UPDATE invoices SET name = ? WHERE invoice_id = ?",
+                                     [(self.CAST_RETURN_NAME, inv["رقم الفاتورة"]) for inv in changed])
+                    conn.commit()
+                self.mark_backup_dirty()
+            except Exception as e:
+                log_cloud_error("تعذّر حفظ الاسم الجديد لحركات التحليل", e)
         return len(changed)
 
     def migrate_row_extras(self):
@@ -7324,7 +7348,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.apply_undo_step(step)
             self.recalculate_all()
             for fn in ("refresh_journal_entries_table", "refresh_losses_tab", "refresh_khayas_category_buttons",
-                       "refresh_chart_of_accounts", "refresh_stage_buttons"):
+                       "refresh_chart_of_accounts", "refresh_stage_buttons", "refresh_set_track_table"):
                 if hasattr(self, fn):
                     try:
                         getattr(self, fn)()
@@ -7372,6 +7396,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoices[inv_id] = self.invoice_from_row(row)
         if step.get("settings"):
             self._deleted_accounts = None
+            self._polish_before_cache = None
         for cat in step["cats"]:
             self.categories.setdefault(cat, [])
         for name, cat, idx in reversed(step["names"]):
@@ -9063,7 +9088,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # «المسترجع» في شاشة الكاستنج رجوعٌ من الفاقد الحالي نفسه — لا صلة له بحساب
     # «مسترجع كاستنج» (ذاك لما يُستلم من شاشة الوارد إلى حسابه). تُسجَّل حركاته صرفاً
     # وقبضاً للكاستنج نفسه بهذين الاسمين، فيزيد صرفها الفاقد الحالي ويُخصم قبضها منه:
-    CAST_RETURN_NAME = "مسترجع الفاقد"      # عملية «مسترجع» (بلا صف): صرفها وقبضها
+    CAST_RETURN_NAME = "تحليل الكاستنج"     # عملية «التحليل» («مسترجع» سابقاً): اسم حركات صرفها وقبضها
+    CAST_RETURN_OLD_NAME = "مسترجع الفاقد"   # اسمها حتى 1.73 — migrate_analysis_name يحوّله
+    CAST_ANALYSIS = "التحليل"               # اسم العملية في الكاستنج وفي الجداول والسندات
     TREE_RETURN_NAME = "مسترجع الأشجار"     # مسترجع أشجار الصف: قبض من فاقد صفه
     # الليزر في «بوليش 1»: عملية مستقلة («العملية»: فاقد / ليزر) مثل الصرف تماماً — صرفٌ للقسم
     # («صرف تلميع بف») يُضاف إلى فاقد بوليش 1، يُسجَّل بهذا الاسم وله كشفه. (كان خانةً بجانب
@@ -9088,17 +9115,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     and (inv.get("row_number", "") or ""))
 
     def is_recovery_op(self, inv, madin_type, recover_name):
-        """عملية «مسترجع» بلا صف (الكاستنج): صرفها يزيد الفاقد الحالي وقبضها يُخصم منه"""
-        return bool(recover_name and inv.get("الاسم") == self.CAST_RETURN_NAME
-                    and not (inv.get("row_number", "") or ""))
+        """عملية «التحليل» في الكاستنج («مسترجع» سابقاً): صرفها يزيد الفاقد الحالي وقبضها يُخصم منه.
+        تُعرف باسمها المخزّن وحده: الجديدة برقم صف (صرفها وقبضها صفٌّ واحد)، والقديمة بلا صف"""
+        return bool(recover_name and inv.get("الاسم") == self.CAST_RETURN_NAME)
 
     def collect_stage_ops_rows(self, madin_type, qabd_type, recover_name=None):
         """يجمع حركات أي شاشة عمليات للشهر المعروض في صفوف مرتبة تصاعدياً برقم الصف.
 
         لكل صف (g["op"]):
           • «فاقد»   — صرف وقبض القسم بصفوفها (رقم الصف)، ومعها «مسترجع الأشجار» لصفها.
-          • «مسترجع» — عمليات المسترجع بلا صف، كل عملية صف مستقل بعد صفوف الفاقد:
-                       صرفها تحت الصرف، وقبضها تحت القبض.
+          • «التحليل» — عمليات التحليل («المسترجع» سابقاً) بعد صفوف الفاقد: برقم صفّها (صرفها وقبضها
+                       في صف واحد)، والقديمة بلا صف كل عملية صف مستقل — صرفها تحت الصرف وقبضها تحت القبض.
           • «ليزر»   — (بوليش 1) الليزر بصفه: صرفٌ تحت الصرف يُضاف إلى الخياس، صفاً مستقلاً.
         الخياس = الصرف − القبض − مسترجع الأشجار: كلها من الفاقد الحالي نفسه، ولا صلة لأيٍّ
         منها بحساب «مسترجع» المرحلة.
@@ -9121,15 +9148,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             rec_op = self.is_recovery_op(inv, madin_type, recover_name)
             tree = is_extra(inv)
             key = ((inv.get("row_number", "") or ""), inv["الاسم"])
-            if rec_op:
-                key = ("", inv["الاسم"], inv["رقم الفاتورة"])      # كل عملية مسترجع صف مستقل
+            if rec_op and not key[0]:
+                key = ("", inv["الاسم"], inv["رقم الفاتورة"])      # تحليل قديم بلا صف: كل عملية صف مستقل
             elif tree:
-                key = next((k for k in grouped if len(k) == 2 and k[0] == key[0]), key)
+                # مسترجع الأشجار يُلحق بصف «فاقد» برقمه وحده — لا بصف تحليلٍ يحمل الرقم نفسه
+                key = next((k for k in grouped if len(k) == 2 and k[0] == key[0]
+                            and grouped[k]["op"] == "فاقد"), key)
             laser = inv.get("الاسم") == self.LASER_NAME
             if key not in grouped:
                 grouped[key] = {"ids": [], "مدين": 0.0, "دائن": 0.0, "مسترجع": 0.0,
                                 "dt": inv["التاريخ"], "البيان": "", "أشجار": 0.0,
-                                "op": "مسترجع" if rec_op else "ليزر" if laser else "فاقد"}
+                                "op": self.CAST_ANALYSIS if rec_op else "ليزر" if laser else "فاقد"}
             g = grouped[key]
             g["ids"].append(inv["رقم الفاتورة"])
             note = (inv.get("البيان") or "").strip()
@@ -9154,7 +9183,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if trees > g["أشجار"]:
                 g["أشجار"] = trees
 
-        order = sorted(grouped.keys(), key=lambda k: (grouped[k]["op"] == "مسترجع",
+        order = sorted(grouped.keys(), key=lambda k: (grouped[k]["op"] == self.CAST_ANALYSIS,
                                                       self.row_sort_key(k[0]), grouped[k]["dt"], k[1]))
         return [(k[0], k[1], grouped[k]) for k in order]
 
@@ -9166,10 +9195,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         (الصف / [العملية] / صرف / قبض / [مسترجع الأشجار] / الخياس [+ الأشجار] / البيان)
         مع سطر إجماليات أسفل الجدول وشريط إجماليات ثابت تحته.
 
-        recover_name (الكاستنج): عمود «العملية» (فاقد/مسترجع) و«مسترجع الأشجار».
+        recover_name (الكاستنج): عمود «العملية» (فاقد/التحليل) و«مسترجع الأشجار».
         الخياس = الصرف − القبض − مسترجع الأشجار (كلها من الفاقد الحالي نفسه).
         وفي «بوليش 1» عمود «الليزر» مكانه: الخياس = الصرف − القبض − الليزر.
-        op_filter: «مسترجع» أو «ليزر» ← تلك العمليات وحدها؛ غير ذلك ← كل العمليات.
+        op_filter: «التحليل» أو «ليزر» ← تلك العمليات وحدها؛ غير ذلك ← كل العمليات.
         op_column (بوليش 1): عمود «العملية» (فاقد/ليزر) — كشف الفاقد يجمع العمليتين، وكشف الليزر وحده.
         """
         # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج وبوليش 1 مكانه «العملية»
@@ -9199,7 +9228,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rows_map = {}
         tot_madin = tot_daen = tot_trees = tot_rec = tot_laser = 0.0
         rows = self.collect_stage_ops_rows(madin_type, qabd_type, recover_name)
-        if op_filter in ("مسترجع", "ليزر"):
+        if op_filter in (self.CAST_ANALYSIS, "ليزر"):
             # تلك العمليات وحدها، والإجماليات لها وحدها
             rows = [r for r in rows if r[2].get("op") == op_filter]
         # أثر الحركة الثانية: مسترجع الأشجار قبضٌ (−1)، والليزر صرفٌ (+1)
@@ -9213,7 +9242,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tot_trees += g["أشجار"]
             if g.get("op") == "ليزر":
                 tot_laser = round(tot_laser + g["مدين"], 2)
-            is_rec_row = g.get("op") == "مسترجع"
+            is_rec_row = g.get("op") == self.CAST_ANALYSIS
             row_label = row_num if row_num else ("-" if is_rec_row else "بدون ترقيم")
             # التلوين حسب إعداد القسم نفسه: الأحمر فقط لو كان الخياس سالباً
             # (أي أن القبض أكبر من الصرف) والزر مفعّل في هذا القسم.
@@ -11688,12 +11717,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.casting_container = ctk.CTkFrame(tab, fg_color="transparent")
         self.polish_container = ctk.CTkFrame(tab, fg_color="transparent")
         self.polish_buff_container = ctk.CTkFrame(tab, fg_color="transparent")
+        self.set_track_container = ctk.CTkFrame(tab, fg_color="transparent")
         self._stage_builders = {
             "المصنعين": (self.mfg_inst_container, self.build_mfg_ui),
             "المركبين": (self.mfg_inst_container, self.build_mfg_ui),
             "الكاستنج": (self.casting_container, self.build_casting_ui),
             "التلميع": (self.polish_container, self.build_polish_ui),
             "التلميع/البف": (self.polish_buff_container, self.build_polish_buff_ui),
+            self.SET_TRACK_KEY: (self.set_track_container, self.build_set_track_ui),
         }
         self._built_stage_containers = set()
 
@@ -11793,6 +11824,396 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.op_ledger_tree = None
         self.op_ledger_group_map = {}
 
+    # ═══ لوحة «تتبع رقم التشغيل» في مراحل التصنيع (للعرض والربط فقط) ═══
+    SET_TRACK_KEY = "تتبع رقم التشغيل"
+    SET_TRACK_COLS = ("رقم التشغيل", "بعد البوليش", "قبل البوليش", "خياس البوليش", "مصدره في المركبين",
+                      "في المبيعات")
+
+    def build_set_track_ui(self, parent):
+        """لوحة «تتبع رقم التشغيل»: لكل رقم تشغيل في قسم المركبين —
+          • بعد البوليش  = صرفه في قسم المركبين (من صفّه نفسه، مع ذكر الصف والعامل والفترة).
+          • قبل البوليش  = يُكتب يدوياً في خانته داخل الجدول: حدّد الصف واكتب، وEnter للصف التالي،
+                           والأسهم ↑ ↓ بين الصفوف — ويُحفظ فوراً (خطوة تراجع).
+          • خياس البوليش = قبل − بعد — ومنه تُملأ خانة «خياس البوليش» في المبيعات وقالب رقم التشغيل.
+        لا تُعدّ خياساً ولا تؤثر على الخزينة؛ و«في المبيعات» يطابق المسجّل في فاتورة البيع بالتتبع."""
+        card = ctk.CTkFrame(parent, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+                            border_width=1, border_color=(UI["line"], "#2A313B"))
+        card.pack(fill="x", padx=16, pady=(2, 6))
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(top, text="🔎 تتبع رقم التشغيل", font=ctk.CTkFont(family=UI_FONT, size=17, weight="bold"),
+                     text_color=UI_TITLE).pack(side="right", padx=(4, 14))
+        ctk.CTkLabel(top, text="رقم التشغيل:", font=(UI_FONT, 14, "bold"),
+                     text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(8, 4))
+        self.set_track_search = ctk.CTkEntry(top, font=(UI_FONT, 14), justify="center", width=150, height=34,
+                                             placeholder_text="بحث أو مسح باركود")
+        self.set_track_search.pack(side="right", padx=4)
+        self.set_track_scope = ctk.CTkSegmentedButton(
+            top, values=["الفترة المعروضة", "كل الفترات"], font=(UI_FONT, 13, "bold"), height=34,
+            selected_color=UI["primary"], selected_hover_color=UI["primary_hover"],
+            command=lambda _v: self.refresh_set_track_table())
+        self.set_track_scope.set("الفترة المعروضة")
+        self.set_track_scope.pack(side="right", padx=12)
+        btn_voucher = ctk.CTkButton(top, text="🖨️ قالب رقم التشغيل", font=(UI_FONT, 13, "bold"), width=150,
+                                    height=34, command=self.print_selected_set_voucher, **BUTTON_STYLES["primary"])
+        btn_voucher.pack(side="left", padx=3)
+        HoverTip(btn_voucher, "سند رقم التشغيل المحدد بكل قيمه: التصنيع والبوليش والتركيب وبوليش 2 والأوزان")
+        ctk.CTkButton(top, text="🔎 رحلة الرقم", font=(UI_FONT, 13, "bold"), width=110, height=34,
+                      command=lambda: self.open_set_number_trace(self.set_track_selected() or None),
+                      **BUTTON_STYLES["secondary"]).pack(side="left", padx=3)
+        ctk.CTkLabel(card, text=("للعرض والربط فقط — لا يُعدّ خياساً ولا يؤثر على الخزينة.   «بعد البوليش» = صرف رقم التشغيل "
+                                 "في قسم المركبين،  و«قبل البوليش» تكتبه أنت: حدّد الصف واكتب ثم Enter للصف التالي "
+                                 "(↑ ↓ بين الصفوف)،  و«خياس البوليش» = قبل − بعد — ومنه تُملأ خانة خياس البوليش في "
+                                 "المبيعات وقالب رقم التشغيل."),
+                     font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"), wraplength=1250, justify="right",
+                     anchor="e").pack(fill="x", padx=14, pady=(0, 8))
+
+        self.set_track_totals = ctk.CTkLabel(parent, text="", font=(UI_FONT, 14, "bold"), text_color=UI_TITLE)
+        self.set_track_totals.pack(side="bottom", fill="x", padx=18, pady=(0, 6))
+        frame = ttk.Frame(parent)
+        frame.pack(fill="both", expand=True, padx=18, pady=(0, 2))
+        tree = self.create_standard_treeview(frame, self.SET_TRACK_COLS, height=14)
+        tree.tag_configure("warn_tag", foreground="#e74c3c", font=(UI_FONT, 13, "bold"))
+        self.set_track_tree = tree
+        self.set_track_items, self._set_track_data = {}, {}
+
+        # ── «قبل البوليش» يُكتب في خانته داخل الجدول نفسه (مثل إكسل) ──
+        st = {"item": None, "key": None, "orig": "", "busy": False, "moving": False, "job": None}
+        self._set_track_state = st
+        editor = None
+        if not getattr(self, "view_only", False):      # حساب العميل في برنامج المدير: للعرض فقط
+            editor = tk.Entry(tree, justify="center", font=(UI_FONT, 14, "bold"), relief="solid", bd=1,
+                              bg="#FFF6D6", fg="#111111", insertbackground="#111111")
+        self._set_track_editor = editor
+
+        def before_text(key):
+            v = self.polish_before_map().get(key)
+            return f"{v:g}" if v is not None else ""
+
+        def place():
+            if editor is None:
+                return
+            item = st["item"]
+            try:
+                box = tree.bbox(item, "قبل البوليش") if item is not None and tree.exists(item) else ""
+            except tk.TclError:
+                box = ""
+            if not box:
+                editor.place_forget()
+                return
+            x, y, w, h = box
+            editor.place(x=x, y=y, width=w, height=h)
+            editor.lift()
+
+        def start(item):
+            if editor is None:
+                return
+            key = self.set_track_items.get(item)
+            if key is None:
+                st.update(item=None, key=None)
+                editor.place_forget()
+                return
+            st.update(item=item, key=key, orig=before_text(key))
+            editor.delete(0, "end")
+            editor.insert(0, st["orig"])
+            place()
+            editor.focus_set()
+            editor.select_range(0, "end")
+
+        def revert(why=""):
+            editor.delete(0, "end")
+            editor.insert(0, st["orig"])
+            if why:
+                self.toast(why, "warn")
+
+        def commit(interactive=True):
+            """يحفظ ما كُتب للرقم المحرَّر. يرجع True إن صحّ (حُفظ أو لم يتغيّر).
+            interactive=False (مغادرة الخانة أو النقر على صف آخر): القيمة غير الصحيحة تُرفض بتنبيه صغير."""
+            if editor is None or st["busy"] or st["key"] is None:
+                return True
+            text = (editor.get().strip().translate(self._SET_DIGITS)
+                    .replace("٫", ".").replace(",", ".").replace("،", "."))
+            if text == st["orig"]:
+                return True
+            key = st["key"]
+            st["busy"] = True
+            try:
+                value = None
+                if text:
+                    try:
+                        value = round(float(text), 2)
+                    except ValueError:
+                        value = -1.0
+                    if value <= 0:
+                        if interactive:
+                            messagebox.showerror("قيمة غير صحيحة", "«قبل البوليش» وزنٌ بالجرام أكبر من صفر.")
+                            return False
+                        revert(f"لم يُحفظ «قبل البوليش» للرقم {key}: القيمة غير صحيحة")
+                        return True
+                    after = self.set_tracking_values(key)["polish_after"]
+                    if after is not None and value < after:
+                        msg = (f"«قبل البوليش» ({value:.2f}) أقل من «بعد البوليش» ({after:.2f}) للرقم {key} — "
+                               "سيكون خياس البوليش سالباً.\n\nهل الرقم صحيح؟")
+                        if not interactive:
+                            revert(f"لم يُحفظ «قبل البوليش» للرقم {key}: أقل من بعد البوليش")
+                            return True
+                        if not messagebox.askyesno("تأكيد", msg):
+                            return False
+                if not self.set_polish_before(key, value):
+                    revert()
+                    return not interactive
+                st["orig"] = before_text(key)
+                self.update_set_track_row(key)
+                return True
+            finally:
+                st["busy"] = False
+
+        def move(step):
+            if editor is None:
+                return "break"
+            if not commit():
+                editor.focus_set()
+                return "break"
+            items = [i for i in tree.get_children() if i in self.set_track_items]
+            if not items:
+                return "break"
+            cur = st["item"]
+            idx = items.index(cur) + step if cur in items else 0
+            nxt = items[max(0, min(idx, len(items) - 1))]
+            st["moving"] = True
+            try:
+                tree.selection_set(nxt)
+                tree.see(nxt)
+            finally:
+                st["moving"] = False
+            tree.update_idletasks()
+            start(nxt)
+            return "break"
+
+        def on_select(_e=None):
+            if editor is None or st["moving"]:
+                return
+            sel = tree.selection()
+            if not sel:
+                return
+            if sel[0] == st["item"]:
+                place()
+                return
+            commit(interactive=False)
+            start(sel[0])
+
+        tree.bind("<<TreeviewSelect>>", on_select, add="+")
+        tree.bind("<Configure>", lambda e: self.after_idle(place), add="+")
+        if editor is not None:
+            for seq, step in (("<Return>", 1), ("<KP_Enter>", 1), ("<Down>", 1), ("<Up>", -1)):
+                editor.bind(seq, lambda e, s=step: move(s))
+            editor.bind("<Escape>", lambda e: (revert(), "break")[1])
+            editor.bind("<FocusOut>", lambda e: commit(interactive=False), add="+")
+            # تمرير الجدول (العجلة أو الشريط): الخانة تتبع صفّها
+            try:
+                scroll_cmd = tree.tk.splitlist(tree.cget("yscrollcommand"))
+            except tk.TclError:
+                scroll_cmd = ()
+
+            def on_scroll(first, last):
+                if scroll_cmd:
+                    try:
+                        tree.tk.call(*scroll_cmd, first, last)
+                    except tk.TclError:
+                        pass
+                self.after_idle(place)
+            tree.configure(yscrollcommand=on_scroll)
+
+        def after_refresh(key):
+            """بعد إعادة ملء الجدول: الكتابة تستمر على الرقم نفسه إن بقي ظاهراً"""
+            if editor is None:
+                return
+            item = next((i for i, k in self.set_track_items.items() if k == key), None) if key else None
+            if item is None:
+                st.update(item=None, key=None)
+                editor.place_forget()
+                return
+            st["item"] = item
+            if editor.get().strip() == st["orig"]:
+                # لا كتابة معلّقة: الخانة تعرض القيمة المحفوظة الآن (بعد تراجع أو تحديث من مكان آخر)
+                st["orig"] = before_text(key)
+                editor.delete(0, "end")
+                editor.insert(0, st["orig"])
+            st["moving"] = True
+            try:
+                tree.selection_set(item)
+            finally:
+                st["moving"] = False
+            self.after_idle(place)
+        self._set_track_after_refresh = after_refresh
+        self._set_track_start = start
+
+        def on_search(_e=None):
+            if st["job"] is not None:
+                try:
+                    self.after_cancel(st["job"])
+                except Exception:
+                    pass
+            st["job"] = self.after(200, self.refresh_set_track_table)
+
+        def on_search_enter(_e=None):
+            """Enter أو قارئ الباركود: يوحّد الرقم، ويفتح خانة «قبل البوليش» لأول صف مطابق"""
+            raw = self.set_track_search.get()
+            clean = self.scanned_set_number(raw)
+            if clean != raw:
+                self.set_track_search.delete(0, "end")
+                self.set_track_search.insert(0, clean)
+            self.refresh_set_track_table()
+            items = [i for i in tree.get_children() if i in self.set_track_items]
+            if not items and clean and self.set_track_scope.get() != "كل الفترات":
+                self.set_track_scope.set("كل الفترات")       # الرقم في فترة أخرى
+                self.refresh_set_track_table()
+                items = [i for i in tree.get_children() if i in self.set_track_items]
+            if items:
+                exact = next((i for i in items if self.set_track_items[i] == clean), items[0])
+                st["moving"] = True
+                try:
+                    tree.selection_set(exact)
+                    tree.see(exact)
+                finally:
+                    st["moving"] = False
+                tree.update_idletasks()
+                start(exact)
+            elif clean:
+                self.toast(f"رقم التشغيل {clean} غير موجود في قسم المركبين", "warn")
+            return "break"
+        self.set_track_search.bind("<KeyRelease>", on_search, add="+")
+        self.set_track_search.bind("<Return>", on_search_enter)
+
+    def set_track_selected(self):
+        """رقم التشغيل في الصف المحدد بلوحة التتبع (أو المكتوب في بحثها)"""
+        tree = getattr(self, "set_track_tree", None)
+        try:
+            sel = tree.selection() if tree is not None else ()
+        except Exception:
+            sel = ()
+        if sel and sel[0] in getattr(self, "set_track_items", {}):
+            return self.set_track_items[sel[0]]
+        ent = getattr(self, "set_track_search", None)
+        return self.normalize_set_number(ent.get()) if ent is not None else ""
+
+    @staticmethod
+    def set_track_row_values(v):
+        """قيم صف رقم في جدول التتبع بترتيب أعمدته"""
+        def f(x):
+            return f"{x:.2f}" if x is not None else "-"
+        src = "  +  ".join(f"{r['name']} — الصف {r['row'] or '-'} — {r['period']}: صرف {r['sarf']:.2f}"
+                           for r in v.get("rows", [])) or "-"
+        if len(v.get("rows", [])) > 1:
+            src = "⚠️ في أكثر من صف: " + src
+        before = v.get("polish_before")
+        return (v["set_number"], f(v.get("polish_after")), f"{before:g}" if before is not None else "",
+                f(v.get("polish_khayas")), src, v.get("sale_text", ""))
+
+    @staticmethod
+    def set_track_row_tags(v):
+        k = v.get("polish_khayas")
+        warn = (k is not None and k < 0) or v.get("sale_mismatch") or len(v.get("rows", [])) > 1
+        return ("warn_tag",) if warn else ()
+
+    def update_set_track_totals(self):
+        lbl = getattr(self, "set_track_totals", None)
+        if lbl is None:
+            return
+        data = list(getattr(self, "_set_track_data", {}).values())
+        n = len(data)
+        done = sum(1 for v in data if v.get("polish_before") is not None)
+        khayas = round(sum(v["polish_khayas"] for v in data if v.get("polish_khayas") is not None), 2)
+        bad = sum(1 for v in data if v.get("sale_mismatch"))
+        text = (f"{n} رقم تشغيل — «قبل البوليش» مسجّل لـ {done} وناقص {n - done} — "
+                f"مجموع خياس البوليش: {khayas:.2f} جم") if n else "لا أرقام تشغيل في قسم المركبين لهذا العرض"
+        if bad:
+            text += f"   ⚠️ {bad} يختلف خياس البوليش المسجّل في فاتورة بيعه عن التتبع (صحّحه من تعديل الفاتورة)"
+        try:
+            lbl.configure(text=text)
+        except Exception:
+            pass
+
+    def refresh_set_track_table(self):
+        tree = getattr(self, "set_track_tree", None)
+        try:
+            if tree is None or not tree.winfo_exists():
+                return
+        except Exception:
+            return
+        scope = getattr(self, "set_track_scope", None)
+        scope_all = scope is not None and scope.get() == "كل الفترات"
+        search = getattr(self, "set_track_search", None)
+        rows = self.set_track_rows(scope_all, search.get() if search is not None else "")
+        editing = getattr(self, "_set_track_state", {}).get("key")
+        tree.delete(*tree.get_children())
+        self.set_track_items, self._set_track_data = {}, {}
+        for v in rows:
+            item = tree.insert("", "end", values=self.set_track_row_values(v), tags=self.set_track_row_tags(v))
+            self.set_track_items[item] = v["set_number"]
+            self._set_track_data[v["set_number"]] = v
+        self.update_set_track_totals()
+        self.apply_column_labels(tree, "set_track")
+        self.fit_columns_to_content(tree, "set_track", min_width=70, max_width=460)
+        hook = getattr(self, "_set_track_after_refresh", None)
+        if hook is not None:
+            hook(editing)
+
+    def update_set_track_row(self, key):
+        """بعد حفظ «قبل البوليش»: صفّه وحده يتحدّث (قبل، خياس البوليش، حاله في المبيعات) ثم الإجماليات"""
+        tree = getattr(self, "set_track_tree", None)
+        if tree is None:
+            return
+        v = self.set_tracking_values(key)
+        v["sale_text"], v["sale_mismatch"] = self.set_track_sale_status(v, self.sale_polish_by_set().get(key))
+        self._set_track_data[key] = v
+        for item, k in list(self.set_track_items.items()):
+            if k == key and tree.exists(item):
+                tree.item(item, values=self.set_track_row_values(v), tags=self.set_track_row_tags(v))
+        self.update_set_track_totals()
+
+    def print_selected_set_voucher(self):
+        key = self.set_track_selected()
+        if not key:
+            messagebox.showwarning("تنبيه", "حدّد رقم التشغيل في الجدول أو اكتبه في خانة البحث أولاً.")
+            return None
+        return self.print_set_voucher(key)
+
+    def set_voucher_data(self, set_number):
+        """بيانات سند رقم التشغيل: من فاتورة بيعه إن بيع (آخر بيع له)، وإلا رقم التشغيل وحده (القالب
+        يأخذ بقية قيمه من تتبع رقم التشغيل)"""
+        key = self.normalize_set_number(set_number)
+        sale = None
+        for inv in self.invoices.values():
+            if (inv.get("settled_status") in SALE_READ_STATUSES and inv.get("النوع") in self.SALE_TYPES
+                    and self.normalize_set_number(inv.get("set_number")) == key):
+                if sale is None or ((inv.get("التاريخ") or ""), inv.get("رقم الفاتورة", 0) or 0) > (
+                        (sale.get("التاريخ") or ""), sale.get("رقم الفاتورة", 0) or 0):
+                    sale = inv
+        if sale is not None:
+            return self.get_invoice_group_data(sale.get("set_number"), sale.get("التاريخ"), sale.get("الاسم"))
+        return self.get_invoice_group_data(key, None, None)
+
+    def print_set_voucher(self, set_number):
+        """يطبع سند رقم التشغيل وحده (من التتبع) — معاينة PDF"""
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً.")
+            return None
+        data = self.set_voucher_data(set_number)
+        safe = re.sub(r"[^0-9A-Za-z_-]+", "_", data.get("set_number") or "set")
+        out_path = os.path.join(INVOICES_DIR, f"set_voucher_{safe}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        try:
+            c = pdf_canvas.Canvas(out_path, pagesize=A4)
+            self.draw_set_voucher_page(c, data)
+            c.showPage()
+            c.save()
+        except Exception as e:
+            messagebox.showerror("خطأ", f"تعذّر إنشاء سند رقم التشغيل:\n{e}")
+            return None
+        self.last_generated_invoice_pdf = out_path
+        self._open_file(out_path)
+        return out_path
+
     def build_stage_on_demand(self, stage):
         """يبني واجهة القسم مرة واحدة عند أول فتح له"""
         spec = getattr(self, "_stage_builders", {}).get(stage)
@@ -11815,6 +12236,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.refresh_polish_table()
         elif stage == "التلميع/البف":
             self.refresh_polish_buff_table()
+        elif stage == self.SET_TRACK_KEY:
+            self.refresh_set_track_table()
         elif stage in self.categories.get("أقسام_خياس_إضافية", []):
             self.refresh_generic_stage_table(stage)
 
@@ -11833,6 +12256,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ]
         for stage_name in self.categories.get("أقسام_خياس_إضافية", []):
             stage_defs.append((stage_name, f"➕ {stage_name}"))
+        # لوحة التتبع (للعرض والربط فقط — ليست قسم خياس)
+        stage_defs.append((self.SET_TRACK_KEY, f"🔎 {self.SET_TRACK_KEY}"))
 
         # ترتيب الأقسام كما رتّبه المستخدم (محفوظ ويبقى بعد الإغلاق)
         labels = dict(stage_defs)
@@ -11912,6 +12337,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.casting_container.pack_forget()
         self.polish_container.pack_forget()
         self.polish_buff_container.pack_forget()
+        if hasattr(self, 'set_track_container'):
+            self.set_track_container.pack_forget()
         if hasattr(self, 'dynamic_stage_containers'):
             for cont in self.dynamic_stage_containers.values():
                 cont.pack_forget()
@@ -11929,6 +12356,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.current_op_cat = stage
             self.mfg_inst_container.pack(fill="both", expand=True)
             self.update_op_names(stage)
+        elif stage == self.SET_TRACK_KEY:
+            self.set_track_container.pack(fill="both", expand=True)
+            self.refresh_set_track_table()
         elif stage in self.categories.get("أقسام_خياس_إضافية", []):
             if not hasattr(self, 'dynamic_stage_containers'):
                 self.dynamic_stage_containers = {}
@@ -11978,7 +12408,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # =========================================================================
     def build_stage_panel(self, parent, *, key, title, name_values=None, fields, submit_text, submit_cmd,
                           on_edit, on_delete, neg_section, neg_refresh, view,
-                          operations=None, mode_fields=None, on_operation_change=None):
+                          operations=None, mode_fields=None, on_operation_change=None, extra_buttons=()):
         """لوحة قسم من مراحل التصنيع بترتيب مضغوط واحد لكل الأقسام:
 
             بطاقة إدخال بصف واحد ← [التاريخ][الاسم أو العملية][الخانات…][البيان][زر الترحيل]
@@ -12126,6 +12556,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       fg_color=UI["primary"], hover_color=UI["primary_hover"], command=view).pack(side="left", padx=3)
         ctk.CTkButton(bar, text="✏️ تعديل", font=(UI_FONT, 13, "bold"), width=90, height=30,
                       fg_color=UI["edit"], hover_color=UI["edit_hover"], command=on_edit).pack(side="left", padx=3)
+        for text, command, tip in extra_buttons:
+            btn = ctk.CTkButton(bar, text=text, font=(UI_FONT, 13, "bold"), width=120, height=30, command=command,
+                                **BUTTON_STYLES["secondary"])
+            btn.pack(side="left", padx=3)
+            if tip:
+                HoverTip(btn, tip)
 
         # سطر الإجماليات يُحجز أسفل الشاشة قبل الجدول، فيأخذ الجدول كل ما بينهما
         w["totals"] = ctk.CTkLabel(parent, text="", font=(UI_FONT, 14, "bold"),
@@ -12299,16 +12735,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.open_stage_op_edit_dialog(ids, madin_type, qabd_type, f"تعديل حركة {stage_name}",
                                        status_text=f"✏️ تم تعديل حركة {stage_name}")
 
-    # عمليتا الكاستنج مكان خانة الاسم، وخانات كل عملية
-    CAST_OPERATIONS = ("فاقد", "مسترجع")
+    # عمليتا الكاستنج مكان خانة الاسم، وخانات كل عملية («التحليل» — «مسترجع» سابقاً — برقم صف وصرف وقبض)
+    CAST_OPERATIONS = ("فاقد", "التحليل")
     CAST_MODE_FIELDS = {"فاقد": ("row_num", "sarf", "qabd", "recover", "trees"),
-                        "مسترجع": ("sarf", "qabd")}
+                        "التحليل": ("row_num", "sarf", "qabd")}
 
     def build_casting_ui(self, parent):
         label = self.get_display_label("الكاستنج")
         p = self.build_stage_panel(
             parent, key="cast", title=f"كشف حركة {label}",
-            # «العملية» مكان الاسم: فاقد (خانات الصف كلها) أو مسترجع (صرف وقبض فقط)
+            # «العملية» مكان الاسم: فاقد (خانات الصف كلها) أو التحليل (رقم الصف والصرف والقبض)
             operations=self.CAST_OPERATIONS, mode_fields=self.CAST_MODE_FIELDS,
             on_operation_change=self.on_cast_operation_change,
             # مسترجع الأشجار بعد القبض مباشرة (خانةً وعموداً)
@@ -12317,7 +12753,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             submit_text="ترحيل 💾", submit_cmd=self.submit_casting_op,
             on_edit=self.edit_selected_casting_row, on_delete=self.delete_selected_casting_row,
             neg_section="الكاستنج", neg_refresh=self.refresh_casting_table,
-            view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"))
+            view=lambda: self.view_treeview_fullscreen(self.cast_tree, f"عرض كامل — {label}"),
+            extra_buttons=[("🖨️ سند التحليل", self.print_selected_analysis_voucher,
+                            "سند صف التحليل المحدد: «تحليل» للصرف و«سند قبض» للقبض")])
         self.cast_date, self.cast_note = p["date"], p["note"]
         self.cast_op = p["op"]
         self.cast_title_lbl = p["title"]
@@ -12330,7 +12768,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.cast_totals_lbl = p["totals"]
 
     def get_cast_operation(self):
-        """العملية المختارة في الكاستنج: «فاقد» (الافتراضي) أو «مسترجع»"""
+        """العملية المختارة في الكاستنج: «فاقد» (الافتراضي) أو «التحليل»"""
         widget = getattr(self, "cast_op", None)
         try:
             value = widget.get() if widget is not None else ""
@@ -12339,7 +12777,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return value if value in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
 
     def on_cast_operation_change(self, _mode=None):
-        """تبديل العملية: الجدول يعرض كل العمليات (فاقد) أو عمليات المسترجع وحدها"""
+        """تبديل العملية: الجدول يعرض كل العمليات (فاقد) أو عمليات التحليل وحدها"""
         self.refresh_casting_table()
 
     @staticmethod
@@ -12353,7 +12791,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return None
 
     def submit_casting_op(self):
-        if self.get_cast_operation() == "مسترجع":
+        if self.get_cast_operation() == self.CAST_ANALYSIS:
             return self.submit_casting_recovery_op()
         return self.submit_casting_loss_op()
 
@@ -12395,7 +12833,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             skipped.append("الصرف")
             sarf_v = 0.0
         if qabd_v > 0 and row_has(lambda i: i.get("النوع") == "قبض كاستنج"
-                                  and not self.is_row_recovery(i, recover_name)):
+                                  and not self.is_row_recovery(i, recover_name)
+                                  and not self.is_recovery_op(i, "قبض كاستنج", recover_name)):
             skipped.append("القبض")
             qabd_v = 0.0
         if recover_v > 0 and row_has(lambda i: self.is_row_recovery(i, recover_name)):
@@ -12456,15 +12895,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after(60, lambda: self.cast_row_num.focus_set())
 
     def submit_casting_recovery_op(self):
-        """عملية «مسترجع» في الكاستنج (بلا رقم صف): رجوعٌ من الفاقد الحالي نفسه.
+        """عملية «التحليل» في الكاستنج («مسترجع» سابقاً) برقم صفها: رجوعٌ من الفاقد الحالي نفسه.
           • الصرف ← صرف للكاستنج يزيد فاقده الحالي كأي صرف، ويظهر تحت الصرف.
           • القبض ← قبض للكاستنج يُخصم من فاقده الحالي، ويظهر تحت القبض.
-        لا صلة لها بحساب «مسترجع كاستنج» (ذاك لما يُستلم من شاشة الوارد إلى حسابه).
-        """
+        صرف الصف وقبضه يُسجَّل كلٌّ منهما مرة واحدة (والآخر يُكمَل لاحقاً على الرقم نفسه)، وبعد الترحيل
+        يُعرض طباعة السند: «تحليل» للصرف و«سند قبض» للقبض. لا صلة لها بحساب «مسترجع كاستنج»
+        (ذاك لما يُستلم من شاشة الوارد إلى حسابه)."""
         date_val = self.cast_date.get().strip()
         note = self.cast_note.get().strip()
+        row_num = self.cast_row_num.get().strip()
         date_val = self.read_entry_date(date_val)
         if not date_val:
+            return
+        if not row_num:
+            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم صف التحليل أولاً قبل الترحيل.")
             return
         sarf_v = self._read_weight(self.cast_sarf)
         qabd_v = self._read_weight(self.cast_qabd)
@@ -12477,43 +12921,211 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sarf_v <= 0 and qabd_v <= 0:
             messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
             return
+        # صرف صف التحليل وقبضه يُسجَّل كلٌّ منهما مرة واحدة في الفترة
+        month = self.current_display_month
+        row_n = self.norm_row_no(row_num)
+
+        def row_has(op_type):
+            return any(inv.get("settled_status") == "ACTIVE" and inv.get("الاسم") == self.CAST_RETURN_NAME
+                       and inv.get("النوع") == op_type and self.norm_row_no(inv.get("row_number")) == row_n
+                       for inv in self.period_invoices(month))
+        skipped = []
+        if sarf_v > 0 and row_has("صرف كاستنج"):
+            skipped.append("الصرف")
+            sarf_v = 0.0
+        if qabd_v > 0 and row_has("قبض كاستنج"):
+            skipped.append("القبض")
+            qabd_v = 0.0
+        if skipped and not messagebox.askyesno(
+                "عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل في صف التحليل ({row_num}).\n"
+                "لتغيير قيمة موجودة عدّلها من الجدول (✏️ تعديل).\n\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
+            return
+        if sarf_v <= 0 and qabd_v <= 0:
+            return
         lines = []
         if sarf_v > 0:
             lines.append(f"• صرف {sarf_v:.2f} جم — يزيد الفاقد الحالي للكاستنج")
         if qabd_v > 0:
             lines.append(f"• قبض {qabd_v:.2f} جم — يُخصم من الفاقد الحالي للكاستنج")
-        if not messagebox.askyesno("تأكيد ترحيل المسترجع", "ترحيل عملية مسترجع للكاستنج:\n\n"
+        if not messagebox.askyesno("تأكيد ترحيل التحليل", f"ترحيل عملية التحليل للكاستنج — الصف ({row_num}):\n\n"
                                    + "\n".join(lines) + "\n\nهل تريد المتابعة؟"):
             return
 
         full_date_time = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
-        if sarf_v > 0:
+        posted = []
+        for value, op_type in ((sarf_v, "صرف كاستنج"), (qabd_v, "قبض كاستنج")):
+            if value <= 0:
+                continue
             self.invoice_counter += 1
             inv_data = {
                 "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": self.CAST_RETURN_NAME,
-                "النوع": "صرف كاستنج", "الوزن": sarf_v, "البيان": note, "settled_status": "ACTIVE",
-                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": ""
+                "النوع": op_type, "الوزن": value, "البيان": note, "settled_status": "ACTIVE",
+                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
-            self.save_invoice_to_db(self.invoice_counter, inv_data)
-        if qabd_v > 0:
-            self.invoice_counter += 1
-            inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": self.CAST_RETURN_NAME,
-                "النوع": "قبض كاستنج", "الوزن": qabd_v, "البيان": note, "settled_status": "ACTIVE",
-                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": ""
-            }
-            self.invoices[self.invoice_counter] = inv_data
-            self.save_invoice_to_db(self.invoice_counter, inv_data)
+            if self.save_invoice_to_db(self.invoice_counter, inv_data):
+                posted.append(self.invoice_counter)
+        if not posted:
+            return
 
         self.register_operation_period(date_val)
         self.recalculate_all()
-        for entry in (self.cast_sarf, self.cast_qabd, self.cast_note):
+        for entry in (self.cast_sarf, self.cast_qabd, self.cast_note, self.cast_row_num):
             entry.delete(0, 'end')
-        self.lbl_op_status.configure(text="✅ تم ترحيل عملية مسترجع الكاستنج")
+        self.lbl_op_status.configure(text=f"✅ تم ترحيل عملية التحليل — الصف ({row_num})")
         self.after(2500, lambda: self.lbl_op_status.configure(text=""))
         self.refresh_casting_table()
-        self.after(60, lambda: self.cast_sarf.focus_set())
+        if messagebox.askyesno("طباعة السند", "هل تريد طباعة السند؟\n"
+                               "(«تحليل» للصرف و«سند قبض» للقبض — بالقيمة المُدخلة)"):
+            self.print_analysis_vouchers(posted)
+        self.after(60, lambda: self.cast_row_num.focus_set())
+
+    def analysis_ids_of_selected(self):
+        """حركات صف التحليل المحدد في جدول الكاستنج (فارغة إن لم يكن الصف صف تحليل)"""
+        tree = getattr(self, "cast_tree", None)
+        sel = tree.selection() if tree else ()
+        ids = self.cast_table_rows_map.get(sel[0], []) if sel else []
+        recover_name = self.get_stage_config("الكاستنج")[2]
+        return [i for i in ids if i in self.invoices
+                and self.is_recovery_op(self.invoices[i], "صرف كاستنج", recover_name)]
+
+    def print_selected_analysis_voucher(self):
+        ids = self.analysis_ids_of_selected()
+        if not ids:
+            messagebox.showwarning("تنبيه", "حدّد صف تحليل من جدول الكاستنج أولاً (العملية: التحليل).")
+            return None
+        return self.print_analysis_vouchers(ids)
+
+    def print_analysis_vouchers(self, ids):
+        """سندات عملية التحليل في الكاستنج: «تحليل» للصرف و«سند قبض» للقبض — سندان في كل صفحة A4
+        (نصفها لكل سند بخط قصّ بينهما)، بالقيمة المُدخلة. يرجع مسار الملف."""
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً.")
+            return None
+        invs = [self.invoices[i] for i in ids if i in self.invoices]
+        invs.sort(key=lambda x: (0 if x.get("النوع") == "صرف كاستنج" else 1, x.get("رقم الفاتورة", 0)))
+        if not invs:
+            messagebox.showwarning("تنبيه", "لم تعد حركات هذا الصف موجودة.")
+            return None
+        out_path = os.path.join(INVOICES_DIR, f"analysis_voucher_{invs[0]['رقم الفاتورة']}_"
+                                              f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        try:
+            c = pdf_canvas.Canvas(out_path, pagesize=A4)
+            for i, inv in enumerate(invs):
+                if i and i % 2 == 0:
+                    c.showPage()
+                self.draw_analysis_voucher(c, inv, half=i % 2)
+            c.showPage()
+            c.save()
+        except Exception as e:
+            messagebox.showerror("خطأ", f"تعذّر إنشاء سند التحليل:\n{e}")
+            return None
+        self.last_generated_invoice_pdf = out_path
+        self._open_file(out_path)
+        return out_path
+
+    def analysis_voucher_fields(self, inv):
+        """محتوى سند التحليل لحركة: (العنوان، الوصف، [(عنوان، قيمة)…]، الوزن، البيان)"""
+        receipt = inv.get("النوع") != "صرف كاستنج"
+        title = "سند قبض" if receipt else "تحليل"
+        section = self.get_display_label("الكاستنج")
+        sub = f"قبض من التحليل — قسم {section}" if receipt else f"صرف للتحليل — قسم {section}"
+        dt = str(inv.get("التاريخ") or "")
+        info = [("رقم السند:", str(inv.get("رقم الفاتورة", ""))), ("التاريخ:", dt[:10] or "-"),
+                ("رقم الصف:", (inv.get("row_number") or "").strip() or "-"), ("الفترة:", self.inv_period(inv) or "-")]
+        return title, sub, info, round(inv.get("الوزن", 0.0) or 0.0, 2), (inv.get("البيان") or "").strip()
+
+    def draw_analysis_voucher(self, c, inv, half=0):
+        """سند تحليل/قبض واحد في نصف صفحة A4 (half: ٠ الأعلى، ١ الأسفل): ترويسة المصنع والشعار، والعنوان
+        في شارة بالوسط، وبيانات السند، والوزن بخط كبير، والبيان، والتوقيعات."""
+        from reportlab.lib.colors import Color
+        PW, PH = A4
+        M = 10 * mm
+        navy, gold = Color(0.15, 0.15, 0.55), Color(0.80, 0.64, 0.22)
+        soft, line = Color(0.94, 0.95, 0.98), Color(0.55, 0.58, 0.66)
+        top = PH - M - half * (PH / 2)              # أعلى السند (من أسفل الصفحة)
+        H = PH / 2 - 2 * M
+        x0, x1 = M, PW - M
+        title, sub, info, weight, note = self.analysis_voucher_fields(inv)
+
+        def y(off_mm):
+            return top - off_mm * mm
+
+        def txt(x, yy, s, size=11, bold=True, align="center", color=None):
+            c.setFillColor(color or Color(0.10, 0.11, 0.14))
+            c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
+            s = str(s)
+            s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
+            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](x, yy, s)
+
+        # الإطار
+        c.setStrokeColor(navy)
+        c.setLineWidth(1.3)
+        c.roundRect(x0, top - H, x1 - x0, H, 4 * mm, stroke=1, fill=0)
+        # الترويسة: اسم المصنع يميناً، والشعار يساراً، والعنوان في شارة بالوسط
+        txt(x1 - 6 * mm, y(10), "مصنع جاديت للتصنيع", 15, color=navy, align="right")
+        txt(x1 - 6 * mm, y(16), "الرياض - صناعية الموسى", 9.5, bold=False, align="right")
+        logo = self.pdf_logo()
+        if logo:
+            lh = 17 * mm
+            c.drawImage(logo[0], x0 + 6 * mm, y(20), width=lh * logo[1], height=lh, mask="auto",
+                        preserveAspectRatio=True)
+        pill_w, pill_h = 62 * mm, 13 * mm
+        cx = (x0 + x1) / 2
+        c.setFillColor(navy)
+        c.roundRect(cx - pill_w / 2, y(18), pill_w, pill_h, 3 * mm, stroke=0, fill=1)
+        txt(cx, y(13.6), title, 21, color=Color(1, 1, 1))
+        txt(cx, y(23.5), sub, 10.5, bold=False, color=Color(0.30, 0.32, 0.38))
+        c.setStrokeColor(gold)
+        c.setLineWidth(1.2)
+        c.line(x0 + 5 * mm, y(27), x1 - 5 * mm, y(27))
+        # بيانات السند: صفّان × خانتان
+        gx0, gx1 = x0 + 8 * mm, x1 - 8 * mm
+        col_w = (gx1 - gx0) / 2
+        lab_w = 27 * mm
+        for k, (label, value) in enumerate(info):
+            row, col = divmod(k, 2)
+            right = gx1 - col * col_w
+            t0 = 31 + row * 11
+            c.setStrokeColor(line)
+            c.setLineWidth(0.7)
+            c.setFillColor(soft)
+            c.rect(right - lab_w, y(t0 + 9), lab_w, 9 * mm, stroke=1, fill=1)
+            c.rect(right - col_w + 2 * mm, y(t0 + 9), col_w - 2 * mm - lab_w, 9 * mm, stroke=1, fill=0)
+            txt(right - 2.5 * mm, y(t0 + 6), label, 11, align="right")
+            txt(right - lab_w - (col_w - 2 * mm - lab_w) / 2, y(t0 + 6), value, 12.5)
+        # الوزن بخط كبير
+        bt = 57
+        c.setStrokeColor(navy)
+        c.setLineWidth(1.1)
+        c.setFillColor(soft)
+        c.roundRect(gx0, y(bt + 24), gx1 - gx0, 24 * mm, 3 * mm, stroke=1, fill=1)
+        kind = "القبض" if title == "سند قبض" else "الصرف"
+        txt(gx1 - 5 * mm, y(bt + 13.5), f"وزن {kind} (جم):", 14, align="right", color=navy)
+        txt((gx0 + gx1) / 2 - 10 * mm, y(bt + 15.5), f"{weight:.2f}", 30, color=navy)
+        # البيان
+        c.setStrokeColor(line)
+        c.setLineWidth(0.7)
+        txt(gx1 - 2 * mm, y(bt + 33), "البيان:", 11.5, align="right")
+        c.line(gx0, y(bt + 34), gx1 - 20 * mm, y(bt + 34))
+        if note:
+            fit = fit_font_size(note, gx1 - gx0 - 24 * mm, 11.5, bold=False, min_size=7)
+            txt(gx1 - 22 * mm, y(bt + 33), note, fit, bold=False, align="right")
+        # التوقيعات
+        third = (gx1 - gx0) / 3
+        for k, label in enumerate(("المسلِّم", "المستلِم", "المحاسب")):
+            sx = gx1 - (k + 0.5) * third
+            c.setStrokeColor(line)
+            c.line(sx - 22 * mm, y(H / mm - 9), sx + 22 * mm, y(H / mm - 9))
+            txt(sx, y(H / mm - 4.5), label, 11)
+        c.setFillColorRGB(0, 0, 0)
+        if half == 0:                                   # خط القصّ في منتصف الصفحة
+            c.saveState()
+            c.setStrokeColor(line)
+            c.setDash(4, 3)
+            c.setLineWidth(0.6)
+            c.line(M, PH / 2, PW - M, PH / 2)
+            c.restoreState()
 
     def refresh_casting_table(self):
         if not hasattr(self, 'cast_table_frame') or not self.cast_table_frame:
@@ -12522,11 +13134,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         title_lbl = getattr(self, "cast_title_lbl", None)
         if title_lbl is not None:
             label = self.get_display_label("الكاستنج")
-            title_lbl.configure(text=f"كشف حركة {label} — عمليات المسترجع" if operation == "مسترجع"
-                                else f"كشف حركة {label} — كل العمليات")
+            title_lbl.configure(text=f"كشف حركة {label} — عمليات {self.CAST_ANALYSIS}"
+                                if operation == self.CAST_ANALYSIS else f"كشف حركة {label} — كل العمليات")
         self.cast_tree, self.cast_table_rows_map = self.render_stage_ops_table(
             self.cast_table_frame, "صرف كاستنج", "قبض كاستنج", height=11, with_trees=True,
-            # «فاقد»: كل العمليات، «مسترجع»: عمليات المسترجع وحدها
+            # «فاقد»: كل العمليات، «التحليل»: عمليات التحليل وحدها
             section="الكاستنج", op_filter=operation,
             on_refresh=self.refresh_casting_table,
             recover_name=self.get_stage_config("الكاستنج")[2],
@@ -12567,11 +13179,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not ids:
             return
         recover_name = self.get_stage_config("الكاستنج")[2]
-        # عملية مسترجع (بلا صف): نافذة وزنها وتاريخها وبيانها
-        if len(ids) == 1 and ids[0] in self.invoices and self.is_recovery_op(
-                self.invoices[ids[0]], "صرف كاستنج", recover_name):
-            return self.open_recovery_op_edit_dialog(ids[0], "تعديل عملية مسترجع الكاستنج",
-                                                     status_text="✏️ تم تعديل عملية المسترجع")
+        analysis = [i for i in ids if i in self.invoices
+                    and self.is_recovery_op(self.invoices[i], "صرف كاستنج", recover_name)]
+        if analysis:
+            # صف تحليل برقمه: نافذة الصف نفسها (رقم الصف والصرف والقبض) بلا خانات الأشجار، ورقمه بين
+            # صفوف التحليل وحدها؛ والتحليل القديم بلا صف: نافذة وزنه وتاريخه وبيانه
+            if all((self.invoices[i].get("row_number") or "").strip() for i in analysis):
+                return self.open_stage_op_edit_dialog(analysis, "صرف كاستنج", "قبض كاستنج",
+                                                      f"تعديل عملية {self.CAST_ANALYSIS}",
+                                                      status_text=f"✏️ تم تعديل عملية {self.CAST_ANALYSIS}")
+            return self.open_recovery_op_edit_dialog(analysis[0], f"تعديل عملية {self.CAST_ANALYSIS}",
+                                                     status_text=f"✏️ تم تعديل عملية {self.CAST_ANALYSIS}")
         self.open_stage_op_edit_dialog(ids, "صرف كاستنج", "قبض كاستنج", "تعديل حركة الكاستنج",
                                        with_trees=True, status_text="✏️ تم تعديل حركة الكاستنج",
                                        recover_name=recover_name)
@@ -12611,7 +13229,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if len(new_date) < 10 or new_date[4] != "-":
                 messagebox.showerror("خطأ", "الرجاء إدخال التاريخ بالصيغة YYYY-MM-DD.", parent=win)
                 return
-            self.push_undo(f"تعديل عملية مسترجع ({inv.get('الاسم', '')})")
+            self.push_undo(f"تعديل عملية {self.CAST_ANALYSIS}")
             if new_w <= 0:
                 if not messagebox.askyesno("تأكيد", "الوزن صفر — ستُحذف هذه العملية.\nهل تريد المتابعة؟", parent=win):
                     return
@@ -17177,12 +17795,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     t = inv.get("النوع")
                     who = inv.get("الاسم")
                     if t == madin_type:
-                        label = ("صرف مسترجع" if who == self.CAST_RETURN_NAME
+                        label = (f"صرف {self.CAST_ANALYSIS}" if who == self.CAST_RETURN_NAME
                                  else "الليزر" if who == self.LASER_NAME else "صرف")
                         add(inv, inv["الوزن"], 0.0, inv.get("البيان") or label)
                     elif qabd_type and t == qabd_type:
                         label = (self.TREE_RETURN_NAME if who == self.TREE_RETURN_NAME
-                                 else "قبض مسترجع" if who == self.CAST_RETURN_NAME
+                                 else f"قبض {self.CAST_ANALYSIS}" if who == self.CAST_RETURN_NAME
                                  else "الليزر" if who == self.LASER_NAME else "قبض")
                         add(inv, 0.0, inv["الوزن"], label)
 
@@ -18517,6 +19135,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # أثناء الكتابة في «خياس بوليش 2»: نافذة صغيرة تحت الخانة بالوزن قبل البوليش وبعده
         self.attach_polish2_hint(self.sale_khayas, tab,
                                  [self.sale_gold, self.sale_gems, self.sale_stones, self.sale_diamond])
+        # وتحت «خياس البوليش»: قبل البوليش وبعده لرقم التشغيل من «تتبع رقم التشغيل»
+        self.attach_polish_hint(self.sale_khayas_polish, tab, self.sale_set_number)
 
         # التنقل بزر Enter بين **كل** الخانات (من التاريخ حتى آخر خانة)، وإضافة
         # السطر تلقائياً عند آخر خانة (بدون ترحيل الفاتورة). الفاتورة المعلّقة
@@ -18592,21 +19212,65 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_sales_table()
         self.update_suspended_count()
 
-    def attach_polish2_hint(self, khayas_entry, host, parts):
-        """نافذة صغيرة تحت خانة «خياس بوليش 2» ما دامت الخانة نشطة، بخانتين:
-        قبل = خياس بوليش 2 المكتوب + الذهب + الفصوص + الأحجار + الماس، وبعد = الذهب + الفصوص + الأحجار + الماس.
-        تتحدّث مع كل حرف وتختفي بمغادرة الخانة. يرجع دالة الحساب (قبل، بعد)."""
+    def attach_before_after_hint(self, entry, host, compute, triggers=()):
+        """نافذة صغيرة تحت خانة ما دامت الخانة نشطة: خانتا «قبل» و«بعد»، وسطر تنبيه عند الحاجة.
+        compute() ← (قبل، بعد، تنبيه): رقمان (أو None حيث لا قيمة) ونص التنبيه أو "".
+        تتحدّث مع كل حرف في الخانة وفي triggers، وتختفي بمغادرة الخانة."""
         box = ctk.CTkFrame(host, corner_radius=10, fg_color=(UI["surface"], "#1D232B"),
                            border_width=1, border_color=(UI["primary"], "#9CC0F5"))
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(padx=2, pady=(2, 0))
         cells = {}
         for key in ("قبل", "بعد"):
-            cell = ctk.CTkFrame(box, corner_radius=8, fg_color=(UI["surface_alt"], "#232A33"))
+            cell = ctk.CTkFrame(row, corner_radius=8, fg_color=(UI["surface_alt"], "#232A33"))
             cell.pack(side="right", padx=4, pady=4)
             ctk.CTkLabel(cell, text=key, font=(UI_FONT, 11, "bold"),
                          text_color=(UI["muted"], "#9AA4B2")).pack(padx=10, pady=(3, 0))
             cells[key] = ctk.CTkLabel(cell, text="0.00", font=(UI_FONT, 15, "bold"), text_color=UI_TITLE)
             cells[key].pack(padx=10, pady=(0, 3))
+        warn = ctk.CTkLabel(box, text="", font=(UI_FONT, 11, "bold"), text_color=(UI["danger"], "#F08A8F"),
+                            wraplength=250, justify="center")
+        shown = {"on": False}
 
+        def update(_e=None):
+            if not shown["on"]:
+                return
+            try:
+                before, after, note = compute()
+            except Exception as e:
+                log_cloud_error("تعذّر حساب نافذة قبل/بعد", e)
+                return
+            cells["قبل"].configure(text="-" if before is None else f"{before:.2f}")
+            cells["بعد"].configure(text="-" if after is None else f"{after:.2f}")
+            if note:
+                warn.configure(text=note)
+                warn.pack(padx=6, pady=(0, 5))
+            else:
+                warn.pack_forget()
+
+        def show(_e=None):
+            shown["on"] = True
+            update()
+            try:
+                box.place(in_=entry, relx=0.5, rely=1.0, y=4, anchor="n")
+                box.lift()
+            except tk.TclError:
+                pass
+
+        def hide(_e=None):
+            shown["on"] = False
+            box.place_forget()
+        entry.bind("<FocusIn>", show, add="+")
+        entry.bind("<FocusOut>", hide, add="+")
+        for w in [entry] + list(triggers):
+            w.bind("<KeyRelease>", update, add="+")
+        entry._before_after_hint = (box, cells, warn)
+        return compute
+
+    def attach_polish2_hint(self, khayas_entry, host, parts):
+        """تحت خانة «خياس بوليش 2» ما دامت نشطة:
+        قبل = خياس بوليش 2 المكتوب + الذهب + الفصوص + الأحجار + الماس، وبعد = الذهب + الفصوص + الأحجار + الماس.
+        يرجع دالة الحساب (قبل، بعد)."""
         def num(entry):
             try:
                 return float(str(entry.get()).strip() or 0)
@@ -18617,27 +19281,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             after = round(sum(num(e) for e in parts), 2)
             return round(after + num(khayas_entry), 2), after
 
-        def update(_e=None):
-            before, after = values()
-            cells["قبل"].configure(text=f"{before:.2f}")
-            cells["بعد"].configure(text=f"{after:.2f}")
-
-        def show(_e=None):
-            update()
-            try:
-                box.place(in_=khayas_entry, relx=0.5, rely=1.0, y=4, anchor="n")
-                box.lift()
-            except tk.TclError:
-                pass
-
-        def hide(_e=None):
-            box.place_forget()
-        khayas_entry.bind("<FocusIn>", show, add="+")
-        khayas_entry.bind("<FocusOut>", hide, add="+")
-        for entry in [khayas_entry] + list(parts):
-            entry.bind("<KeyRelease>", update, add="+")
+        self.attach_before_after_hint(khayas_entry, host, lambda: values() + ("",), triggers=parts)
+        box, cells, _warn = khayas_entry._before_after_hint
         khayas_entry._polish2_hint = (box, cells, values)
         return values
+
+    def polish_hint_values(self, set_text, typed_text=""):
+        """قبل البوليش وبعده لرقم التشغيل من «تتبع رقم التشغيل»، وتنبيه إن نقص شيء أو خالف المكتوبُ التتبعَ"""
+        key = self.normalize_set_number(set_text)
+        if not key:
+            return None, None, "اكتب رقم التشغيل أولاً"
+        v = self.set_tracking_values(key)
+        before, after, khayas = v["polish_before"], v["polish_after"], v["polish_khayas"]
+        if after is None:
+            return before, after, f"رقم التشغيل {key} غير موجود في قسم المركبين — لا «بعد البوليش»"
+        if before is None:
+            return before, after, "لا «قبل البوليش» لهذا الرقم — سجّله في «تتبع رقم التشغيل»"
+        if khayas < 0:
+            return before, after, "«قبل البوليش» أقل من بعده — راجعه في «تتبع رقم التشغيل»"
+        try:
+            typed = round(float(str(typed_text).strip() or 0), 2)
+        except ValueError:
+            typed = None
+        if typed is None or abs(typed - khayas) > 0.005:
+            return before, after, f"⚠️ المكتوب يختلف عن التتبع (خياس البوليش {khayas:.2f})"
+        return before, after, ""
+
+    def attach_polish_hint(self, polish_entry, host, set_entry):
+        """تحت خانة «خياس البوليش» ما دامت نشطة: قبل البوليش وبعده لرقم التشغيل المكتوب (من التتبع)"""
+        return self.attach_before_after_hint(
+            polish_entry, host, lambda: self.polish_hint_values(set_entry.get(), polish_entry.get()),
+            triggers=[set_entry])
 
     def switch_sales_subtab(self, key):
         """التنقل بين «إصدار مبيعات» (الإدخال)، و«المبيعات الصادرة» (الفواتير المرحّلة — المفتاح «العمليات»)،
@@ -19314,6 +19988,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     entries["خياس المركب"].insert(0, f"{details[0]:g}")
                 lbl_asm.configure(text=self.describe_assembler_khayas(set_no, details),
                                   text_color=(UI["muted"], "#9AA4B2"))
+                # وخياس البوليش من «تتبع رقم التشغيل» (قيمة الرقم السابق لا تبقى)
+                polish = self.set_tracking_values(set_no)["polish_khayas"] if set_no else None
+                entries["خياس البوليش"].delete(0, "end")
+                if polish is not None and polish > 0.0001:
+                    entries["خياس البوليش"].insert(0, f"{polish:g}")
             except Exception as e:
                 log_cloud_error("تعذّر جلب خياس المركب في نافذة تعديل الفاتورة", e)
 
@@ -19340,11 +20019,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             else:
                 lbl_asm.configure(text=(f"⚠️ خياس المركب المسجّل {stored:.2f} لكن {source} — راجع الرقم "
                                         "قبل الحفظ"), text_color=alert)
+            # خياس البوليش المسجّل مقابل «تتبع رقم التشغيل» (حين يكون فيه قيمة صحيحة للرقم)
+            polish = self.set_tracking_values(set_no)["polish_khayas"]
+            stored_p = round(r.get("خياس البوليش", 0.0) or 0.0, 2)
+            if polish is not None and polish >= 0 and abs(stored_p - polish) > 0.005:
+                entries["خياس البوليش"].delete(0, "end")
+                if polish > 0.0001:
+                    entries["خياس البوليش"].insert(0, f"{polish:g}")
+                lbl_asm.configure(text=lbl_asm.cget("text") + (
+                    f"\n⚠️ خياس البوليش المسجّل {stored_p:.2f} والصحيح من تتبع رقم التشغيل {polish:.2f} — "
+                    "وُضع الصحيح في الخانة: (حفظ تعديلات الفاتورة) يعتمده"), text_color=alert)
 
         entries["set_number"].bind("<FocusOut>", fetch_assembler, add="+")
         # تحت خانة «خياس بوليش 2»: الوزن قبل البوليش وبعده — كما في شاشة المبيعات
         self.attach_polish2_hint(entries["خياس"], win,
                                  [entries[k] for k in ("ذهب", "فصوص", "أحجار", "الماس")])
+        # وتحت «خياس البوليش»: قبل البوليش وبعده لرقم التشغيل من «تتبع رقم التشغيل»
+        self.attach_polish_hint(entries["خياس البوليش"], win, entries["set_number"])
 
         btns_row = ctk.CTkFrame(win, fg_color="transparent")
         btns_row.pack(fill="x", padx=18, pady=(2, 4))
@@ -19743,6 +20434,191 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             index[g["set_number"]] = (round(total + m["allow8"], 2), matches + [m])
         return index
 
+    # ═══ تتبع رقم التشغيل: قيم كل رقم من قسم المركبين + «قبل البوليش» اليدوي — للعرض والربط فقط ═══
+    # لا حركة ولا خياس ولا أثر على الخزينة: «قبل البوليش» إعدادٌ لكل رقم تشغيل (يُرفع مع النسخة كبقية
+    # الإعدادات ويراه المدير)، وبقية القيم تُقرأ من الحركات المسجّلة نفسها لحظة العرض
+    POLISH_BEFORE_PREFIX = "polish_before:"
+
+    def assembler_set_index(self, month=None):
+        """كل رقم تشغيل في قسم **المركبين** ← صرفه وقبضه، من صفوفه كما في كشف المركبين تماماً:
+          ١) تُجمع حركات كل مركّب في صفوف (العامل، الفترة، رقم الصف) — تجميع الكشف نفسه.
+          ٢) رقم تشغيل الصف = أول رقم غير فارغ في حركاته بترتيب التاريخ (ما يعرضه الكشف).
+          ٣) صرف الصف = مجموع «صرف ذهب»، وقبضه = مجموع «قبض ذهب» (عمودا الصرف والقبض في الكشف).
+        الرقم في أكثر من صف يُجمع من صفوفه كلها وتُذكر صفوفه. الحالات كخياس المركب: المقفل بالأرشفة
+        يبقى (ذهبٌ صُرف وقُبض فعلاً على الرقم). month: صفوف فترة واحدة فقط."""
+        assemblers = set(self.categories.get("المركبين", []))
+        if not assemblers:
+            return {}
+        sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0), month, tuple(sorted(assemblers)))
+        cache = self.__dict__.setdefault("_asm_set_idx_cache", {})
+        if month in cache and cache[month][0] == sig:
+            return cache[month][1]
+        rows = [inv for inv in self.invoices.values()
+                if inv.get("settled_status") in self.ASSEMBLER_KHAYAS_STATUSES
+                and inv.get("الاسم") in assemblers
+                and (not month or self.inv_in_period(inv, month))]
+        rows.sort(key=lambda x: (str(x.get("التاريخ", "")), x.get("رقم الفاتورة", 0) or 0))
+        groups = {}
+        for inv in rows:
+            key = (inv.get("الاسم"), self.inv_period(inv), (inv.get("row_number", "") or "").strip())
+            g = groups.setdefault(key, {"set_number": "", "صرف": 0.0, "قبض": 0.0})
+            if not g["set_number"]:
+                g["set_number"] = self.normalize_set_number(inv.get("set_number", ""))
+            t = inv.get("النوع")
+            if t == "صرف ذهب":
+                g["صرف"] += inv.get("الوزن", 0.0) or 0.0
+            elif t == "قبض ذهب":
+                g["قبض"] += inv.get("الوزن", 0.0) or 0.0
+        index = {}
+        for (name, period, row), g in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0], kv[0][2])):
+            if not g["set_number"]:
+                continue
+            e = index.setdefault(g["set_number"], {"sarf": 0.0, "qabd": 0.0, "rows": []})
+            e["sarf"] = round(e["sarf"] + g["صرف"], 2)
+            e["qabd"] = round(e["qabd"] + g["قبض"], 2)
+            e["rows"].append({"name": name, "period": period, "row": row,
+                              "sarf": round(g["صرف"], 2), "qabd": round(g["قبض"], 2)})
+        cache[month] = (sig, index)
+        return index
+
+    def polish_before_map(self):
+        """«قبل البوليش» المسجّل لكل رقم تشغيل (من الإعدادات بقراءة واحدة، ومحفوظ حتى يتغيّر)"""
+        cached = getattr(self, "_polish_before_cache", None)
+        if cached is not None:
+            return cached
+        result = {}
+        prefix = self.POLISH_BEFORE_PREFIX
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                for key, value in conn.execute("SELECT key, value FROM settings WHERE key LIKE ?", (prefix + "%",)):
+                    if not str(key).startswith(prefix):
+                        continue
+                    try:
+                        result[str(key)[len(prefix):]] = round(float(value), 2)
+                    except (TypeError, ValueError):
+                        continue
+        except sqlite3.Error as e:
+            log_cloud_error("تعذّر قراءة قيم قبل البوليش", e)
+        self._polish_before_cache = result
+        return result
+
+    def set_polish_before(self, set_number, value):
+        """يحفظ «قبل البوليش» لرقم تشغيل (None يمسحه) — خطوة تراجع (Ctrl+Z يعيد القيمة السابقة).
+        يرجع True إن حُفظ أو لم يتغيّر شيء."""
+        key = self.normalize_set_number(set_number)
+        if not key:
+            return False
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return False
+        skey = self.POLISH_BEFORE_PREFIX + key
+        old = self.get_setting(skey, None)
+        new = None if value is None else repr(round(float(value), 2))
+        try:
+            same = old == new or (old is not None and new is not None and abs(float(old) - float(new)) < 0.0001)
+        except (TypeError, ValueError):
+            same = False
+        if same:
+            return True
+        # تغيير قيمة مسجّلة تعديلٌ يخضع لقفل التعديل؛ تسجيلها أول مرة إدخالٌ عادي
+        if old is not None and not self.check_edit_permission():
+            return False
+        step = self.push_undo(f"قبل البوليش ({key})")
+        if step is not None:
+            step.setdefault("settings", {}).setdefault(skey, old)
+        if new is None:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM settings WHERE key = ?", (skey,))
+                conn.commit()
+            self.mark_backup_dirty()
+        else:
+            self.set_setting(skey, new)
+        self._polish_before_cache = None
+        return True
+
+    def set_tracking_values(self, set_number, index=None, before_map=None):
+        """قيم رقم التشغيل في «تتبع رقم التشغيل» — None حيث لا قيمة مسجّلة (خانة فارغة لا صفر مضلّل):
+          • polish_before : قبل البوليش (يدوي)
+          • polish_after  : بعد البوليش = صرف الرقم في قسم المركبين
+          • polish_khayas : خياس البوليش = قبل − بعد
+          • asm_before / asm_after / asm_khayas: التركيب = صرف المركبين / قبضهم / الفرق
+          • rows / names  : صفوف المركبين التي جاءت منها القيم (العامل، الفترة، الصف، صرفه، قبضه)"""
+        key = self.normalize_set_number(set_number)
+        index = self.assembler_set_index() if index is None else index
+        before_map = self.polish_before_map() if before_map is None else before_map
+        e = index.get(key) or {}
+
+        def present(v):
+            return round(v, 2) if v is not None and abs(v) > 0.0001 else None
+
+        before = before_map.get(key)
+        sarf, qabd = present(e.get("sarf")), present(e.get("qabd"))
+        rows = list(e.get("rows", []))
+        names = []
+        for r in rows:
+            if r["name"] not in names:
+                names.append(r["name"])
+        return {
+            "set_number": key, "polish_before": before, "polish_after": sarf,
+            "polish_khayas": round(before - sarf, 2) if before is not None and sarf is not None else None,
+            "asm_before": sarf, "asm_after": qabd,
+            "asm_khayas": round(sarf - qabd, 2) if sarf is not None and qabd is not None else None,
+            "rows": rows, "names": names,
+        }
+
+    def sale_polish_by_set(self):
+        """رقم التشغيل ← (هل بيع؟، «خياس البوليش» المسجّل في فاتورة بيعه) — لمطابقة التتبع بالمبيعات"""
+        out = {}
+        for inv in self.invoices.values():
+            if inv.get("settled_status") not in SALE_READ_STATUSES:
+                continue
+            t = inv.get("النوع")
+            key = self.normalize_set_number(inv.get("set_number"))
+            if not key:
+                continue
+            if t in self.SALE_TYPES:
+                out.setdefault(key, [True, 0.0])[0] = True
+            elif t == "خياس طقوم" and (inv.get("trees_count", 0.0) or 0.0) == KHAYAS_MARK_POLISH:
+                rec = out.setdefault(key, [False, 0.0])
+                rec[1] = round(rec[1] + (inv.get("الوزن", 0.0) or 0.0), 2)
+        return {k: (v[0], v[1]) for k, v in out.items()}
+
+    @staticmethod
+    def set_track_sale_status(values, sale):
+        """حال «خياس البوليش» في المبيعات لرقم: (النص، هل يختلف عن التتبع؟)"""
+        if not sale or not sale[0]:
+            return "لم يُبع", False
+        recorded = sale[1]
+        computed = values.get("polish_khayas")
+        if computed is None:
+            return (f"{recorded:.2f}" if recorded else "-"), False
+        if abs(recorded - computed) <= 0.005:
+            return f"✔ {recorded:.2f}", False
+        return f"⚠️ {recorded:.2f}", True
+
+    @staticmethod
+    def set_number_sort_key(key):
+        key = str(key or "")
+        return (0, int(key), "") if key.isdigit() else (1, 0, key)
+
+    def set_track_rows(self, scope_all=False, query=""):
+        """صفوف لوحة «تتبع رقم التشغيل»: أرقام قسم المركبين (للفترة المعروضة أو لكل الفترات)،
+        وقيم كل رقم من كل صفوفه في كل الفترات (الرقم فريد عبر الزمن)، وحاله في المبيعات."""
+        index = self.assembler_set_index()
+        keys = set(index) if scope_all else set(self.assembler_set_index(self.current_display_month))
+        q = self.normalize_set_number(query)
+        if q:
+            keys = {k for k in keys if q in k}
+        before_map = self.polish_before_map()
+        sold = self.sale_polish_by_set()
+        rows = []
+        for key in sorted(keys, key=self.set_number_sort_key):
+            v = self.set_tracking_values(key, index, before_map)
+            v["sale_text"], v["sale_mismatch"] = self.set_track_sale_status(v, sold.get(key))
+            rows.append(v)
+        return rows
+
     def audit_sale_assembler_khayas(self, month=None):
         """سطور فواتير المبيعات المرحّلة التي يختلف «خياس المركب» المسجّل فيها عن
         قيمته الصحيحة الآن في كشف المركبين (مسموح/٨ لرقم التشغيل).
@@ -19869,6 +20745,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 pass
         try:
             key = self.normalize_set_number(self.sale_set_number.get())
+            try:
+                self.autofill_polish_khayas(key)
+            except Exception as e:
+                log_cloud_error("تعذّر جلب خياس البوليش من تتبع رقم التشغيل", e)
             # الرقم نفسه ما زال مكتوباً والخانة ممتلئة ← لا يُعاد الجلب: المرور على
             # الخانة بالأسهم أو Enter لا يمسح خياساً عدّله المستخدم بيده
             if (key == getattr(self, "_assembler_set_fetched", None)
@@ -19885,6 +20765,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self._recompute_sale_totals()
         except Exception as e:
             log_cloud_error("تعذّر جلب خياس المركب تلقائياً", e)
+
+    def autofill_polish_khayas(self, key=None):
+        """يملأ «خياس البوليش» في المبيعات من «تتبع رقم التشغيل» (قبل البوليش − بعده) لرقم التشغيل المكتوب.
+        كخياس المركب: الرقم نفسه والخانة ممتلئة ← لا يُعاد الجلب (لا يُمسح ما عدّله المستخدم بيده)، ورقمٌ
+        جديد يمسح قيمة الرقم السابق دائماً. لا قيمة في التتبع أو قيمة سالبة ← الخانة فارغة والتنبيه تحتها."""
+        entry = getattr(self, "sale_khayas_polish", None)
+        if entry is None:
+            return None
+        key = self.normalize_set_number(self.sale_set_number.get()) if key is None else key
+        if key == getattr(self, "_polish_set_fetched", None) and entry.get().strip():
+            return None
+        self._polish_set_fetched = key
+        khayas = self.set_tracking_values(key)["polish_khayas"] if key else None
+        entry.delete(0, "end")
+        if khayas is not None and khayas > 0.0001:
+            entry.insert(0, f"{khayas:g}")
+        return khayas
 
     def schedule_assembler_autofill(self, event=None):
         """الجلب بعد توقّف الكتابة ١٨٠ ملّي ثانية — لا مع كل حرف (البحث يمسح كل الحركات)"""
@@ -20088,6 +20985,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_weight_standing.delete(0, 'end')
         self.sale_weight_bound.delete(0, 'end')
         self._assembler_set_fetched = None
+        self._polish_set_fetched = None
         self.show_assembler_source("")
         self.sale_set_number.focus_set()
 
@@ -20671,6 +21569,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             put(attr, draft.get(key, ""))
         # خياس المركب المحفوظ مع المسودة يبقى كما هو حتى يتغيّر رقم التشغيل
         self._assembler_set_fetched = self.normalize_set_number(draft.get("set_number", "")) or None
+        self._polish_set_fetched = self._assembler_set_fetched
         self.show_assembler_source("")
         if hasattr(self, "_recompute_sale_totals"):
             self._recompute_sale_totals()
@@ -21038,7 +21937,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "set_number": set_number, "date": date_str, "name": name,
             "gold": 0.0, "gems": 0.0, "stones": 0.0, "stones_discount": "",
             "diamond": 0.0, "khayas": 0.0, "khayas_polish": 0.0, "khayas_assembler": 0.0, "net": 0.0,
-            "row_number": "", "invoice_no": None, "voucher": "", "manual_no": ""
+            "row_number": "", "invoice_no": None, "voucher": "", "manual_no": "", "kind": ""
         }
         for inv in self.invoices.values():
             if inv.get("set_number") != set_number: continue
@@ -21076,6 +21975,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 data["invoice_no"] = inv.get("رقم الفاتورة")
             if not data["manual_no"] and inv.get("رقم الفاتورة اليدوي"):
                 data["manual_no"] = str(inv.get("رقم الفاتورة اليدوي")).strip()
+            if not data["kind"] and inv.get("sale_kind"):
+                data["kind"] = inv.get("sale_kind")
         return data
 
     @staticmethod
@@ -21111,6 +22012,53 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ("ناقص احجار", round(stones, 2)), ("ناقص الماس", round(diamond, 2)),
                 ("الوزن الصافي", round(gold, 2))]
 
+    def set_voucher_sections(self, data, track=None):
+        """قيم سند رقم التشغيل المعبّأة — كل قيمة رقمٌ أو None (خانة فارغة: لا قيمة مسجّلة، لا صفر مضلّل).
+        من «تتبع رقم التشغيل» (track) ومن سطر بيع الرقم (data):
+          • التصنيع : ٠٫٠٤٪ = قبل البوليش.
+          • البوليش : قبل = قبل البوليش، بعد = صرف الرقم في المركبين، خياس = الفرق.
+          • التركيب : قبل = صرف المركبين، بعد = قبض المركبين، خياس = الفرق.
+          • فصوص / أحجار / الماس: من سطر البيع (الأحجار قبل الخصم، ونسبة خصمها).
+          • الوزن بعد     = المركب بعد (قبض المركبين) + الماس + الأحجار + الفصوص.
+          • الوزن الإجمالي = قبل بوليش 2 = خياس بوليش 2 + الذهب + الفصوص + الأحجار + الماس.
+          • السلسال       = الوزن الإجمالي − الوزن بعد.
+          • بوليش 2: قبل = الوزن الإجمالي، بعد = الذهب + الفصوص + الأحجار + الماس، خياس = خياس بوليش 2
+            (نافذة «قبل/بعد» نفسها تحت خانة خياس بوليش 2 في المبيعات).
+          • الإجمالي: الوزن الصافي (الذهب)، الفصوص، الأحجار بعد الخصم ونسبتها، الوزن المقيد."""
+        track = self.set_tracking_values(data.get("set_number")) if track is None else track
+        sold = data.get("invoice_no") is not None
+
+        def num(k):
+            try:
+                return float(data.get(k) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        gold, gems, stones, diamond, polish2 = (num(k) for k in ("gold", "gems", "stones", "diamond", "khayas"))
+        disc = num("stones_discount")
+        a_after = track.get("asm_after")
+        pieces = round(gold + gems + stones + diamond, 2) if sold else None
+        total = round(pieces + polish2, 2) if sold else None
+        weight_after = round(a_after + diamond + stones + gems, 2) if (sold and a_after is not None) else None
+        chain = round(total - weight_after, 2) if (total is not None and weight_after is not None) else None
+
+        def sale(v):
+            return round(v, 2) if sold else None
+        return {
+            "mfg": (None, track.get("polish_before"), None),            # ٠٫٠٨٪، ٠٫٠٤٪، خياس
+            "polish": (track.get("polish_before"), track.get("polish_after"), track.get("polish_khayas")),
+            "assembly": (track.get("asm_before"), a_after, track.get("asm_khayas")),
+            "gems": sale(gems), "stones": sale(stones), "diamond": sale(diamond),
+            "stones_pct": round(disc / stones * 100, 2) if (sold and stones > 0 and disc > 0) else None,
+            "weight_after": weight_after, "chain": chain, "total": total,
+            "polish2": (total, pieces, sale(polish2)),
+            "net": sale(gold), "stones_discount": sale(disc),
+            "bound": round(gold + gems + disc + diamond, 2) if sold else None,
+            "assemblers": "، ".join(track.get("names", [])),
+            "kind": (data.get("kind") or ("الماس" if diamond > 0 else "ذهب")) if sold else "",
+            "name": str(data.get("name") or "") if sold else "",
+            "date": str(data.get("date") or "")[:10] if sold else "",
+        }
+
     def set_voucher_layout(self):
         """مواضع أقسام سند رقم التشغيل على صفحة A4 كاملة — بالنقاط، وy من أعلى الصفحة.
 
@@ -21140,7 +22088,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def draw_set_voucher_page(self, c, data):
         """سند رقم التشغيل بأقسام قالب المصنع الورقي (التصنيع، البوليش، التركيب، بوليش 2 —
         «التلميع النهائي» سابقاً، جدول القطع ١–١٨، الإجماليات، التوقيعات) على صفحة A4 كاملة (set_voucher_layout).
-        لا يُعبّأ منه إلا رقم التشغيل في خانة NO وجدول «الوزن النهائي»؛ وبقية الخانات فارغة للتعبئة اليدوية."""
+        يُعبّأ محمّلاً بقيم الرقم كلها من set_voucher_sections (تتبع رقم التشغيل + سطر بيعه) و«الوزن النهائي»
+        من set_voucher_values؛ وما لا قيمة له (ورقم الموديل والاسم وجدول القطع) يبقى فارغاً للتعبئة اليدوية."""
         from reportlab.lib.colors import Color
         L = self.set_voucher_layout()
         PH, MM, r, v, p, g = L["PH"], L["MM"], L["r"], L["v"], L["p"], L["g"]
@@ -21174,6 +22123,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cell(x0, t0, mid, t1, value, rows_fill, size=size + 1)
 
         left, right = L["left"], L["right"]
+        sec = self.set_voucher_sections(data)
+
+        def fmt(val):
+            return "" if val is None else f"{val:.2f}"
         # ── الرأس: مصنع جاديت في الوسط، وشعار المصنع يميناً، ورقم التشغيل (NO) يساراً ──
         t0, t1 = L["head"]
         box(left, t0, right, t1, HEAD, lw=1.4)
@@ -21188,43 +22141,49 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # ── بيانات السند: سطران بعرض الصفحة ──
         (a0, a1), (b0, b1) = L["info"]
         quarter = (right - left) / 4
-        for i, (label, value) in enumerate((("اسم العميل:", ""), ("رقم الموديل:", ""), (":NAME", ""),
-                                            (":DATE", "/      /"))):
+        for i, (label, value) in enumerate((("اسم العميل:", sec["name"]), ("رقم الموديل:", ""), (":NAME", ""),
+                                            (":DATE", sec["date"] or "/      /"))):
             x1 = right - i * quarter
             cell(x1 - 24 * MM, a0, x1, a1, label, LABEL, size=10.5)
             cell(x1 - quarter, a0, x1 - 24 * MM, a1, value, None, size=10.5)
         half = (right - left) / 2
-        for i, label in enumerate(("اسم المركب:", "النوع:")):
+        for i, (label, value) in enumerate((("اسم المركب:", sec["assemblers"]), ("النوع:", sec["kind"]))):
             x1 = right - i * half
             cell(x1 - 24 * MM, b0, x1, b1, label, LABEL, size=10.5)
-            cell(x1 - half, b0, x1 - 24 * MM, b1, "", None)
+            cell(x1 - half, b0, x1 - 24 * MM, b1, value, None, size=10.5)
 
         # ── العمود الأيسر: أقسام المراحل ──
         lx0, lx1 = L["col_left"]
         third = (lx1 - lx0) / 3
         three = tuple((lx1 - (i + 1) * third, lx1 - i * third) for i in range(3))     # من اليمين
 
-        def stage(top, title, heads):
+        def stage(top, title, heads, values=(None, None, None)):
             cell(lx0, top, lx1, top + r, title, HEAD, size=13)
-            for (x0, x1), h in zip(three, heads):
+            for (x0, x1), h, val in zip(three, heads, values):
                 cell(x0, top + r, x1, top + 2 * r, h, LABEL, size=11.5)
-                cell(x0, top + 2 * r, x1, top + 2 * r + v)
+                cell(x0, top + 2 * r, x1, top + 2 * r + v, fmt(val), size=13)
             return top + 2 * r + v
 
-        t = stage(L["body_top"], "التصنيع", ("0.08%", "0.04%", "خياس")) + g
-        t = stage(t, "البوليش", ("قبل", "بعد", "خياس")) + g
-        t = stage(t, "التركيب", ("قبل", "بعد", "خياس"))
-        for label in ("فصوص", "احجار", "الماس"):
+        # التصنيع: ٠٫٠٤٪ = قبل البوليش — والبوليش والتركيب من «تتبع رقم التشغيل»
+        t = stage(L["body_top"], "التصنيع", ("0.08%", "0.04%", "خياس"), sec["mfg"]) + g
+        t = stage(t, "البوليش", ("قبل", "بعد", "خياس"), sec["polish"]) + g
+        t = stage(t, "التركيب", ("قبل", "بعد", "خياس"), sec["assembly"])
+        for label, val in (("فصوص", sec["gems"]), ("احجار", sec["stones"]), ("الماس", sec["diamond"])):
             mid = (lx0 + lx1) / 2
             cell(mid, t, lx1, t + r, label, LABEL)
-            cell(lx0, t, mid, t + r, "%" if label == "احجار" else "", None, align="right")
+            cell(lx0, t, mid, t + r, fmt(val), None)
+            if label == "احجار":                                      # نسبة خصم الأحجار في طرف خانتها
+                pct = sec["stones_pct"]
+                text(mid - 2.5 * MM, t + r / 2, f"{pct:g}%" if pct else "%", 10, align="right")
             t += r
-        for label, value_fill in (("الوزن بعد", LABEL), ("السلسال", None), ("الوزن الأجمالي:", None)):
-            pair(lx0, lx1, t, t + r, label, value_fill)
+        for label, value_fill, val in (("الوزن بعد", LABEL, sec["weight_after"]), ("السلسال", None, sec["chain"]),
+                                       ("الوزن الأجمالي:", None, sec["total"])):
+            pair(lx0, lx1, t, t + r, label, value_fill, value=fmt(val))
             t += r
         c.setLineWidth(1.8)
         c.line(lx0, PH - (t - 3 * r), lx1, PH - (t - 3 * r))         # فاصل بين الأحجار والأوزان
-        t = stage(t + g, self.get_display_label("خياس الطقوم"), ("قبل", "بعد", "خياس")) + g
+        # بوليش 2 («التلميع النهائي» سابقاً): قيم نافذة «قبل/بعد» نفسها تحت خانة خياس بوليش 2
+        t = stage(t + g, "بوليش 2", ("قبل", "بعد", "خياس"), sec["polish2"]) + g
         # الوزن النهائي — الجدول الوحيد المعبّأ
         cell(lx0, t, lx1, t + r, "الوزن النهائي", HEAD, size=13)
         t += r
@@ -21259,14 +22218,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         t += r + g
         cell(rx0, t, rx1, t + r, "الأجمالي", HEAD, size=13)
         t += r
-        for label in ("الوزن الصافي", "فصوص", "الاحجار %", "الوزن المقيد"):
+        for label, val in (("الوزن الصافي", sec["net"]), ("فصوص", sec["gems"]),
+                           ("الاحجار %", sec["stones_discount"]), ("الوزن المقيد", sec["bound"])):
             if label == "الاحجار %":
                 mid = rx1 - rhalf
+                pct = sec["stones_pct"]
                 cell(mid + rhalf * 0.4, t, rx1, t + r, label, LABEL)
-                cell(mid, t, mid + rhalf * 0.4, t + r, "", LABEL)
-                cell(rx0, t, mid, t + r)
+                cell(mid, t, mid + rhalf * 0.4, t + r, f"{pct:g}%" if pct else "", LABEL)
+                cell(rx0, t, mid, t + r, fmt(val), size=12.5)
             else:
-                pair(rx0, rx1, t, t + r, label)
+                pair(rx0, rx1, t, t + r, label, value=fmt(val), size=12)
             t += r
 
         # ── التوقيعات: ثلاثة بعرض الصفحة أسفلها ──

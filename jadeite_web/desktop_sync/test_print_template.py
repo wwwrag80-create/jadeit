@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """اختبار قالب الطباعة: سند رقم التشغيل بقالب المصنع الورقي (الدفعة ٢١) —
-لا يُعبّأ منه إلا رقم التشغيل (NO) وجدول «الوزن النهائي»"""
+رقم التشغيل (NO) وجدول «الوزن النهائي» (set_voucher_values)، وبقية الخانات من set_voucher_sections
+(تتبع رقم التشغيل + سطر بيعه — 1.74)"""
 import ast, io, re
 
 src = io.open("rageh-1-34-14-cloud.py", encoding="utf-8").read()
@@ -34,11 +35,12 @@ empty = ns["set_voucher_values"](None, {"gold": None})
 assert [v for _l, v in empty] == [0.0] * 5, empty
 print("✔ القيم الناقصة تُطبع 0.00 بلا خطأ")
 
-# ═══ ٢) لا يُعبّأ غير رقم التشغيل وجدول الوزن النهائي ═══
+# ═══ ٢) القالب يقرأ قيمه من مصدرين محسوبين فقط (لا حساب داخل الرسم) ═══
 reads = re.findall(r'data\.get\("(\w+)"', tpl)
 assert reads == ["set_number"], reads
-assert tpl.count("self.set_voucher_values(data)") == 1
-print("✔ القالب لا يقرأ من بيانات الطقم إلا رقم التشغيل، وقيمه الخمس من set_voucher_values وحدها")
+assert tpl.count("self.set_voucher_values(data)") == 1 and tpl.count("self.set_voucher_sections(data)") == 1
+print("✔ القالب يقرأ رقم التشغيل وحده من بيانات الطقم؛ «الوزن النهائي» من set_voucher_values، "
+      "وبقية الخانات من set_voucher_sections")
 
 assert 'cell(left + 17 * MM, t0 + 6 * MM, left + 66 * MM, t1 - 6 * MM, str(data.get("set_number") or ""), WHITE' in tpl
 print("✔ رقم التشغيل في الخانة البيضاء بجوار NO أعلى السند")
@@ -48,12 +50,13 @@ print("✔ كل قيمة بخانتين عشريتين، وكل نص يتقلّ�
 
 # ═══ ٣) أقسام النموذج الورقي كلها مرسومة (فارغة للتعبئة اليدوية) ═══
 for part in ("مصنع جاديت", "NO:", ":DATE", ":NAME", "رقم الموديل:", "اسم العميل:", "النوع:", "اسم المركب:",
-             '"التصنيع"', '"البوليش"', '"التركيب"', 'self.get_display_label("خياس الطقوم")', '"0.08%"', '"0.04%"', '"خياس"',
+             '"التصنيع"', '"البوليش"', '"التركيب"', '"بوليش 2"', '"0.08%"', '"0.04%"', '"خياس"',
              '"السلسال"', '"الوزن الأجمالي:"', '"الوزن النهائي"', '"الاجمالي"', '"الأجمالي"',
              '"الوزن المقيد"', "range(18)", "توقيع المدير", "توقيع المحاسب", "توقيع مدير الانتاج"):
     assert part in tpl, part
 print("✔ كل أقسام النموذج الورقي مرسومة: التصنيع، البوليش، التركيب، بوليش 2 («التلميع النهائي» سابقاً)، جدول القطع ١–١٨، "
       "الإجماليات، التوقيعات")
+assert '"التلميع النهائي"' not in tpl
 
 # ═══ ٤) الصفحة كاملة: هامش متساوٍ، وعمودان بعرض واحد ينتهيان على سطر واحد فوق التوقيعات ═══
 import sys, types
@@ -78,9 +81,14 @@ print(f"✔ هامش 10 مم من الجهات الأربع؛ عمودان بع�
 rects, lines = [], []
 
 
+drawn = []
+
+
 class Canvas:
     def rect(self, x, y, w, h, **k): rects.append((x, y, x + w, y + h))
     def line(self, x0, y0, x1, y1): lines.append((x0, y0, x1, y1))
+    def drawCentredString(self, x, y, s): drawn.append(s)
+    drawRightString = drawString = drawCentredString
     def __getattr__(self, name): return lambda *a, **k: None
 
 
@@ -93,12 +101,23 @@ if "reportlab.lib.colors" not in sys.modules:
                             "reportlab.lib.colors": mod})
 draw_fn = method("draw_set_voucher_page")
 ns.update(re=re, ar=lambda t: t, fit_font_size=lambda *a, **k: a[2], _ARABIC_FONT_NAME="f", _ARABIC_FONT_BOLD_NAME="b")
-exec(compile(ast.Module(body=[draw_fn], type_ignores=[]), "draw_set_voucher_page", "exec"), ns)
+exec(compile(ast.Module(body=[draw_fn, method("set_voucher_sections")], type_ignores=[]), "voucher", "exec"), ns)
 fake.set_voucher_layout = lambda: ns["set_voucher_layout"](fake)
 fake.set_voucher_values = lambda d: ns["set_voucher_values"](fake, d)
+fake.set_voucher_sections = lambda d: ns["set_voucher_sections"](fake, d)
+fake.set_tracking_values = lambda k: {"polish_before": 33.6, "polish_after": 33.0, "polish_khayas": 0.6,
+                                      "asm_before": 33.0, "asm_after": 32.5, "asm_khayas": 0.5, "names": ["سالم"]}
 fake.pdf_logo = lambda: None
 fake.get_display_label = lambda k: "بوليش 2"
-ns["draw_set_voucher_page"](fake, Canvas(), {"set_number": "88001", "gold": 35.25})
+ns["draw_set_voucher_page"](fake, Canvas(), {"set_number": "88001", "gold": 35.25, "gems": 2.5, "stones": 3.0,
+                                             "stones_discount": "0.90", "diamond": 0.4, "khayas": 0.6,
+                                             "invoice_no": 7, "name": "المصنع", "date": "2026-10-05 10:00:00",
+                                             "kind": "الماس"})
+for value in ("33.60", "33.00", "0.60", "32.50", "0.50", "38.40", "3.35", "41.75", "41.15", "39.05", "30%",
+              "سالم", "المصنع", "2026-10-05", "الماس", "88001"):
+    assert value in drawn, (value, drawn)
+print("✔ الرسم الفعلي يكتب القيم في خاناتها: البوليش 33.60/33.00/0.60، التركيب 33.00/32.50/0.50، الوزن بعد 38.40، "
+      "السلسال 3.35، الإجمالي 41.75، بوليش 2 41.75/41.15/0.60، المقيد 39.05، ونسبة الأحجار 30%")
 xs = [v for r_ in rects for v in (r_[0], r_[2])]
 ys = [v for r_ in rects for v in (r_[1], r_[3])]
 assert close(min(xs), M) and close(max(xs), PW - M) and close(max(ys), PH - M), (min(xs), max(xs), max(ys))

@@ -198,13 +198,16 @@ app.invoices = {1: inv(1, "سالم", "صرف ذهب", 400.0, "1", "7003", "2026
                 2: inv(2, "سالم", "قبض ذهب", 375.0, "1", "", "2026-08")}
 shown = []
 app.show_assembler_source = shown.append
+polish_calls = []                                       # خياس البوليش يُجلب مع خياس المركب للرقم نفسه
+app.autofill_polish_khayas = lambda key=None: polish_calls.append(key)
 app.sale_set_number, app.sale_khayas_assembler = Entry("7003"), Entry("")
 app.autofill_assembler_khayas()
 assert app.sale_khayas_assembler.get() == "3" and "سالم" in shown[-1], shown
 app.sale_khayas_assembler.text = "2.9"                 # تعديل يدوي
 app.autofill_assembler_khayas()                        # المرور على الخانة بالأسهم/Enter
 assert app.sale_khayas_assembler.get() == "2.9"
-print("✔ الجلب يملأ الخانة ويُظهر المصدر، والمرور على الخانة لا يمسح تعديلاً يدوياً")
+assert polish_calls and polish_calls[0] == "7003", polish_calls
+print("✔ الجلب يملأ الخانة ويُظهر المصدر، والمرور على الخانة لا يمسح تعديلاً يدوياً (وخياس البوليش يُجلب معه)")
 app.sale_set_number.text = "9999"
 app.autofill_assembler_khayas()
 assert app.sale_khayas_assembler.get() == "" and "غير موجود" in shown[-1]

@@ -133,15 +133,17 @@ assert vals == [("الوزن النهائي", 41.15), ("ناقص فصوص", 2.5)
                 ("الوزن الصافي", 35.25)], vals
 voucher = body("draw_set_voucher_page")
 assert 'for label, value in self.set_voucher_values(data):' in voucher
-assert voucher.count('f"{value:.2f}"') == 1, "لا قيمة أخرى تُعبّأ في السند"
+assert voucher.count('f"{value:.2f}"') == 1, "جدول «الوزن النهائي» من set_voucher_values وحده"
+assert "sec = self.set_voucher_sections(data)" in voucher, "بقية القيم من set_voucher_sections (التتبع + سطر البيع)"
 assert 'str(data.get("set_number") or "")' in voucher, "رقم التشغيل في خانة NO"
 for label in ("مصنع جاديت", "التصنيع", "البوليش", "التركيب", "الوزن النهائي", "السلسال",
               "الوزن الأجمالي:", "رقم الموديل:", "اسم المركب:", "الوزن المقيد", "توقيع مدير الانتاج"):
     assert f'"{label}"' in voucher, label
-# مرحلة «التلميع النهائي» في السند اسمها الآن «بوليش 2» — من اسم الصندوق نفسه
-assert 'stage(t + g, self.get_display_label("خياس الطقوم")' in voucher and '"التلميع النهائي"' not in voucher
+# مرحلة «التلميع النهائي» في السند اسمها «بوليش 2» وقيمها قيم نافذة «قبل/بعد» تحت خانة خياس بوليش 2
+assert 'stage(t + g, "بوليش 2", ("قبل", "بعد", "خياس"), sec["polish2"])' in voucher
+assert '"التلميع النهائي"' not in voucher
 print("✔ ملف الترحيل: فاتورة المبيعات ثم التذاكر ثم سند لكل رقم تشغيل بقالب المصنع الورقي، "
-      "ولا يُعبّأ منه إلا رقم التشغيل و«الوزن النهائي» (القائم 41.15، الفصوص، الأحجار، الماس، الذهب 35.25)")
+      "و«الوزن النهائي» (القائم 41.15، الفصوص، الأحجار، الماس، الذهب 35.25) وبقية خاناته من التتبع وسطر البيع")
 draw = body("draw_sale_tickets")
 assert "code128.Code128(code" in draw and 'qr.QrCodeWidget(t["qr"])' in draw and "c.setDash(3, 2)" in draw
 assert 'code = t.get("barcode") or t["set_number"]' in draw and "max(0.6, room / bar.width)" in draw
