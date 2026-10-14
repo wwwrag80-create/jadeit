@@ -34,7 +34,7 @@ def module_value(name):
 
 
 MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEFORE_PREFIX", "CAST_RETURN_NAME",
-           "CAST_RETURN_OLD_NAMES", "migrate_analysis_name",
+           "CAST_RETURN_OLD_NAMES", "migrate_analysis_name", "LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "period_lock_blocked", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods",
            "CAST_ANALYSIS", "BOX_DISPLAY_OVERRIDES", "UNDO_LIMIT", "INVOICE_COLUMNS",
            "normalize_set_number", "inv_period", "inv_in_period", "assembler_set_index", "polish_before_map",
            "set_polish_before", "set_tracking_values", "sale_polish_by_set", "set_track_sale_status",

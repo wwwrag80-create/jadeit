@@ -24,7 +24,7 @@ MEMBERS = ("UNDO_LIMIT", "INVOICE_COLUMNS", "OPENING_ACCOUNT", "DELETED_ACCOUNTS
            "get_supplier_name_values_no_mustarja", "get_account_statement_options", "save_name_to_db",
            "set_setting", "get_setting", "push_undo", "_close_undo_step", "_undo_note_row", "_undo_note_name",
            "undo_step_label", "can_undo", "apply_undo_step", "invoice_from_row", "delete_worker_from_db",
-           "check_delete_permission", "view_only_blocked", "save_invoice_to_db", "_view_only_restore",
+           "check_delete_permission", "view_only_blocked", "save_invoice_to_db", "LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "period_lock_blocked", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_view_only_restore",
            "VIEW_ONLY_ACTIONS", "_install_view_only_guards", "save_suspended_sale", "SUSPENDED_TABLE_SQL")
 shown = []
 ns = {"sqlite3": sqlite3, "json": json, "time": time, "log_cloud_error": lambda *a: None,

@@ -48,7 +48,7 @@ M9 = "2026-09"
 METHODS = [
     # البيان والترحيل والعمليات
     "sale_bayan", "sale_note_of", "post_sale_rows", "get_sale_invoice_groups", "get_sale_invoice_records",
-    "sale_records_to_rows", "sale_row_order", "commit_sale_invoice", "save_invoice_to_db", "_undo_note_row", "invoice_from_row", "mark_backup_dirty",
+    "sale_records_to_rows", "sale_row_order", "commit_sale_invoice", "save_invoice_to_db", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row", "mark_backup_dirty",
     "inv_period", "inv_in_period", "invoices_by_period", "period_invoices",
     # المعلقات
     "list_suspended_sales", "get_suspended_sale", "save_suspended_sale", "delete_suspended_sale",
@@ -72,7 +72,7 @@ METHODS = [
     # كل ترحيل وتعديل خطوة تراجع (1.71)
     "push_undo", "_close_undo_step", "update_undo_buttons", "can_undo", "undo_step_label",
 ]
-ATTRS = ["UNDO_LIMIT", "INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
+ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "UNDO_LIMIT", "INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
          "SALE_NO_START_KEYS", "SALE_NO_DEFAULT_START", "SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SALE_NO_START_KEY", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 

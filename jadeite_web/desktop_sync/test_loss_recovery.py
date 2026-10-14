@@ -61,7 +61,7 @@ METHODS = [
     "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
-    "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "_undo_note_row", "invoice_from_row",
+    "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row",
     # الإقفال والبيانات القديمة
     "close_khayas_box", "close_split_khayas_box", "_post_closing_entry", "neutralize_auto_recovery_closings",
     "migrate_casting_returns", "migrate_analysis_name", "migrate_polish2_names",
@@ -69,7 +69,7 @@ METHODS = [
     "submit_inbound", "submit_journal_entry",
     # الكاستنج
     "get_cast_operation", "_read_weight", "submit_casting_op", "submit_casting_loss_op",
-    "submit_casting_recovery_op", "collect_stage_ops_rows", "render_stage_ops_table",
+    "submit_casting_recovery_op", "collect_stage_ops_rows", "render_stage_ops_table", "section_ops_khayas_text",
     "is_row_recovery", "is_recovery_op", "row_sort_key", "stage_row_extra", "norm_row_no",
     # بوليش ١ (الليزر) والتلميع — بلا خانة اسم، وأسماء الحسابات الثابتة
     "submit_polish_buff_op", "get_polish_buff_operation", "submit_polish_op", "stage_row_taken", "get_account_label", "migrate_row_extras", "read_entry_date",
@@ -79,7 +79,7 @@ METHODS = [
     # خطوات التراجع (الإقفال يفتح خطوة)
     "push_undo", "_close_undo_step", "update_undo_buttons", "undo_step_label", "can_undo",
 ]
-ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
+ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_TYPES", "LOSS_PARENT_ACCOUNT",
          "AUTO_RECOVERY_CLOSE_NOTE", "INBOUND_TYPES", "INBOUND_DEFAULT_ACCOUNT", "OPENING_ACCOUNT",
          "CAST_OPERATIONS", "CAST_MODE_FIELDS", "MADIN_DAEN_ACCOUNTS", "CAST_RETURN_NAME", "CAST_RETURN_OLD_NAMES", "TREE_RETURN_NAME", "CAST_ANALYSIS",
          "LASER_NAME", "POLISH_OPERATIONS", "POLISH_MODE_FIELDS", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL",
@@ -87,6 +87,7 @@ ATTRS = ["_DATE_DIGITS", "BOX_DISPLAY_OVERRIDES", "RECOVERY_IN_TYPES", "JOURNAL_
 
 EXTRA = '''
 def check_edit_permission(self): return True
+def get_setting(self, key, default=None): return default
 def deleted_account_names(self): return frozenset()
 def revive_deleted_accounts(self, names): pass
 def recalculate_all(self): self.recalcs += 1
@@ -330,7 +331,7 @@ treasury = round(sum(a.treasury_bucket(i, sets)[1] for i in m8), 2)
 assert treasury == -6.0, treasury
 print("✔ الخزينة: خرج 110 وعاد 104 = −6 = الفاقد الحالي (كلها حركات الكاستنج، لا «وارد»)")
 
-# الجدول: «فاقد» يعرض كل العمليات، و«صب وتحليل» عملياته وحدها — صف التحليل ١ صفٌّ واحد بصرفه وقبضه
+# الجدول (1.77): لكل عملية كشفها — «فاقد» صفوفه وحدها و«صب وتحليل» صفوفه وحدها — وخياس القسم = مجموعهما
 a.current_display_month = M8
 rows = a.collect_stage_ops_rows("صرف كاستنج", "قبض كاستنج", CAST_REC)
 assert [(r, g["op"]) for r, _n, g in rows] == [("1", "فاقد"), ("1", "صب وتحليل")]
@@ -338,20 +339,23 @@ assert (rows[0][2]["مدين"], rows[0][2]["دائن"], rows[0][2]["مسترجع
 assert (rows[1][2]["مدين"], rows[1][2]["دائن"], rows[1][2]["مسترجع"]) == (10.0, 8.0, 0.0), \
     "مسترجع الأشجار يُلحق بصف الفاقد لا بصف التحليل ذي الرقم نفسه"
 tot = W()
+section_line = "خياس قسم الكاستنج (العمليات مدموجة) = فاقد 4.00  +  صب وتحليل 2.00  =  6.00 جم"
 a.render_stage_ops_table(None, "صرف كاستنج", "قبض كاستنج", with_trees=True, recover_name=CAST_REC,
                          op_filter="فاقد", section=CAST, totals_label=tot)
 data = [r for r in a._tree.rows if r["الصف"] != "إجمالي الشهر"]
-assert [r["العملية"] for r in data] == ["فاقد", "صب وتحليل"], [r["العملية"] for r in data]
-assert "صرف: 110.00" in tot.v and "قبض: 103.00" in tot.v and "مسترجع الأشجار: 1.00" in tot.v, tot.v
-assert "الخياس: 6.00" in tot.v and "الصافي" not in tot.v, tot.v
-assert [r["الخياس"] for r in data] == ["4.00", "2.00"], [r["الخياس"] for r in data]
+assert [r["العملية"] for r in data] == ["فاقد"], [r["العملية"] for r in data]
+assert "كشف فاقد — صرف: 100.00" in tot.v and "قبض: 95.00" in tot.v and "مسترجع الأشجار: 1.00" in tot.v, tot.v
+assert "خياس فاقد: 4.00" in tot.v and tot.v.endswith(section_line) and "الصافي" not in tot.v, tot.v
+assert [r["الخياس"] for r in data] == ["4.00"], [r["الخياس"] for r in data]
 a.render_stage_ops_table(None, "صرف كاستنج", "قبض كاستنج", with_trees=True, recover_name=CAST_REC,
                          op_filter="صب وتحليل", section=CAST, totals_label=tot)
 data = [r for r in a._tree.rows if r["الصف"] != "إجمالي الشهر"]
 assert [(r["العملية"], r["الصف"]) for r in data] == [("صب وتحليل", "1")], data
-assert "صرف: 10.00" in tot.v and "قبض: 8.00" in tot.v and "الخياس: 2.00" in tot.v, tot.v
-print("✔ الجدول: «فاقد» يعرض كل العمليات — صف التحليل برقمه بصرفه وقبضه، ومسترجع الأشجار يُخصم من خياس صفه")
-print("✔ و«صب وتحليل» يعرض عملياته وحدها برقم صفها")
+assert "مسترجع الأشجار" not in data[0] and "عدد الأشجار" not in data[0], "كشف صب وتحليل بلا خانات الأشجار"
+assert "صرف: 10.00" in tot.v and "قبض: 8.00" in tot.v and "خياس صب وتحليل: 2.00" in tot.v, tot.v
+assert tot.v.endswith(section_line) and "مسترجع الأشجار" not in tot.v, tot.v
+print("✔ كشف «فاقد» وحده (صرف 100 قبض 95 مسترجع الأشجار 1 ← خياسه 4)، وكشف «صب وتحليل» وحده (10/8 ← 2) "
+      "بلا خانات الأشجار، وتحت كلٍّ: خياس قسم الكاستنج = 4 + 2 = 6 (فاقد صندوقه)")
 
 # ═══ ٣) الإقفال بالزر وحده ← حساب «فاقد الكاستنج» ═══
 a.current_display_month = M9
@@ -752,15 +756,20 @@ f.render_stage_ops_table(None, "صرف تلميع بف", "قبض تلميع بف
 assert f._tree.cols == ("الصف", "العملية", "صرف", "قبض", "الخياس", "البيان"), f._tree.cols
 assert f._tree.rows[0] == {"الصف": "41", "العملية": "فاقد", "صرف": "20.00", "قبض": "18.00",
                            "الخياس": "2.00", "البيان": "طقم"}, f._tree.rows[0]
-assert f._tree.rows[1] == {"الصف": "41", "العملية": "ليزر", "صرف": "0.50", "قبض": "-",
-                           "الخياس": "0.50", "البيان": "طقم"}, f._tree.rows[1]
-assert f._tree.rows[-1]["صرف"] == "20.50" and f._tree.rows[-1]["الخياس"] == "2.50"
-assert "منها الليزر 0.50" in lbl.get() and "الخياس: 2.50" in lbl.get(), lbl.get()
+assert len(f._tree.rows) == 2, "كشف «فاقد» صفوف الفاقد وحدها (1.77)"
+assert f._tree.rows[-1]["صرف"] == "20.00" and f._tree.rows[-1]["الخياس"] == "2.00"
+p1_line = "خياس قسم بوليش 1 (العمليات مدموجة) = فاقد 2.00  +  ليزر 0.50  =  2.50 جم"
+assert "كشف فاقد — صرف: 20.00" in lbl.get() and "خياس فاقد: 2.00" in lbl.get(), lbl.get()
+assert lbl.get().endswith(p1_line) and "منها الليزر" not in lbl.get(), lbl.get()
 f.render_stage_ops_table(None, "صرف تلميع بف", "قبض تلميع بف", section=P1, totals_label=lbl,
                          op_column=True, op_filter="ليزر")
 assert [r["العملية"] for r in f._tree.rows[:-1]] == ["ليزر"] and f._tree.rows[-1]["الخياس"] == "0.50"
-assert lbl.get().startswith("إجمالي الليزر: 0.50")
-print("✔ كشف «فاقد»: العمليتان بعمود «العملية» والخياس فاقد بوليش 1 كاملاً (2.50)؛ وكشف «ليزر»: الليزر وحده (0.50)")
+assert f._tree.rows[0] == {"الصف": "41", "العملية": "ليزر", "صرف": "0.50", "قبض": "-",
+                           "الخياس": "0.50", "البيان": "طقم"}, f._tree.rows[0]
+assert lbl.get().startswith("كشف الليزر — صرف الليزر: 0.50  |  خياس الليزر: 0.50 جم")
+assert lbl.get().endswith(p1_line), lbl.get()
+print("✔ بوليش 1: كشف «فاقد» وحده (20/18 ← خياسه 2.00) وكشف «ليزر» وحده (0.50)، وتحت كلٍّ: "
+      "خياس قسم بوليش 1 = 2.00 + 0.50 = 2.50 (فاقد صندوقه)")
 
 # الليزر وحده لصف؛ والصرف لصفٍّ فيه ليزر ليس تكراراً (الليزر لا يُعدّ صرف الصف)
 polish1(f, M9, "42", sarf="0.3", op="ليزر")

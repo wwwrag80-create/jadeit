@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.76.0"
+APP_VERSION = "1.77.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4673,6 +4673,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.view_only = bool(IS_ADMIN_BUILD and client_id)
         if self.view_only:
             self._install_view_only_guards()
+        else:
+            # الفترة المقفلة: لا إضافة ولا تعديل ولا حذف فيها (ووضع العرض يمنع كل شيء أصلاً)
+            self._install_period_guards()
         # صلاحية التعديل: المدير/الجلسة المحلية بدون عميل = مسموح دائماً، العميل العادي حسب ما فتحه المدير له
         self.can_edit = True if (is_admin_session or not client_id) else bool(initial_can_edit)
 
@@ -5530,6 +5533,184 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after_idle(run)
         except Exception:
             self._view_only_restore_pending = False
+
+    # ═══ إقفال الفترة (1.77): فترة مقفلة = لا إضافة ولا تعديل ولا حذف فيها حتى تُفتح من زرّها ═══
+    # الأقفال إعدادٌ واحد (قائمة الفترات المقفلة) يُرفع مع النسخة فيراه المدير. الحماية في طبقتين:
+    #   ١) قبل أن يبدأ أي إجراء على الفترة المعروضة (ترحيل، تعديل، حذف…): رسالة واضحة ولا شيء يتغيّر.
+    #   ٢) في الحفظ والحذف والتراجع أنفسها لكل حركة بفترتها (أي مسار آخر، كتعديل حركة من كشف حساب).
+    LOCKED_PERIODS_KEY = "locked_periods"
+
+    def locked_periods(self):
+        """الفترات المقفلة (من الإعدادات بقراءة واحدة، ومحفوظة حتى تتغيّر)"""
+        cached = getattr(self, "_locked_periods_cache", None)
+        if cached is not None:
+            return cached
+        raw = ""
+        try:
+            raw = self.get_setting(self.LOCKED_PERIODS_KEY, "") or ""
+        except Exception as e:
+            log_cloud_error("تعذّر قراءة الفترات المقفلة", e)
+        def valid(p):          # «YYYY-MM» وحده
+            return len(p) == 7 and p[4] == "-" and p[:4].isdigit() and p[5:].isdigit()
+        result = frozenset(p.strip() for p in str(raw).split(",") if valid(p.strip()))
+        self._locked_periods_cache = result
+        return result
+
+    def is_period_locked(self, month):
+        return bool(month) and month in self.locked_periods()
+
+    def set_period_locked(self, month, locked):
+        """يقفل فترة أو يفتحها (إعداد لا حركة: لا يغيّر أي رقم)، ويُسجَّل في سجل التغييرات"""
+        if not re.fullmatch(r"\d{4}-\d{2}", str(month or "")):
+            return False
+        periods = set(self.locked_periods())
+        if locked:
+            periods.add(month)
+        else:
+            periods.discard(month)
+        self.set_setting(self.LOCKED_PERIODS_KEY, ",".join(sorted(periods)))
+        self._locked_periods_cache = None
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                self._log_change(conn.cursor(), "إقفال الفترة" if locked else "فتح الفترة", period=month)
+                conn.commit()
+        except sqlite3.Error as e:
+            log_cloud_error("تعذّر تسجيل إقفال الفترة في السجل", e)
+        return True
+
+    def period_lock_blocked(self, periods, silent=False):
+        """True إن كانت أي فترة من periods مقفلة — برسالة واضحة (مرة لكل ضغطة)"""
+        locked = sorted({p for p in periods if p and self.is_period_locked(p)})
+        if not locked:
+            return False
+        now = time.monotonic()
+        if not silent and now - getattr(self, "_period_lock_warned_at", -10.0) > 1.5:
+            self._period_lock_warned_at = now
+            try:
+                messagebox.showwarning(
+                    "الفترة مقفلة 🔒",
+                    f"🔒 الفترة {'، '.join(locked)} مقفلة.\n\n"
+                    "لا إضافة ولا تعديل ولا حذف في فترة مقفلة — تبقى أرقامها كما أُقفلت.\n"
+                    "لفتحها: اختر الفترة من «الفترة» أعلى الشاشة ثم اضغط «🔓 فتح الفترة».")
+            except Exception:
+                pass
+        return True
+
+    # الإجراءات التي تعمل على الفترة المعروضة: تُمنع قبل أن تبدأ إن كانت مقفلة
+    PERIOD_GUARDED_ACTIONS = (
+        "submit_generic_stage_op", "submit_casting_op", "submit_casting_loss_op", "submit_casting_recovery_op",
+        "submit_polish_op", "submit_polish_buff_op", "submit_unified_op", "submit_inbound", "submit_journal_entry",
+        "commit_sale_invoice", "stage_sale_row", "set_opening_balance",
+        "delete_selected_opening_row", "edit_selected_opening_row",
+        "delete_selected_generic_stage_row", "edit_selected_generic_stage_row", "delete_selected_casting_row",
+        "edit_selected_casting_row", "delete_selected_polish_row", "edit_selected_polish_row",
+        "delete_selected_polish_buff_row", "edit_selected_polish_buff_row",
+        "rename_op_ledger_set_number", "reassign_op_ledger_row", "op_ledger_edit_selected", "op_ledger_delete_selected",
+        "bulk_settle_current_category", "delete_selected_sale_invoice", "edit_selected_sale_invoice",
+        "edit_selected_inout_row", "delete_selected_inout_row")
+    # ومنها ما يضيف حركات جديدة: في فترة سابقة يُسأل مرة واحدة لكل زيارة لها قبل أول ترحيل
+    PERIOD_ADD_ACTIONS = (
+        "submit_generic_stage_op", "submit_casting_op", "submit_casting_loss_op", "submit_casting_recovery_op",
+        "submit_polish_op", "submit_polish_buff_op", "submit_unified_op", "submit_inbound", "submit_journal_entry",
+        "commit_sale_invoice", "set_opening_balance")
+
+    def _install_period_guards(self):
+        for name in self.PERIOD_GUARDED_ACTIONS:
+            original = getattr(self, name, None)
+            if not callable(original):
+                continue
+
+            def guarded(*a, _orig=original, _adds=name in self.PERIOD_ADD_ACTIONS, **k):
+                if self.period_lock_blocked([self.current_display_month]):
+                    return None
+                if _adds and not self.confirm_past_period_entry():
+                    return None
+                return _orig(*a, **k)
+            setattr(self, name, guarded)
+
+    def confirm_past_period_entry(self):
+        """ترحيل حركة جديدة والفترة المعروضة شهرٌ سابق: تأكيد مرة واحدة لكل زيارة لتلك الفترة.
+        أكثر سبب لظهور «أرقام لم أُدخلها» في شهر سابق: العودة إليه (للإقفال مثلاً) ثم متابعة الإدخال
+        فيه نسياناً — فتُختم حركات الشهر الجديد بالشهر السابق وتغيّر خياسه بعد إقفاله."""
+        month = self.current_display_month
+        today = datetime.datetime.now().strftime("%Y-%m")
+        if not month or month >= today:
+            return True
+        ok = self.__dict__.setdefault("_past_period_ok", set())
+        if month in ok:
+            return True
+        if not messagebox.askyesno(
+                "التسجيل في فترة سابقة",
+                f"⚠️ الفترة المعروضة {month} ليست الشهر الحالي ({today}).\n\n"
+                f"الحركة ستُسجَّل في فترة {month}: تظهر في جداولها وتدخل في خياسها وصناديقها.\n\n"
+                f"هل تريد التسجيل في فترة {month}؟\n"
+                f"(«لا» يلغي الترحيل — ولتسجيلها في {today} اختر الفترة من «الفترة» أعلى الشاشة)",
+                default=messagebox.NO):
+            return False
+        ok.add(month)
+        return True
+
+    def toggle_period_lock(self):
+        """زر واحد أعلى الشاشة: «🔒 إقفال الفترة» للفترة المعروضة، و«🔓 فتح الفترة» إن كانت مقفلة"""
+        if self.view_only_blocked():
+            return
+        month = self.current_display_month
+        if self.is_period_locked(month):
+            # الفتح يتيح التعديل: يخضع لقفل التعديل من المدير
+            if not self.check_edit_permission():
+                return
+            if not messagebox.askyesno(
+                    "فتح الفترة",
+                    f"🔓 فتح الفترة {month}؟\n\n"
+                    "تصبح الإضافة والتعديل والحذف فيها ممكنة من جديد.\n"
+                    "أقفلها مرة أخرى بعد انتهائك من الزر نفسه."):
+                return
+            self.set_period_locked(month, False)
+            self.toast(f"🔓 فُتحت الفترة {month}", "info")
+        else:
+            notes = self.period_lock_notes(month)
+            msg = (f"🔒 إقفال الفترة {month}:\n\n"
+                   "• لا إضافة ولا تعديل ولا حذف فيها حتى تفتحها من الزر نفسه.\n"
+                   "• الإقفال لا يغيّر أي رقم — يحفظ أرقام الفترة كما هي الآن.")
+            if notes:
+                msg += "\n\nتنبيه قبل الإقفال:\n" + "\n".join(f"   • {n}" for n in notes)
+                msg += "\n\n(التفاصيل في «🔎 مراجعة الفترة» بالشاشة الرئيسية)"
+            msg += "\n\nهل تريد إقفال الفترة؟"
+            if not messagebox.askyesno("إقفال الفترة", msg):
+                return
+            self.set_period_locked(month, True)
+            self.toast(f"🔒 أُقفلت الفترة {month} — للعرض فقط حتى تفتحها", "success")
+        self.update_period_lock_ui()
+        self.refresh_screen_info_bar()
+
+    def period_lock_notes(self, month):
+        """ما يحسن مراجعته قبل إقفال فترة: صناديق فيها خياس غير مُقفل، وحركات تحتاج انتباهاً"""
+        notes = []
+        try:
+            data = self.period_review_data(month, with_log=False)
+        except Exception as e:
+            log_cloud_error("تعذّر تجهيز ملخص الفترة قبل الإقفال", e)
+            return notes
+        for box in data["boxes"]:
+            if abs(box["remaining"]) >= 0.005:
+                notes.append(f"خياس غير مُقفل في {box['label']}: {box['remaining']:.2f} جم")
+        if data["flagged"]:
+            notes.append(f"{len(data['flagged'])} حركة تحتاج مراجعة (أُضيفت بعد إقفال خياسها أو بتاريخ خارج الفترة)")
+        return notes
+
+    def update_period_lock_ui(self):
+        """زر الإقفال/الفتح ومؤشر الفترة المقفلة حسب الفترة المعروضة"""
+        btn = getattr(self, "btn_period_lock", None)
+        locked = self.is_period_locked(getattr(self, "current_display_month", ""))
+        if btn is not None:
+            try:
+                if locked:
+                    btn.configure(text="🔓 فتح الفترة", fg_color=UI["danger"], hover_color=UI["danger_hover"])
+                else:
+                    btn.configure(text="🔒 إقفال الفترة", fg_color=UI["neutral"], hover_color=UI["neutral_hover"])
+            except Exception:
+                pass
+        self.update_period_warning()
 
     def update_edit_status_ui(self):
         """يحدّث مؤشر حالة التعديل أعلى الشاشة ليعرف المستخدم فوراً إن كان التعديل مفتوحاً أو مقفولاً"""
@@ -6760,6 +6941,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             
             # الفواتير المعلّقة في شاشة المبيعات (لا حركات محاسبية — مسودّات تُستكمل لاحقاً)
             cursor.execute(self.SUSPENDED_TABLE_SQL)
+            # سجل التغييرات (1.77): كل إضافة وتعديل وحذف وتراجع وإقفال فترة بوقته الحقيقي، وآخر
+            # CHANGE_LOG_LIMIT سطر فقط (يبقى صغيراً)
+            cursor.execute(self.CHANGE_LOG_SQL)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_change_log_period ON change_log(period)")
+            cursor.execute("DELETE FROM change_log WHERE id <= (SELECT MAX(id) FROM change_log) - ?",
+                           (self.CHANGE_LOG_LIMIT,))
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inv_date ON invoices(date_time)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inv_name ON invoices(name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inv_status ON invoices(settled_status)")
@@ -6834,6 +7021,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self._undo_stack, self._undo_open = [], None
         self._deleted_accounts = None          # قائمة الحسابات المحذوفة من القاعدة المحمّلة
         self._polish_before_cache = None       # «قبل البوليش» في تتبع رقم التشغيل
+        self._locked_periods_cache = None      # الفترات المقفلة (إعداد في القاعدة المحمّلة)
         self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
         self.invoices = {}
         self.opening_balance = 0.0
@@ -6923,6 +7111,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     conn.executemany(
                         "UPDATE invoices SET settled_status = ?, note = ? WHERE invoice_id = ?",
                         [(MEMO_STATUS, self.AUTO_RECOVERY_CLOSE_NOTE, leg["رقم الفاتورة"]) for leg in found])
+                    self._log_auto_fix(conn, found, "إلغاء إقفال تلقائي قديم للمسترجع (سطر معلوماتي)")
                     conn.commit()
                 self.mark_backup_dirty()
             except Exception as e:
@@ -6968,6 +7157,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         "UPDATE invoices SET op_type = ?, name = ?, before_w = ?, after_w = ? WHERE invoice_id = ?",
                         [(inv["النوع"], inv["الاسم"], inv.get("قبل", 0.0), inv.get("بعد", 0.0),
                           inv["رقم الفاتورة"]) for inv in changed])
+                    self._log_auto_fix(conn, changed, "مسترجع الكاستنج القديم صار قبضاً/صرفاً للكاستنج")
                     conn.commit()
                 self.mark_backup_dirty()
             except Exception as e:
@@ -6990,6 +7180,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 with sqlite3.connect(self.db_path) as conn:
                     conn.executemany("UPDATE invoices SET name = ? WHERE invoice_id = ?",
                                      [(self.CAST_RETURN_NAME, inv["رقم الفاتورة"]) for inv in changed])
+                    self._log_auto_fix(conn, changed, f"الاسم الجديد «{self.CAST_RETURN_NAME}» (الاسم وحده)")
                     conn.commit()
                 self.mark_backup_dirty()
             except Exception as e:
@@ -7022,6 +7213,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 with sqlite3.connect(self.db_path) as conn:
                     conn.executemany("UPDATE invoices SET op_type = ? WHERE invoice_id = ?",
                                      [(inv["النوع"], inv["رقم الفاتورة"]) for inv in changed])
+                    self._log_auto_fix(conn, changed, "الليزر القديم المسجّل قبضاً صار صرفاً")
                     conn.commit()
                 self.mark_backup_dirty()
             except Exception as e:
@@ -7070,11 +7262,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 with sqlite3.connect(self.db_path) as conn:
                     conn.executemany("UPDATE invoices SET name = ?, note = ? WHERE invoice_id = ?",
                                      [(inv["الاسم"], inv.get("البيان", ""), inv["رقم الفاتورة"]) for inv in changed])
+                    self._log_auto_fix(conn, changed, "اسم «بوليش 2» الجديد (الاسم والبيان وحدهما)")
                     conn.commit()
                 self.mark_backup_dirty()
             except Exception as e:
                 log_cloud_error("تعذّر حفظ نقل حركات خياس التلميع النهائي إلى بوليش 2", e)
         return len(changed)
+
+    def _log_auto_fix(self, conn, invs, detail):
+        """تصحيحات البيانات القديمة عند التحميل تُسجَّل أيضاً: لا رقم يتغيّر بلا أثر في السجل.
+        لا يوقف التصحيح نفسه أبداً (السجل للاطّلاع)."""
+        try:
+            cursor = conn.cursor()
+            for inv in invs:
+                self._log_change(cursor, "تصحيح تلقائي", inv, detail=detail)
+        except Exception as e:
+            log_cloud_error("تعذّر تسجيل التصحيح التلقائي في السجل", e)
 
     def save_invoice_to_db(self, inv_id, inv_data):
         """يرجع True لو تم الحفظ فعلياً، أو False لو تم المنع (تعديل على فاتورة موجودة ومقفول عليها التعديل)"""
@@ -7099,6 +7302,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if not inv_data.get("period"):
                 inv_data["period"] = existing_period or self.current_display_month
 
+            # فترة مقفلة (فترة الحركة الجديدة، أو الأصلية لحركة قائمة): لا كتابة، والذاكرة كالقاعدة
+            old_period = (existing_period or str(existing_row[1] or "")[:7]) if existing_row else ""
+            if self.period_lock_blocked([inv_data["period"], old_period]):
+                if existing_row:
+                    self.invoices[inv_id] = self.invoice_from_row(existing_row)
+                elif self.invoices.get(inv_id) is inv_data:
+                    self.invoices.pop(inv_id, None)
+                self._inv_version = getattr(self, "_inv_version", 0) + 1
+                return False
+
             # فاتورة موجودة بالفعل بقاعدة البيانات (تعديل على عملية سابقة) ومقفول عليه التعديل؟
             if existing_row and not self.check_edit_permission():
                 # نرجّع الذاكرة لنفس القيمة المخزّنة فعلياً بقاعدة البيانات (بدون أي تغيير وهمي)
@@ -7122,6 +7335,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                   inv_data.get("رقم الفاتورة اليدوي", existing_manual),
                   inv_data.get("period") or existing_period or self.inv_period(inv_data),
                   inv_data.get("sale_kind", existing_kind) or ""))
+            # سجل التغييرات: متى أُضيفت الحركة أو عُدّلت (وما تغيّر)، وفي أي فترة كان المستخدم يعمل
+            detail = self._change_detail(existing_row, inv_data) if existing_row else ""
+            if not existing_row or detail:
+                self._log_change(cursor, "تعديل" if existing_row else "إضافة", inv_data,
+                                 period=inv_data.get("period") or existing_period, detail=detail)
             conn.commit()
         # الذاكرة كالقاعدة دائماً: من يحفظ نسخة من الحركة (dict(...)) كانت تبقى الذاكرة على القديم،
         # فيعرض الجدول القيمة السابقة حتى إعادة التشغيل («عدّلت ولم يتعدّل الصف»)
@@ -7141,10 +7359,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             row = cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices WHERE invoice_id = ?",
                                  (inv_id,)).fetchone()
             if row:
+                # حركة في فترة مقفلة لا تُحذف
+                if self.period_lock_blocked([row[13] or str(row[1] or "")[:7]]):
+                    return False
                 # كل حذف قابل للتراجع: يفتح خطوة (أو ينضمّ لخطوة الضغطة نفسها)
                 if getattr(self, "_undo_open", None) is None:
                     self.push_undo(f"حذف حركة ({row[2]} — {row[3]})", auto=True)
                 self._undo_note_row(inv_id, row, deleted=True)
+                self._log_change(cursor, "حذف", self.invoice_from_row(row))
             cursor.execute("DELETE FROM invoices WHERE invoice_id = ?", (inv_id,))
             conn.commit()
         if inv_id in self.invoices:
@@ -7163,6 +7385,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """
         if not self.check_delete_permission():
             return False
+        # حذف حركات الاسم معه: لا يمسّ حركة في فترة مقفلة (كل شيء أو لا شيء)
+        if not keep_transactions and self.period_lock_blocked(
+                {self.inv_period(inv) for inv in self.invoices.values()
+                 if inv.get("الاسم") == worker_name and inv.get("settled_status") == "ACTIVE"}):
+            return False
 
         # خطوة تراجع قبل أي تغيير: الاسم وحركاته المحذوفة (إن حُذفت) تعود معاً
         self.push_undo(f"حذف الاسم ({worker_name})")
@@ -7175,6 +7402,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 for row in cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices "
                                           "WHERE name = ? AND settled_status = 'ACTIVE'", (worker_name,)).fetchall():
                     self._undo_note_row(row[0], row, deleted=True)
+                    self._log_change(cursor, "حذف", self.invoice_from_row(row), detail=f"مع حذف الاسم ({worker_name})")
                 cursor.execute("DELETE FROM invoices WHERE name = ? AND settled_status = 'ACTIVE'",
                                (worker_name,))
             conn.commit()
@@ -7196,6 +7424,62 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # داخل الخطوة، والأسماء المحذوفة — لا نسخة كاملة من البيانات (كانت اللقطة
     # الكاملة تتضخّم بعشرات الميغابايت مع آلاف الحركات).
     UNDO_LIMIT = 50
+
+    # ═══ سجل التغييرات (1.77): متى أُضيفت كل حركة أو عُدّلت أو حُذفت، وفي أي فترة كان المستخدم ═══
+    # يُكتب في المعاملة نفسها التي تكتب الحركة. يجيب عن «من أين جاء هذا الرقم؟» في «🔎 مراجعة الفترة»
+    CHANGE_LOG_LIMIT = 50000
+    CHANGE_LOG_SQL = ("CREATE TABLE IF NOT EXISTS change_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, "
+                      "action TEXT, invoice_id INTEGER, period TEXT, view_period TEXT, name TEXT, op_type TEXT, "
+                      "weight REAL, row_number TEXT, set_number TEXT, detail TEXT)")
+    CHANGE_LOG_FIELDS = (("الوزن", "الوزن"), ("الاسم", "الاسم"), ("النوع", "النوع"), ("row_number", "الصف"),
+                         ("set_number", "رقم التشغيل"), ("period", "الفترة"), ("التاريخ", "التاريخ"),
+                         ("settled_status", "الحالة"), ("trees_count", "الأشجار"), ("البيان", "البيان"))
+
+    def _log_change(self, cursor, action, inv=None, period=None, detail=""):
+        """سطر في سجل التغييرات — لا يوقف الحفظ أبداً إن تعذّر (قاعدة قديمة: يُنشأ الجدول ويُعاد مرة)"""
+        try:
+            inv = inv or {}
+            values = (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), action, inv.get("رقم الفاتورة"),
+                      period if period is not None else (self.inv_period(inv) if inv else ""),
+                      getattr(self, "current_display_month", "") or "", inv.get("الاسم", "") or "",
+                      inv.get("النوع", "") or "", inv.get("الوزن"), inv.get("row_number", "") or "",
+                      inv.get("set_number", "") or "", detail or "")
+            sql = ("INSERT INTO change_log (ts, action, invoice_id, period, view_period, name, op_type, weight, "
+                   "row_number, set_number, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            try:
+                cursor.execute(sql, values)
+            except sqlite3.OperationalError:
+                cursor.execute(self.CHANGE_LOG_SQL)
+                cursor.execute(sql, values)
+        except Exception as e:
+            try:
+                log_cloud_error("تعذّر تسجيل التغيير في السجل", e)
+            except Exception:
+                pass
+
+    def _change_detail(self, old_row, inv):
+        """ما تغيّر في حركة قائمة («الوزن من 3.00 إلى 4.00، الصف من 2 إلى 5») — فارغ إن لم يتغيّر شيء"""
+        old = self.invoice_from_row(old_row)
+        old["trees_count"] = old.get("trees_count") or 0.0
+
+        def shown(v):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return f"{v:.2f}"
+            return str(v) if v not in (None, "") else "—"
+        parts = []
+        for key, label in self.CHANGE_LOG_FIELDS:
+            a, b = old.get(key), inv.get(key)
+            if key in ("الوزن", "trees_count"):
+                try:
+                    same = abs(float(a or 0) - float(b or 0)) < 0.0005
+                except (TypeError, ValueError):
+                    same = a == b
+            else:
+                same = str(a or "") == str(b or "")
+            if not same:
+                parts.append(f"{label} من {shown(a)} إلى {shown(b)}")
+        return "، ".join(parts)
+
     INVOICE_COLUMNS = ("invoice_id, date_time, name, op_type, weight, before_w, after_w, note, "
                        "settled_status, trees_count, set_number, row_number, manual_no, period, sale_kind")
 
@@ -7336,10 +7620,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         step = self._undo_stack[-1]
         label = self.undo_step_label(step)
-        if not messagebox.askyesno(
-                "تأكيد التراجع",
-                f"سيتم التراجع عن: {label}\n\n"
-                f"وتعود {len(step['rows'])} حركة كما كانت قبل هذه الخطوة. هل تريد المتابعة؟"):
+        # فترات الخطوة (صور الحركات قبلها، والحركات الآن): فترة مقفلة ← لا تراجع
+        periods = self.undo_step_periods(step)
+        if self.period_lock_blocked(periods):
+            return
+        msg = (f"سيتم التراجع عن: {label}\n\n"
+               f"وتعود {len(step['rows'])} حركة كما كانت قبل هذه الخطوة.")
+        other = sorted(p for p in periods if p != self.current_display_month)
+        if other:
+            # كان Ctrl+Z في شهر جديد يتراجع بصمت عن خطوات شهر سابق (إقفاله أو تعديلاته) فيتغيّر خياسه
+            msg += (f"\n\n⚠️ هذه الخطوة في فترة {'، '.join(other)} — ليست الفترة المعروضة "
+                    f"({self.current_display_month}). التراجع يغيّر أرقام تلك الفترة.")
+        if not messagebox.askyesno("تأكيد التراجع", msg + "\n\nهل تريد المتابعة؟",
+                                   default=messagebox.NO if other else messagebox.YES):
             return
 
         self._undo_stack.pop()
@@ -7360,6 +7653,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             log_cloud_error("تعذّر التراجع", e)
             messagebox.showerror("خطأ", f"تعذّر إتمام التراجع:\n{e}")
 
+    def undo_step_periods(self, step):
+        """فترات حركات خطوة تراجع: من صورها قبل الخطوة ومن حالها الآن"""
+        periods = set()
+        for inv_id, row in step.get("rows", {}).items():
+            if row:
+                periods.add((row[13] if len(row) > 13 and row[13] else "") or str(row[1] or "")[:7])
+            now = self.invoices.get(inv_id)
+            if now:
+                periods.add(self.inv_period(now))
+        periods.discard("")
+        return periods
+
     def apply_undo_step(self, step):
         """يُعيد صور الحركات والأسماء المسجّلة في الخطوة.
 
@@ -7373,8 +7678,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             try:
                 for inv_id, row in step["rows"].items():
                     if row is None:
+                        now = self.invoices.get(inv_id)
+                        if now:
+                            self._log_change(cur, "تراجع (حذف ما أُضيف)", now)
                         cur.execute("DELETE FROM invoices WHERE invoice_id = ?", (inv_id,))
                     else:
+                        self._log_change(cur, "تراجع (استعادة)", self.invoice_from_row(row))
                         cur.execute(f"INSERT OR REPLACE INTO invoices ({self.INVOICE_COLUMNS}) VALUES ({marks})",
                                     row)
                 for name, cat, _idx in step["names"]:
@@ -7804,11 +8113,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not hasattr(self, 'lbl_period_warning'):
             return
         curr = datetime.datetime.now().strftime("%Y-%m")
-        if self.current_display_month == curr:
+        if self.is_period_locked(self.current_display_month):
+            self.lbl_period_warning.configure(
+                text=f"🔒 الفترة {self.current_display_month} مقفلة — للعرض فقط", text_color=UI["danger"])
+        elif self.current_display_month == curr:
             self.lbl_period_warning.configure(text="")
         else:
             self.lbl_period_warning.configure(
-                text=f"⚠️ أنت تعمل في فترة سابقة ({self.current_display_month}) — الشهر الحالي {curr}")
+                text=f"⚠️ أنت تعمل في فترة سابقة ({self.current_display_month}) — الشهر الحالي {curr}",
+                text_color="#e67e22")
 
     def watch_system_month(self):
         """يراقب تغيّر شهر النظام والبرنامج مفتوح (يعمل ليلاً عند نهاية الشهر).
@@ -9223,16 +9536,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         recover_name (الكاستنج): عمود «العملية» (فاقد/صب وتحليل) و«مسترجع الأشجار».
         الخياس = الصرف − القبض − مسترجع الأشجار (كلها من الفاقد الحالي نفسه).
-        وفي «بوليش 1» عمود «الليزر» مكانه: الخياس = الصرف − القبض − الليزر.
-        op_filter: «صب وتحليل» أو «ليزر» ← تلك العمليات وحدها؛ غير ذلك ← كل العمليات.
-        op_column (بوليش 1): عمود «العملية» (فاقد/ليزر) — كشف الفاقد يجمع العمليتين، وكشف الليزر وحده.
+        op_filter (1.77): «فاقد» أو «صب وتحليل» أو «ليزر» ← كشف تلك العملية وحدها بصفوفها وإجمالياتها
+        وخياسها؛ وسطر تحته بخياس القسم = مجموع خياس عملياته (الحساب نفسه في صندوق القسم).
+        None ← كل العمليات (الأقسام الأخرى). op_column (بوليش 1): عمود «العملية».
         """
         # عمود الاسم يظهر فقط حيث يكون له معنى؛ وفي الكاستنج وبوليش 1 مكانه «العملية»
         op_column = bool(op_column or recover_name)
         name_col = ("الاسم",) if (show_name and not op_column) else ()
         op_col = ("العملية",) if op_column else ()
         extra = self.stage_row_extra(qabd_type, recover_name)
-        rec_col = (extra[1],) if extra else ()
+        # كشف «صب وتحليل» بلا مسترجع الأشجار ولا الأشجار: صرفه وقبضه وخياسه وحده
+        shown_extra = extra if op_filter != self.CAST_ANALYSIS else None
+        if op_filter == self.CAST_ANALYSIS:
+            with_trees = False
+        rec_col = (shown_extra[1],) if shown_extra else ()
         if with_trees:
             cols = (("الصف",) + op_col + name_col + ("صرف", "قبض") + rec_col + ("الخياس",)
                     + ("عدد الأشجار", "خياس كل شجرة", "البيان"))
@@ -9252,13 +9569,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # الإجمالي في شجرة ثابتة أسفل الجدول: يبقى أمام المستخدم أثناء التمرير
         # بدل الاضطرار للنزول لآخر الصفوف لرؤيته
         rows_map = {}
-        tot_madin = tot_daen = tot_trees = tot_rec = tot_laser = 0.0
+        tot_madin = tot_daen = tot_trees = tot_rec = 0.0
         rows = self.collect_stage_ops_rows(madin_type, qabd_type, recover_name)
-        if op_filter in (self.CAST_ANALYSIS, "ليزر"):
-            # تلك العمليات وحدها، والإجماليات لها وحدها
-            rows = [r for r in rows if r[2].get("op") == op_filter]
-        # أثر الحركة الثانية: مسترجع الأشجار قبضٌ (−1)، والليزر صرفٌ (+1)
+        # أثر الحركة الثانية: مسترجع الأشجار قبضٌ (−1)
         extra_sign = extra[2] if extra else -1
+        # خياس كل عملية في الفترة (لسطر خياس القسم): مجموعها = فاقد القسم الحالي في صندوقه
+        op_khayas = {}
+        for _r, _n, g in rows:
+            op = g.get("op", "فاقد")
+            op_khayas[op] = round(op_khayas.get(op, 0.0) + g["مدين"] - g["دائن"] + extra_sign * g["مسترجع"], 2)
+        if op_filter:
+            # كشف العملية وحدها: صفوفها وإجمالياتها وخياسها
+            rows = [r for r in rows if r[2].get("op", "فاقد") == op_filter]
         for row_num, name, g in rows:
             # الخياس = الفاقد الحالي للصف: صرف − قبض − مسترجع الأشجار (أو + الليزر)
             khayas = round(g["مدين"] - g["دائن"] + extra_sign * g["مسترجع"], 2)
@@ -9266,8 +9588,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tot_daen = round(tot_daen + g["دائن"], 2)
             tot_rec = round(tot_rec + g["مسترجع"], 2)
             tot_trees += g["أشجار"]
-            if g.get("op") == "ليزر":
-                tot_laser = round(tot_laser + g["مدين"], 2)
             is_rec_row = g.get("op") == self.CAST_ANALYSIS
             row_label = row_num if row_num else ("-" if is_rec_row else "بدون ترقيم")
             # التلوين حسب إعداد القسم نفسه: الأحمر فقط لو كان الخياس سالباً
@@ -9285,7 +9605,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 vals.append(name)
             vals += [f"{g['مدين']:.2f}" if g["مدين"] else "-",
                      f"{g['دائن']:.2f}" if g["دائن"] else "-"]
-            if extra:
+            if shown_extra:
                 vals.append(f"{g['مسترجع']:.2f}" if g["مسترجع"] else "-")
             vals.append(f"{khayas:.2f}")
             if with_trees:
@@ -9300,7 +9620,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if rows_map:
             tvals = ["إجمالي الشهر"] + (["-"] if (op_column or show_name) else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
-                     [f"{tot_rec:.2f}"] if extra else []) + [f"{tot_khayas:.2f}"]
+                     [f"{tot_rec:.2f}"] if shown_extra else []) + [f"{tot_khayas:.2f}"]
             if with_trees:
                 tvals += [f"{tot_trees:g}" if tot_trees else "-",
                           f"{round(tot_khayas / tot_trees, 2):.2f}" if tot_trees > 0 else "-"]
@@ -9313,19 +9633,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tree._total_tree = total_tree
 
         if totals_label is not None:
-            txt = f"الإجماليات — صرف: {tot_madin:.2f}  |  قبض: {tot_daen:.2f}"
-            if tot_laser and op_filter != "ليزر":
-                # بوليش 1: الليزر صرفٌ من الصرف أعلاه، والخياس فاقد العمليتين معاً
-                txt = (f"الإجماليات — صرف: {tot_madin:.2f} (منها الليزر {tot_laser:.2f})  |  "
-                       f"قبض: {tot_daen:.2f}")
-            if extra:
-                txt += f"  |  {extra[1]}: {tot_rec:.2f}"
-            txt += f"  |  الخياس: {tot_khayas:.2f} جم"
-            if with_trees:
-                per_tree = round(tot_khayas / tot_trees, 2) if tot_trees > 0 else 0.0
-                txt += f"  |  عدد الأشجار: {tot_trees:g}  |  خياس كل شجرة: {per_tree:.2f}"
             if op_filter == "ليزر":
-                txt = f"إجمالي الليزر: {tot_madin:.2f} جم — صرفٌ يُضاف إلى فاقد بوليش 1"
+                txt = f"كشف الليزر — صرف الليزر: {tot_madin:.2f}  |  خياس الليزر: {tot_khayas:.2f} جم"
+            else:
+                txt = (f"كشف {op_filter} — " if op_filter else "الإجماليات — ") + \
+                      f"صرف: {tot_madin:.2f}  |  قبض: {tot_daen:.2f}"
+                if shown_extra:
+                    txt += f"  |  {shown_extra[1]}: {tot_rec:.2f}"
+                txt += f"  |  خياس {op_filter}: {tot_khayas:.2f} جم" if op_filter else f"  |  الخياس: {tot_khayas:.2f} جم"
+                if with_trees:
+                    per_tree = round(tot_khayas / tot_trees, 2) if tot_trees > 0 else 0.0
+                    txt += f"  |  عدد الأشجار: {tot_trees:g}  |  خياس كل شجرة: {per_tree:.2f}"
+            if op_filter:
+                # خياس القسم = خياس عملياته كلها مدموجاً (= فاقد صندوق القسم الحالي في الفترة)
+                txt += "\n" + self.section_ops_khayas_text(section, recover_name, op_khayas)
             totals_label.configure(text=txt)
 
         # الضغط المزدوج يعرض تفاصيل العملية. التعديل يبقى متاحاً من زره المخصّص،
@@ -9350,6 +9671,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # تعديل اسم أي عمود بالضغط على رأسه (يُحفظ ويُطبَّق في كل مرة)
         self.enable_column_rename(tree, table_key, on_renamed=on_refresh)
         return tree, rows_map
+
+    def section_ops_khayas_text(self, section, recover_name, op_khayas):
+        """سطر خياس القسم تحت كشف العملية: خياس كل عملية ثم مجموعها — خياس القسم المدموج في حسابه.
+        الكاستنج: الفاقد + صب وتحليل، وبوليش 1: الفاقد + الليزر."""
+        ops = self.CAST_OPERATIONS if recover_name else self.POLISH_OPERATIONS
+        extra = [op for op in op_khayas if op not in ops]          # عملية أخرى (احتياطاً) تُذكر أيضاً
+        parts = [(op, op_khayas.get(op, 0.0)) for op in tuple(ops) + tuple(extra)]
+        total = round(sum(v for _op, v in parts), 2)
+        label = self.get_display_label(section) if section else ""
+        return (f"خياس قسم {label} (العمليات مدموجة) = "
+                + "  +  ".join(f"{op} {v:.2f}" for op, v in parts) + f"  =  {total:.2f} جم")
 
     def show_selected_stage_details(self, tree, rows_map, title):
         """يفتح تفاصيل الصف المحدد في أي جدول من جداول الأقسام"""
@@ -10173,12 +10505,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.period_column = period_column
 
         period_frame = ctk.CTkFrame(period_column, fg_color="transparent")
-        period_frame.pack(side="right")
-        
+        period_frame.pack(side="top", anchor="e")
+        # صف ثانٍ تحت الفترة: «🔒 إقفال الفترة» و«تصفير البيانات» — الشريط يتّسع على أصغر الشاشات (١٣٦٦)
+        self.period_actions = ctk.CTkFrame(period_column, fg_color="transparent")
+        self.period_actions.pack(side="top", anchor="e", pady=(4, 0))
+
         ctk.CTkLabel(period_frame, text="الفترة:", font=ctk.CTkFont(family=UI_FONT, size=16, weight="bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=5)
         self.combo_active_period = ctk.CTkComboBox(period_frame, width=125, font=(UI_FONT, 16), command=self.on_period_changed)
         self.combo_active_period.pack(side="right", padx=5)
-        
+        # إقفال الفترة المعروضة وفتحها بزر واحد (في برنامج المدير يعرض حالتها عند العميل)
+        self.btn_period_lock = ctk.CTkButton(
+            self.period_actions, text="🔒 إقفال الفترة", width=128, height=34, corner_radius=10,
+            font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
+            fg_color=UI["neutral"], hover_color=UI["neutral_hover"], command=self.toggle_period_lock)
+        self.btn_period_lock.pack(side="right", padx=5)
+        HoverTip(self.btn_period_lock, "إقفال الفترة المعروضة: لا إضافة ولا تعديل ولا حذف فيها حتى تفتحها "
+                                       "من الزر نفسه (🔓 فتح الفترة) — الإقفال لا يغيّر أي رقم")
+
         btn_add_period = ctk.CTkButton(period_frame, text="➕ شهر جديد", width=110, height=40, font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"), fg_color="#1f77b4", hover_color="#144d75", command=self.add_new_period_ui)
         # نسخة المدير تتصفّح فترات العميل كما هي: فترة جديدة عندها لا تصل العميل ولا معنى لها
         if not IS_ADMIN_BUILD:
@@ -10213,7 +10556,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # زر التصفير يُنشأ داخل عمود الفترة مباشرة فيظهر فوق شريط الشهر
         # زر خطير: إطار أحمر فقط (لا زر ممتلئ بارز) حتى لا يُضغط سهواً
-        btn_clear_system = ctk.CTkButton(self.period_column, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), width=132, height=34, corner_radius=10, fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"), command=self.reset_system_data_action)
+        btn_clear_system = ctk.CTkButton(self.period_actions, text="⚠️ تصفير البيانات", font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), width=132, height=34, corner_radius=10, fg_color="transparent", border_width=1, border_color=UI["danger"], text_color=UI["danger"], hover_color=(UI["danger_soft"], "#3A1C1E"), command=self.reset_system_data_action)
         # نسخة المدير مرآة لجهاز العميل: التصفير لا يمسّ إلا نسختها المؤقتة ويُربك، فلا يُعرض
         if not IS_ADMIN_BUILD:
             btn_clear_system.pack(side="right", padx=(6, 0))
@@ -10876,6 +11219,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for text, cmd, style, tip in (
                 ("🩺 فحص سلامة الحسابات", self.open_integrity_check_window, "secondary",
                  "يطابق الخزينة والصناديق والكشوف والمبيعات والقيود في كل فترة — قراءة فقط"),
+                ("🔎 مراجعة الفترة", lambda: self.open_period_review_window(), "secondary",
+                 "من أين جاءت أرقام الفترة: خياس كل صندوق، والحركات المضافة بعد إقفاله أو بتاريخ خارج "
+                 "الفترة، وسجل كل إضافة وتعديل وحذف بوقته"),
                 ("⌨️ الاختصارات", self.open_shortcuts_help, "secondary", "كل اختصارات لوحة المفاتيح (F1)")):
             b = ctk.CTkButton(quick, text=text, height=36, corner_radius=10, command=cmd,
                               font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), **BUTTON_STYLES[style])
@@ -11228,8 +11574,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not hasattr(self, 'tabview'):
             return
         try:
+            # الفترة المقفلة ظاهرة في شريط كل شاشة (الشريط العلوي بزرّها في الرئيسية)
+            lock = " 🔒 مقفلة" if self.is_period_locked(self.current_display_month) else ""
             self.tabview.update_screen_info(
-                f"الفترة: {self.current_display_month}",
+                f"الفترة: {self.current_display_month}{lock}",
                 f"الخزينة: {en(getattr(self, 'current_treasury_balance', 0.0))} جم",
                 f"الرصيد الحالي: {en(getattr(self, 'current_total_gold', 0.0))} جم")
         except Exception:
@@ -11237,6 +11585,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def reset_system_data_action(self):
         if not self.check_edit_permission():
+            return
+        # التصفير يمسح كل الفترات: لا يُنفَّذ وفيها فترة مقفلة (تُفتح أولاً بزرّها)
+        if self.period_lock_blocked(self.locked_periods()):
             return
         first_confirm = messagebox.askyesno("تنبيه أمني حساس", "تنبيه خطير جداً!\n\nهل أنت متأكد من رغبتك في مسح وتصفير كافة بيانات النظام بالكامل؟\n(سيتم حذف جميع الحسابات، العمال، الفواتير، الأرشيف والخزائن بشكل نهائي!)")
         if not first_confirm: return
@@ -11290,7 +11641,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         
         self.combo_active_period.configure(values=sorted_months)
         self.combo_active_period.set(self.current_display_month)
-        self.update_period_warning()
+        self.update_period_lock_ui()
 
     WORKING_PERIOD_KEY = "client_working_period"
 
@@ -11320,8 +11671,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def on_period_changed(self, selected_period):
         self.current_display_month = selected_period
         self._remember_working_period(selected_period)
+        # كل زيارة لفترة سابقة يُسأل فيها مرة قبل أول ترحيل (confirm_past_period_entry)
+        self._past_period_ok = set()
         self.recalculate_all()
-        self.update_period_warning()
+        self.update_period_lock_ui()
         # تنبيه بعد اكتمال إعادة الحساب: قد تكون هناك فترة منتهية لم يُقفل
         # خياسها، فتبقى معلّقة بلا أثر محاسبي إن لم يُنتبَه لها
         self.after(400, self.check_unclosed_previous_periods)
@@ -12828,7 +13181,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return value if value in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
 
     def on_cast_operation_change(self, _mode=None):
-        """تبديل العملية: الجدول يعرض كل العمليات (فاقد) أو عمليات صب وتحليل وحدها"""
+        """تبديل العملية: كشف «فاقد» وحده أو كشف «صب وتحليل» وحده (وخياس القسم المدموج تحته)"""
         self.refresh_casting_table()
 
     @staticmethod
@@ -13182,11 +13535,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         title_lbl = getattr(self, "cast_title_lbl", None)
         if title_lbl is not None:
             label = self.get_display_label("الكاستنج")
-            title_lbl.configure(text=f"كشف حركة {label} — عمليات {self.CAST_ANALYSIS}"
-                                if operation == self.CAST_ANALYSIS else f"كشف حركة {label} — كل العمليات")
+            title_lbl.configure(text=f"كشف {operation} — {label}")
         self.cast_tree, self.cast_table_rows_map = self.render_stage_ops_table(
             self.cast_table_frame, "صرف كاستنج", "قبض كاستنج", height=11, with_trees=True,
-            # «فاقد»: كل العمليات، «صب وتحليل»: عملياتها وحدها
+            # لكل عملية كشفها وخياسها («فاقد» أو «صب وتحليل»)، وتحته خياس القسم = مجموعهما
             section="الكاستنج", op_filter=operation,
             on_refresh=self.refresh_casting_table,
             recover_name=self.get_stage_config("الكاستنج")[2],
@@ -13582,11 +13934,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         label = self.get_display_label("التلميع/البف")
         title_lbl = getattr(self, "pbuff_title_lbl", None)
         if title_lbl is not None:
-            title_lbl.configure(text=f"كشف حركة {label} — الليزر" if operation == "ليزر"
-                                else f"كشف حركة {label} — الفاقد والليزر")
+            title_lbl.configure(text=f"كشف {operation} — {label}")
         self.pbuff_tree, self.pbuff_table_rows_map = self.render_stage_ops_table(
             self.pbuff_table_frame, "صرف تلميع بف", "قبض تلميع بف", height=11, section="التلميع/البف",
-            # «فاقد»: العمليتان معاً (الخياس = فاقد بوليش 1 كاملاً)، «ليزر»: الليزر وحده
+            # لكل عملية كشفها وخياسها («فاقد» أو «ليزر»)، وتحته خياس القسم = مجموعهما (فاقد بوليش 1)
             show_name=False, op_column=True, op_filter=operation, on_refresh=self.refresh_polish_buff_table,
             on_detail=lambda: self.show_selected_stage_details(
                 self.pbuff_tree, self.pbuff_table_rows_map, f"تفاصيل حركة {label}"),
@@ -15253,6 +15604,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             
             for arch_date, cat in archived_periods:
                 if cat not in self.categories: continue
+                # أرقام الفترة المقفلة تبقى كما أُقفلت
+                if self.is_period_locked(str(arch_date or "")[:7]): continue
                 
                 for worker_name in self.categories[cat]:
                     res = self.calculate_single_ledger(worker_name, cat, target_month=arch_date, include_settled=True)
@@ -16080,6 +16433,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             entry = next((e for e in entries if e["ref"] == ref), None)
             if not entry:
                 return
+            # إقفال في فترة مقفلة لا يُفتح
+            if self.period_lock_blocked({self.inv_period(self.invoices[i]) for i in entry["ids"]
+                                         if i in self.invoices}):
+                return
 
             if not messagebox.askyesno(
                     "تأكيد التراجع",
@@ -16322,16 +16679,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         (collect_stage_ops_rows) حتى يبقى الرقمان متطابقين بين الشاشتين دائماً،
         بدل حساب منفصل قد ينحرف عنه.
         """
-        madin_type, qabd_type, _ = self.get_stage_config(cat)
+        madin_type, qabd_type, recover = self.get_stage_config(cat)
         saved_month = self.current_display_month
         self.current_display_month = month
         try:
-            rows = self.collect_stage_ops_rows(madin_type, qabd_type)
+            rows = self.collect_stage_ops_rows(madin_type, qabd_type, recover)
         finally:
             self.current_display_month = saved_month
 
+        # الأشجار لعملية «فاقد» وحدها (1.77): خياسها = صرفها − قبضها − مسترجع أشجارها، كما في كشف الفاقد
+        rows = [r for r in rows if r[2].get("op", "فاقد") == "فاقد"]
         total_trees = sum(g.get("أشجار", 0.0) for _, _, g in rows)
-        total_khayas = sum(round(g["مدين"] - g["دائن"], 2) for _, _, g in rows)
+        total_khayas = sum(round(g["مدين"] - g["دائن"] - g.get("مسترجع", 0.0), 2) for _, _, g in rows)
         per_tree = round(total_khayas / total_trees, 2) if total_trees > 0 else 0.0
         return round(total_trees, 2), per_tree
 
@@ -17284,6 +17643,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "الوزن": abs(actual_khayas), "قبل": 0.0, "بعد": 0.0, "trees_count": 0.0,
                 "البيان": f"إقفال شهري للقسم", "settled_status": "ACTIVE"
             }
+            self._log_change(cursor, "إقفال أرشيفي", self.invoices[treasury_inv_id],
+                             period=self.current_display_month,
+                             detail=f"أرشفة حركات قسم ({self.current_view_cat}) في الفترة")
 
             for name in target_list:
                 res = self.calculate_single_ledger(name, self.current_view_cat)
@@ -23722,6 +24084,240 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lines.extend(f"ℹ️ {n}" for n in notes)
         return "\n".join(lines)
 
+    # ═══ «🔎 مراجعة الفترة» (1.77): من أين جاءت أرقام فترة؟ ═══
+    # لكل فترة: خياس كل صندوق (المُقفل وغير المُقفل)، والحركات التي تحتاج انتباهاً — أُضيفت بعد إقفال
+    # خياس صندوقها في الفترة (رقم الحركة أكبر من أرقام قيود الإقفال)، أو تاريخها خارج الفترة (سُجّلت
+    # فيها والفترة المعروضة غير شهرها) — وسجل التغييرات بوقته الحقيقي. ونقل المحدد إلى فترة تاريخه.
+    def _stage_type_map(self):
+        """نوع حركة كل مرحلة ← اسم مرحلتها (للمراجعة)"""
+        out = {}
+        for cat in self.get_all_stage_categories():
+            try:
+                madin, qabd, _m = self.get_stage_config(cat)
+            except Exception:
+                continue
+            for t in (madin, qabd):
+                if t:
+                    out.setdefault(t, cat)
+        return out
+
+    def movement_section(self, inv, type_map=None):
+        """القسم الذي تتبعه الحركة: (مفتاح القسم، اسمه المعروض)"""
+        type_map = self._stage_type_map() if type_map is None else type_map
+        t, name = inv.get("النوع"), inv.get("الاسم")
+        if t in type_map:
+            return type_map[t], self.get_display_label(type_map[t])
+        for cat in ("المصنعين", "المركبين"):
+            if name in self.categories.get(cat, []):
+                return cat, self.get_display_label(cat)
+        if t == "خياس طقوم":
+            return "خياس الطقوم", self.get_display_label("خياس الطقوم")
+        if t in self.JOURNAL_TYPES:
+            return "قيد", "قيد يومي"
+        if t in self.SALE_TYPES:
+            return "مبيعات", "المبيعات"
+        if str(t or "").startswith("وارد"):
+            return "وارد", "الوارد"
+        return "أخرى", t or "-"
+
+    def period_review_data(self, month, with_log=True):
+        """بيانات «مراجعة الفترة»: الصناديق، والحركات التي تحتاج انتباهاً، وسجل التغييرات"""
+        type_map = self._stage_type_map()
+        boxes = []
+        last_closing = {}          # الصندوق ← (أكبر رقم في قيود إقفاله في الفترة، تاريخه)
+        for cat in self.get_khayas_box_categories():
+            remaining = self.get_current_unclosed_khayas(cat, month=month)
+            closed = self.get_box_closed_total(cat, month=month)
+            entries = self.get_box_closing_entries(cat, month=month)
+            if entries:
+                ids = [i for e in entries for i in e["ids"]]
+                last_closing[cat] = (max(ids), str(entries[0]["date"])[:10])
+            if abs(remaining) >= 0.005 or abs(closed) >= 0.005:
+                boxes.append({"cat": cat, "label": self.get_display_label(cat), "total": round(remaining + closed, 2),
+                              "closed": closed, "remaining": round(remaining, 2), "closings": len(entries)})
+        flagged = []
+        for inv in self.period_invoices(month):
+            if inv.get("settled_status") != "ACTIVE" or not isinstance(inv.get("رقم الفاتورة"), int):
+                continue
+            key, label = self.movement_section(inv, type_map)
+            reasons = []
+            if key in last_closing and inv.get("النوع") not in self.JOURNAL_TYPES \
+                    and inv["رقم الفاتورة"] > last_closing[key][0]:
+                reasons.append(f"أُضيفت بعد إقفال خياس {label} ({last_closing[key][1]})")
+            date_month = str(inv.get("التاريخ") or "")[:7]
+            if re.fullmatch(r"\d{4}-\d{2}", date_month) and date_month != month:
+                reasons.append(f"تاريخها {str(inv.get('التاريخ'))[:10]} خارج الفترة")
+            if reasons:
+                flagged.append({"id": inv["رقم الفاتورة"], "date": str(inv.get("التاريخ") or "")[:16],
+                                "section": label, "name": inv.get("الاسم", ""), "type": inv.get("النوع", ""),
+                                "row": inv.get("row_number", "") or "", "weight": inv.get("الوزن", 0.0) or 0.0,
+                                "reasons": reasons, "date_month": date_month})
+        flagged.sort(key=lambda f: f["id"])
+        log = []
+        if with_log and getattr(self, "db_path", None):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(self.CHANGE_LOG_SQL)
+                    log = conn.execute(
+                        "SELECT ts, action, invoice_id, name, op_type, row_number, weight, detail, view_period "
+                        "FROM change_log WHERE period = ? ORDER BY id DESC LIMIT 3000", (month,)).fetchall()
+            except sqlite3.Error as e:
+                log_cloud_error("تعذّر قراءة سجل التغييرات", e)
+        return {"boxes": boxes, "flagged": flagged, "log": log}
+
+    MOVABLE_EXCLUDED = ("قيد يومي مدين", "قيد يومي دائن", "خياس طقوم", "رصيد افتتاحي")
+
+    def move_movements_to_date_period(self, ids):
+        """ينقل حركات إلى فترة شهر تاريخها (خطوة تراجع واحدة). يرجع (المنقولة، المتروكة [(رقم، السبب)]).
+        لا تُنقل: حركات الفواتير والقيود (تُعدَّل من شاشاتها كاملة)، ولا حركة صفّها مستخدم في الفترة الهدف
+        (كانت ستندمج بصفٍّ آخر)، ولا شيء إن كانت إحدى الفترتين مقفلة."""
+        type_map = self._stage_type_map()
+        wanted = [self.invoices[i] for i in ids if i in self.invoices]
+        moving_ids = {inv["رقم الفاتورة"] for inv in wanted}
+        candidates, skipped = [], []
+        for inv in wanted:
+            target = str(inv.get("التاريخ") or "")[:7]
+            if not re.fullmatch(r"\d{4}-\d{2}", target) or target == self.inv_period(inv):
+                skipped.append((inv["رقم الفاتورة"], "تاريخها داخل فترتها"))
+                continue
+            if inv.get("النوع") in self.MOVABLE_EXCLUDED or inv.get("النوع") in self.SALE_TYPES:
+                skipped.append((inv["رقم الفاتورة"], "حركة فاتورة أو قيد — تُعدَّل من شاشتها"))
+                continue
+            row = (inv.get("row_number") or "").strip()
+            key = self.movement_section(inv, type_map)[0]
+            if row and any(o.get("settled_status") == "ACTIVE" and o["رقم الفاتورة"] not in moving_ids
+                           and (o.get("row_number") or "").strip() == row
+                           and self.movement_section(o, type_map)[0] == key
+                           and (key not in ("المصنعين", "المركبين") or o.get("الاسم") == inv.get("الاسم"))
+                           for o in self.period_invoices(target)):
+                skipped.append((inv["رقم الفاتورة"], f"الصف {row} مستخدم في فترة {target}"))
+                continue
+            candidates.append((inv, target))
+        if not candidates:
+            return [], skipped
+        periods = {self.inv_period(inv) for inv, _t in candidates} | {t for _i, t in candidates}
+        if self.period_lock_blocked(periods):
+            return [], skipped + [(inv["رقم الفاتورة"], "فترة مقفلة") for inv, _t in candidates]
+        self.push_undo(f"نقل {len(candidates)} حركة إلى فترات تواريخها")
+        moved = []
+        for inv, target in candidates:
+            updated = dict(inv)
+            updated["period"] = target
+            if self.save_invoice_to_db(inv["رقم الفاتورة"], updated):
+                moved.append(inv["رقم الفاتورة"])
+        return moved, skipped
+
+    def open_period_review_window(self, month=None):
+        """نافذة «🔎 مراجعة الفترة»"""
+        win = ctk.CTkToplevel(self)
+        win.title("مراجعة الفترة")
+        win.geometry("1180x800")
+        win.transient(self)
+        win.focus_force()
+        ctk.CTkLabel(win, text="🔎 مراجعة الفترة", font=(UI_FONT, 20, "bold"),
+                     text_color=(UI["title"], "#C9D6E8")).pack(pady=(12, 0))
+        ctk.CTkLabel(win, text=("من أين جاءت أرقام الفترة: خياس كل صندوق، والحركات التي أُضيفت بعد إقفال خياسها "
+                                "أو تاريخها خارج الفترة، وسجل كل إضافة وتعديل وحذف بوقته"),
+                     font=(UI_FONT, 12), text_color=UI["muted"]).pack(pady=(0, 6))
+        top = ctk.CTkFrame(win, fg_color="transparent")
+        top.pack(fill="x", padx=18)
+        ctk.CTkLabel(top, text="الفترة:", font=(UI_FONT, 14, "bold"),
+                     text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(0, 6))
+        combo = ctk.CTkComboBox(top, values=self.get_recorded_periods(), font=(UI_FONT, 14), width=130,
+                                state="readonly", justify="center", command=lambda _v: run())
+        combo.set(month or self.current_display_month)
+        combo.pack(side="right")
+        lbl_lock = ctk.CTkLabel(top, text="", font=(UI_FONT, 13, "bold"))
+        lbl_lock.pack(side="right", padx=12)
+        summary = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"), justify="right", anchor="e",
+                               corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"))
+        summary.pack(fill="x", padx=18, pady=6, ipady=6)
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side="bottom", pady=(4, 10))
+        ctk.CTkLabel(win, text="⚠️ حركات تحتاج انتباهاً", font=(UI_FONT, 14, "bold"), anchor="e",
+                     text_color=UI_TITLE).pack(fill="x", padx=20)
+        f1 = ttk.Frame(win)
+        f1.pack(fill="both", expand=True, padx=18, pady=(2, 6))
+        cols1 = ("رقم الحركة", "التاريخ", "القسم", "الاسم", "النوع", "الصف", "الوزن", "السبب")
+        flagged_tree = self.create_standard_treeview(f1, cols1, height=8)
+        flagged_tree.configure(selectmode="extended")
+        for c, w in zip(cols1, (80, 130, 110, 120, 120, 60, 80, 380)):
+            flagged_tree.column(c, width=w, anchor="center")
+        ctk.CTkLabel(win, text="🕘 سجل التغييرات في الفترة (الأحدث أولاً)", font=(UI_FONT, 14, "bold"), anchor="e",
+                     text_color=UI_TITLE).pack(fill="x", padx=20)
+        f2 = ttk.Frame(win)
+        f2.pack(fill="both", expand=True, padx=18, pady=(2, 4))
+        cols2 = ("الوقت", "العملية", "رقم الحركة", "الاسم", "النوع", "الصف", "الوزن", "التفاصيل",
+                 "الفترة المعروضة وقتها")
+        log_tree = self.create_standard_treeview(f2, cols2, height=8)
+        for c, w in zip(cols2, (140, 110, 80, 120, 110, 60, 80, 330, 110)):
+            log_tree.column(c, width=w, anchor="center")
+        ctk.CTkLabel(win, text=("السجل يبدأ من الإصدار 1.77 — وما قبله تكشفه القائمة الأولى من أرقام الحركات وتواريخها. "
+                                "«نقل المحدد إلى فترة تاريخه» خطوة تراجع واحدة (Ctrl+Z)."),
+                     font=(UI_FONT, 11), text_color=UI["muted"]).pack(pady=(0, 2))
+
+        def run():
+            m = combo.get() or self.current_display_month
+            data = self.period_review_data(m)
+            locked = self.is_period_locked(m)
+            lbl_lock.configure(text="🔒 مقفلة" if locked else "🔓 مفتوحة",
+                               text_color=UI["danger"] if locked else UI["success"])
+            lines = []
+            for b in data["boxes"]:
+                mark = "  ⚠️ خياس غير مُقفل بعد إقفال سابق" if b["closings"] and abs(b["remaining"]) >= 0.005 else ""
+                lines.append(f"{b['label']}: الخياس {b['total']:.2f} — المُقفل {b['closed']:.2f} — "
+                             f"غير المُقفل {b['remaining']:.2f}{mark}")
+            lines.append(f"حركات تحتاج انتباهاً: {len(data['flagged'])}   ·   أسطر السجل: {len(data['log'])}")
+            summary.configure(text="\n".join(lines))
+            for t in (flagged_tree, log_tree):
+                for item in t.get_children():
+                    t.delete(item)
+            for f in data["flagged"]:
+                flagged_tree.insert("", "end", iid=str(f["id"]), values=(
+                    f["id"], f["date"], f["section"], f["name"], f["type"], f["row"] or "-",
+                    f"{f['weight']:.2f}", " · ".join(f["reasons"])))
+            for r in data["log"]:
+                ts, action, inv_id, name, op_type, row, weight, detail, view_period = r
+                log_tree.insert("", "end", values=(
+                    ts, action, inv_id if inv_id is not None else "-", name or "-", op_type or "-", row or "-",
+                    f"{weight:.2f}" if isinstance(weight, (int, float)) else "-", detail or "-", view_period or "-"))
+
+        def move_selected():
+            ids = [int(i) for i in flagged_tree.selection()]
+            if not ids:
+                messagebox.showwarning("تنبيه", "حدّد حركة أو أكثر من القائمة الأولى.", parent=win)
+                return
+            targets = sorted({str(self.invoices[i].get("التاريخ") or "")[:7] for i in ids if i in self.invoices})
+            if not messagebox.askyesno(
+                    "نقل إلى فترة التاريخ",
+                    f"نقل {len(ids)} حركة إلى فترة شهر تاريخها ({'، '.join(targets)})؟\n\n"
+                    "تخرج من أرقام هذه الفترة وخياسها وتدخل في فترة تاريخها — خطوة تراجع واحدة.", parent=win):
+                return
+            moved, skipped = self.move_movements_to_date_period(ids)
+            if moved:
+                self.recalculate_all()
+            msg = f"نُقلت {len(moved)} حركة."
+            if skipped:
+                msg += "\n\nلم تُنقل:\n" + "\n".join(f"   • {i}: {why}" for i, why in skipped[:15])
+            messagebox.showinfo("نقل الحركات", msg, parent=win)
+            run()
+
+        def copy_all():
+            rows = [" | ".join(str(v) for v in flagged_tree.item(i, "values")) for i in flagged_tree.get_children()]
+            self.clipboard_clear()
+            self.clipboard_append(summary.cget("text") + "\n\n" + "\n".join(rows))
+            self.toast("📋 نُسخت المراجعة", "success")
+
+        buttons = [("🔄 تحديث", run, "primary"), ("📋 نسخ", copy_all, "secondary"), ("إغلاق", win.destroy, "secondary")]
+        if not getattr(self, "view_only", False):
+            buttons.insert(1, ("↪️ نقل المحدد إلى فترة تاريخه", move_selected, "secondary"))
+        for text, cmd, style in buttons:
+            ctk.CTkButton(btns, text=text, font=(UI_FONT, 13, "bold"), height=36, command=cmd,
+                          **BUTTON_STYLES[style]).pack(side="right", padx=5)
+        run()
+        return win
+
     def open_integrity_check_window(self):
         """نافذة «فحص سلامة الحسابات»: ملخص لكل مجموعة ثم تفصيل المخالفات بقيمها"""
         win = ctk.CTkToplevel(self)
@@ -24215,8 +24811,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         current = self.current_display_month
         out = []
         for month in self.get_recorded_periods():
-            if month >= current:
-                continue
+            if month >= current or self.is_period_locked(month):
+                continue          # الفترة المقفلة لا يُعرض إقفالها (لا كتابة فيها حتى تُفتح)
             remaining = self.get_current_unclosed_khayas(cat, month=month)
             if abs(remaining) >= 0.005:
                 out.append((month, remaining))
@@ -24374,6 +24970,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         month: الفترة المراد إقفالها (الافتراضي: الفترة المعروضة).
         """
         month = month or self.current_display_month
+        if self.period_lock_blocked([month]):
+            return
         display_name = f"{self.get_display_label(cat)} — فترة {month}"
         # مكوّنات المعادلة المعتمدة: (ذهب/باقي − المرجع ٧٥٠) ثم خصم الخياس الموجب
         faqid_k, marja_k, pos_k, total_k = self.get_section_khayas_parts(
@@ -24435,6 +25033,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         month = month or self.current_display_month
         if cat in ("المصنعين", "المركبين"):
             return self.close_split_khayas_box(cat, month=month)
+        if self.period_lock_blocked([month]):
+            return
 
         current = self.get_current_unclosed_khayas(cat, month=month)
         display_name = self.get_display_label(cat)
@@ -24771,7 +25371,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "هل تريد المتابعة فعلاً؟", parent=win):
                 return
 
-            self.perform_khayas_box_deletion(box)
+            if self.perform_khayas_box_deletion(box) is False:
+                return
             win.destroy()
 
         ctk.CTkButton(win, text="🗑️ حذف نهائياً", font=(UI_FONT, 15, "bold"), fg_color="#8b0000",
@@ -24781,17 +25382,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def perform_khayas_box_deletion(self, stage_name):
         """التنفيذ الفعلي للحذف: الحركات ثم الحسابات ثم إعادة بناء الشاشات"""
+        madin, qabd, mustarja = self.get_stage_config(stage_name)
+        box_account = self.get_box_account_name(stage_name)
+        related = [inv for inv in self.invoices.values()
+                   if inv.get("النوع") in (madin, qabd)
+                   or inv.get("الاسم") in (mustarja, box_account, stage_name)]
+        # حركة له في فترة مقفلة: لا يُحذف شيء (كان سيُحذف بعضه ويبقى بعضه)
+        if self.period_lock_blocked({self.inv_period(inv) for inv in related}):
+            return False
         # خطوة تراجع واحدة تضمّ الحركات والعمّال والقسم معاً
         step = self.push_undo(f"حذف صندوق ({stage_name})")
         if step is not None and stage_name in self.categories:
             step["cats"].append(stage_name)
-        madin, qabd, mustarja = self.get_stage_config(stage_name)
-        box_account = self.get_box_account_name(stage_name)
 
         # ١) حذف كل الحركات المرتبطة
-        to_delete = [inv["رقم الفاتورة"] for inv in self.invoices.values()
-                     if inv.get("النوع") in (madin, qabd)
-                     or inv.get("الاسم") in (mustarja, box_account, stage_name)]
+        to_delete = [inv["رقم الفاتورة"] for inv in related]
         blocked = 0
         for inv_id in to_delete:
             if not self.delete_invoice_from_db(inv_id):
@@ -25618,9 +26223,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             row = cursor.fetchone()
 
         if not row: return
+        # حركة في فترة مقفلة: لا تُفتح للتعديل أصلاً (الحفظ نفسه يرفضها أيضاً)
+        mem = self.invoices.get(inv_id)
+        if self.period_lock_blocked([self.inv_period(mem) if mem else str(row[1] or "")[:7]]):
+            return
         inv = {
             "رقم الفاتورة": row[0], "التاريخ": row[1], "الاسم": row[2], "النوع": row[3],
-            "الوزن": row[4], "قبل": row[5], "بعد": row[6], "البيان": row[7], 
+            "الوزن": row[4], "قبل": row[5], "بعد": row[6], "البيان": row[7],
             "settled_status": row[8], "trees_count": row[9] if len(row)>9 and row[9] else 0.0,
             "set_number": row[10] if len(row) > 10 and row[10] else "",
             "row_number": row[11] if len(row) > 11 and row[11] else "",

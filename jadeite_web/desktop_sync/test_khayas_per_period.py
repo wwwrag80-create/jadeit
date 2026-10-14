@@ -26,7 +26,8 @@ exec("class S:\n"
      "    def get_box_recovered_total(self, cat, month=None): return 0.0\n"
      "    def get_actual_section_khayas(self, cat, target_month=None, include_settled=False):\n"
      "        return self._live.get((cat, target_month), 0.0)\n"
-     "    def get_recorded_periods(self): return ['2026-10', '2026-09', '2026-08']\n", ns)
+     "    def get_recorded_periods(self): return ['2026-10', '2026-09', '2026-08']\n"
+     "    def is_period_locked(self, month): return month in getattr(self, '_locked', ())\n", ns)
 app = ns["S"]()
 app.current_display_month = "2026-10"
 app.invoices = {}
