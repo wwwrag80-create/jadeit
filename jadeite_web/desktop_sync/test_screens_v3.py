@@ -77,12 +77,12 @@ print("✔ قيد يومي على اسم غير مسجّل يطلب تأكيدا
 assert "_open_selected_supplier_statement" in seg("refresh_suppliers_table")
 print("✔ نقرتان على مورد تفتحان كشف حسابه")
 
-# ═══ ٢) الكاستنج: مسترجع الأشجار وعملية «صب وتحليل» («مسترجع» سابقاً) — من الفاقد الحالي نفسه ═══
+# ═══ ٢) الكاستنج: مسترجع الأشجار وعمليتا «صب وتحليل» (أبيض وأصفر) — من الفاقد الحالي نفسه ═══
 C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect_stage_ops_rows", "is_row_recovery", "stage_row_extra",
            "is_recovery_op", "row_sort_key", "inv_period", "inv_in_period",
            "get_box_khayas_cumulative", "get_stage_config", "get_box_account_name", "get_display_label"],
           attrs=("INBOUND_TYPES", "BOX_DISPLAY_OVERRIDES", "CAST_RETURN_NAME", "TREE_RETURN_NAME", "LASER_NAME",
-                 "CAST_ANALYSIS"))
+                 "CAST_ANALYSIS", "CAST_ANALYSIS_OPS"))
 app = C()
 app.categories = {"أقسام_خياس_إضافية": []}
 app.current_display_month = M
@@ -93,7 +93,8 @@ app.invoices = {i["رقم الفاتورة"]: i for i in [
     inv(4, "كاستنج", "صرف كاستنج", 60.0, row="4"),
     inv(5, "كاستنج", "قبض كاستنج", 57.4, row="4"),
     inv(6, "مسترجع الأشجار", "قبض كاستنج", 1.0, row="9"),         # مسترجع أشجار لصف بلا صرف/قبض
-    inv(7, "صب وتحليل", "قبض كاستنج", 2.0),                   # قبض تحليل قديم (بلا صف)
+    inv(7, "صب وتحليل / أبيض", "قبض كاستنج", 2.0),            # قبض «صب وتحليل / أبيض» (حركة بلا صف)
+    inv(10, "صب وتحليل / أصفر", "صرف كاستنج", 0.4),           # صرف «صب وتحليل / أصفر»
     inv(8, "مسترجع كاستنج", "وارد ذهب (عيار 18)", 5.0),           # وارد لحساب المسترجع (شاشة الوارد)
 ]}
 app.invoices[8]["set_number"] = "V-8"
@@ -102,16 +103,19 @@ by_row = {r: g for r, _n, g in rows if g["op"] == "فاقد"}
 assert by_row["7"]["مسترجع"] == 6.5 and by_row["7"]["مدين"] == 80.0 and by_row["7"]["دائن"] == 70.0
 assert 3 in by_row["7"]["ids"] and by_row["7"]["البيان"] == ""
 print("✔ مسترجع الأشجار يُلحق بصفه (٧) في الجدول، ويُحذف ويُعدَّل معه")
-rec_rows = [g for _r, _n, g in rows if g["op"] == "صب وتحليل"]
+rec_rows = [g for _r, _n, g in rows if g["op"] == "صب وتحليل / أبيض"]
 assert len(rec_rows) == 1 and rec_rows[0]["دائن"] == 2.0 and rec_rows[0]["مسترجع"] == 0.0 and rec_rows[0]["ids"] == [7]
+yel_rows = [g for _r, _n, g in rows if g["op"] == "صب وتحليل / أصفر"]
+assert len(yel_rows) == 1 and yel_rows[0]["مدين"] == 0.4 and yel_rows[0]["ids"] == [10]
 assert all(8 not in g["ids"] for _r, _n, g in rows)
-print("✔ قبض عملية «صب وتحليل» يظهر تحت القبض؛ والوارد لحساب المسترجع ليس من جدول الكاستنج")
+print("✔ قبض «صب وتحليل / أبيض» تحت القبض وصرف «صب وتحليل / أصفر» تحت الصرف؛ والوارد لحساب المسترجع ليس من جدول الكاستنج")
 khayas_rows = round(sum(round(g["مدين"] - g["دائن"] - g["مسترجع"], 2) for _r, _n, g in rows), 2)
 box = app.get_box_khayas_cumulative("الكاستنج")
-assert khayas_rows == box == 3.1, (khayas_rows, box)
+assert khayas_rows == box == 3.5, (khayas_rows, box)
 print(f"✔ الفاقد الحالي = الصرف − القبض − مسترجع الأشجار لكل الصفوف ({khayas_rows:.2f}) = فاقد الصندوق ({box:.2f})")
-assert [r for r, _n, g in rows if g["op"] == "فاقد"] == ["4", "7", "9"] and rows[-1][2]["op"] == "صب وتحليل"
-print("✔ صفوف الفاقد مرتبة تصاعدياً برقم الصف، وعمليات التحليل بعدها")
+assert [r for r, _n, g in rows if g["op"] == "فاقد"] == ["4", "7", "9"]
+assert [g["op"] for _r, _n, g in rows][-2:] == ["صب وتحليل / أبيض", "صب وتحليل / أصفر"]
+print("✔ صفوف الفاقد مرتبة تصاعدياً برقم الصف، ثم «صب وتحليل / أبيض» ثم «صب وتحليل / أصفر»")
 
 cast = seg("submit_casting_loss_op")
 assert '"الاسم": self.TREE_RETURN_NAME' in cast and '"النوع": "قبض كاستنج", "الوزن": recover_v' in cast

@@ -283,19 +283,23 @@ print("✔ الإقفال يشمل: إقفال الخياس وفتحه، وحذ�
       "كشف حساب؛ وزر «🔒 إقفال الفترة / 🔓 فتح الفترة» أعلى الشاشة، و«🔎 مراجعة الفترة» في الرئيسية")
 
 # ═══ ٨) كشف لكل عملية في الكاستنج وبوليش 1، وخياس القسم = مجموعهما ═══
-assert a.section_ops_khayas_text("الكاستنج", "مسترجع كاستنج", {"فاقد": 3.5, "صب وتحليل": 0.2}) == \
-    "خياس قسم الكاستنج (العمليات مدموجة) = فاقد 3.50  +  صب وتحليل 0.20  =  3.70 جم"
+assert a.section_ops_khayas_text("الكاستنج", "مسترجع كاستنج",
+                                 {"فاقد": 3.5, "صب وتحليل / أبيض": 0.2, "صب وتحليل / أصفر": -0.5}) == \
+    "خياس قسم الكاستنج (العمليات مدموجة) = فاقد 3.50  +  صب وتحليل / أبيض 0.20  +  صب وتحليل / أصفر -0.50  =  3.20 جم"
+assert a.section_ops_khayas_text("الكاستنج", "مسترجع كاستنج", {"فاقد": 1.0}) == \
+    "خياس قسم الكاستنج (العمليات مدموجة) = فاقد 1.00  +  صب وتحليل / أبيض 0.00  +  صب وتحليل / أصفر 0.00  =  1.00 جم"
 assert a.section_ops_khayas_text("التلميع/البف", None, {"فاقد": 1.0, "ليزر": 0.4}) == \
     "خياس قسم بوليش 1 (العمليات مدموجة) = فاقد 1.00  +  ليزر 0.40  =  1.40 جم"
 assert a.section_ops_khayas_text("الكاستنج", "x", {}) .endswith("=  0.00 جم")
 render = member("render_stage_ops_table")
 assert "if op_filter:" in render and 'r[2].get("op", "فاقد") == op_filter' in render
 assert "self.section_ops_khayas_text(section, recover_name, op_khayas)" in render
-assert 'shown_extra = extra if op_filter != self.CAST_ANALYSIS else None' in render
+assert "analysis_view = op_filter in self.CAST_ANALYSIS_OPS" in render
+assert "shown_extra = extra if not analysis_view else None" in render
 assert 'f"كشف {operation} — {label}"' in member("refresh_casting_table")
 assert 'f"كشف {operation} — {label}"' in member("refresh_polish_buff_table")
 assert 'r[2].get("op", "فاقد") == "فاقد"' in member("get_stage_monthly_tree_totals")
-print("✔ الكاستنج: كشف «فاقد» وحده وكشف «صب وتحليل» وحده، وبوليش 1: كشف «فاقد» وحده وكشف «ليزر» وحده — "
+print("✔ الكاستنج: كشف «فاقد» وحده وكشف «صب وتحليل / أبيض» وحده وكشف «صب وتحليل / أصفر» وحده، وبوليش 1: كشف «فاقد» وحده وكشف «ليزر» وحده — "
       "كلٌّ بإجمالياته وخياسه، وتحته خياس القسم = مجموع العمليات (فاقد صندوقه)")
 assert not errors, errors
 print("\n✅ إقفال الفترة وسجل التغييرات ومراجعة الفترة وكشف كل عملية — سليمة")

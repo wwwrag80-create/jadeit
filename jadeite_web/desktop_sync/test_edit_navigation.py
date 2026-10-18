@@ -54,7 +54,9 @@ assert "self.finish_horizontal_edit_window(win, entries, save_edit, focus=ent_sa
 assert "if with_trees:" in stage and '("عدد الأشجار:"' in stage
 print("✔ نافذة تعديل الكاستنج/التلميع/بوليش 1 والأقسام المضافة: أفقية بالتنقّل نفسه، وعدد الأشجار حين يُعرض")
 rec = seg("open_recovery_op_edit_dialog")
-assert "self.finish_horizontal_edit_window(win, [ent_w, ent_date, ent_note], save_edit" in rec
-print("✔ ونافذة عملية «مسترجع» كذلك")
+assert "entries = self.build_horizontal_edit_fields(win, specs" in rec
+assert "self.finish_horizontal_edit_window(win, list(entries), save_edit, focus=ent_w" in rec
+assert 'specs.append(("العيار:"' in rec, "1.78: خانة العيار لحركة «صب وتحليل» بعيارها"
+print("✔ ونافذة حركة «صب وتحليل» كذلك (الوزن والعيار والتاريخ والبيان)")
 
 print("\n✅ التنقّل يعمل في كل نوافذ تعديل الحركة")

@@ -6,7 +6,9 @@
   • قبل البوليش  = يُكتب يدوياً لكل رقم (إعداد يُرفع مع النسخة، وخطوة تراجع).
   • خياس البوليش = قبل − بعد ← خانة «خياس البوليش» في المبيعات، والنافذة تحتها، وقالب رقم التشغيل.
   • القالب: ٠٫٠٤٪ = قبل البوليش؛ البوليش والتركيب (صرف/قبض المركبين)؛ الوزن بعد؛ السلسال؛ الإجمالي؛ بوليش 2.
-  • الكاستنج: «المسترجع» صار «صب وتحليل» برقم صف، وسند صرف وحده وسند قبض وحده (كلٌّ في صفحته).
+  • الكاستنج: «المسترجع» صار «صب وتحليل» ثم (1.78) «صب وتحليل / أبيض» ومعه «صب وتحليل / أصفر»: كل حركة
+    صرفٌ أو قبض بوزنها وعيارها (المعادل لعيار 18)، ولكلٍّ سندها في صفحته.
+  • 1.78: Enter في بحث التتبع ← خانة «قبل البوليش» ← Enter ← تأكيد ← العودة لخانة رقم التشغيل.
 لا شيء من التتبع حركةٌ أو خياس: الخزينة والصناديق لا تتأثر.
 """
 import ast, io, os, sqlite3, sys, tempfile, textwrap
@@ -35,7 +37,8 @@ def module_value(name):
 
 MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEFORE_PREFIX", "CAST_RETURN_NAME",
            "CAST_RETURN_OLD_NAMES", "migrate_analysis_name", "LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "period_lock_blocked", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods",
-           "CAST_ANALYSIS", "BOX_DISPLAY_OVERRIDES", "UNDO_LIMIT", "INVOICE_COLUMNS",
+           "CAST_ANALYSIS", "CAST_ANALYSIS_YELLOW", "CAST_ANALYSIS_OPS", "carat_factor", "carat_equivalent",
+           "analysis_statement_label", "BOX_DISPLAY_OVERRIDES", "UNDO_LIMIT", "INVOICE_COLUMNS",
            "normalize_set_number", "inv_period", "inv_in_period", "assembler_set_index", "polish_before_map",
            "set_polish_before", "set_tracking_values", "sale_polish_by_set", "set_track_sale_status",
            "set_number_sort_key", "set_track_rows", "set_voucher_sections", "polish_hint_values",
@@ -264,59 +267,108 @@ print("✔ الوزن بعد 44.40 = المركب بعد + الماس + الأح
       "السلسال = الفرق؛ بوليش 2 = 41.75/41.15/0.60؛ المقيد 39.05")
 print("✔ رقمٌ لم يُبع بعد: البوليش والتركيب من التتبع، وخانات البيع فارغة (لا أصفار مضلّلة)")
 
-# ═══ ٦) الكاستنج: «صب وتحليل» وسنداه ═══
-assert a.CAST_RETURN_NAME == "صب وتحليل" and a.CAST_ANALYSIS == "صب وتحليل"
-assert a.CAST_RETURN_OLD_NAMES == ("مسترجع الفاقد", "تحليل الكاستنج")
-assert a.is_recovery_op({"الاسم": "صب وتحليل", "row_number": "3"}, "صرف كاستنج", "مسترجع كاستنج")
-assert a.is_recovery_op({"الاسم": "صب وتحليل", "row_number": ""}, "صرف كاستنج", "مسترجع كاستنج")
-# الاسم القديم «مسترجع الفاقد» يتحوّل (في الذاكرة والقاعدة)، والوزن والنوع والصف كما هي
+# ═══ ٦) الكاستنج: «صب وتحليل / أبيض» و«صب وتحليل / أصفر» وسنداتهما ═══
+WHITE, YELLOW = "صب وتحليل / أبيض", "صب وتحليل / أصفر"
+assert a.CAST_RETURN_NAME == a.CAST_ANALYSIS == WHITE and a.CAST_ANALYSIS_YELLOW == YELLOW
+assert a.CAST_ANALYSIS_OPS == (WHITE, YELLOW)
+assert a.CAST_RETURN_OLD_NAMES == ("مسترجع الفاقد", "تحليل الكاستنج", "صب وتحليل")
+for name in (WHITE, YELLOW):
+    assert a.is_recovery_op({"الاسم": name, "row_number": ""}, "صرف كاستنج", "مسترجع كاستنج")
+    assert a.is_recovery_op({"الاسم": name, "row_number": "3"}, "صرف كاستنج", "مسترجع كاستنج")
+    assert not a.is_recovery_op({"الاسم": name}, "صرف كاستنج", None), "خارج الكاستنج لا شيء"
+assert not a.is_recovery_op({"الاسم": "صب وتحليل", "row_number": ""}, "صرف كاستنج", "مسترجع كاستنج"), \
+    "الاسم القديم يُحوَّل عند الفتح، ولا يُقرأ بعده"
+# الأسماء القديمة («مسترجع الفاقد» و«تحليل الكاستنج» و«صب وتحليل» حتى 1.77) ← «صب وتحليل / أبيض»
 old1 = a.add("مسترجع الفاقد", "صرف كاستنج", 6.0)
 old2 = a.add("تحليل الكاستنج", "قبض كاستنج", 5.5, row="4")                    # اسم 1.74
+old3 = a.add("صب وتحليل", "قبض كاستنج", 2.25, row="6")                         # اسم 1.75–1.77
 other = a.add("مسترجع الفاقد", "وارد ذهب (عيار 18)", 1.0)          # ليس من الكاستنج: لا يُمسّ
 with sqlite3.connect(path) as c:
-    for i in (old1, old2, other):
+    for i in (old1, old2, old3, other):
         inv_ = a.invoices[i]
         c.execute("INSERT INTO invoices (invoice_id, date_time, name, op_type, weight, row_number) VALUES (?,?,?,?,?,?)",
                   (i, inv_["التاريخ"], inv_["الاسم"], inv_["النوع"], inv_["الوزن"], inv_["row_number"]))
-assert a.migrate_analysis_name() == 2 and a.migrate_analysis_name() == 0
-assert [(a.invoices[i]["الاسم"], a.invoices[i]["الوزن"], a.invoices[i]["row_number"]) for i in (old1, old2)] == \
-    [("صب وتحليل", 6.0, ""), ("صب وتحليل", 5.5, "4")]
+assert a.migrate_analysis_name() == 3 and a.migrate_analysis_name() == 0
+assert [(a.invoices[i]["الاسم"], a.invoices[i]["النوع"], a.invoices[i]["الوزن"], a.invoices[i]["row_number"])
+        for i in (old1, old2, old3)] == [(WHITE, "صرف كاستنج", 6.0, ""), (WHITE, "قبض كاستنج", 5.5, "4"),
+                                         (WHITE, "قبض كاستنج", 2.25, "6")]
 assert a.invoices[other]["الاسم"] == "مسترجع الفاقد"
 with sqlite3.connect(path) as c:
-    assert c.execute("SELECT name FROM invoices WHERE invoice_id = ?", (old2,)).fetchone()[0] == "صب وتحليل"
+    assert c.execute("SELECT name FROM invoices WHERE invoice_id = ?", (old3,)).fetchone()[0] == WHITE
     assert c.execute("SELECT name FROM invoices WHERE invoice_id = ?", (other,)).fetchone()[0] == "مسترجع الفاقد"
-print("✔ الحركات القديمة («مسترجع الفاقد» و«تحليل الكاستنج») تأخذ اسمها الجديد «صب وتحليل» — الاسم وحده، "
-      "والأوزان كما هي")
+print("✔ «صب وتحليل» القديم (وما قبله «مسترجع الفاقد» و«تحليل الكاستنج») يصير «صب وتحليل / أبيض» عند الفتح — "
+      "الاسم وحده، والنوع والوزن والصف كما هي (لا يتغيّر رقمٌ ولا خياس)")
 assert not a.is_recovery_op({"الاسم": "كاستنج", "row_number": "3"}, "صرف كاستنج", "مسترجع كاستنج")
-iss = {"رقم الفاتورة": 51, "النوع": "صرف كاستنج", "الوزن": 10.0, "التاريخ": "2026-09-20 09:00:00",
-       "row_number": "3", "البيان": "عينة الفرن", "period": "2026-09"}
+
+# العيار ← المعادل لعيار 18 (معادلة الوارد): الوزن × العيار ÷ 18 (أو ÷ 750 للعيار بالألف)
+assert a.carat_equivalent(10, 21) == 11.67 and a.carat_equivalent(6, 24) == 8.0 and a.carat_equivalent(9, "18") == 9.0
+assert a.carat_equivalent(10, 875) == 11.67 and a.carat_equivalent(10, "750") == 10.0
+assert a.carat_equivalent(10, "") is None and a.carat_equivalent(10, 25) is None and a.carat_equivalent(10, 0) is None
+print("✔ العيار: 10 جم عيار 21 ← 11.67 جم عيار 18، و6 جم عيار 24 ← 8.00، والعيار بالألف (875) ← 11.67؛ وغير الصالح يُرفض")
+
+# سند الحركة: العنوان سند صرف/قبض، والوصف اسم العملية، وستّ خانات، والوزن الكبير هو المعادل لعيار 18
+iss = {"رقم الفاتورة": 51, "الاسم": YELLOW, "النوع": "صرف كاستنج", "الوزن": 11.67, "قبل": 10.0, "بعد": 21.0,
+       "التاريخ": "2026-09-20 09:00:00", "row_number": "", "البيان": "عينة الفرن", "period": "2026-09"}
 title, sub, info, weight, note = a.analysis_voucher_fields(iss)
-assert (title, weight, note) == ("سند صرف", 10.0, "عينة الفرن") and sub.startswith("صب وتحليل — قسم")
-assert info == [("رقم السند:", "51"), ("التاريخ:", "2026-09-20"), ("رقم الصف:", "3"), ("الفترة:", "2026-09")]
-title, sub, _info, weight, _n = a.analysis_voucher_fields(dict(iss, **{"النوع": "قبض كاستنج", "الوزن": 9.8}))
-assert (title, weight) == ("سند قبض", 9.8) and sub.startswith("صب وتحليل")
+assert (title, weight, note) == ("سند صرف", 11.67, "عينة الفرن") and sub.startswith(f"{YELLOW} — قسم"), sub
+assert info == [("رقم السند:", "51"), ("التاريخ:", "2026-09-20"), ("الوزن كما كُتب:", "10.00"), ("العيار:", "21"),
+                ("الفترة:", "2026-09"), ("اللون:", "أصفر")], info
+title, sub, info, weight, _n = a.analysis_voucher_fields(dict(iss, **{"الاسم": WHITE, "النوع": "قبض كاستنج"}))
+assert (title, weight) == ("سند قبض", 11.67) and sub.startswith(WHITE) and info[-1] == ("اللون:", "أبيض")
+# القديم برقم صف وبلا عيار: رقم صفه، وخانتا الوزن المكتوب والعيار «-»، والوزن كما سُجّل
+title, sub, info, weight, _n = a.analysis_voucher_fields(dict(iss, **{"الاسم": WHITE, "قبل": 0.0, "بعد": 0.0,
+                                                                     "row_number": "3", "الوزن": 9.8}))
+assert weight == 9.8 and info[2:4] == [("الوزن كما كُتب:", "-"), ("العيار:", "-")] and info[-1] == ("رقم الصف:", "3")
+print("✔ السند: «سند صرف» أو «سند قبض» واسم العملية تحته، ورقم السند والتاريخ والوزن كما كُتب والعيار والفترة "
+      "واللون، والوزن الكبير بالمعادل لعيار 18؛ والقديم برقم صفه وبلا عيار")
+
+assert a.analysis_statement_label(iss, "صرف") == f"صرف {YELLOW} — 10.00 جم عيار 21"
+assert a.analysis_statement_label(dict(iss, **{"بعد": 0.0}), "قبض") == f"قبض {YELLOW}"
+print("✔ كشف حساب الكاستنج: «صرف صب وتحليل / أصفر — 10.00 جم عيار 21» بوزن المعادل لعيار 18")
+
 pv = member("print_analysis_voucher")
 assert "self.draw_analysis_voucher(c, inv)" in pv and pv.count("c.showPage()") == 1, "سند واحد في صفحته وملفه"
 assert "self.print_analysis_voucher(i)" in member("print_analysis_vouchers")
+assert "return self.print_analysis_vouchers(ids)" in member("preview_selected_analysis")
+draw = member("draw_analysis_voucher")
+assert "عيار 18 (جم):" in draw and "t0 = 40 + row * 15" in draw and "c.roundRect(x0, y(130)" in draw
 cast_ui = member("build_casting_ui")
-assert '"🖨️ معاينة الصرف", lambda: self.preview_selected_analysis("صرف كاستنج")' in cast_ui
-assert '"🖨️ معاينة القبض", lambda: self.preview_selected_analysis("قبض كاستنج")' in cast_ui
+assert '("🖨️ معاينة السند", self.preview_selected_analysis' in cast_ui and "معاينة الصرف" not in cast_ui
 cast = member("submit_casting_recovery_op")
-assert 'messagebox.showwarning("رقم الصف مطلوب"' in cast and '"row_number": row_num' in cast
-assert 'askyesno("طباعة السند"' in cast and "self.print_analysis_vouchers(posted)" in cast
+assert "self.carat_equivalent(raw, carat_text)" in cast and '"الاسم": op' in cast and '"الوزن": eq' in cast
+assert '"قبل": raw, "بعد": carat' in cast and '"row_number": ""' in cast and "رقم الصف مطلوب" not in cast
+assert 'askyesno("طباعة السند"' in cast and "self.print_analysis_vouchers([inv_id])" in cast
 assert cast.index("self.recalculate_all()") < cast.index('askyesno("طباعة السند"')
+assert "for entry in (self.cast_weight, self.cast_note):" in cast, "العيار يبقى للحركة التالية"
+assert "self.submit_casting_recovery_op()" in member("submit_casting_op") and \
+    "in self.CAST_ANALYSIS_OPS" in member("submit_casting_op")
+edit = member("open_recovery_op_edit_dialog")
+assert "self.carat_equivalent(new_raw, ent_carat.get().strip())" in edit and 'inv["قبل"], inv["بعد"] = new_raw, new_carat' in edit
+assert "self.open_recovery_op_edit_dialog(inv_id" in member("open_edit_invoice_ui"), \
+    "فتح حركة صب وتحليل من كشف الحساب يفتح نافذتها (الوزن والعيار)"
 collect = member("collect_stage_ops_rows")
 assert 'and grouped[k]["op"] == "فاقد"' in collect, "مسترجع الأشجار يُلحق بصف الفاقد لا بصف تحليل برقمه"
-print("✔ «صب وتحليل» برقم صف (إلزامي) — صرفه وقبضه صفٌّ واحد — والسند بعد الترحيل: «سند صرف» وحده و«سند قبض» وحده، "
-      "كلٌّ في صفحته، وزرّا «معاينة الصرف» و«معاينة القبض»")
+assert '"op": inv["الاسم"] if rec_op' in collect and "enumerate(self.CAST_ANALYSIS_OPS)" in collect
+print("✔ الترحيل: زر صرف/قبض ثم الوزن ثم العيار ثم البيان ← حركة واحدة باسم عمليتها (بلا رقم صف) بالمعادل لعيار 18، "
+      "ثم «طباعة السند» لها وحدها؛ وزر «🖨️ معاينة السند» للحركة المحددة؛ والتعديل بالوزن والعيار")
 
 # ═══ ٧) الواجهة: اللوحة في شريط الأقسام، والكتابة في الجدول، والربط بالمبيعات وبالقالب ═══
 assert 'stage_defs.append((self.SET_TRACK_KEY, f"🔎 {self.SET_TRACK_KEY}"))' in member("refresh_stage_buttons")
 assert "elif stage == self.SET_TRACK_KEY:" in member("switch_op_stage")
 assert "self.refresh_set_track_table()" in member("refresh_current_stage")
 ui = member("build_set_track_ui")
-for key in ('("<Return>", 1)', '("<KP_Enter>", 1)', '("<Down>", 1)', '("<Up>", -1)'):
+for key in ('("<Return>", 1, True)', '("<KP_Enter>", 1, True)', '("<Down>", 1, False)', '("<Up>", -1, False)'):
     assert key in ui, key
+# 1.78: من البحث: Enter ← خانة «قبل البوليش» في صفّه؛ Enter ← تأكيد؛ Enter ← يعود الإدخال لخانة رقم التشغيل
+search_src = ui[ui.index("def on_search_enter("):]
+assert "start(exact, from_search=True)" in search_src and "self.after_cancel(st[\"job\"])" in search_src
+move_src = ui[ui.index("def move("):ui.index("def on_select(")]
+assert move_src.index("if not commit():") < move_src.index('if enter and st.get("from_search"):') < \
+    move_src.index("back_to_search()")
+back_src = ui[ui.index("def back_to_search("):ui.index("def move(")]
+assert "editor.place_forget()" in back_src and 'entry.select_range(0, "end")' in back_src and "from_search=False" in back_src
+assert "self.after(80, focus)" in back_src
+assert 'st.update(item=item, key=key, orig=before_text(key), from_search=from_search)' in ui
 assert 'if not getattr(self, "view_only", False):' in ui and "self.set_polish_before(key, value)" in ui
 assert 'editor.bind("<FocusOut>", on_focus_out, add="+")' in ui and "tree.configure(yscrollcommand=on_scroll)" in ui
 # 1.76: لا حفظ بلا تأكيد — الرسالة قبل الحفظ (Enter يؤكّد)، ومغادرة الخانة لا تحفظ
@@ -336,6 +388,8 @@ assert "self.autofill_polish_khayas(key)" in member("autofill_assembler_khayas")
 assert "self.set_tracking_values(" in member("set_voucher_sections")
 print("✔ لوحة «🔎 تتبع رقم التشغيل» في شريط الأقسام؛ «قبل البوليش» يُكتب في خانته، وEnter ← رسالة تأكيد "
       "وEnter يؤكّد ثم الصف التالي (↑ للسابق)، ومغادرة الخانة لا تحفظ؛ ولا كتابة في حساب العميل لدى المدير")
+print("✔ من البحث: رقم التشغيل ثم Enter ← خانة «قبل البوليش» في صفّه، القيمة ثم Enter ← رسالة التأكيد وEnter "
+      "يؤكّد ← يعود الإدخال لخانة رقم التشغيل محدَّداً كله للرقم التالي")
 print("✔ «خياس المركب» في المبيعات ونافذة تعديل الفاتورة: نافذة قبل/بعد/خياس تحت الخانة")
 print("✔ المبيعات ونافذة تعديل الفاتورة تجلبان خياس البوليش وتنبّهان إن خالف المسجّلُ التتبعَ؛ والقالب منه")
 print("\n✅ تتبع رقم التشغيل وخياس البوليش والقالب والتحليل — كل رقم بقيمه الصحيحة")
