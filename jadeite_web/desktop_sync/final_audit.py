@@ -20,7 +20,9 @@ INHERITED = {"after","after_idle","title","geometry","update_idletasks","state",
  "yview","yview_moveto","yview_scroll","bind_all","unbind_all","item","identify_column",
  "get_children","index","selection","winfo_rgb","iconify","winfo_rootx","winfo_rooty","focus_get",
  # رسوم لوحة المؤشرات (MiniChart يرث tk.Canvas)
- "bbox","create_line","create_oval","create_rectangle","create_text","delete","move","tag_lower","find_withtag"}
+ "bbox","create_line","create_oval","create_rectangle","create_text","delete","move","tag_lower","find_withtag",
+ # خانة الاسم على ورقة «قالب رقم التشغيل» (PaperNameEntry يرث tk.Entry)
+ "insert"}
 
 for cls in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
     defined = {m.name for m in cls.body if isinstance(m, ast.FunctionDef)}

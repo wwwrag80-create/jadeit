@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.79.0"
+APP_VERSION = "1.80.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -2558,6 +2558,18 @@ class ThemedLabel(ctk.CTkLabel):
 
 
 ctk.CTkLabel = ThemedLabel
+
+
+class PaperNameEntry(tk.Entry):
+    """خانة اسم على ورقة «قالب رقم التشغيل» بواجهة القائمة التي تحتاجها اقتراحات الأسماء (set وvalues)"""
+
+    def set(self, value):
+        self.delete(0, "end")
+        self.insert(0, value)
+
+    def configure(self, cnf=None, **kw):
+        kw.pop("values", None)              # قائمة الاقتراحات تُعرض في نافذتها، لا في الخانة
+        return super().configure(cnf, **kw) if (cnf or kw) else None
 
 
 class HoverTip:
@@ -11519,6 +11531,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.refresh_pending_screen(name)
             self.tabview.show(name)
         self.refresh_screen_info_bar()
+        hook = self.SCREEN_ON_SHOW.get(name)
+        if hook and hasattr(self, hook):
+            self.after_idle(getattr(self, hook))         # ما تفعله الشاشة عند فتحها (مثل التركيز في خاناتها)
         # ظهرت بمقاسها الحقيقي: لا حاجة لرسمها مسبقاً ما دام المقاس نفسه
         size = self.screen_area_size()
         if size is not None:
@@ -11534,6 +11549,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if hasattr(self, 'home_frame') and self.home_frame:
             self.home_frame.pack(fill="both", expand=True)
         self.refresh_home_stats()
+
+    # ما تفعله الشاشة كلما فُتحت (بعد ظهورها): «قالب رقم التشغيل» يضع الإدخال في خانات القالب مباشرة
+    SCREEN_ON_SHOW = {"قالب رقم التشغيل": "sb_on_screen_shown"}
 
     # خريطة: اسم الشاشة ← الدوال التي تُعيد بناء جداولها
     # الأسماء هنا يجب أن تطابق أسماء الشاشات المسجّلة في tabview.add تماماً،
@@ -23367,24 +23385,189 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # ─────────────────── شاشة «قالب رقم التشغيل» ───────────────────
     SB_SCREEN = "قالب رقم التشغيل"
-    # ترتيب الخانات بزر Enter (الخانة ← التالية)، كما في القالب الورقي من أعلاه إلى أسفله
-    SB_FLOW = ("customer", "model", "label", "date", "p08", "p04", "mfg_khayas", "p1_before", "p1_after",
+    # ترتيب الخانات بزر Enter: بترتيب العمل على الطقم (البيانات، التصنيع، البوليش، التركيب، الأحجار، بوليش 2)
+    SB_FLOW = ("customer", "model", "label", "date", "kind", "p08", "p04", "mfg_khayas", "p1_before", "p1_after",
                "assembler", "asm_row", "asm_before", "asm_after", "gems", "stones", "stones_pct", "diamond",
                "chain", "p2_before", "p2_after")
     # خانات المرحلة المُرحَّلة: خانة الشاشة ← خانة الترحيل (٠٫٠٤٪ في التصنيع هو قبل البوليش نفسه)
     SB_POST_CELLS = {"p04": "p1_before", "p1_before": "p1_before", "p1_after": "p1_after",
                      "asm_before": "asm_before", "asm_after": "asm_after",
                      "p2_before": "p2_before", "p2_after": "p2_after"}
+    # نوع كل خانة إدخال: post مُرحَّلة، num رقم يُحفظ في القالب، text نص، name اسم المركّب، kind النوع (ذهب/الماس)
+    SB_CELL_KINDS = {"customer": "text", "model": "text", "label": "text", "date": "text", "kind": "kind",
+                     "assembler": "name", "asm_row": "text", "p08": "num", "p04": "post", "mfg_khayas": "num",
+                     "p1_before": "post", "p1_after": "post", "asm_before": "post", "asm_after": "post",
+                     "gems": "num", "stones": "num", "stones_pct": "num", "diamond": "num", "chain": "num",
+                     "p2_before": "post", "p2_after": "post"}
+    SB_CELL_TITLES = {"customer": "اسم العميل", "model": "رقم الموديل", "label": "NAME", "date": "التاريخ",
+                      "kind": "النوع", "assembler": "اسم المركب", "asm_row": "رقم الصف", "p08": "0.08%",
+                      "p04": "0.04%", "mfg_khayas": "خياس التصنيع", "p1_before": "قبل البوليش",
+                      "p1_after": "بعد البوليش", "asm_before": "قبل التركيب", "asm_after": "بعد التركيب",
+                      "gems": "فصوص", "stones": "احجار", "stones_pct": "خصم الأحجار %", "diamond": "الماس",
+                      "chain": "السلسال", "p2_before": "قبل بوليش 2", "p2_after": "بعد بوليش 2"}
+    # ألوان الورقة: بيضاء كالقالب المطبوع في المظهرين؛ المُرحَّل بخلفية زرقاء خفيفة، وما لم يُرحَّل بالأصفر
+    SB_PAPER = {"page": "#FFFFFF", "line": "#3F4650", "head": "#CCCCCC", "label": "#DBDBDB", "calc": "#F1F3F5",
+                "ink": "#111827", "muted": "#8A94A3", "posted": "#E3ECF9", "pending": "#FFF1CC",
+                "focus": UI["primary"], "shadow": "#C9D0DA"}
+
+    def sb_paper_spec(self):
+        """القالب الورقي نفسه — هندسة سند رقم التشغيل (set_voucher_layout) وأقسامه بترتيبها — عناصرَ للرسم على
+        الشاشة، بالنقاط وy من أعلى الصفحة:
+          ("box", x0, t0, x1, t1, اللون)              خانة (اللون: head / label / calc / None أبيض)
+          ("text", x, t, النص، الحجم، العرض الأقصى)    عنوانٌ في وسط موضعه
+          ("line", x0, t, x1, السُّمك)                 فاصل
+          ("logo", x1, t0, t1)                        شعار المصنع يميناً في الرأس
+          ("cell", المفتاح، x0, t0, x1, t1, الحجم)    خانة إدخال
+          ("calc", المفتاح، x0, t0, x1, t1, الحجم)    خانة محسوبة (تُكتب فيها القيمة)"""
+        L = self.set_voucher_layout()
+        MM, r, v, p, g = L["MM"], L["r"], L["v"], L["p"], L["g"]
+        left, right = L["left"], L["right"]
+        out = []
+
+        def box(x0, t0, x1, t1, fill=None):
+            out.append(("box", x0, t0, x1, t1, fill))
+
+        def label(x0, t0, x1, t1, text, fill="label", size=11.5):
+            box(x0, t0, x1, t1, fill)
+            out.append(("text", (x0 + x1) / 2, (t0 + t1) / 2, text, size, (x1 - x0) - 2 * MM))
+
+        def cell(key, x0, t0, x1, t1, size=12.5):
+            box(x0, t0, x1, t1)
+            out.append(("cell", key, x0, t0, x1, t1, size))
+
+        def calc(key, x0, t0, x1, t1, size=12.5, fill="calc"):
+            box(x0, t0, x1, t1, fill)
+            out.append(("calc", key, x0, t0, x1, t1, size))
+
+        def pair(x0, x1, t0, t1, text, key, computed, size=11.5):
+            mid = (x0 + x1) / 2
+            label(mid, t0, x1, t1, text, size=size)
+            (calc if computed else cell)(key, x0, t0, mid, t1, size + 1)
+
+        # الرأس: «مصنع جاديت» في الوسط، والشعار يميناً، ورقم التشغيل (NO) يساراً
+        t0, t1 = L["head"]
+        box(left, t0, right, t1, "head")
+        centre = (left + right) / 2
+        out.append(("text", centre, (t0 + t1) / 2, "مصنع جاديت", 24, 2 * (centre - left - 69 * MM)))  # بين NO والشعار
+        out.append(("logo", right - 3 * MM, t0 + 2 * MM, t1 - 2 * MM))
+        out.append(("text", left + 9 * MM, (t0 + t1) / 2, "NO:", 15, 14 * MM))
+        cell("set_no", left + 17 * MM, t0 + 6 * MM, left + 66 * MM, t1 - 6 * MM, 17)   # يُكتب فيه الرقم ثم Enter
+        # بيانات الطقم: سطران بعرض الصفحة
+        (a0, a1), (b0, b1) = L["info"]
+        quarter = (right - left) / 4
+        for i, (text, key) in enumerate((("اسم العميل:", "customer"), ("رقم الموديل:", "model"),
+                                         (":NAME", "label"), (":DATE", "date"))):
+            x1 = right - i * quarter
+            label(x1 - 24 * MM, a0, x1, a1, text, size=10.5)
+            cell(key, x1 - quarter, a0, x1 - 24 * MM, a1, 11)
+        half = (right - left) / 2
+        label(right - 24 * MM, b0, right, b1, "اسم المركب:", size=10.5)
+        cell("assembler", right - half + 30 * MM, b0, right - 24 * MM, b1, 11)
+        label(right - half + 16 * MM, b0, right - half + 30 * MM, b1, "الصف:", size=10.5)
+        cell("asm_row", right - half, b0, right - half + 16 * MM, b1, 11)
+        label(right - half - 24 * MM, b0, right - half, b1, "النوع:", size=10.5)
+        cell("kind", left, b0, right - half - 24 * MM, b1, 11)
+
+        # العمود الأيسر: المراحل
+        lx0, lx1 = L["col_left"]
+        third = (lx1 - lx0) / 3
+        three = tuple((lx1 - (i + 1) * third, lx1 - i * third) for i in range(3))     # من اليمين
+
+        def stage(top, title, heads, keys):
+            label(lx0, top, lx1, top + r, title, "head", 13)
+            for (x0, x1), h, key in zip(three, heads, keys):
+                label(x0, top + r, x1, top + 2 * r, h)
+                if self.SB_CELL_KINDS.get(key):
+                    cell(key, x0, top + 2 * r, x1, top + 2 * r + v, 13)
+                else:
+                    calc(key, x0, top + 2 * r, x1, top + 2 * r + v, 13)
+            return top + 2 * r + v
+
+        t = stage(L["body_top"], "التصنيع", ("0.08%", "0.04%", "خياس"), ("p08", "p04", "mfg_khayas")) + g
+        t = stage(t, "البوليش", ("قبل", "بعد", "خياس"), ("p1_before", "p1_after", "p1_khayas")) + g
+        t = stage(t, "التركيب", ("قبل", "بعد", "خياس"), ("asm_before", "asm_after", "asm_khayas"))
+        mid = (lx0 + lx1) / 2
+        for text, key in (("فصوص", "gems"), ("احجار", "stones"), ("الماس", "diamond")):
+            label(mid, t, lx1, t + r, text)
+            if key == "stones":
+                # نسبة خصم الأحجار في طرف خانتها — كالقالب الورقي
+                cell("stones", lx0, t, mid - 17 * MM, t + r)
+                box(mid - 17 * MM, t, mid, t + r)
+                out.append(("text", mid - 14.5 * MM, t + r / 2, "%", 10, 4 * MM))
+                out.append(("cell", "stones_pct", mid - 12 * MM, t, mid, t + r, 10.5))
+            else:
+                cell(key, lx0, t, mid, t + r)
+            t += r
+        for text, key, computed in (("الوزن بعد", "weight_after", True), ("السلسال", "chain", False),
+                                    ("الوزن الأجمالي:", "total", True)):
+            pair(lx0, lx1, t, t + r, text, key, computed)
+            t += r
+        out.append(("line", lx0, t - 3 * r, lx1, 1.8))               # فاصل بين الأحجار والأوزان
+        t = stage(t + g, "بوليش 2", ("قبل", "بعد", "خياس"), ("p2_before", "p2_after", "p2_khayas")) + g
+        label(lx0, t, lx1, t + r, "الوزن النهائي", "head", 13)
+        t += r
+        for text, key in (("الوزن النهائي", "final"), ("ناقص فصوص", "minus_gems"), ("ناقص احجار", "minus_stones"),
+                          ("ناقص الماس", "minus_diamond"), ("الوزن الصافي", "net")):
+            pair(lx0, lx1, t, t + r, text, key, True, 11.5)
+            t += r
+
+        # العمود الأيمن: جدول القطع ١–١٨، ثم الإجماليات
+        rx0, rx1 = L["col_right"]
+        edges = [rx1]
+        for w_ in (9, 17, 15, 15, 17):                               # #، العدد، المقاس، النوع، الوزن (مم)
+            edges.append(edges[-1] - w_ * MM)
+        edges.append(rx0)                                            # البيان: ما بقي
+        t = L["body_top"]
+        for i, h in enumerate(("",) + self.SB_PIECE_COLS):
+            label(edges[i + 1], t, edges[i], t + r, h, size=10.5)
+        t += r
+        for row in range(self.SB_PIECE_ROWS):
+            label(edges[1], t, edges[0], t + p, str(row + 1), fill=None, size=10.5)
+            for c in range(len(self.SB_PIECE_COLS)):
+                cell(f"piece:{row}:{c}", edges[c + 2], t, edges[c + 1], t + p, 10.5)
+            t += p
+        t += g
+        label(rx0, t, rx1, t + r, "الاجمالي", "head", 13)
+        t += r
+        rhalf = (rx1 - rx0) / 2
+        for i, (text, key) in enumerate((("فصوص:", "ptot_gems"), ("احجار:", "ptot_stones"))):
+            x1 = rx1 - i * rhalf
+            label(x1 - 20 * MM, t, x1, t + r, text)
+            calc(key, x1 - rhalf, t, x1 - 20 * MM, t + r, 12)
+        t += r + g
+        label(rx0, t, rx1, t + r, "الأجمالي", "head", 13)
+        t += r
+        for text, key in (("الوزن الصافي", "net2"), ("فصوص", "gems2"), ("الاحجار %", "stones_disc"),
+                          ("الوزن المقيد", "bound")):
+            if key == "stones_disc":
+                m = rx1 - rhalf
+                label(m + rhalf * 0.4, t, rx1, t + r, text)
+                calc("pct2", m, t, m + rhalf * 0.4, t + r, 11.5, fill="label")
+                calc(key, rx0, t, m, t + r, 12.5)
+            else:
+                pair(rx0, rx1, t, t + r, text, key, True, 11.5)
+            t += r
+
+        # التوقيعات أسفل الورقة
+        third_w = (right - left) / 3
+        for i, text in enumerate(("توقيع المدير", "توقيع المحاسب", "توقيع مدير الانتاج")):
+            cx = right - (i + 0.5) * third_w
+            out.append(("line", cx - 28 * MM, L["sig_line"], cx + 28 * MM, 0.9))
+            out.append(("text", cx, L["sig_line"] + 5 * MM, text, 11.5, 56 * MM))
+        return out
 
     def build_set_builder_tab(self):
-        """شاشة «قالب رقم التشغيل»: القالب الورقي نفسه على الشاشة — بحثٌ برقم التشغيل أو طقمٌ جديد، والتنقّل بين
-        الطقوم بالسهمين، وكل خانة مرحلةٍ تُرحَّل إلى مكانها فور إدخالها وتأكيدها، ثم «توليد الطقم» للبيع"""
+        """شاشة «قالب رقم التشغيل»: القالب الورقي نفسه (سند رقم التشغيل) على الشاشة والإدخال في خاناته — Enter يرحّل
+        الخانة (بالتأكيد) وينتقل للتالية، والأسهم تنتقل بين الخانات في كل اتجاه وتمرّر الورقة معها؛ وبالأعلى البحث
+        برقم التشغيل وطقمٌ جديد والسهمان بين الطقوم، وبجانب الورقة حال الطقم وأزراره وحركاته المرحَّلة"""
         tab = self.tabview.tab(self.SB_SCREEN)
-        st = {"key": None, "editing": False, "pending": {}, "w": {}}
+        st = {"key": None, "editing": False, "pending": {}, "w": {}, "auto": {}, "calc_items": {}, "calc_text": {},
+              "rects": {}, "wins": {}, "pieces": [], "layout_w": None, "shown": {}, "filled": set(), "by_widget": {},
+              "fonts": {}, "cell_font": {}}
         self._sb_state = st
         view_only = getattr(self, "view_only", False)
 
-        # ── شريط الأدوات: البحث وطقم جديد، والسهمان، والحالة والتعديل والطباعة ──
+        # ── الشريط: البحث وطقم جديد، والسهمان بين الطقوم، وحال الطقم ──
         bar = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                            border_width=1, border_color=(UI["line"], "#2A313B"))
         bar.pack(fill="x", padx=14, pady=(2, 4))
@@ -23416,186 +23599,379 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         st["chip"] = ctk.CTkLabel(bar, text="", font=(UI_FONT, 13, "bold"), corner_radius=10, height=30, width=130,
                                   fg_color=(UI["primary_soft"], "#22324A"), text_color=UI_TITLE)
         st["chip"].pack(side="left", padx=10)
-        # الصف الثاني: الإجراءات يساراً، وسطر حال الطقم يميناً (يتسع الشريط لشاشة ١٣٦٦)
-        actions = ctk.CTkFrame(tab, fg_color="transparent")
-        actions.pack(fill="x", padx=16, pady=(0, 2))
-        for text, cmd, tip, style in (
-                ("🖨️ طباعة القالب", lambda: self.sb_print(), "سند رقم التشغيل محمّلاً بكل قيم القالب", "primary"),
+
+        body = ctk.CTkFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        # ── بجانب الورقة (يساراً): الأزرار وحال الطقم والتنبيهات وحركاته المرحَّلة ──
+        side = ctk.CTkFrame(body, width=310, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+                            border_width=1, border_color=(UI["line"], "#2A313B"))
+        side.pack(side="left", fill="y", padx=(0, 8))
+        side.pack_propagate(False)
+        st["btn_produce"] = ctk.CTkButton(side, text="🏭 توليد الطقم", height=38,
+                                          font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"),
+                                          command=lambda: self.sb_produce_current(), **BUTTON_STYLES["primary"])
+        st["btn_produce"].pack(fill="x", padx=10, pady=(10, 4))
+        HoverTip(st["btn_produce"], "يجعل الطقم جاهزاً للبيع: رقمه في المبيعات يملأ الذهب (الصافي) والفصوص والأحجار والماس")
+        st["btn_unproduce"] = ctk.CTkButton(side, text="↩️ إلغاء التوليد", height=30, font=(UI_FONT, 13, "bold"),
+                                            command=lambda: self.sb_unproduce_current(), **BUTTON_STYLES["secondary"])
+        st["btn_unproduce"].pack(fill="x", padx=10, pady=2)
+        grid = ctk.CTkFrame(side, fg_color="transparent")
+        grid.pack(fill="x", padx=8, pady=2)
+        grid.grid_columnconfigure((0, 1), weight=1, uniform="sb_side")
+        st["btn_edit"] = ctk.CTkButton(grid, text="✏️ تعديل", height=30, font=(UI_FONT, 13, "bold"),
+                                       command=lambda: self.sb_toggle_edit(), **BUTTON_STYLES["secondary"])
+        st["btn_edit"].grid(row=0, column=0, columnspan=2, padx=2, pady=2, sticky="ew")
+        for (text, cmd, tip, style), (row, col) in zip((
+                ("🖨️ طباعة", lambda: self.sb_print(), "سند رقم التشغيل محمّلاً بكل قيم القالب", "primary"),
                 ("📋 كل الطقوم", self.open_sb_list_window, "كل الطقوم في القالب: الحالة والأوزان — والبحث والفتح",
                  "secondary"),
                 ("🗑️ حذف", lambda: self.sb_delete_current(), "حذف قالب الطقم (وحركاته المرحَّلة منه إن وافقت)",
-                 "danger")):
-            b = ctk.CTkButton(actions, text=text, font=(UI_FONT, 13, "bold"), width=118, height=30, command=cmd,
+                 "danger")), ((1, 1), (1, 0), (2, 0))):
+            b = ctk.CTkButton(grid, text=text, height=30, font=(UI_FONT, 13, "bold"), command=cmd,
                               **BUTTON_STYLES[style])
-            b.pack(side="left", padx=3)
+            b.grid(row=row, column=col, columnspan=2 if style == "danger" else 1, padx=2, pady=2, sticky="ew")
             HoverTip(b, tip)
             if style == "danger":
                 st["btn_delete"] = b
-        st["btn_edit"] = ctk.CTkButton(actions, text="✏️ تعديل", font=(UI_FONT, 13, "bold"), width=118, height=30,
-                                       command=lambda: self.sb_toggle_edit(), **BUTTON_STYLES["secondary"])
-        st["btn_edit"].pack(side="left", padx=3)
-        st["btn_produce"] = ctk.CTkButton(actions, text="🏭 توليد الطقم", height=30, width=190,
-                                          font=ctk.CTkFont(family=UI_FONT, size=14, weight="bold"),
-                                          command=lambda: self.sb_produce_current(), **BUTTON_STYLES["primary"])
-        st["btn_produce"].pack(side="left", padx=(12, 3))
-        HoverTip(st["btn_produce"], "يجعل الطقم جاهزاً للبيع: رقمه في المبيعات يملأ الذهب (الصافي) والفصوص والأحجار والماس")
-        st["btn_unproduce"] = ctk.CTkButton(actions, text="↩️ إلغاء التوليد", height=30, width=118,
-                                            font=(UI_FONT, 13, "bold"), command=lambda: self.sb_unproduce_current(),
-                                            **BUTTON_STYLES["secondary"])
-        st["btn_unproduce"].pack(side="left", padx=3)
         if view_only:
             for b in (btn_new, st["btn_edit"], st["btn_delete"]):
                 b.configure(state="disabled")
-        st["info"] = ctk.CTkLabel(actions, text="", font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"),
-                                  anchor="e", justify="right", wraplength=560)
-        st["info"].pack(side="right", fill="x", expand=True, padx=6)
-
-        # ── جسم القالب: ثلاثة أعمدة (المراحل يميناً، الأوزان في الوسط، القطع وسجل الحركات يساراً) ──
-        body = ctk.CTkFrame(tab, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=10, pady=(0, 6))
-        for c in range(3):
-            body.grid_columnconfigure(c, weight=1, uniform="sb_cols")
-        body.grid_rowconfigure(0, weight=1)
-        cols = [ctk.CTkFrame(body, fg_color="transparent") for _ in range(3)]
-        for c, frame in enumerate(cols):
-            frame.grid(row=0, column=2 - c, sticky="nsew", padx=3)
-        right, middle, left = cols
-        w = st["w"]
-
-        def section(parent, title, hint="", head_extra=None):
-            card = ctk.CTkFrame(parent, corner_radius=10, fg_color=(UI["surface"], "#171C23"),
-                                border_width=1, border_color=(UI["line"], "#2A313B"))
-            card.pack(fill="x", pady=2)
-            head = ctk.CTkFrame(card, fg_color="transparent", height=24)
-            head.pack(fill="x", padx=10, pady=(3, 0))
-            ctk.CTkLabel(head, text=title, font=(UI_FONT, 14, "bold"), text_color=UI_TITLE, height=22).pack(side="right")
-            if hint:
-                ctk.CTkLabel(head, text=hint, font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"),
-                             height=22).pack(side="right", padx=8)
-            if head_extra:
-                head_extra(head)
-            inner = ctk.CTkFrame(card, fg_color="transparent")
-            inner.pack(fill="x", padx=6, pady=(0, 4))
-            return inner
-
-        def cells(inner, specs, row=0):
-            """خانات صفٍّ من اليمين: (المفتاح، العنوان، النوع) — post مُرحَّلة، num/text تُحفظ في القالب، calc محسوبة"""
-            n = len(specs)
-            for c in range(n):
-                inner.grid_columnconfigure(c, weight=1, uniform=f"sb_{id(inner)}")
-            for i, (key, label, kind) in enumerate(specs):
-                col = n - 1 - i
-                size = 12 if n <= 3 else 11 if n == 4 else 10
-                if n >= 4 and len(label) >= 13:
-                    size = 10                    # «أحجار بعد الخصم» و«خصم الأحجار %» في عمود ضيق
-                lbl = ctk.CTkLabel(inner, text=label, font=(UI_FONT, size, "bold"), height=18,
-                                   text_color=(UI["ink"], "#E5E7EB"))
-                lbl.grid(row=2 * row, column=col, padx=3, pady=(1, 0), sticky="s")
-                if kind == "calc":
-                    ent = ctk.CTkLabel(inner, text="-", font=(UI_FONT, 15, "bold"), height=32, corner_radius=8,
-                                       fg_color=(UI["surface_alt"], "#232A33"), text_color=UI_TITLE)
-                elif kind == "kind":
-                    ent = ctk.CTkSegmentedButton(inner, values=["ذهب", "الماس"], font=(UI_FONT, 13, "bold"),
-                                                 height=32, selected_color=UI["primary"],
-                                                 selected_hover_color=UI["primary_hover"],
-                                                 command=lambda v: self.sb_commit_cell("kind", v))
-                elif kind == "name":
-                    ent = ctk.CTkComboBox(inner, values=list(self.categories.get("المركبين", [])),
-                                          font=(UI_FONT, 14), height=32, justify="right",
-                                          command=lambda _v: self.sb_commit_cell("assembler"))
-                    self.bind_name_autocomplete(ent, lambda: list(self.categories.get("المركبين", [])))
-                else:
-                    ent = ctk.CTkEntry(inner, justify="right" if kind == "text" else "center",
-                                       font=(UI_FONT, 13 if kind == "text" else 15, "bold"), height=32, width=60,
-                                       border_width=2)
-                ent.grid(row=2 * row + 1, column=col, padx=3, pady=(0, 1), sticky="ew")
-                w[key] = {"widget": ent, "kind": kind, "label": lbl, "title": label}
-                if kind not in ("calc", "kind"):
-                    target = getattr(ent, "_entry", ent)
-                    target.bind("<Return>", lambda e, k=key: self.sb_on_enter(k), add="+")
-                    target.bind("<KP_Enter>", lambda e, k=key: self.sb_on_enter(k), add="+")
-                    target.bind("<FocusOut>", lambda e, k=key: self.sb_on_focus_out(k), add="+")
-                    target.bind("<KeyRelease>", lambda e, k=key: self.sb_on_key(k, e), add="+")
-
-        def kind_toggle(head):
-            seg = ctk.CTkSegmentedButton(head, values=["ذهب", "الماس"], font=(UI_FONT, 12, "bold"), height=24,
-                                         selected_color=UI["primary"], selected_hover_color=UI["primary_hover"],
-                                         command=lambda v: self.sb_commit_cell("kind", v))
-            seg.pack(side="left")
-            w["kind"] = {"widget": seg, "kind": "kind", "label": None, "title": "النوع"}
-        sec = section(right, "بيانات الطقم", head_extra=kind_toggle)
-        cells(sec, [("customer", "اسم العميل", "text"), ("model", "رقم الموديل", "text"), ("label", "NAME", "text"),
-                    ("date", "التاريخ", "text")])
-        cells(section(right, "التصنيع", "٠٫٠٤٪ = «قبل» البوليش"),
-              [("p08", "0.08%", "num"), ("p04", "0.04%", "post"), ("mfg_khayas", "خياس", "num")])
-        cells(section(right, f"البوليش — {self.get_display_label('التلميع/البف')}",
-                      "قبل صرف · بعد قبض"),
-              [("p1_before", "قبل", "post"), ("p1_after", "بعد", "post"), ("p1_khayas", "خياس", "calc")])
-        sec = section(right, "التركيب — المركبين", "قبل صرف · بعد قبض (جدول المركّب)")
-        cells(sec, [("assembler", "اسم المركّب", "name"), ("asm_row", "رقم الصف", "text")])
-        cells(sec, [("asm_before", "قبل", "post"), ("asm_after", "بعد", "post"), ("asm_khayas", "خياس", "calc")],
-              row=1)
-
-        cells(section(middle, "الفصوص والأحجار والماس"),
-              [("gems", "فصوص", "num"), ("stones", "احجار", "num"), ("stones_pct", "خصم الأحجار %", "num"),
-               ("diamond", "الماس", "num")])
-        cells(section(middle, "الأوزان", "بعد = التركيب + فصوص + أحجار + الماس"),
-              [("weight_after", "الوزن بعد", "calc"), ("chain", "السلسال", "num"),
-               ("total", "الوزن الإجمالي", "calc")])
-        cells(section(middle, f"{self.get_display_label('خياس الطقوم')}", "قبل = الإجمالي (مقترح)"),
-              [("p2_before", "قبل", "post"), ("p2_after", "بعد", "post"), ("p2_khayas", "خياس", "calc")])
-        cells(section(middle, "الوزن النهائي", "الصافي = النهائي − فصوص − أحجار − الماس"),
-              [("final", "النهائي", "calc"), ("minus_gems", "ناقص فصوص", "calc"),
-               ("minus_stones", "ناقص احجار", "calc"), ("minus_diamond", "ناقص الماس", "calc"),
-               ("net", "الصافي", "calc")])
-        cells(section(middle, "الإجمالي"),
-              [("net2", "الوزن الصافي", "calc"), ("gems2", "فصوص", "calc"),
-               ("stones_disc", "أحجار بعد الخصم", "calc"), ("bound", "الوزن المقيد", "calc")])
-        st["warn"] = ctk.CTkLabel(middle, text="", font=(UI_FONT, 12, "bold"), wraplength=420, justify="right",
+        st["info"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"),
+                                  anchor="e", justify="right", wraplength=280)
+        st["info"].pack(fill="x", padx=10, pady=(6, 0))
+        st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12, "bold"), wraplength=280, justify="right",
                                   text_color=(UI["danger"], "#F08A8F"), anchor="e")
-        st["warn"].pack(fill="x", padx=6)
+        st["warn"].pack(fill="x", padx=10)
+        legend = ctk.CTkFrame(side, fg_color="transparent")
+        legend.pack(fill="x", padx=10, pady=(6, 0))
+        for color, text in ((self.SB_PAPER["posted"], "مُرحَّل لمكانه"), (self.SB_PAPER["pending"], "لم يُرحَّل بعد (Enter)"),
+                            (self.SB_PAPER["calc"], "محسوب تلقائياً")):
+            row_f = ctk.CTkFrame(legend, fg_color="transparent")
+            row_f.pack(fill="x", pady=1)
+            tk.Label(row_f, bg=color, width=2, relief="solid", bd=1).pack(side="right", padx=(0, 6))
+            ctk.CTkLabel(row_f, text=text, font=(UI_FONT, 12), text_color=(UI["ink"], "#E5E7EB"),
+                         height=18).pack(side="right")
+        ctk.CTkLabel(side, text="Enter: ترحيل الخانة والتالية  •  الأسهم: الانتقال بين الخانات\n"
+                                "المسافة: تبديل النوع  •  Esc: إلغاء ما لم يُرحَّل",
+                     font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), justify="right",
+                     wraplength=280).pack(fill="x", padx=10, pady=(6, 2))
+        ctk.CTkLabel(side, text="حركات الطقم المرحَّلة", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE,
+                     anchor="e").pack(fill="x", padx=10, pady=(6, 0))
+        log_frame = ttk.Frame(side)
+        log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+        st["log"] = self.create_standard_treeview(log_frame, ("التاريخ", "الحركة", "الوزن"), height=6)
+        st["log"].bind("<Double-1>", lambda e: self.sb_open_log_row(), add="+")
+        self.sb_log_columns()
 
-        # جدول القطع ١–١٨ (العدد، المقاس، النوع، الوزن، البيان) — يُحفظ في القالب
-        pieces = section(left, "جدول القطع")
-        holder = ctk.CTkScrollableFrame(pieces, height=230, fg_color="transparent")
-        holder.pack(fill="both", expand=True)
-        heads = ("#",) + self.SB_PIECE_COLS
-        widths = (3, 6, 7, 8, 7, 14)
-        for c, (h, wd) in enumerate(zip(heads, widths)):
-            holder.grid_columnconfigure(len(heads) - 1 - c, weight=wd)
-            ctk.CTkLabel(holder, text=h, font=(UI_FONT, 12, "bold"), text_color=(UI["ink"], "#E5E7EB")).grid(
-                row=0, column=len(heads) - 1 - c, padx=1, sticky="ew")
-        st["pieces"] = []
+        # ── الورقة: القالب نفسه، تملأ بقية العرض وتُمرَّر عمودياً ──
+        holder = ctk.CTkFrame(body, corner_radius=12, fg_color=(UI["canvas"], "#0F1318"))
+        holder.pack(side="right", fill="both", expand=True)
+        canvas = tk.Canvas(holder, highlightthickness=0, bd=0, takefocus=1, yscrollincrement=12)
+        scroll = ctk.CTkScrollbar(holder, command=canvas.yview)
+        scroll.pack(side="left", fill="y", padx=(2, 0), pady=6)
+        canvas.pack(side="right", fill="both", expand=True, padx=(0, 4), pady=4)
+        canvas.configure(yscrollcommand=scroll.set)
+        st["canvas"] = canvas
+
+        self.sb_make_cell("set_no", "setno")
+        for key, kind in self.SB_CELL_KINDS.items():
+            self.sb_make_cell(key, kind)
         for r in range(self.SB_PIECE_ROWS):
-            tk.Label(holder, text=str(r + 1), font=(UI_FONT, 11, "bold"), bg=UI["surface_alt"]).grid(
-                row=r + 1, column=len(heads) - 1, padx=1, pady=1, sticky="nsew")
             row_entries = []
             for c in range(len(self.SB_PIECE_COLS)):
-                ent = tk.Entry(holder, justify="right" if c in (2, 4) else "center", font=(UI_FONT, 12),
-                               relief="solid", bd=1, width=4)
-                ent.grid(row=r + 1, column=len(heads) - 2 - c, padx=1, pady=1, sticky="nsew")
+                key = f"piece:{r}:{c}"
+                ent = self.sb_make_entry(justify="right" if c in (2, 4) else "center")
+                st["wins"][key] = canvas.create_window(0, 0, window=ent, anchor="nw")
+                st["by_widget"][str(ent)] = key
                 ent.bind("<Return>", lambda e, r=r, c=c: self.sb_piece_next(r, c), add="+")
+                ent.bind("<KP_Enter>", lambda e, r=r, c=c: self.sb_piece_next(r, c), add="+")
                 ent.bind("<FocusOut>", lambda e: self.sb_save_pieces(), add="+")
+                self.sb_bind_cell_nav(ent, key)
                 row_entries.append(ent)
             st["pieces"].append(row_entries)
-        st["pieces_total"] = ctk.CTkLabel(pieces, text="", font=(UI_FONT, 12, "bold"), text_color=UI_TITLE,
-                                          anchor="e", wraplength=420, justify="right")
-        st["pieces_total"].pack(fill="x", padx=6)
 
-        # سجل الطقم: كل حركاته المرحَّلة (من القالب ومن أي شاشة) بأقسامها وفتراتها
-        log = section(left, "حركات الطقم المرحَّلة")
-        log_frame = ttk.Frame(log)
-        log_frame.pack(fill="both", expand=True)
-        st["log"] = self.create_standard_treeview(log_frame, ("التاريخ", "الحركة", "الوزن"), height=5)
-        st["log"].bind("<Double-1>", lambda e: self.sb_open_log_row(), add="+")
-
+        canvas.bind("<Configure>", lambda e: self.sb_layout_paper(), add="+")
+        for seq, delta in (("<Up>", -3), ("<Down>", 3), ("<Prior>", -30), ("<Next>", 30)):
+            canvas.bind(seq, lambda e, d=delta: (canvas.yview_scroll(d, "units"), "break")[1])
+        canvas.bind("<Button-1>", lambda e: canvas.focus_set(), add="+")
+        for w in (canvas, holder):
+            w.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120 or (1 if e.delta > 0 else -1)) * 3,
+                                                                "units"), add="+")
+            w.bind("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"), add="+")
+            w.bind("<Button-5>", lambda e: canvas.yview_scroll(3, "units"), add="+")
         search.bind("<Return>", lambda e: (self.sb_open_search(), "break")[1])
-        self.sb_set_editing(False)
+        self.sb_set_editing(False, render=False)
         self.refresh_set_builder()
+
+    def sb_make_entry(self, justify="center"):
+        """خانة إدخال على الورقة: بيضاء بلا حافة (حافة القالب حولها)، وحلقة التركيز باللون الرئيسي"""
+        canvas = self._sb_state["canvas"]
+        P = self.SB_PAPER
+        ent = tk.Entry(canvas, justify=justify, relief="flat", bd=0, highlightthickness=2,
+                       highlightbackground=P["page"], highlightcolor=P["focus"], bg=P["page"], fg=P["ink"],
+                       disabledbackground=P["page"], disabledforeground=P["ink"], readonlybackground=P["page"],
+                       insertbackground=P["ink"], font=(UI_FONT, -16, "bold"))
+        # عجلة الفأرة فوق الخانة تمرّر الورقة
+        ent.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120 or (1 if e.delta > 0 else -1)) * 3,
+                                                               "units"), add="+")
+        ent.bind("<FocusIn>", lambda e, w=ent: self.sb_on_cell_focus(w), add="+")
+        return ent
+
+    def sb_make_cell(self, key, kind):
+        st = self._sb_state
+        canvas = st["canvas"]
+        if kind == "name":
+            P = self.SB_PAPER
+            ent = PaperNameEntry(canvas, justify="right", relief="flat", bd=0, highlightthickness=2,
+                             highlightbackground=P["page"], highlightcolor=P["focus"], bg=P["page"], fg=P["ink"],
+                             disabledbackground=P["page"], disabledforeground=P["ink"], insertbackground=P["ink"],
+                             font=(UI_FONT, -16, "bold"))
+            ent.bind("<FocusIn>", lambda e, w=ent: self.sb_on_cell_focus(w), add="+")
+            self.bind_name_autocomplete(ent, lambda: list(self.categories.get("المركبين", [])))
+        else:
+            ent = self.sb_make_entry(justify="right" if kind in ("text",) and key != "date" else "center")
+        if kind == "kind":
+            ent.configure(state="readonly", cursor="hand2")
+            ent.bind("<space>", lambda e: (self.sb_toggle_kind(), "break")[1], add="+")
+            ent.bind("<Button-1>", lambda e: self.sb_toggle_kind(), add="+")
+        st["w"][key] = {"widget": ent, "kind": kind, "title": self.SB_CELL_TITLES.get(key, "رقم التشغيل")}
+        st["wins"][key] = canvas.create_window(0, 0, window=ent, anchor="nw")
+        st["by_widget"][str(ent)] = key
+        for seq in ("<Return>", "<KP_Enter>"):
+            ent.bind(seq, lambda e, k=key: self.sb_on_enter(k), add="+")
+        ent.bind("<FocusOut>", lambda e, k=key: self.sb_on_focus_out(k), add="+")
+        ent.bind("<KeyRelease>", lambda e, k=key: self.sb_on_key(k, e), add="+")
+        ent.bind("<Escape>", lambda e, k=key: self.sb_cancel_cell(k), add="+")
+        self.sb_bind_cell_nav(ent, key)
+
+    def sb_bind_cell_nav(self, ent, key):
+        """الأسهم الأربعة: الخانة التالية في اتجاهها على الورقة (وتُمرَّر الورقة إليها)"""
+        for seq, direction in (("<Up>", "up"), ("<Down>", "down"), ("<Left>", "left"), ("<Right>", "right")):
+            ent.bind(seq, lambda e, k=key, d=direction: self.sb_arrow(k, d), add="+")
+
+    def sb_layout_paper(self, force=False):
+        """يرسم الورقة بعرض المساحة (بمقياس ثابت النسبة، وتُمرَّر عمودياً) ويضع كل خانة إدخال في خانتها"""
+        st = getattr(self, "_sb_state", None)
+        canvas = (st or {}).get("canvas")
+        if canvas is None:
+            return
+        width = canvas.winfo_width()
+        if width < 120:
+            return
+        L = self.set_voucher_layout()
+        PW, PH = L["PW"], L["PH"]
+        if not force and st.get("layout_w") == width:
+            return
+        st["layout_w"] = width
+        s = max(1.1, min(2.1, (width - 40) / PW))
+        st["scale"] = s
+        P = self.SB_PAPER
+        dark = ctk.get_appearance_mode() == "Dark"
+        canvas.configure(bg="#0F1318" if dark else UI["canvas"])
+        ox, oy = max(16, (width - PW * s) / 2), 14
+        X = lambda x: ox + x * s
+        Y = lambda t: oy + t * s
+        fitted = self.sb_fit_font
+        canvas.delete("paper")
+        canvas.create_rectangle(X(0) + 5, Y(0) + 5, X(PW) + 5, Y(PH) + 5, fill=P["shadow"], outline="", tags="paper")
+        canvas.create_rectangle(X(0), Y(0), X(PW), Y(PH), fill=P["page"], outline=P["line"], tags="paper")
+        lw = max(1, int(round(0.9 * s * 0.8)))
+        fills = {"head": P["head"], "label": P["label"], "calc": P["calc"], None: P["page"]}
+        st["calc_items"], st["rects"] = {}, {}
+        for el in self.sb_paper_spec():
+            kind = el[0]
+            if kind == "box":
+                _k, x0, t0, x1, t1, fill = el
+                canvas.create_rectangle(X(x0), Y(t0), X(x1), Y(t1), fill=fills.get(fill, P["page"]),
+                                        outline=P["line"], width=lw, tags="paper")
+            elif kind == "text":
+                _k, x, t, text, size, max_w = el
+                canvas.create_text(X(x), Y(t), text=text, fill=P["ink"], tags="paper",
+                                   font=fitted(text, size * s, max_w * s))
+            elif kind == "line":
+                _k, x0, t, x1, w_ = el
+                canvas.create_line(X(x0), Y(t), X(x1), Y(t), fill=P["line"], width=max(1, int(round(w_ * s * 0.8))),
+                                   tags="paper")
+            elif kind == "logo":
+                _k, x1, t0, t1 = el
+                img = self.sb_logo_image(int((t1 - t0) * s))
+                if img is not None:
+                    canvas.create_image(X(x1), Y(t0), image=img, anchor="ne", tags="paper")
+            elif kind == "cell":
+                _k, key, x0, t0, x1, t1, size = el
+                win = st["wins"].get(key)
+                if win is None:
+                    continue
+                inset = max(1, lw)
+                canvas.coords(win, X(x0) + inset, Y(t0) + inset)
+                canvas.itemconfigure(win, width=max(10, int((x1 - x0) * s) - 2 * inset),
+                                     height=max(10, int((t1 - t0) * s) - 2 * inset))
+                cell = st["w"].get(key)
+                ent = cell["widget"] if cell else self.sb_piece_entry(key)
+                if ent is not None:
+                    px, w_px = max(8, size * s * 0.95), (x1 - x0) * s - 2 * inset - 10
+                    st["cell_font"][key] = (px, w_px)
+                    ent.configure(font=self.sb_fit_font(ent.get(), px, w_px))
+                st["rects"][key] = (X(x0), Y(t0), X(x1), Y(t1))
+            elif kind == "calc":
+                _k, key, x0, t0, x1, t1, size = el
+                text = st["calc_text"].get(key, "")
+                item = canvas.create_text((X(x0) + X(x1)) / 2, (Y(t0) + Y(t1)) / 2, text=text, fill=P["ink"],
+                                          tags="paper", font=fitted(text, size * s, (x1 - x0) * s - 6))
+                st["calc_items"][key] = (item, size * s, (x1 - x0) * s - 6)
+        canvas.configure(scrollregion=(0, 0, width, Y(PH) + 18))
+
+    def sb_font(self, px):
+        """خط الورقة بالبكسل (محفوظ لكل مقاس)"""
+        st = self._sb_state
+        px = max(7, int(round(px)))
+        if px not in st["fonts"]:
+            st["fonts"][px] = tkfont.Font(root=st["canvas"], family=UI_FONT, size=-px, weight="bold")
+        return st["fonts"][px]
+
+    def sb_fit_font(self, text, px, max_w):
+        """أكبر خط حتى px يتسع فيه النص لعرض خانته"""
+        px = max(7, int(round(px)))
+        f = self.sb_font(px)
+        while text and f.measure(text) > max_w and px > 7:
+            px -= 1
+            f = self.sb_font(px)
+        return f
+
+    def sb_logo_image(self, height):
+        """شعار المصنع لرأس الورقة بالارتفاع المطلوب (محفوظ لكل مقاس)"""
+        cache = self.__dict__.setdefault("_sb_logo_cache", {})
+        if height in cache:
+            return cache[height]
+        img = None
+        try:
+            from PIL import ImageTk
+            path = resource_path("jadeite_logo.png")
+            src = Image.open(path).convert("RGBA") if os.path.exists(path) else None
+            if src is not None and height > 4:
+                w = max(1, int(src.width * height / src.height))
+                img = ImageTk.PhotoImage(src.resize((w, height)), master=self)
+        except Exception:
+            img = None
+        cache[height] = img
+        return img
+
+    def sb_piece_entry(self, key):
+        if not str(key).startswith("piece:"):
+            return None
+        _p, r, c = str(key).split(":")
+        try:
+            return self._sb_state["pieces"][int(r)][int(c)]
+        except (IndexError, ValueError):
+            return None
+
+    def sb_entry_of(self, key):
+        cell = self._sb_state["w"].get(key)
+        return cell["widget"] if cell else self.sb_piece_entry(key)
+
+    def sb_ensure_visible(self, key):
+        """يمرّر الورقة حتى تظهر الخانة كاملة (مع هامش)"""
+        st = self._sb_state
+        canvas, rect = st.get("canvas"), st["rects"].get(key)
+        if canvas is None or rect is None:
+            return
+        region = canvas.cget("scrollregion").split()
+        total = float(region[3]) if len(region) == 4 else 0
+        view_h = canvas.winfo_height()
+        if total <= view_h or total <= 0:
+            return
+        top = canvas.canvasy(0)
+        margin = 40
+        if rect[1] - margin < top:
+            canvas.yview_moveto(max(0.0, (rect[1] - margin) / total))
+        elif rect[3] + margin > top + view_h:
+            canvas.yview_moveto(min(1.0, (rect[3] + margin - view_h) / total))
+
+    def sb_on_cell_focus(self, widget):
+        st = self._sb_state
+        key = st["by_widget"].get(str(widget))
+        if key:
+            st["last_focus"] = key
+            self.sb_ensure_visible(key)
+        try:
+            if str(widget.cget("state")) == "normal":
+                widget.select_range(0, "end")
+                widget.icursor("end")
+        except tk.TclError:
+            pass
+
+    def sb_neighbor(self, key, direction):
+        """أقرب خانة في الاتجاه على الورقة: ↑↓ في العمود نفسه (الأقرب أفقياً)، و←→ في السطر نفسه"""
+        rects = self._sb_state["rects"]
+        cur = rects.get(key)
+        if cur is None:
+            return None
+        cx, cy = (cur[0] + cur[2]) / 2, (cur[1] + cur[3]) / 2
+        best, best_score = None, None
+        for k, (x0, y0, x1, y1) in rects.items():
+            if k == key:
+                continue
+            kx, ky = (x0 + x1) / 2, (y0 + y1) / 2
+            dx, dy = kx - cx, ky - cy
+            # ↑↓ في العمود نفسه فقط (خانة تتقاطع معها أفقياً) و←→ في السطر نفسه فقط — لا قفز للعمود الآخر
+            h_overlap = min(x1, cur[2]) - max(x0, cur[0]) > 2
+            v_overlap = min(y1, cur[3]) - max(y0, cur[1]) > 2
+            if direction == "down" and y0 >= cur[3] - 2 and h_overlap:
+                score = (dy, abs(dx))
+            elif direction == "up" and y1 <= cur[1] + 2 and h_overlap:
+                score = (-dy, abs(dx))
+            elif direction == "left" and x1 <= cur[0] + 2 and v_overlap:
+                score = (-dx, abs(dy))
+            elif direction == "right" and x0 >= cur[2] - 2 and v_overlap:
+                score = (dx, abs(dy))
+            else:
+                continue
+            if best_score is None or score < best_score:
+                best, best_score = k, score
+        return best
+
+    def sb_arrow(self, key, direction):
+        """سهم في خانة: يُحفظ ما كُتب فيها (ويُرحَّل بالتأكيد إن تغيّر) ثم الخانة التي في اتجاهه"""
+        st = self._sb_state
+        if not st.get("key"):
+            return "break"
+        cell = st["w"].get(key)
+        if st.get("editing") and cell and cell["kind"] != "setno" and (cell["kind"] != "post" or key in st["pending"]):
+            # المقترح المعروض (بالأصفر) لا يُرحَّل بالمرور عليه — يُرحَّل ما كُتب فقط
+            if not self.sb_commit_cell(key):
+                return "break"
+        if key.startswith("piece:"):
+            self.sb_save_pieces()
+        target = self.sb_neighbor(key, direction)
+        if target:
+            self.sb_focus(target)
+        return "break"
+
+    def sb_toggle_kind(self):
+        st = self._sb_state
+        if not st.get("editing") or not st.get("key"):
+            return
+        now = self.sb_cell_text("kind")
+        self.sb_commit_cell("kind", "الماس" if now != "الماس" else "ذهب")
+
+    def sb_cancel_cell(self, key):
+        """Esc: يلغي ما كُتب في الخانة ولم يُرحَّل، فتعود قيمتها المسجّلة"""
+        st = self._sb_state
+        if key == "set_no" and self.sb_cell_text("set_no") != (st.get("key") or ""):
+            self.sb_put("set_no", st.get("key") or "")              # يعود رقم الطقم المعروض
+            self.sb_focus("set_no")
+            return "break"
+        if key not in st["pending"]:
+            return None                  # لا شيء لم يُرحَّل: Esc كعادته (القائمة الرئيسية)
+        st["pending"].pop(key, None)
+        self.sb_render()
+        self.sb_focus(key)
+        return "break"
 
     # ── عرض الطقم ──
     def refresh_set_builder(self):
-        """فتح الشاشة: آخر طقم عُمل عليه (أو الطقم المعروض بأحدث أرقامه)"""
+        """تحديث الشاشة: الطقم المعروض بأحدث أرقامه (أو آخر طقم عُمل عليه إن لم يكن طقم)"""
         st = getattr(self, "_sb_state", None)
         if not st:
             return
@@ -23606,6 +23982,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             st["key"] = key
         self.sb_render()
 
+    def sb_on_screen_shown(self):
+        """عند فتح الشاشة: القالب ظاهر والإدخال في خاناته مباشرة — آخر طقم عُمل عليه مفتوحاً للتعديل (إن كان قيد
+        التشغيل) والتركيز في أول خانة فارغة؛ والجاهز أو المباع للعرض؛ وبلا طقوم ← خانة رقم التشغيل"""
+        st = getattr(self, "_sb_state", None)
+        if not st:
+            return
+        if st.pop("explicit", False):
+            return                      # فُتح طقمٌ بعينه (من شاشة أخرى): لا يُستبدل
+        self.refresh_set_builder()
+        key = st.get("key")
+        if not key:
+            self.sb_focus("set_no")          # بلا طقوم: يُكتب رقم التشغيل في خانة NO بالقالب
+            return
+        if not st.get("editing") and self.sb_status(key) == "قيد التشغيل" and not getattr(self, "view_only", False):
+            self.sb_set_editing(True)
+        if st.get("editing"):
+            self.sb_focus(st.get("last_focus") if st.get("last_focus") in st["rects"] else self.sb_first_empty())
+        else:
+            st["canvas"].focus_set()
+
+    def sb_first_empty(self):
+        """أول خانة فارغة بترتيب العمل (حيث يُكمل الطقم) — وإلا أول خانة"""
+        filled = self._sb_state["filled"]
+        for key in self.SB_FLOW:
+            if key not in ("kind", "mfg_khayas") and key not in filled:
+                return key
+        return self.SB_FLOW[0]
+
     def sb_show(self, key, edit=False):
         st = getattr(self, "_sb_state", None)
         if not st:
@@ -23614,12 +24018,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             names = "، ".join(st["w"][k]["title"] for k in st["pending"] if k in st["w"])
             self.toast(f"لم تُرحَّل: {names} — تُركت", "warn")
         st["pending"] = {}
+        st["last_focus"] = None
         st["key"] = self.normalize_set_number(key) or None
         self.sb_set_editing(bool(edit) and not getattr(self, "view_only", False), render=False)
         self.sb_render()
+        if st["canvas"].winfo_ismapped():
+            st["canvas"].yview_moveto(0.0)
 
     def sb_open(self, key, edit=False):
         """يفتح الطقم في شاشة القالب (من أي شاشة)"""
+        self._sb_state["explicit"] = True
         self.navigate_to_screen(self.SB_SCREEN)
         self.sb_show(key, edit=edit)
 
@@ -23633,10 +24041,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
         for key, cell in st["w"].items():
-            if cell["kind"] == "calc":
-                continue
             try:
-                cell["widget"].configure(state="normal" if st["editing"] else "disabled")
+                if cell["kind"] == "setno":
+                    cell["widget"].configure(state="normal")       # خانة رقم التشغيل: للبحث والفتح دائماً
+                    continue
+                cell["widget"].configure(state=("readonly" if cell["kind"] == "kind" else "normal")
+                                         if st["editing"] else "disabled")
             except Exception:
                 pass
         for row in st.get("pieces", []):
@@ -23651,6 +24061,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not key:
             messagebox.showwarning("تنبيه", "حدّد رقم التشغيل في الجدول أو اكتبه في خانة البحث أولاً.")
             return None
+        self._sb_state["explicit"] = True
         self.navigate_to_screen(self.SB_SCREEN)
         return self.sb_open_search(key)
 
@@ -23669,68 +24080,84 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.sb_save_pieces()
         self.sb_set_editing(not st["editing"])
         if st["editing"]:
-            self.sb_focus("customer")
+            self.sb_focus(self.sb_first_empty())
 
     def sb_focus(self, key):
-        cell = self._sb_state["w"].get(key)
-        if cell is None:
+        ent = self.sb_entry_of(key) if key else None
+        if ent is None:
             return
-        target = getattr(cell["widget"], "_entry", cell["widget"])
+        self.sb_ensure_visible(key)
         try:
-            target.focus_set()
-            if hasattr(target, "select_range"):
-                target.select_range(0, "end")
+            # الخانة خارج المعروض من الورقة غير مرسومة (لا تأخذ التركيز) حتى تُمرَّر إليها
+            self._sb_state["canvas"].update_idletasks()
+            ent.focus_set()
+            if str(ent.cget("state")) == "normal":
+                ent.select_range(0, "end")
         except tk.TclError:
             pass
 
     def sb_cell_text(self, key):
-        cell = self._sb_state["w"].get(key)
-        if cell is None:
+        ent = self.sb_entry_of(key)
+        if ent is None:
             return ""
         try:
-            return str(cell["widget"].get()).strip()
+            return str(ent.get()).strip()
         except Exception:
             return ""
 
     def sb_put(self, key, text, state=None):
-        """يكتب قيمة خانة في الشاشة؛ state: «posted» مُرحَّلة (حافة كحلية) أو «pending» مقترحة/لم تُرحَّل (حافة
-        بلون التنبيه) أو None"""
+        """يكتب قيمة خانة على الورقة؛ state: «posted» مُرحَّلة (خلفية زرقاء خفيفة) أو «pending» مقترحة/لم تُرحَّل
+        (صفراء) أو «auto» محسوبة تُكتب بلون خافت إن تُركت، أو None"""
+        st = self._sb_state
+        text = "" if text is None else str(text)
+        if key not in st["w"]:
+            st["calc_text"][key] = text
+            item = st["calc_items"].get(key)
+            if item is not None:
+                st["canvas"].itemconfigure(item[0], text=text, font=self.sb_fit_font(text, item[1], item[2]))
+            return
+        cell = st["w"][key]
+        wdg, kind = cell["widget"], cell["kind"]
+        if kind == "kind" and st.get("key"):
+            text = text if text in ("ذهب", "الماس") else "ذهب"
+        state_before = str(wdg.cget("state"))
+        wdg.configure(state="normal")
+        wdg.delete(0, "end")
+        if text:
+            wdg.insert(0, text)
+        fit = st["cell_font"].get(key)
+        if fit is not None:
+            wdg.configure(font=self.sb_fit_font(text, *fit))       # النص الطويل (كالتاريخ) يتسع في خانته
+        wdg.configure(state=state_before)
+        st["shown"][key] = text
+        st["auto"].pop(key, None)
+        if state == "auto":
+            st["auto"][key] = text
+        if text and state in (None, "posted"):
+            st["filled"].add(key)
+        else:
+            st["filled"].discard(key)
+        self.sb_tint(key, state)
+
+    def sb_tint(self, key, state=None):
+        """لون خانة الإدخال: مُرحَّلة (زرقاء خفيفة)، لم تُرحَّل (صفراء)، محسوبة لم تُكتب (نصٌّ خافت)، أو بيضاء"""
         cell = self._sb_state["w"].get(key)
         if cell is None:
             return
-        wdg, kind = cell["widget"], cell["kind"]
-        text = "" if text is None else str(text)
-        if kind == "calc":
-            wdg.configure(text=text or "-")
-            return
-        if kind == "kind":
-            wdg.set(text if text in ("ذهب", "الماس") else "ذهب")
-            return
-        disabled = str(wdg.cget("state")) == "disabled"
-        if disabled:
-            wdg.configure(state="normal")
-        if kind == "name":
-            wdg.set(text)
-        else:
-            wdg.delete(0, "end")
-            if text:
-                wdg.insert(0, text)
-        if disabled:
-            wdg.configure(state="disabled")
-        if kind == "post":
-            color = {"posted": (UI["primary"], "#9CC0F5"), "pending": ("#D9A21B", "#E8B84A")}.get(
-                state, (UI["line"], "#2A313B"))
-            try:
-                wdg.configure(border_color=color)
-            except Exception:
-                pass
+        P = self.SB_PAPER
+        bg = {"posted": P["posted"], "pending": P["pending"]}.get(state, P["page"])
+        fg = P["muted"] if state == "auto" else P["ink"]
+        cell["widget"].configure(bg=bg, disabledbackground=bg, readonlybackground=bg, highlightbackground=bg,
+                                 fg=fg, disabledforeground=fg)
 
     def sb_render(self):
-        """يعرض الطقم الحالي بكل قيمه: المُرحَّل من حركاته، والمحفوظ من قالبه، والمحسوب — والمقترح للخانات
-        غير المُرحَّلة (من الخانة التي فوقها) بحافة التنبيه"""
+        """يعرض الطقم الحالي على الورقة بكل قيمه: المُرحَّل من حركاته، والمحفوظ من قالبه، والمحسوب — والمقترح
+        للخانات غير المُرحَّلة (من الخانة التي فوقها) بالأصفر حتى يُؤكَّد"""
         st = getattr(self, "_sb_state", None)
         if not st:
             return
+        if st.get("layout_w") is None:
+            self.sb_layout_paper()
         key = st.get("key")
         sets = self.sb_all()
         keys = [r["set_number"] for r in sets]
@@ -23742,12 +24169,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             st["search"].delete(0, "end")
             if key:
                 st["search"].insert(0, key)
+        no_cell = st["w"]["set_no"]["widget"]
+        if self.focus_get() is not no_cell or not self.sb_cell_text("set_no"):
+            self.sb_put("set_no", key or "")
         if not key:
-            for k in st["w"]:
-                self.sb_put(k, "")
+            for b in (st["btn_produce"], st["btn_unproduce"]):
+                b.configure(state="disabled")
+            st["btn_produce"].configure(text="🏭 توليد الطقم")
+            for k in list(st["w"]) + list(st["calc_items"]):
+                if k != "set_no":
+                    self.sb_put(k, "")
+            st["info"].configure(text="اكتب رقم التشغيل في خانة NO بالقالب (أو امسح باركوده) ثم Enter — أو «➕ توليد طقم "
+                                      "جديد». كل خانة مرحلة تُرحَّل لمكانها فور إدخالها وتأكيدها")
             st["chip"].configure(text="لا طقم")
-            st["info"].configure(text="ابحث برقم التشغيل (Enter) أو «➕ توليد طقم جديد» — كل خانة مرحلة تُرحَّل "
-                                      "لمكانها فور إدخالها وتأكيدها")
+            st["warn"].configure(text="")
             self.sb_fill_pieces([])
             self.sb_fill_log(None)
             return
@@ -23759,18 +24194,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return "" if x is None else f"{x:g}"
 
         def calc(x):
-            return "-" if x is None else f"{x:.2f}"
+            return "" if x is None else f"{x:.2f}"
         for k in ("customer", "model", "label", "date", "assembler", "asm_row"):
             val = v.get(k) if k in ("assembler", "asm_row") else rec.get(k)
             self.sb_put(k, pending.get(k, val or ""))
         self.sb_put("kind", rec.get("kind") or ("الماس" if v["diamond"] else "ذهب"))
         for k in ("p08", "gems", "stones", "stones_pct", "diamond", "chain"):
             self.sb_put(k, pending.get(k, f(v[k])))
-        self.sb_put("mfg_khayas", pending.get("mfg_khayas", f(self.sb_num(rec.get("mfg_khayas")))))
+        written = self.sb_num(rec.get("mfg_khayas"))
+        if "mfg_khayas" in pending:
+            self.sb_put("mfg_khayas", pending["mfg_khayas"])
+        elif written is None and v["mfg_khayas"] is not None:
+            self.sb_put("mfg_khayas", f(v["mfg_khayas"]), "auto")          # ٠٫٠٨٪ − ٠٫٠٤٪ ما لم يُكتب
+        else:
+            self.sb_put("mfg_khayas", f(written))
         # المُرحَّلة: قيمتها من حركاتها؛ وغير المُرحَّلة: ما كُتب ولم يُؤكَّد، أو المقترح من الخانة التي فوقها
         suggest = {"p1_before": v["legacy_polish_before"], "asm_before": v["p1_after"],
                    "p2_before": v["total"]}
-        notes = []
         for cell_key, field in self.SB_POST_CELLS.items():
             posted = v[field]
             if cell_key in pending:
@@ -23781,16 +24221,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.sb_put(cell_key, f(suggest[field]), "pending")
             else:
                 self.sb_put(cell_key, "")
+        pieces = rec.get("pieces") or []
+        ptot = self.sb_pieces_totals(pieces)
         for k, val in (("p1_khayas", v["p1_khayas"]), ("asm_khayas", v["asm_khayas"]),
                        ("weight_after", v["weight_after"]), ("total", v["total"]), ("p2_khayas", v["p2_khayas"]),
                        ("final", v["final"]), ("minus_gems", v["gems"]), ("minus_stones", v["stones"]),
                        ("minus_diamond", v["diamond"]), ("net", v["net"]), ("net2", v["net"]),
-                       ("gems2", v["gems"]), ("stones_disc", v["stones_disc"]), ("bound", v["bound"])):
+                       ("gems2", v["gems"]), ("stones_disc", v["stones_disc"]), ("bound", v["bound"]),
+                       ("ptot_gems", ptot[0] or None), ("ptot_stones", ptot[1] or None)):
             self.sb_put(k, calc(val))
-        if v["mfg_khayas"] is not None and rec.get("mfg_khayas") in (None, ""):
-            self.sb_put("mfg_khayas", "")
-            st["w"]["mfg_khayas"]["widget"].configure(placeholder_text=f"{v['mfg_khayas']:g}")
-        # تنبيهات: الخياس السالب، و«قبل» بوليش 2 يخالف الوزن الإجمالي، ومجموع القطع يخالف الفصوص/الأحجار
+        self.sb_put("pct2", f"{v['stones_pct']:g}%" if v["stones_pct"] is not None else "")
+        # تنبيهات: الخياس السالب، و«قبل» بوليش 2 يخالف الإجمالي، والصافي غير الصحيح
+        notes = []
         for label, kh in (("البوليش", v["p1_khayas"]), ("التركيب", v["asm_khayas"]), ("بوليش 2", v["p2_khayas"])):
             if kh is not None and kh < 0:
                 notes.append(f"⚠️ خياس {label} سالب ({kh:.2f})")
@@ -23798,7 +24240,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             notes.append(f"⚠️ «قبل» بوليش 2 ({v['p2_before']:.2f}) يختلف عن الوزن الإجمالي ({v['total']:.2f})")
         if v["net"] is not None and v["net"] <= 0:
             notes.append("⚠️ الوزن الصافي غير صحيح")
-        st["warn"].configure(text="   ".join(notes))
+        st["warn"].configure(text="\n".join(notes))
         status = self.sb_status(key, rec)
         st["chip"].configure(text={"مباع": "🔵 مباع", "جاهز للبيع": "🟢 جاهز للبيع"}.get(status, "🟡 قيد التشغيل"))
         ready = rec.get("status") == self.SB_READY
@@ -23809,9 +24251,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                       else "disabled")
         asm_txt = (f"المركّب: {v['assembler']} — الصف {v['asm_row']}" + (f" ({v['asm_period']})" if v["asm_period"] else "")
                    if v["assembler"] else "لم يُسجَّل المركّب بعد")
-        st["info"].configure(text=f"الطقم {key} — {status} — {asm_txt} — آخر تعديل {str(rec.get('updated') or '')[:16]}"
-                                  + ("" if st["editing"] else "  (للعرض: ✏️ تعديل)"))
-        self.sb_fill_pieces(rec.get("pieces") or [])
+        st["info"].configure(text=f"الطقم {key} — {status}\n{asm_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
+                                  + ("" if st["editing"] else "\n(للعرض — ✏️ تعديل)"))
+        self.sb_fill_pieces(pieces)
         self.sb_fill_log(key)
 
     def sb_fill_pieces(self, pieces):
@@ -23819,16 +24261,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for r, row in enumerate(st.get("pieces", [])):
             vals = (list(pieces[r]) + [""] * 5)[:5] if r < len(pieces) else [""] * 5
             for c, ent in enumerate(row):
-                disabled = str(ent.cget("state")) == "disabled"
-                if disabled:
+                state = str(ent.cget("state"))
+                if state == "disabled":
                     ent.configure(state="normal")
                 ent.delete(0, "end")
                 ent.insert(0, vals[c])
-                if disabled:
+                if state == "disabled":
                     ent.configure(state="disabled")
-        g, s, d, t = self.sb_pieces_totals(pieces)
-        st["pieces_total"].configure(text=(f"مجموع أوزان القطع: {t:.2f}  —  فصوص {g:.2f}  |  أحجار {s:.2f}  |  الماس {d:.2f}"
-                                           if t else "اكتب القطع في الجدول (النوع: فص/حجر/الماس ليُجمع وزنه)"))
 
     def sb_read_pieces(self):
         return [[ent.get().strip() for ent in row] for row in self._sb_state.get("pieces", [])]
@@ -23838,9 +24277,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not st or not st.get("editing") or not st.get("key"):
             return
         if self.sb_set_pieces(st["key"], self.sb_read_pieces()):
-            g, s, d, t = self.sb_pieces_totals(self.sb_read_pieces())
-            st["pieces_total"].configure(
-                text=f"مجموع أوزان القطع: {t:.2f}  —  فصوص {g:.2f}  |  أحجار {s:.2f}  |  الماس {d:.2f}")
+            g, s, _d, _t = self.sb_pieces_totals(self.sb_read_pieces())
+            self.sb_put("ptot_gems", f"{g:.2f}" if g else "")
+            self.sb_put("ptot_stones", f"{s:.2f}" if s else "")
 
     def sb_piece_next(self, r, c):
         """Enter في جدول القطع: الخانة التالية في الصف، ثم أول خانة في الصف التالي"""
@@ -23848,9 +24287,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         c += 1
         if c >= len(self.SB_PIECE_COLS):
             r, c = r + 1, 0
-        if r < len(rows):
-            rows[r][c].focus_set()
         self.sb_save_pieces()
+        if r < len(rows):
+            self.sb_focus(f"piece:{r}:{c}")
         return "break"
 
     def sb_fill_log(self, key):
@@ -23882,13 +24321,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             else:
                 what = f"{label}: {names.get(t, t)}"
             date, period = str(inv.get("التاريخ", ""))[:10], self.inv_period(inv)
-            if period and not date.startswith(period):
-                date += f" (فترة {period})"
-            item = tree.insert("", "end", values=(date, what, f"{inv.get('الوزن', 0.0):.2f}"))
+            shown = date[5:] if period and date.startswith(period) else (f"{date[5:]} ({period})" if period else date)
+            item = tree.insert("", "end", values=(shown, what, f"{inv.get('الوزن', 0.0):.2f}"))
             self._sb_state["log_ids"][item] = inv["رقم الفاتورة"]
-        tree.column("التاريخ", width=104, stretch=False)
-        tree.column("الوزن", width=66, stretch=False)
-        tree.column("الحركة", width=260, stretch=True)
+        self.sb_log_columns()
+
+    def sb_log_columns(self):
+        tree = self._sb_state["log"]
+        tree.column("التاريخ", width=58, stretch=False)          # الشهر-اليوم (والفترة إن اختلفت)
+        tree.column("الوزن", width=58, stretch=False)
+        tree.column("الحركة", width=170, stretch=True)
 
     def sb_open_log_row(self):
         st = self._sb_state
@@ -23899,16 +24341,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # ── الإدخال ──
     def sb_on_key(self, key, event=None):
-        """كتابة في خانة مرحلة: تُعلَّم «لم تُرحَّل» حتى Enter والتأكيد"""
+        """كتابة في خانة مرحلة: تُعلَّم «لم تُرحَّل» (بالأصفر) حتى Enter والتأكيد — والمرور بالأسهم لا يعلّمها"""
         st = self._sb_state
         cell = st["w"].get(key)
-        if cell is None or not st.get("editing"):
+        if cell is None or not st.get("editing") or cell["kind"] != "post":
             return
-        if getattr(event, "keysym", "") in ("Return", "KP_Enter", "Tab", "Escape"):
-            return
-        if cell["kind"] == "post":
-            st["pending"][key] = self.sb_cell_text(key)
-            self.sb_put(key, st["pending"][key], "pending")
+        text = self.sb_cell_text(key)
+        if text != st["shown"].get(key, ""):
+            if st["pending"].get(key) != text:
+                st["pending"][key] = text
+                self.sb_tint(key, "pending")
+        elif key in st["pending"]:
+            st["pending"].pop(key, None)
 
     def sb_on_focus_out(self, key):
         """مغادرة خانة: ما يُحفظ في القالب يُحفظ؛ وخانة المرحلة لا تُرحَّل بلا Enter وتأكيد (تبقى «لم تُرحَّل»)"""
@@ -23916,18 +24360,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not st or not st.get("editing") or not st.get("key"):
             return
         cell = st["w"].get(key)
-        if cell is None or cell["kind"] == "post":
+        if cell is None or cell["kind"] in ("post", "kind", "setno"):
             return
         self.sb_commit_cell(key, quiet=True)
 
+    def sb_flow_next(self, key):
+        flow = list(self.SB_FLOW)
+        i = flow.index(key) if key in flow else -1
+        return flow[i + 1] if 0 <= i < len(flow) - 1 else None
+
     def sb_on_enter(self, key):
+        """Enter: تُحفظ الخانة (والمرحلة تُرحَّل بالتأكيد) ثم التالية بترتيب العمل — وآخرها ← «توليد الطقم».
+        وفي العرض (قبل ✏️ تعديل) ينتقل فقط"""
         st = self._sb_state
-        if not st.get("editing") or not st.get("key"):
+        if key == "set_no":
+            self.sb_open_search(self.sb_cell_text("set_no"))       # خانة NO: فتح الرقم أو إنشاء قالبه
+            return "break"
+        if not st.get("key"):
+            return "break"
+        if not st.get("editing"):
+            nxt = self.sb_flow_next(key)
+            if nxt:
+                self.sb_focus(nxt)
             return "break"
         if self.sb_commit_cell(key):
-            flow = list(self.SB_FLOW)
-            i = flow.index(key) if key in flow else -1
-            nxt = flow[i + 1] if 0 <= i < len(flow) - 1 else None
+            nxt = self.sb_flow_next(key)
             if nxt:
                 self.after(30, lambda: self.sb_focus(nxt))
             else:
@@ -23945,6 +24402,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         kind = cell["kind"] if cell else ("kind" if key == "kind" else None)
         text = value if value is not None else self.sb_cell_text(key)
         parent = self
+        if value is None and key in st["auto"] and text == st["auto"][key]:
+            return True                  # القيمة المحسوبة المعروضة بخطٍّ خافت (لم تُكتب) — لا تُحفظ
         if kind == "post":
             field = self.SB_POST_CELLS[key]
             num = self.sb_num(text)
@@ -23960,6 +24419,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 elif key == "p1_before":
                     st["pending"].pop("p04", None)
                 self.sb_render()
+            elif field in ("asm_before", "asm_after") and not self.sb_assembler_target_group(set_key):
+                # الاسم أو الصف ناقص: الإدخال إلى خانته في رأس القالب
+                missing = "assembler" if not self.sb_cell_text("assembler") else (
+                    "asm_row" if not self.sb_cell_text("asm_row") else None)
+                if missing:
+                    self.after(30, lambda: self.sb_focus(missing))
             return bool(ok)
         if kind == "num" and text and self.sb_num(text) is None:
             if not quiet:
@@ -24011,7 +24476,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             rec = self.sb_load(key)
             self.sb_show(key, edit=rec.get("status") != self.SB_READY and not self.sb_is_sold(key))
             if st["editing"]:
-                self.after(40, lambda: self.sb_focus("p04" if self.sb_values(key)["p1_before"] is None else "customer"))
+                self.after(40, lambda: self.sb_focus(self.sb_first_empty()))     # حيث يُكمل الطقم
+            else:
+                self.after(40, lambda: st["canvas"].focus_set())
             return key
         if getattr(self, "view_only", False):
             messagebox.showinfo("غير موجود", f"رقم التشغيل ({key}) ليس في قالب رقم التشغيل.")
@@ -24039,12 +24506,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         typed = self.scanned_set_number(st["search"].get())
         if typed and typed != st.get("key") and self.sb_load(typed) is None:
             return self.sb_open_search(typed)
+        suggestion = self.sb_next_set_number()
         st["search"].delete(0, "end")
-        st["search"].insert(0, self.sb_next_set_number())
-        target = getattr(st["search"], "_entry", st["search"])
-        target.focus_set()
-        target.select_range(0, "end")
-        self.toast("اكتب رقم التشغيل (أو اترك المقترح) ثم Enter", "info")
+        st["search"].insert(0, suggestion)
+        self.sb_put("set_no", suggestion, "pending")              # المقترح في خانة NO بالقالب نفسه
+        self.sb_focus("set_no")
+        self.toast("اكتب رقم التشغيل في خانة NO (أو اترك المقترح) ثم Enter", "info")
         return None
 
     def sb_step(self, step):

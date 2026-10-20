@@ -412,6 +412,89 @@ assert "يختلف عن الوزن الإجمالي" in render and "سالب" in
 print("✔ أول فتح يعرض آخر طقم، والسهمان من أول طقم لآخرها، والبحث (أو الباركود) يفتح الطقم أو ينشئه بعد التأكيد")
 print("✔ المقترح: «قبل» التركيب = «بعد» البوليش و«قبل» بوليش 2 = الوزن الإجمالي (بحافة تنبيه حتى يُؤكَّد)")
 
+# ═══ ١٥) 1.80: الشاشة هي القالب الورقي نفسه — هندسة سند رقم التشغيل، والإدخال في خاناته ═══
+pns = {}
+exec("class Paper:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
+    "VOUCHER_MARGIN_MM", "set_voucher_layout", "SB_CELL_KINDS", "SB_PIECE_ROWS", "SB_PIECE_COLS",
+    "sb_paper_spec", "sb_neighbor")), pns)
+paper = pns["Paper"]()
+spec = paper.sb_paper_spec()
+L = paper.set_voucher_layout()
+cells = [el for el in spec if el[0] == "cell"]
+keys = [el[1] for el in cells]
+assert len(keys) == len(set(keys)), "كل خانة إدخال مرة واحدة على الورقة"
+pieces = {k for k in keys if k.startswith("piece:")}
+assert set(keys) - pieces == set(paper.SB_CELL_KINDS) | {"set_no"}, set(keys) ^ (set(paper.SB_CELL_KINDS) | {"set_no"})
+assert len(pieces) == a.SB_PIECE_ROWS * len(a.SB_PIECE_COLS) == 90
+calcs = {el[1] for el in spec if el[0] == "calc"}
+assert calcs == {"p1_khayas", "asm_khayas", "weight_after", "total", "p2_khayas", "final", "minus_gems", "minus_stones",
+                 "minus_diamond", "net", "net2", "gems2", "stones_disc", "bound", "ptot_gems", "ptot_stones", "pct2"}, calcs
+titles = {el[3] for el in spec if el[0] == "text"}
+assert {"مصنع جاديت", "NO:", "التصنيع", "البوليش", "التركيب", "بوليش 2", "الوزن النهائي", "الاجمالي", "الأجمالي",
+        "اسم العميل:", "رقم الموديل:", ":NAME", ":DATE", "اسم المركب:", "النوع:", "الوزن بعد", "السلسال",
+        "الوزن الأجمالي:", "ناقص فصوص", "الوزن الصافي", "الوزن المقيد", "توقيع المدير", "توقيع المحاسب",
+        "توقيع مدير الانتاج"} <= titles
+print(f"✔ الورقة: كل خانات القالب ({len(keys) - 90} خانة + جدول القطع ٩٠) مرة واحدة، و{len(calcs)} خانة محسوبة، وعناوين القالب")
+
+rects = {el[1]: el[2:6] for el in cells}
+lx0, lx1 = L["col_left"]
+rx0, rx1 = L["col_right"]
+for k, (x0, t0, x1, t1) in rects.items():
+    assert L["left"] - 0.01 <= x0 < x1 <= L["right"] + 0.01 and L["head"][0] <= t0 < t1 <= L["body_bottom"] + 0.01, k
+    if k.startswith("piece:"):
+        assert rx0 - 0.01 <= x0 and x1 <= rx1 + 0.01, k
+    elif k in ("p08", "p04", "mfg_khayas", "p1_before", "p1_after", "asm_before", "asm_after", "gems", "stones",
+               "stones_pct", "diamond", "chain", "p2_before", "p2_after"):
+        assert lx0 - 0.01 <= x0 and x1 <= lx1 + 0.01, k
+    else:
+        assert t1 <= L["info"][1][1] + 0.01, k                       # الرأس وسطرا البيانات
+items = list(rects.items())
+for i, (k1, r1) in enumerate(items):
+    for k2, r2 in items[i + 1:]:
+        assert not (r1[0] < r2[2] - 0.01 and r2[0] < r1[2] - 0.01 and r1[1] < r2[3] - 0.01 and r2[1] < r1[3] - 0.01), (k1, k2)
+print("✔ وهندسة سند رقم التشغيل نفسها: المراحل في العمود الأيسر، والقطع في الأيمن، والبيانات في الرأس — بلا تداخل")
+
+paper._sb_state = {"rects": rects}
+nb = paper.sb_neighbor
+assert nb("p1_before", "left") == "p1_after" and nb("p1_after", "right") == "p1_before"
+assert nb("p1_after", "down") == "asm_after" and nb("asm_after", "up") == "p1_after"
+assert nb("customer", "down") == "assembler" and nb("p08", "up") == "kind" and nb("date", "up") == "set_no"
+assert nb("customer", "up") is None, "لا خانة فوق «اسم العميل» في عموده (NO فوق التاريخ وNAME)"
+assert nb("piece:0:0", "down") == "piece:1:0" and nb("piece:0:0", "left") == "piece:0:1"
+assert nb("piece:17:0", "down") is None and nb("stones", "right") == "stones_pct"
+print("✔ الأسهم على الورقة: ← → في السطر نفسه، و↑ ↓ في العمود نفسه (لا قفز للعمود الآخر)، وجدول القطع خانةً خانة")
+
+flow = list(a.SB_FLOW)
+assert flow[:5] == ["customer", "model", "label", "date", "kind"] and set(flow) <= set(paper.SB_CELL_KINDS)
+arrow = member("sb_arrow")
+assert 'cell["kind"] != "post" or key in st["pending"]' in arrow, "المقترح (بالأصفر) لا يُرحَّل بالمرور عليه"
+assert "self.sb_commit_cell(key)" in arrow and "self.sb_neighbor(key, direction)" in arrow
+enter = member("sb_on_enter")
+assert 'if key == "set_no":' in enter and 'self.sb_open_search(self.sb_cell_text("set_no"))' in enter
+keyh = member("sb_on_key")
+assert 'text != st["shown"].get(key, "")' in keyh, "الأسهم وEnter لا تعلّم الخانة «لم تُرحَّل» — الكتابة فقط"
+commit = member("sb_commit_cell")
+assert 'key in st["auto"] and text == st["auto"][key]' in commit, "المحسوب المعروض (خياس التصنيع) لا يُحفظ كأنه مكتوب"
+esc = member("sb_cancel_cell")
+assert 'st["pending"].pop(key, None)' in esc and "return None" in esc
+focus = member("sb_focus")
+assert 'self.sb_ensure_visible(key)' in focus and 'update_idletasks()' in focus, "تُمرَّر الورقة للخانة قبل التركيز"
+print("✔ Enter بترتيب العمل (البيانات ← النوع ← المراحل)، وفي NO يفتح الرقم؛ والأسهم تحفظ ما كُتب ثم تنتقل؛ وEsc يلغيه")
+
+shown = member("sb_on_screen_shown")
+assert 'self.sb_focus("set_no")' in shown and 'self.sb_status(key) == "قيد التشغيل"' in shown
+assert "self.sb_first_empty()" in shown and 'st.pop("explicit", False)' in shown
+assert 'SCREEN_ON_SHOW = {"قالب رقم التشغيل": "sb_on_screen_shown"}' in src
+nav = member("navigate_to_screen")
+assert nav.index("self.tabview.show(name)") < nav.index("self.SCREEN_ON_SHOW.get(name)")
+assert "self.after_idle(getattr(self, hook))" in nav
+build = member("build_set_builder_tab")
+assert "tk.Canvas(holder" in build and 'canvas.bind("<Configure>", lambda e: self.sb_layout_paper()' in build
+lay = member("sb_layout_paper")
+assert "self.set_voucher_layout()" in lay and "self.sb_paper_spec()" in lay and "canvas.create_window" not in lay
+assert "(width - 40) / PW" in lay, "الورقة بعرض المساحة (تُمرَّر عمودياً)"
+print("✔ عند فتح الشاشة: القالب ظاهر والإدخال في خاناته — آخر طقم قيد التشغيل مفتوحاً في أول خانة فارغة، وبلا طقوم في NO")
+
 # بوليش 1 في قسمه: أرقام القالب صفٌّ واحد بكشفٍ لكل رقم؛ وتعديله/حذفه من القالب
 ops = member("collect_stage_ops_rows")
 assert 'g.setdefault("sb_sets", set()).add(' in ops
