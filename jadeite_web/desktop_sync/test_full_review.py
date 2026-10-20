@@ -110,6 +110,8 @@ class Rec:
     POLISH2_SALE_BAYAN = "خياس بوليش 2"
     SALE_KINDS = ("ذهب", "الماس")
 
+    def sb_polish2_khayas(self, k): return None
+
     def __init__(self):
         self.invoices, self.invoice_counter, self.saved = {}, 0, []
 

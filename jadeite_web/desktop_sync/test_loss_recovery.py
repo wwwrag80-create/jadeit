@@ -58,7 +58,7 @@ METHODS = [
     "losses_period_options", "selected_losses_range", "set_losses_range", "losses_show_all",
     "reset_losses_period", "losses_close_period", "losses_statement_range", "losses_period_breakdown",
     "combo_range", "set_combo_range", "periods_in_range", "range_covers_all", "range_scope_label",
-    "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket",
+    "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket", "stage_types",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
     "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row",
@@ -86,6 +86,9 @@ ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_DATE_DIG
          "CAST_ANALYSIS_YELLOW", "CAST_ANALYSIS_OPS",
          "LASER_NAME", "POLISH_OPERATIONS", "POLISH_MODE_FIELDS", "ACCOUNT_LABELS", "UNDO_LIMIT", "INVOICE_COLUMNS", "LOSSES_ALL",
          "POLISH2_OLD_ACCOUNTS", "POLISH2_OLD_BAYAN", "POLISH2_SALE_BAYAN", "SALE_NOTE_SEP"]
+ATTRS += ["SB_NAME"]
+ATTRS += ["SB_P2_IN"]
+ATTRS += ["SB_P2_OUT"]
 
 EXTRA = '''
 def check_edit_permission(self): return True

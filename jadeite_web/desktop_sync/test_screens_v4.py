@@ -152,7 +152,7 @@ print("✔ ونوع القبض (زركون/أحجار…) يبقى في أول �
 
 S = build(["collect_stage_ops_rows", "is_row_recovery", "is_recovery_op", "stage_row_extra", "period_invoices", "invoices_by_period",
            "inv_period", "row_sort_key"], attrs=("INBOUND_TYPES", "CAST_RETURN_NAME", "TREE_RETURN_NAME", "LASER_NAME",
-                                                  "CAST_ANALYSIS", "CAST_ANALYSIS_OPS"))
+                                                  "CAST_ANALYSIS", "CAST_ANALYSIS_OPS", "SB_NAME"))
 st = S()
 st.current_display_month, st.invoice_counter = M9, 0
 st.invoices = {1: inv(1, "كاستنج", "صرف كاستنج", 10.0, M9, "شجرة ذهب أبيض", "5"),

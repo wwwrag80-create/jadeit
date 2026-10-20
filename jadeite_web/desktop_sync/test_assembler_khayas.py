@@ -45,6 +45,7 @@ for node in tree.body:
 consts["SALE_READ_STATUSES"] = ("ACTIVE", "SETTLED_INOUT", consts["MEMO_STATUS"])
 errors = []
 consts["log_cloud_error"] = lambda msg, e: errors.append((msg, e))
+chunks.append("def autofill_sale_from_build(self, key): return \"\"   # قالب رقم التشغيل له اختباره")
 exec("class S:\n" + "\n".join(textwrap.indent(c, "    ") for c in chunks), consts)
 app = consts["S"]()
 app.categories = {"المركبين": ["سالم", "خالد"], "المصنعين": ["أحمد"]}

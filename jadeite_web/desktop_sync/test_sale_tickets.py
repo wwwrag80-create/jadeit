@@ -132,7 +132,7 @@ vals = ns["Base"].set_voucher_values(None, {"gold": 35.25, "gems": 2.5, "stones"
 assert vals == [("الوزن النهائي", 41.15), ("ناقص فصوص", 2.5), ("ناقص احجار", 3.0), ("ناقص الماس", 0.4),
                 ("الوزن الصافي", 35.25)], vals
 voucher = body("draw_set_voucher_page")
-assert 'for label, value in self.set_voucher_values(data):' in voucher
+assert 'final_values = sec.get("final_values") or self.set_voucher_values(data)' in voucher
 assert voucher.count('f"{value:.2f}"') == 1, "جدول «الوزن النهائي» من set_voucher_values وحده"
 assert "sec = self.set_voucher_sections(data)" in voucher, "بقية القيم من set_voucher_sections (التتبع + سطر البيع)"
 assert 'str(data.get("set_number") or "")' in voucher, "رقم التشغيل في خانة NO"

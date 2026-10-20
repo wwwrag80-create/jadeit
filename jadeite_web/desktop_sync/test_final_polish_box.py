@@ -32,6 +32,7 @@ ns = dict(marks)
 ns["SALE_READ_STATUSES"] = ("ACTIVE", "SETTLED_INOUT", "MEMO")
 ns["log_cloud_error"] = lambda *a, **k: None
 exec("class S:\n"
+     '    SB_NAME, SB_P2_IN, SB_P2_OUT = "قالب رقم التشغيل", "قبل بوليش 2", "بعد بوليش 2"\n'
      '    BOX_DISPLAY_OVERRIDES = {"خياس الطقوم": "بوليش 2"}\n'
      '    ACCOUNT_LABELS = {"التلميع": "التلميع/البف", "التلميع/البف": "البوليش"}\n'
      '    SALE_NOTE_SEP = " — "\n'

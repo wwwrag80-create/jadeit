@@ -82,7 +82,7 @@ C = build(["invoices_by_name", "invoices_by_period", "period_invoices", "collect
            "is_recovery_op", "row_sort_key", "inv_period", "inv_in_period",
            "get_box_khayas_cumulative", "get_stage_config", "get_box_account_name", "get_display_label"],
           attrs=("INBOUND_TYPES", "BOX_DISPLAY_OVERRIDES", "CAST_RETURN_NAME", "TREE_RETURN_NAME", "LASER_NAME",
-                 "CAST_ANALYSIS", "CAST_ANALYSIS_OPS"))
+                 "CAST_ANALYSIS", "CAST_ANALYSIS_OPS", "SB_NAME"))
 app = C()
 app.categories = {"أقسام_خياس_إضافية": []}
 app.current_display_month = M

@@ -55,6 +55,9 @@ exec("class S:\n"
          "get_workers_khayas", "treasury_period_components", "get_treasury_ledger",
          "get_opening_treasury_balance", "period_closing_datetime"))
      + "\n    def get_smart_default_date(self): return '2026-10-05'\n"
+     "    def stage_types(self, c):\n"
+     "        m, q, _r = self.get_stage_config(c)\n"
+     "        return ({m} if m else set()), ({q} if q else set())\n"
      "    def get_all_stage_categories(self): return ['الكاستنج','التلميع/البف']\n"
      "    def get_stage_config(self, c):\n"
      "        return {'الكاستنج': ('صرف كاستنج','قبض كاستنج',''),\n"

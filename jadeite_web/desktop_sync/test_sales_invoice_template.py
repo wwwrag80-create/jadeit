@@ -40,6 +40,7 @@ MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LE
 ns = dict(marks, REPORTLAB_AVAILABLE=False, SALE_READ_STATUSES=("ACTIVE", "SETTLED_INOUT", "MEMO"))
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 App = ns["App"]
+App.sb_polish2_khayas = lambda self, k: None      # لا قوالب في هذا الاختبار
 
 # ═══ ١) «الخياس» لرقم التشغيل = بوليش 1 + بوليش 2 + المركب ═══
 D, NAME = "2026-10-06 10:30:00", "عميل الفاتورة"
@@ -138,6 +139,7 @@ if HAVE_RL:
     g["_register_arabic_font"]()
     g.update(marks)
     exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), g)
+    g["App"].sb_polish2_khayas = lambda self, k: None
     ar = g["ar"]
 
     class Rec(pdf_canvas.Canvas):

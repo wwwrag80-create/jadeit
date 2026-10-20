@@ -28,7 +28,7 @@ for node in ast.walk(cls):
             if isinstance(t, ast.Name) and t.id == "SIDEBAR_PRIMARY":
                 prim = [x[0] for x in ast.literal_eval(node.value)]
 expected = ["المبيعات", "مراحل التصنيع", "صناديق الخياس", "الوارد",
-            "شاشة الخسائر", "صناديق المصنع"]
+            "شاشة الخسائر", "صناديق المصنع", "قالب رقم التشغيل"]
 assert prim == expected, prim
 print("✔ ترتيب الشاشات الأساسية مطابق للمطلوب:")
 for i, n in enumerate(prim, 1):

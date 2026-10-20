@@ -45,8 +45,11 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "assembler_hint_values", "polish_before_confirm_text",
            "autofill_polish_khayas", "get_setting", "set_setting", "push_undo", "_close_undo_step",
            "apply_undo_step", "undo_step_label", "invoice_from_row", "is_recovery_op", "get_display_label",
-           "analysis_voucher_fields", "set_track_row_values", "set_track_row_tags")
-ns = {"sqlite3": sqlite3, "log_cloud_error": lambda *a: None, "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"),
+           "analysis_voucher_fields", "set_track_row_values", "set_track_row_tags",
+           # قالب رقم التشغيل (1.79): قبل/بعد البوليش من حركاته إن بُني الطقم فيه
+           "SB_PREFIX", "SB_NAME", "SB_P2_IN", "SB_P2_OUT", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS",
+           "sb_moves_index", "sb_new_record", "sb_load")
+ns = {"sqlite3": sqlite3, "json": __import__("json"), "datetime": __import__("datetime"), "log_cloud_error": lambda *a: None, "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"),
       "IS_ADMIN_BUILD": False,
       "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH")}
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)

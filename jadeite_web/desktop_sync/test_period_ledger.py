@@ -62,6 +62,9 @@ body += textwrap.dedent('''
     def warm_screens(self): pass
     def save_invoice_to_db(self, i, inv): return True
     def get_smart_default_date(self): return "2026-09-15"
+    def stage_types(self, c):
+        m, q, _r = self.get_stage_config(c)
+        return ({m} if m else set()), ({q} if q else set())
 ''')
 
 ns = {"calendar": calendar, "datetime": datetime}

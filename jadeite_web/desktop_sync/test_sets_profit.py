@@ -28,6 +28,7 @@ exec("class S:\n    RECOVERY_KEYS = ((\'تلميع\',\'خياس التلميع �
     def __init__(self): self._s = {}
     def get_setting(self, k, d=None): return self._s.get(k, d)
     def set_setting(self, k, v): self._s[k] = str(v)
+    def sb_polish2_khayas(self, k): return None
 """, ns)
 app = ns["S"]()
 

@@ -235,6 +235,8 @@ I = build(["inv_period", "inv_in_period", "mark_backup_dirty", "invoices_by_peri
 class A(I):
     current_display_month = "2026-09"
 
+    def sb_polish2_khayas(self, k): return None     # لا قوالب في هذا الاختبار
+
     def __init__(self, invoices):
         self.invoices = invoices
         self.invoice_counter = len(invoices)

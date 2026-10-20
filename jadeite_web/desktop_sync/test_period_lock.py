@@ -34,7 +34,8 @@ MEMBERS = ("LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "set_peri
            "_undo_note_row", "_undo_note_name", "undo_step_label", "can_undo", "apply_undo_step",
            "undo_step_periods", "undo_last_action", "invoice_from_row", "inv_period", "inv_in_period",
            "get_setting", "set_setting", "view_only_blocked", "delete_worker_from_db", "check_delete_permission",
-           "_stage_type_map", "movement_section", "period_review_data", "MOVABLE_EXCLUDED",
+           "_stage_type_map", "stage_types", "SB_P2_IN", "SB_P2_OUT", "movement_section", "period_review_data",
+           "MOVABLE_EXCLUDED",
            "move_movements_to_date_period", "JOURNAL_TYPES", "SALE_TYPES", "section_ops_khayas_text",
            "CAST_OPERATIONS", "POLISH_OPERATIONS")
 
