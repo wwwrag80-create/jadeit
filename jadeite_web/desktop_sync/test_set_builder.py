@@ -74,7 +74,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "SB_POSTED", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS", "sb_new_record", "sb_load", "sb_save", "sb_all",
            "sb_moves_index", "sb_assembler_groups", "sb_assembler_target_group", "sb_field_moves", "sb_num",
            "sb_values", "sb_polish2_khayas", "sb_polish1_posted", "sb_is_sold", "sb_status",
-           "sb_check_assembler", "sb_post", "sb_set_field", "sb_set_pieces", "sb_pieces_totals", "sb_produce",
+           "sb_check_assembler", "sb_ensure_assembler", "check_name_exists", "sb_post", "sb_set_field", "sb_set_pieces", "sb_pieces_totals", "sb_produce",
            "sb_unproduce", "sb_delete", "sb_next_set_number", "sb_sale_fill", "sb_stage_rows", "sb_ids",
            "sb_voucher_sections", "SB_FLOW", "SB_POST_CELLS")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
@@ -96,6 +96,11 @@ class App(ns["Base"]):
     def view_only_blocked(self, silent=False): self.blocked += 1
     def recalculate_all(self): self.recalcs += 1
     def get_smart_default_date(self): return "2026-10-12"
+    def get_display_label(self, cat): return {"المصنعين": "المصنعون"}.get(cat, cat)
+    def toast(self, text, kind="info"): self.toasts = getattr(self, "toasts", []) + [text]
+
+    def save_name_to_db(self, name, category):
+        self.saved_names = getattr(self, "saved_names", []) + [(name, category)]
 
     def push_undo(self, label, auto=False):
         step = {"label": label}
@@ -195,9 +200,19 @@ assert a.sb_post(S, "p1_before", 51.0) is False and mb.last()[0] == "warn" and "
 a.delete_invoice_from_db(extra)
 print("✔ خانة لها أكثر من حركة لا تُعدَّل من القالب — تنبيه بمكانها")
 
-# ═══ ٣) التركيب: صرف/قبض ذهب للمركّب في صفّه — الاسم من قائمة المركبين ورقم الصف إلزامي ═══
+# ═══ ٣) التركيب: صرف/قبض ذهب للمركّب في صفّه — الاسم يُكتب (وحسابه يُفتح إن لم يوجد) ورقم الصف إلزامي ═══
 assert a.sb_post(S, "asm_before", 49.6) is False and mb.last()[1] == "اسم المركّب"
-assert a.sb_post(S, "asm_before", 49.6, assembler="زيد", row="3") is False and mb.last()[1] == "اسم المركّب"
+# 1.81: اسم مركّبٍ جديد ← يُفتح له حساب في المركبين مباشرة (فيظهر في قسم المركبين وصناديق خياسهم)
+assert a.sb_ensure_assembler("‏زيد") is True and "زيد" in a.categories["المركبين"]
+assert a.saved_names == [("زيد", "المركبين")] and "زيد" in a.toasts[-1]
+assert a.sb_ensure_assembler("زيد") is True and len(a.saved_names) == 1, "الحساب الموجود لا يُفتح ثانية"
+assert a.sb_ensure_assembler("أحمد") is False and mb.last()[1] == "الاسم مستخدم" and "المصنعون" in mb.last()[2], \
+    "اسم حسابٍ آخر (مصنّع) لا يصير مركّباً"
+a.view_only = True
+assert a.sb_ensure_assembler("جديد") is False and "جديد" not in a.categories["المركبين"]
+a.view_only = False
+a.categories["المركبين"].remove("زيد")
+print("✔ اسم مركّب جديد في القالب: يُفتح له حساب في المركبين مباشرة؛ والموجود لا يتكرر؛ واسم حسابٍ آخر يُرفض")
 assert a.sb_post(S, "asm_before", 49.6, assembler="سالم", row="") is False and mb.last()[1] == "رقم الصف مطلوب"
 a.add("خالد", "صرف ذهب", 30.0, row="5", set_no="8888")
 assert a.sb_post(S, "asm_before", 49.6, assembler="خالد", row="5") is False and mb.last()[1] == "الصف مستخدم"
@@ -419,7 +434,14 @@ exec("class Paper:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
     "sb_paper_spec", "sb_neighbor")), pns)
 paper = pns["Paper"]()
 spec = paper.sb_paper_spec()
-L = paper.set_voucher_layout()
+L = paper.set_voucher_layout(compact=True)
+P = paper.set_voucher_layout()
+MM = P["MM"]
+assert (P["head"], round(P["body_bottom"], 3), round(P["sig_line"], 3)) == (
+    (P["M"], P["M"] + 24 * MM), round(P["PH"] - P["M"] - 20 * MM, 3), round(P["PH"] - P["M"] - 9 * MM, 3)), \
+    "السند المطبوع بهندسته نفسها"
+assert L["r"] > P["r"] * 1.15 and L["p"] > P["p"] * 1.15 and L["body_bottom"] < L["sig_line"] < L["PH"]
+print(f"✔ الشاشة: الأقسام نفسها بمسافات بيضاء أقل — الصف {L['r'] / MM:.1f} مم (المطبوع {P['r'] / MM:.1f} مم)")
 cells = [el for el in spec if el[0] == "cell"]
 keys = [el[1] for el in cells]
 assert len(keys) == len(set(keys)), "كل خانة إدخال مرة واحدة على الورقة"
@@ -491,8 +513,25 @@ assert "self.after_idle(getattr(self, hook))" in nav
 build = member("build_set_builder_tab")
 assert "tk.Canvas(holder" in build and 'canvas.bind("<Configure>", lambda e: self.sb_layout_paper()' in build
 lay = member("sb_layout_paper")
-assert "self.set_voucher_layout()" in lay and "self.sb_paper_spec()" in lay and "canvas.create_window" not in lay
-assert "(width - 40) / PW" in lay, "الورقة بعرض المساحة (تُمرَّر عمودياً)"
+assert "self.set_voucher_layout(compact=True)" in lay and "self.sb_paper_spec()" in lay
+assert "canvas.create_window" not in lay
+assert "sy = max(0.5, (height - 2 * pad - 4) / PH)" in lay, "القالب كاملاً بارتفاع المساحة — بلا تمرير"
+assert "sy * 1.9" in lay and "box_h * sy * 0.66" in lay, "العرض حتى ١٫٩ من مقياس الارتفاع، والخط بقدر الصف"
+assert 'scroll.pack_forget()' in lay, "شريط التمرير لا يظهر إلا إن لم تتسع الورقة"
+assert "self.set_voucher_layout(compact=True)" in member("sb_paper_spec")
+leave = member("sb_on_focus_out")
+assert 'self.after(60, lambda: self.sb_post_on_leave(key))' in leave and 'not st.get("posting")' in leave
+on_leave = member("sb_post_on_leave")
+assert "focus.winfo_toplevel() is not self" in on_leave and "self.sb_commit_cell(key)" in on_leave
+commit = member("sb_commit_cell")
+assert 'st["posting"] = True' in commit and "self.sb_ensure_assembler(text, parent=parent)" in commit
+assert 'SB_PAIR_BEFORE = {"p1_after": "p1_before", "asm_after": "asm_before", "p2_after": "p2_before"}' in src
+assert "before_cell = self.SB_PAIR_BEFORE.get(key)" in commit and "self.sb_commit_cell(before_cell)" in commit
+assert commit.index("self.sb_commit_cell(before_cell)") < commit.index("ok = self.sb_post(set_key, field, num"), \
+    "«بعد» يُرحّل «قبل» المقترح أو المكتوب أولاً — فلا يظهر «بعد» وحده في الصندوق أو كشف المركّب"
+produce = member("sb_produce_current")
+assert 'st["pending"]' in produce and "لم تُرحَّل بعد" in produce
+print("✔ مغادرة خانة مرحلة كُتب فيها (بالنقر أو غيره) تُرحّلها بالتأكيد — ولا توليد وفيه خانة لم تُرحَّل")
 print("✔ عند فتح الشاشة: القالب ظاهر والإدخال في خاناته — آخر طقم قيد التشغيل مفتوحاً في أول خانة فارغة، وبلا طقوم في NO")
 
 # بوليش 1 في قسمه: أرقام القالب صفٌّ واحد بكشفٍ لكل رقم؛ وتعديله/حذفه من القالب

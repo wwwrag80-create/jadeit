@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.80.0"
+APP_VERSION = "1.81.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -23081,6 +23081,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return "جاهز للبيع"
         return "قيد التشغيل"
 
+    def sb_ensure_assembler(self, name, parent=None):
+        """اسم المركّب في القالب: إن لم يكن له حساب يُفتح له حسابٌ في المركبين مباشرة (فيظهر في مراحل التصنيع
+        — قسم المركبين — وفي صناديق خياس المركبين). الاسم المسجّل لحسابٍ آخر (مصنّع، مورد…) يُرفض. يرجع True إن
+        صار للمركّب حساب"""
+        name = self.clean_name(name or "")
+        if not name:
+            return False
+        if name in self.categories.get("المركبين", []):
+            return True
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return False
+        if self.check_name_exists(name):
+            owner = next((c for c, names in self.categories.items() if name in names), "")
+            messagebox.showwarning("الاسم مستخدم", f"الاسم ({name}) مسجّل لحسابٍ آخر ({self.get_display_label(owner)}).\n"
+                                   "اكتب اسم المركّب كما في قائمة المركبين، أو اسماً جديداً.", parent=parent)
+            return False
+        self.categories.setdefault("المركبين", []).append(name)
+        self.save_name_to_db(name, "المركبين")
+        try:
+            self.toast(f"✅ فُتح حساب للمركّب ({name}) في المركبين", "success")
+        except Exception:
+            pass
+        return True
+
     def sb_check_assembler(self, set_number, name, row, parent=None):
         """التحقق قبل تسجيل صرف أو قبض جديد للمركّب من القالب — قواعد شاشة المركبين نفسها في الفترة المعروضة:
         المركّب من قائمة المركبين، ورقم الصف إلزامي، ورقم التشغيل لصفٍّ واحد ولمركّب واحد، والصف لا يحمل
@@ -23088,8 +23113,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         key = self.normalize_set_number(set_number)
         name = self.clean_name(name or "")
         row = str(row or "").strip()
-        if not name or name not in self.categories.get("المركبين", []):
-            messagebox.showwarning("اسم المركّب", "اختر اسم المركّب من قائمة المركبين أولاً.", parent=parent)
+        if not name:
+            messagebox.showwarning("اسم المركّب", "اكتب اسم المركّب في رأس القالب أولاً.", parent=parent)
+            return None
+        if not self.sb_ensure_assembler(name, parent=parent):
             return None
         if not row:
             messagebox.showwarning("رقم الصف مطلوب", f"اكتب رقم الصف في جدول المركّب ({name}) أولاً.", parent=parent)
@@ -23393,6 +23420,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     SB_POST_CELLS = {"p04": "p1_before", "p1_before": "p1_before", "p1_after": "p1_after",
                      "asm_before": "asm_before", "asm_after": "asm_after",
                      "p2_before": "p2_before", "p2_after": "p2_after"}
+    # «بعد» ← خانة «قبل» في مرحلته (تُرحَّل قبله إن كانت مكتوبة أو مقترحة ولم تُرحَّل)
+    SB_PAIR_BEFORE = {"p1_after": "p1_before", "asm_after": "asm_before", "p2_after": "p2_before"}
     # نوع كل خانة إدخال: post مُرحَّلة، num رقم يُحفظ في القالب، text نص، name اسم المركّب، kind النوع (ذهب/الماس)
     SB_CELL_KINDS = {"customer": "text", "model": "text", "label": "text", "date": "text", "kind": "kind",
                      "assembler": "name", "asm_row": "text", "p08": "num", "p04": "post", "mfg_khayas": "num",
@@ -23414,12 +23443,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """القالب الورقي نفسه — هندسة سند رقم التشغيل (set_voucher_layout) وأقسامه بترتيبها — عناصرَ للرسم على
         الشاشة، بالنقاط وy من أعلى الصفحة:
           ("box", x0, t0, x1, t1, اللون)              خانة (اللون: head / label / calc / None أبيض)
-          ("text", x, t, النص، الحجم، العرض الأقصى)    عنوانٌ في وسط موضعه
+          ("text", x, t, النص، الحجم، العرض الأقصى، الارتفاع)  عنوانٌ في وسط موضعه
           ("line", x0, t, x1, السُّمك)                 فاصل
           ("logo", x1, t0, t1)                        شعار المصنع يميناً في الرأس
           ("cell", المفتاح، x0, t0, x1, t1, الحجم)    خانة إدخال
           ("calc", المفتاح، x0, t0, x1, t1, الحجم)    خانة محسوبة (تُكتب فيها القيمة)"""
-        L = self.set_voucher_layout()
+        L = self.set_voucher_layout(compact=True)           # الأقسام نفسها بمسافات أقل: يتسع كله في الشاشة
         MM, r, v, p, g = L["MM"], L["r"], L["v"], L["p"], L["g"]
         left, right = L["left"], L["right"]
         out = []
@@ -23429,7 +23458,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         def label(x0, t0, x1, t1, text, fill="label", size=11.5):
             box(x0, t0, x1, t1, fill)
-            out.append(("text", (x0 + x1) / 2, (t0 + t1) / 2, text, size, (x1 - x0) - 2 * MM))
+            out.append(("text", (x0 + x1) / 2, (t0 + t1) / 2, text, size, (x1 - x0) - 2 * MM, t1 - t0))
 
         def cell(key, x0, t0, x1, t1, size=12.5):
             box(x0, t0, x1, t1)
@@ -23446,12 +23475,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # الرأس: «مصنع جاديت» في الوسط، والشعار يميناً، ورقم التشغيل (NO) يساراً
         t0, t1 = L["head"]
+        hh = t1 - t0
         box(left, t0, right, t1, "head")
         centre = (left + right) / 2
-        out.append(("text", centre, (t0 + t1) / 2, "مصنع جاديت", 24, 2 * (centre - left - 69 * MM)))  # بين NO والشعار
-        out.append(("logo", right - 3 * MM, t0 + 2 * MM, t1 - 2 * MM))
-        out.append(("text", left + 9 * MM, (t0 + t1) / 2, "NO:", 15, 14 * MM))
-        cell("set_no", left + 17 * MM, t0 + 6 * MM, left + 66 * MM, t1 - 6 * MM, 17)   # يُكتب فيه الرقم ثم Enter
+        out.append(("text", centre, (t0 + t1) / 2, "مصنع جاديت", 24, 2 * (centre - left - 69 * MM), hh))  # بين NO والشعار
+        out.append(("logo", right - 3 * MM, t0 + 0.1 * hh, t1 - 0.1 * hh))
+        out.append(("text", left + 9 * MM, (t0 + t1) / 2, "NO:", 15, 14 * MM, hh * 0.6))
+        cell("set_no", left + 17 * MM, t0 + 0.18 * hh, left + 66 * MM, t1 - 0.18 * hh, 17)   # يُكتب فيه الرقم ثم Enter
         # بيانات الطقم: سطران بعرض الصفحة
         (a0, a1), (b0, b1) = L["info"]
         quarter = (right - left) / 4
@@ -23493,7 +23523,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 # نسبة خصم الأحجار في طرف خانتها — كالقالب الورقي
                 cell("stones", lx0, t, mid - 17 * MM, t + r)
                 box(mid - 17 * MM, t, mid, t + r)
-                out.append(("text", mid - 14.5 * MM, t + r / 2, "%", 10, 4 * MM))
+                out.append(("text", mid - 14.5 * MM, t + r / 2, "%", 10, 4 * MM, r))
                 out.append(("cell", "stones_pct", mid - 12 * MM, t, mid, t + r, 10.5))
             else:
                 cell(key, lx0, t, mid, t + r)
@@ -23553,7 +23583,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for i, text in enumerate(("توقيع المدير", "توقيع المحاسب", "توقيع مدير الانتاج")):
             cx = right - (i + 0.5) * third_w
             out.append(("line", cx - 28 * MM, L["sig_line"], cx + 28 * MM, 0.9))
-            out.append(("text", cx, L["sig_line"] + 5 * MM, text, 11.5, 56 * MM))
+            out.append(("text", cx, L["sig_text"], text, 11.5, 56 * MM, 4.5 * MM))
         return out
 
     def build_set_builder_tab(self):
@@ -23567,61 +23597,57 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self._sb_state = st
         view_only = getattr(self, "view_only", False)
 
-        # ── الشريط: البحث وطقم جديد، والسهمان بين الطقوم، وحال الطقم ──
-        bar = ctk.CTkFrame(tab, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
-                           border_width=1, border_color=(UI["line"], "#2A313B"))
-        bar.pack(fill="x", padx=14, pady=(2, 4))
-        ctk.CTkLabel(bar, text="🧩 قالب رقم التشغيل", font=ctk.CTkFont(family=UI_FONT, size=17, weight="bold"),
-                     text_color=UI_TITLE).pack(side="right", padx=(6, 12), pady=8)
-        ctk.CTkLabel(bar, text="رقم التشغيل:", font=(UI_FONT, 14, "bold"),
-                     text_color=(UI["primary"], "#9CC0F5")).pack(side="right", padx=(6, 3))
-        search = ctk.CTkEntry(bar, font=(UI_FONT, 15, "bold"), justify="center", width=140, height=34,
-                              placeholder_text="بحث أو باركود")
-        search.pack(side="right", padx=3)
-        st["search"] = search
-        ctk.CTkButton(bar, text="🔎 فتح", font=(UI_FONT, 13, "bold"), width=80, height=34,
-                      command=lambda: self.sb_open_search(), **BUTTON_STYLES["primary"]).pack(side="right", padx=3)
-        btn_new = ctk.CTkButton(bar, text="➕ توليد طقم جديد", font=(UI_FONT, 13, "bold"), width=140, height=34,
-                                command=self.sb_new_set, **BUTTON_STYLES["secondary"])
-        btn_new.pack(side="right", padx=3)
-        HoverTip(btn_new, "يقترح رقم التشغيل التالي في خانة البحث — اكتب رقمك أو اتركه ثم Enter")
-        nav = ctk.CTkFrame(bar, fg_color="transparent")
-        nav.pack(side="right", padx=14)
-        st["btn_prev"] = ctk.CTkButton(nav, text="السابق ▶", font=(UI_FONT, 13, "bold"), width=86, height=34,
-                                       command=lambda: self.sb_step(-1), **BUTTON_STYLES["secondary"])
-        st["btn_prev"].pack(side="right", padx=2)
-        st["counter"] = ctk.CTkLabel(nav, text="-", font=(UI_FONT, 13, "bold"), width=70,
-                                     text_color=(UI["muted"], "#9AA4B2"))
-        st["counter"].pack(side="right", padx=2)
-        st["btn_next"] = ctk.CTkButton(nav, text="◀ التالي", font=(UI_FONT, 13, "bold"), width=86, height=34,
-                                       command=lambda: self.sb_step(1), **BUTTON_STYLES["secondary"])
-        st["btn_next"].pack(side="right", padx=2)
-        st["chip"] = ctk.CTkLabel(bar, text="", font=(UI_FONT, 13, "bold"), corner_radius=10, height=30, width=130,
-                                  fg_color=(UI["primary_soft"], "#22324A"), text_color=UI_TITLE)
-        st["chip"].pack(side="left", padx=10)
-
         body = ctk.CTkFrame(tab, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        body.pack(fill="both", expand=True, padx=8, pady=(2, 6))
 
-        # ── بجانب الورقة (يساراً): الأزرار وحال الطقم والتنبيهات وحركاته المرحَّلة ──
-        side = ctk.CTkFrame(body, width=310, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+        # ── بجانب الورقة (يساراً): البحث وطقم جديد والسهمان، ثم الأزرار وحال الطقم وحركاته المرحَّلة —
+        #    فتأخذ الورقة ارتفاع الشاشة كله ويظهر القالب كاملاً ──
+        side = ctk.CTkFrame(body, width=300, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                             border_width=1, border_color=(UI["line"], "#2A313B"))
-        side.pack(side="left", fill="y", padx=(0, 8))
+        side.pack(side="left", fill="y", padx=(0, 6))
         side.pack_propagate(False)
-        st["btn_produce"] = ctk.CTkButton(side, text="🏭 توليد الطقم", height=38,
+        st["chip"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 14, "bold"), corner_radius=10, height=30,
+                                  fg_color=(UI["primary_soft"], "#22324A"), text_color=UI_TITLE)
+        st["chip"].pack(fill="x", padx=10, pady=(8, 2))          # حال الطقم (والعنوان في رأس الشاشة)
+        srow = ctk.CTkFrame(side, fg_color="transparent")
+        srow.pack(fill="x", padx=10, pady=2)
+        ctk.CTkButton(srow, text="🔎 فتح", font=(UI_FONT, 13, "bold"), width=70, height=32,
+                      command=lambda: self.sb_open_search(), **BUTTON_STYLES["primary"]).pack(side="left")
+        search = ctk.CTkEntry(srow, font=(UI_FONT, 14, "bold"), justify="center", height=32,
+                              placeholder_text="رقم التشغيل أو باركود")
+        search.pack(side="right", fill="x", expand=True, padx=(0, 4))
+        st["search"] = search
+        btn_new = ctk.CTkButton(side, text="➕ توليد طقم جديد", font=(UI_FONT, 13, "bold"), height=30,
+                                command=self.sb_new_set, **BUTTON_STYLES["secondary"])
+        btn_new.pack(fill="x", padx=10, pady=2)
+        HoverTip(btn_new, "يضع رقم التشغيل التالي في خانة NO بالقالب — اكتب رقمك أو اتركه ثم Enter")
+        nav = ctk.CTkFrame(side, fg_color="transparent")
+        nav.pack(fill="x", padx=8, pady=2)
+        nav.grid_columnconfigure((0, 2), weight=1, uniform="sb_nav")
+        st["btn_prev"] = ctk.CTkButton(nav, text="السابق ▶", font=(UI_FONT, 13, "bold"), height=30,
+                                       command=lambda: self.sb_step(-1), **BUTTON_STYLES["secondary"])
+        st["btn_prev"].grid(row=0, column=2, padx=2, sticky="ew")
+        st["counter"] = ctk.CTkLabel(nav, text="-", font=(UI_FONT, 13, "bold"), width=64,
+                                     text_color=(UI["muted"], "#9AA4B2"))
+        st["counter"].grid(row=0, column=1, padx=2)
+        st["btn_next"] = ctk.CTkButton(nav, text="◀ التالي", font=(UI_FONT, 13, "bold"), height=30,
+                                       command=lambda: self.sb_step(1), **BUTTON_STYLES["secondary"])
+        st["btn_next"].grid(row=0, column=0, padx=2, sticky="ew")
+        ctk.CTkFrame(side, height=1, fg_color=(UI["line"], "#2A313B")).pack(fill="x", padx=10, pady=(6, 4))
+        st["btn_produce"] = ctk.CTkButton(side, text="🏭 توليد الطقم", height=36,
                                           font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"),
                                           command=lambda: self.sb_produce_current(), **BUTTON_STYLES["primary"])
-        st["btn_produce"].pack(fill="x", padx=10, pady=(10, 4))
+        st["btn_produce"].pack(fill="x", padx=10, pady=2)
         HoverTip(st["btn_produce"], "يجعل الطقم جاهزاً للبيع: رقمه في المبيعات يملأ الذهب (الصافي) والفصوص والأحجار والماس")
-        st["btn_unproduce"] = ctk.CTkButton(side, text="↩️ إلغاء التوليد", height=30, font=(UI_FONT, 13, "bold"),
-                                            command=lambda: self.sb_unproduce_current(), **BUTTON_STYLES["secondary"])
-        st["btn_unproduce"].pack(fill="x", padx=10, pady=2)
         grid = ctk.CTkFrame(side, fg_color="transparent")
         grid.pack(fill="x", padx=8, pady=2)
         grid.grid_columnconfigure((0, 1), weight=1, uniform="sb_side")
+        st["btn_unproduce"] = ctk.CTkButton(grid, text="↩️ إلغاء التوليد", height=30, font=(UI_FONT, 13, "bold"),
+                                            command=lambda: self.sb_unproduce_current(), **BUTTON_STYLES["secondary"])
+        st["btn_unproduce"].grid(row=0, column=0, padx=2, pady=2, sticky="ew")
         st["btn_edit"] = ctk.CTkButton(grid, text="✏️ تعديل", height=30, font=(UI_FONT, 13, "bold"),
                                        command=lambda: self.sb_toggle_edit(), **BUTTON_STYLES["secondary"])
-        st["btn_edit"].grid(row=0, column=0, columnspan=2, padx=2, pady=2, sticky="ew")
+        st["btn_edit"].grid(row=0, column=1, padx=2, pady=2, sticky="ew")
         for (text, cmd, tip, style), (row, col) in zip((
                 ("🖨️ طباعة", lambda: self.sb_print(), "سند رقم التشغيل محمّلاً بكل قيم القالب", "primary"),
                 ("📋 كل الطقوم", self.open_sb_list_window, "كل الطقوم في القالب: الحالة والأوزان — والبحث والفتح",
@@ -23638,33 +23664,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for b in (btn_new, st["btn_edit"], st["btn_delete"]):
                 b.configure(state="disabled")
         st["info"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"),
-                                  anchor="e", justify="right", wraplength=280)
-        st["info"].pack(fill="x", padx=10, pady=(6, 0))
-        st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12, "bold"), wraplength=280, justify="right",
+                                  anchor="e", justify="right", wraplength=270)
+        st["info"].pack(fill="x", padx=10, pady=(4, 0))
+        st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12, "bold"), wraplength=270, justify="right",
                                   text_color=(UI["danger"], "#F08A8F"), anchor="e")
         st["warn"].pack(fill="x", padx=10)
         legend = ctk.CTkFrame(side, fg_color="transparent")
-        legend.pack(fill="x", padx=10, pady=(6, 0))
-        for color, text in ((self.SB_PAPER["posted"], "مُرحَّل لمكانه"), (self.SB_PAPER["pending"], "لم يُرحَّل بعد (Enter)"),
-                            (self.SB_PAPER["calc"], "محسوب تلقائياً")):
-            row_f = ctk.CTkFrame(legend, fg_color="transparent")
-            row_f.pack(fill="x", pady=1)
-            tk.Label(row_f, bg=color, width=2, relief="solid", bd=1).pack(side="right", padx=(0, 6))
-            ctk.CTkLabel(row_f, text=text, font=(UI_FONT, 12), text_color=(UI["ink"], "#E5E7EB"),
+        legend.pack(fill="x", padx=10, pady=(4, 0))
+        for color, text in ((self.SB_PAPER["posted"], "مُرحَّل"), (self.SB_PAPER["pending"], "لم يُرحَّل"),
+                            (self.SB_PAPER["calc"], "محسوب")):
+            tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="right", padx=(6, 3))
+            ctk.CTkLabel(legend, text=text, font=(UI_FONT, 12), text_color=(UI["ink"], "#E5E7EB"),
                          height=18).pack(side="right")
-        ctk.CTkLabel(side, text="Enter: ترحيل الخانة والتالية  •  الأسهم: الانتقال بين الخانات\n"
-                                "المسافة: تبديل النوع  •  Esc: إلغاء ما لم يُرحَّل",
+        ctk.CTkLabel(side, text="Enter: ترحيل الخانة والتالية  •  الأسهم: بين الخانات\n"
+                                "المسافة: النوع  •  Esc: إلغاء ما لم يُرحَّل",
                      font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), justify="right",
-                     wraplength=280).pack(fill="x", padx=10, pady=(6, 2))
+                     wraplength=280).pack(fill="x", padx=10, pady=(4, 0))
         ctk.CTkLabel(side, text="حركات الطقم المرحَّلة", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE,
-                     anchor="e").pack(fill="x", padx=10, pady=(6, 0))
+                     anchor="e").pack(fill="x", padx=10, pady=(4, 0))
         log_frame = ttk.Frame(side)
         log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
-        st["log"] = self.create_standard_treeview(log_frame, ("التاريخ", "الحركة", "الوزن"), height=6)
+        st["log"] = self.create_standard_treeview(log_frame, ("التاريخ", "الحركة", "الوزن"), height=4)
         st["log"].bind("<Double-1>", lambda e: self.sb_open_log_row(), add="+")
         self.sb_log_columns()
 
-        # ── الورقة: القالب نفسه، تملأ بقية العرض وتُمرَّر عمودياً ──
+        # ── الورقة: القالب نفسه كاملاً بارتفاع المساحة ──
         holder = ctk.CTkFrame(body, corner_radius=12, fg_color=(UI["canvas"], "#0F1318"))
         holder.pack(side="right", fill="both", expand=True)
         canvas = tk.Canvas(holder, highlightthickness=0, bd=0, takefocus=1, yscrollincrement=12)
@@ -23672,7 +23696,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         scroll.pack(side="left", fill="y", padx=(2, 0), pady=6)
         canvas.pack(side="right", fill="both", expand=True, padx=(0, 4), pady=4)
         canvas.configure(yscrollcommand=scroll.set)
-        st["canvas"] = canvas
+        st["canvas"], st["scroll"] = canvas, scroll
 
         self.sb_make_cell("set_no", "setno")
         for key, kind in self.SB_CELL_KINDS.items():
@@ -23751,32 +23775,40 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             ent.bind(seq, lambda e, k=key, d=direction: self.sb_arrow(k, d), add="+")
 
     def sb_layout_paper(self, force=False):
-        """يرسم الورقة بعرض المساحة (بمقياس ثابت النسبة، وتُمرَّر عمودياً) ويضع كل خانة إدخال في خانتها"""
+        """يرسم الورقة كاملة في المساحة المتاحة بلا تمرير: ارتفاعها = ارتفاع المساحة، وعرضها حتى عرض المساحة (يتسع
+        أفقياً إلى ١٫٩ من مقياس الارتفاع فتبقى الخانات واسعة مريحة)، والخط بقدر ارتفاع الصف — وتُوضع كل خانة إدخال
+        في خانتها. وفي الشاشات القصيرة جداً تُمرَّر عمودياً"""
         st = getattr(self, "_sb_state", None)
         canvas = (st or {}).get("canvas")
         if canvas is None:
             return
-        width = canvas.winfo_width()
-        if width < 120:
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if width < 120 or height < 120:
             return
-        L = self.set_voucher_layout()
+        if not force and st.get("layout_w") == (width, height):
+            return
+        st["layout_w"] = (width, height)
+        L = self.set_voucher_layout(compact=True)
         PW, PH = L["PW"], L["PH"]
-        if not force and st.get("layout_w") == width:
-            return
-        st["layout_w"] = width
-        s = max(1.1, min(2.1, (width - 40) / PW))
-        st["scale"] = s
+        pad = 8
+        sy = max(0.5, (height - 2 * pad - 4) / PH)
+        sx = max(sy, min((width - 2 * pad - 6) / PW, sy * 1.9))
+        st["scale"] = (sx, sy)
         P = self.SB_PAPER
         dark = ctk.get_appearance_mode() == "Dark"
         canvas.configure(bg="#0F1318" if dark else UI["canvas"])
-        ox, oy = max(16, (width - PW * s) / 2), 14
-        X = lambda x: ox + x * s
-        Y = lambda t: oy + t * s
+        ox, oy = max(pad, (width - PW * sx) / 2), pad
+        X = lambda x: ox + x * sx
+        Y = lambda t: oy + t * sy
+
+        def font_px(size, box_h):
+            """الخط بقدر الصف: لا يتجاوز ثلثي ارتفاع خانته"""
+            return max(8, min(size * sy * 1.45, box_h * sy * 0.66))
         fitted = self.sb_fit_font
         canvas.delete("paper")
-        canvas.create_rectangle(X(0) + 5, Y(0) + 5, X(PW) + 5, Y(PH) + 5, fill=P["shadow"], outline="", tags="paper")
+        canvas.create_rectangle(X(0) + 4, Y(0) + 4, X(PW) + 4, Y(PH) + 4, fill=P["shadow"], outline="", tags="paper")
         canvas.create_rectangle(X(0), Y(0), X(PW), Y(PH), fill=P["page"], outline=P["line"], tags="paper")
-        lw = max(1, int(round(0.9 * s * 0.8)))
+        lw = max(1, int(round(0.9 * sy * 0.9)))
         fills = {"head": P["head"], "label": P["label"], "calc": P["calc"], None: P["page"]}
         st["calc_items"], st["rects"] = {}, {}
         for el in self.sb_paper_spec():
@@ -23786,16 +23818,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 canvas.create_rectangle(X(x0), Y(t0), X(x1), Y(t1), fill=fills.get(fill, P["page"]),
                                         outline=P["line"], width=lw, tags="paper")
             elif kind == "text":
-                _k, x, t, text, size, max_w = el
+                _k, x, t, text, size, max_w, max_h = el
                 canvas.create_text(X(x), Y(t), text=text, fill=P["ink"], tags="paper",
-                                   font=fitted(text, size * s, max_w * s))
+                                   font=fitted(text, font_px(size, max_h), max_w * sx))
             elif kind == "line":
                 _k, x0, t, x1, w_ = el
-                canvas.create_line(X(x0), Y(t), X(x1), Y(t), fill=P["line"], width=max(1, int(round(w_ * s * 0.8))),
+                canvas.create_line(X(x0), Y(t), X(x1), Y(t), fill=P["line"], width=max(1, int(round(w_ * sy))),
                                    tags="paper")
             elif kind == "logo":
                 _k, x1, t0, t1 = el
-                img = self.sb_logo_image(int((t1 - t0) * s))
+                img = self.sb_logo_image(int((t1 - t0) * sy))
                 if img is not None:
                     canvas.create_image(X(x1), Y(t0), image=img, anchor="ne", tags="paper")
             elif kind == "cell":
@@ -23805,22 +23837,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     continue
                 inset = max(1, lw)
                 canvas.coords(win, X(x0) + inset, Y(t0) + inset)
-                canvas.itemconfigure(win, width=max(10, int((x1 - x0) * s) - 2 * inset),
-                                     height=max(10, int((t1 - t0) * s) - 2 * inset))
+                canvas.itemconfigure(win, width=max(10, int((x1 - x0) * sx) - 2 * inset),
+                                     height=max(10, int((t1 - t0) * sy) - 2 * inset))
                 cell = st["w"].get(key)
                 ent = cell["widget"] if cell else self.sb_piece_entry(key)
                 if ent is not None:
-                    px, w_px = max(8, size * s * 0.95), (x1 - x0) * s - 2 * inset - 10
+                    px, w_px = font_px(size, t1 - t0), (x1 - x0) * sx - 2 * inset - 8
                     st["cell_font"][key] = (px, w_px)
                     ent.configure(font=self.sb_fit_font(ent.get(), px, w_px))
                 st["rects"][key] = (X(x0), Y(t0), X(x1), Y(t1))
             elif kind == "calc":
                 _k, key, x0, t0, x1, t1, size = el
                 text = st["calc_text"].get(key, "")
+                px = font_px(size, t1 - t0)
                 item = canvas.create_text((X(x0) + X(x1)) / 2, (Y(t0) + Y(t1)) / 2, text=text, fill=P["ink"],
-                                          tags="paper", font=fitted(text, size * s, (x1 - x0) * s - 6))
-                st["calc_items"][key] = (item, size * s, (x1 - x0) * s - 6)
-        canvas.configure(scrollregion=(0, 0, width, Y(PH) + 18))
+                                          tags="paper", font=fitted(text, px, (x1 - x0) * sx - 6))
+                st["calc_items"][key] = (item, px, (x1 - x0) * sx - 6)
+        canvas.configure(scrollregion=(0, 0, width, max(height, Y(PH) + pad)))
+        # شريط التمرير لا يظهر إلا إن لم تتسع الورقة (شاشة قصيرة جداً)
+        scroll, need = st.get("scroll"), Y(PH) + pad > height + 1
+        if scroll is not None and need != (scroll.winfo_manager() == "pack"):
+            if need:
+                scroll.pack(side="left", fill="y", padx=(2, 0), pady=6, before=canvas)
+            else:
+                scroll.pack_forget()
 
     def sb_font(self, px):
         """خط الورقة بالبكسل (محفوظ لكل مقاس)"""
@@ -24328,7 +24368,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def sb_log_columns(self):
         tree = self._sb_state["log"]
-        tree.column("التاريخ", width=58, stretch=False)          # الشهر-اليوم (والفترة إن اختلفت)
+        tree.column("التاريخ", width=66, stretch=False)          # الشهر-اليوم (والفترة إن اختلفت)
         tree.column("الوزن", width=58, stretch=False)
         tree.column("الحركة", width=170, stretch=True)
 
@@ -24360,9 +24400,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not st or not st.get("editing") or not st.get("key"):
             return
         cell = st["w"].get(key)
-        if cell is None or cell["kind"] in ("post", "kind", "setno"):
+        if cell is None or cell["kind"] in ("kind", "setno"):
+            return
+        if cell["kind"] == "post":
+            # مغادرة خانة مرحلة كُتب فيها (بالنقر على خانة أخرى مثلاً): تُرحَّل بالتأكيد — لا تبقى «لم تُرحَّل»
+            if key in st["pending"] and not st.get("posting"):
+                self.after(60, lambda: self.sb_post_on_leave(key))
             return
         self.sb_commit_cell(key, quiet=True)
+
+    def sb_post_on_leave(self, key):
+        """ترحيل خانة مرحلة غادرها المستخدم إلى خانة أخرى في الشاشة (لا إلى رسالة أو نافذة أخرى)، ثم يعود
+        التركيز للخانة التي انتقل إليها"""
+        st = getattr(self, "_sb_state", None)
+        if not st or key not in st["pending"] or st.get("posting") or not st.get("editing"):
+            return
+        try:
+            focus = self.focus_get()
+        except (KeyError, tk.TclError):
+            focus = None
+        if focus is None or focus.winfo_toplevel() is not self or focus is self.sb_entry_of(key):
+            return
+        target = st["by_widget"].get(str(focus))
+        if self.sb_commit_cell(key) and target:
+            self.after(30, lambda: self.sb_focus(target))
 
     def sb_flow_next(self, key):
         flow = list(self.SB_FLOW)
@@ -24410,8 +24471,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if text and num is None:
                 messagebox.showwarning("قيمة غير صحيحة", f"«{cell['title']}» وزنٌ بالجرام.", parent=parent)
                 return False
-            ok = self.sb_post(set_key, field, num, assembler=self.sb_cell_text("assembler"),
-                              row=self.sb_cell_text("asm_row"), parent=parent)
+            before_cell = self.SB_PAIR_BEFORE.get(key)
+            if (num is not None and before_cell and self.sb_values(set_key)[self.SB_POST_CELLS[before_cell]] is None
+                    and self.sb_cell_text(before_cell) and before_cell not in st["filled"]):
+                # «بعد» قبل أن يُرحَّل «قبل»: «قبل» المكتوب أو المقترح (بالأصفر) يُرحَّل أولاً بتأكيده — فلا يبقى
+                # صرف المركّب أو «قبل» بوليش 2 غير مُرحَّل وقد رُحِّل «بعد» (فيظهر في الصندوق «بعد» وحده)
+                if not self.sb_commit_cell(before_cell):
+                    self.after(30, lambda: self.sb_focus(before_cell))
+                    return False
+            st["posting"] = True                 # رسالة التأكيد تسحب التركيز: لا ترحيل ثانٍ من مغادرة الخانة
+            try:
+                ok = self.sb_post(set_key, field, num, assembler=self.sb_cell_text("assembler"),
+                                  row=self.sb_cell_text("asm_row"), parent=parent)
+            finally:
+                st["posting"] = False
             if ok:
                 st["pending"].pop(key, None)
                 if key == "p04":
@@ -24442,6 +24515,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         field = {"name": "assembler"}.get(kind, key)
         if field == "assembler":
             text = self.clean_name(text)
+            if text and not self.sb_ensure_assembler(text, parent=parent):
+                return False
             g = self.sb_assembler_target_group(set_key)
             if g and text and text != g["name"]:
                 if not quiet:
@@ -24528,6 +24603,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def sb_produce_current(self):
         st = self._sb_state
         if not st.get("key"):
+            return
+        waiting = [k for k in self.SB_FLOW if k in st["pending"]]
+        if waiting:
+            names = "، ".join(st["w"][k]["title"] for k in waiting)
+            messagebox.showwarning("لم تُرحَّل بعد", f"هذه الخانات مكتوبة ولم تُرحَّل: {names}.\n"
+                                   "اضغط Enter في كل خانة لترحيلها (أو Esc لإلغائها) ثم ولِّد الطقم.", parent=self)
+            self.sb_focus(waiting[0])
             return
         self.sb_save_pieces()
         if self.sb_produce(st["key"], parent=self):
@@ -24782,8 +24864,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                              ("ناقص الماس", v["diamond"]), ("الوزن الصافي", v["net"])],
         }
 
-    def set_voucher_layout(self):
+    def set_voucher_layout(self, compact=False):
         """مواضع أقسام سند رقم التشغيل على صفحة A4 كاملة — بالنقاط، وy من أعلى الصفحة.
+        compact: للشاشة (قالب رقم التشغيل) — الأقسام نفسها بترتيبها، والمسافات البيضاء (الهوامش والرأس والفواصل
+        ومكان التوقيعات) أقل، فتكبر الخانات ويتسع القالب كله في الشاشة بلا تمرير.
 
         هامش متساوٍ من كل جهة؛ الرأس وسطرا البيانات بعرض الصفحة؛ ثم عمودان بعرض واحد (جدول القطع يميناً
         والمراحل يساراً) يبدآن معاً وينتهيان على السطر نفسه فوق التوقيعات — فتملأ الأقسام الورقة كلها:
@@ -24793,12 +24877,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         MM = 72 / 25.4
         PW, PH = 595.2756, 841.8898                          # A4
         M = self.VOUCHER_MARGIN_MM * MM
-        head = (M, M + 24 * MM)
-        info_h = 9 * MM
-        info = ((head[1] + 2 * MM, head[1] + 2 * MM + info_h), (head[1] + 2 * MM + info_h, head[1] + 2 * MM + 2 * info_h))
-        body_top = info[1][1] + 5 * MM
-        body_bottom = PH - M - 20 * MM                        # تحته التوقيعات
-        gap_cols, g = 6 * MM, 4.5 * MM
+        if compact:
+            top, head_h, info_h, gap_info, gap_body, sig_h, g = 4 * MM, 14 * MM, 8.5 * MM, 1.5 * MM, 2.5 * MM, 9 * MM, 2.5 * MM
+        else:
+            top, head_h, info_h, gap_info, gap_body, sig_h, g = M, 24 * MM, 9 * MM, 2 * MM, 5 * MM, 20 * MM, 4.5 * MM
+        head = (top, top + head_h)
+        info = ((head[1] + gap_info, head[1] + gap_info + info_h),
+                (head[1] + gap_info + info_h, head[1] + gap_info + 2 * info_h))
+        body_top = info[1][1] + gap_body
+        body_bottom = PH - top - sig_h                        # تحته التوقيعات
+        gap_cols = 6 * MM
         col_w = (PW - 2 * M - gap_cols) / 2
         span = body_bottom - body_top
         r = (span - 4 * g) / (20 + 4 * 1.3)
@@ -24806,7 +24894,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return {"MM": MM, "PW": PW, "PH": PH, "M": M, "left": M, "right": PW - M,
                 "head": head, "info": info, "body_top": body_top, "body_bottom": body_bottom,
                 "col_right": (PW - M - col_w, PW - M), "col_left": (M, M + col_w),
-                "r": r, "v": 1.3 * r, "p": p, "g": g, "sig_line": PH - M - 9 * MM}
+                "r": r, "v": 1.3 * r, "p": p, "g": g,
+                "sig_line": body_bottom + 4 * MM if compact else PH - M - 9 * MM,
+                "sig_text": body_bottom + 7 * MM if compact else PH - M - 4 * MM}
 
     def draw_set_voucher_page(self, c, data):
         """سند رقم التشغيل بأقسام قالب المصنع الورقي (التصنيع، البوليش، التركيب، بوليش 2 —
