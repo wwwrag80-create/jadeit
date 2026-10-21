@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.82.0"
+APP_VERSION = "1.83.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7551,7 +7551,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if getattr(self, "_undo_open", None) is step:
             self._undo_open = None
         # خطوة لم يُسجَّل فيها شيء (مُنع الحذف مثلاً) لا تبقى في المكدس
-        if not (step["rows"] or step["names"] or step["cats"] or step.get("settings")) \
+        if not (step["rows"] or step["names"] or step["cats"] or step.get("settings") or step.get("rename")) \
                 and step in getattr(self, "_undo_stack", []):
             self._undo_stack.remove(step)
         self.update_undo_buttons()
@@ -7637,8 +7637,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         periods = self.undo_step_periods(step)
         if self.period_lock_blocked(periods):
             return
+        if step.get("rename") and self.account_name_taken(step["rename"]["old"]):
+            # الاسم السابق صار لحسابٍ آخر بعد التعديل: الخطوة تبقى (تُتراجع بعد تعديل اسم ذلك الحساب)
+            messagebox.showwarning("لا يمكن التراجع الآن",
+                                   f"الاسم ({step['rename']['old']}) صار لحسابٍ آخر بعد تعديله إلى "
+                                   f"({step['rename']['new']}).\nعدّل اسم ذلك الحساب أولاً ثم تراجع.")
+            return
         msg = (f"سيتم التراجع عن: {label}\n\n"
                f"وتعود {len(step['rows'])} حركة كما كانت قبل هذه الخطوة.")
+        if step.get("rename"):
+            rn = step["rename"]
+            msg = (f"سيتم التراجع عن: {label}\n\n"
+                   f"يعود الاسم ({rn['old']}) بدل ({rn['new']}) في حركاته ({rn['n']}) وكل الشاشات — والأرقام كما هي.")
         other = sorted(p for p in periods if p != self.current_display_month)
         if other:
             # كان Ctrl+Z في شهر جديد يتراجع بصمت عن خطوات شهر سابق (إقفاله أو تعديلاته) فيتغيّر خياسه
@@ -7652,6 +7662,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self._undo_open = None
         try:
             self.apply_undo_step(step)
+            if step.get("rename"):
+                self.after_account_rename(step["rename"]["new"], step["rename"]["old"], recalc=False)
             self.recalculate_all()
             for fn in ("refresh_journal_entries_table", "refresh_losses_tab", "refresh_khayas_category_buttons",
                        "refresh_chart_of_accounts", "refresh_stage_buttons", "refresh_set_track_table"):
@@ -7707,6 +7719,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         cur.execute("DELETE FROM settings WHERE key = ?", (key,))
                     else:
                         cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, old))
+                if step.get("rename"):
+                    self.undo_account_rename(cur, step["rename"])         # الاسم السابق في كل الجداول
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -7726,6 +7740,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             names = self.categories.setdefault(cat, [])
             if name not in names:
                 names.insert(min(idx, len(names)), name)
+        if step.get("rename"):
+            self._rename_in_memory(step["rename"]["new"], step["rename"]["old"])
         self._inv_version = getattr(self, "_inv_version", 0) + 1
         self.mark_backup_dirty()
 
@@ -12235,6 +12251,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                 command=lambda: self.quick_add_worker(), **BUTTON_STYLES["primary"])
         btn_add.pack(side="right", padx=(0, 4))
         HoverTip(btn_add, "إضافة عامل جديد لهذا القسم مباشرة (المصنعين أو المركبين)")
+        btn_rename = ctk.CTkButton(sel_frame, text="✏️", font=(UI_FONT, 16, "bold"), width=36, height=36,
+                                   command=lambda: self.rename_account_dialog(self.clean_name(self.combo_op_name.get())),
+                                   **BUTTON_STYLES["secondary"])
+        btn_rename.pack(side="right", padx=(0, 4))
+        HoverTip(btn_rename, "تعديل اسم العامل المختار — يتغيّر في كل حركاته وصناديق الخياس")
         # اقتراح أقرب الأسماء أثناء الكتابة، واختيار الاسم يعرض خاناته مباشرة
         self.bind_name_autocomplete(
             self.combo_op_name,
@@ -15345,6 +15366,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_del_name = ctk.CTkButton(header_bar, text="حذف العامل 🗑️", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"), fg_color="#8b0000", hover_color="#a52a2a", width=110, height=36, command=self.delete_selected_worker_ui)
         btn_del_name.pack(side="left", padx=5, pady=6)
+
+        btn_rename = ctk.CTkButton(header_bar, text="✏️ تعديل الاسم", font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
+                                   width=120, height=36, command=self.rename_selected_worker_ui,
+                                   **BUTTON_STYLES["secondary"])
+        btn_rename.pack(side="left", padx=5, pady=6)
+        HoverTip(btn_rename, "حدّد العامل في الجدول ثم عدّل اسمه — يتغيّر في كل حركاته وصناديقه ومراحل التصنيع")
 
         # زر عرض الجدول كاملاً — يظهر في كل أقسام صناديق الخياس بما فيها
         # المصنعين والمركبين (كان مضافاً بالخطأ إلى شاشة شجرة الحسابات)
@@ -24416,12 +24443,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         st["counter"].configure(text=f"{idx + 1} / {len(keys)}" if idx >= 0 else f"- / {len(keys)}")
         st["btn_prev"].configure(state="normal" if idx > 0 else "disabled")
         st["btn_next"].configure(state="normal" if 0 <= idx < len(keys) - 1 else "disabled")
-        if st["search"].get().strip() != (key or "") and self.focus_get() is not getattr(st["search"], "_entry", None):
+        try:
+            focus = self.focus_get()
+        except (KeyError, tk.TclError):
+            focus = None                 # رسالة Tk مفتوحة (التركيز فيها): التحديث المؤجَّل لا يتوقّف
+        if st["search"].get().strip() != (key or "") and focus is not getattr(st["search"], "_entry", None):
             st["search"].delete(0, "end")
             if key:
                 st["search"].insert(0, key)
         no_cell = st["w"]["set_no"]["widget"]
-        if self.focus_get() is not no_cell or not self.sb_cell_text("set_no"):
+        if focus is not no_cell or not self.sb_cell_text("set_no"):
             self.sb_put("set_no", key or "")
         if not key:
             for b in (st["btn_produce"], st["btn_unproduce"]):
@@ -27872,6 +27903,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # حذف حساب أو حساب فرعي: يختفي من كل الشاشات، وحركاته تبقى محفوظة كما هي
         ctk.CTkButton(btn_row, text="🗑️ حذف الحساب المحدد", font=(UI_FONT, 13, "bold"), fg_color="#8b0000",
                       hover_color="#a52a2a", width=170, height=38, command=self.delete_selected_account).pack(side="left", padx=5)
+        # تعديل اسم الحساب المحدد: يتغيّر في كل حركاته وكل الشاشات، والأرصدة كما هي
+        ctk.CTkButton(btn_row, text="✏️ تعديل اسم الحساب", font=(UI_FONT, 13, "bold"), width=170, height=38,
+                      command=self.rename_selected_account, **BUTTON_STYLES["secondary"]).pack(side="left", padx=5)
 
         self.refresh_chart_of_accounts()
 
@@ -28137,6 +28171,274 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     combo.set("")
             except Exception:
                 continue
+
+    # ═══ تعديل اسم حساب (مورد، مصنّع، مركّب، حساب مضاف…): الاسم الجديد في كل حركاته وكل الشاشات ═══
+    # الجداول التي تحمل اسم الحساب: شجرة الأسماء، والحركات (المبيعات والوارد والقيود والمراحل…)، وأرشيف إقفال
+    # الفترات، والفواتير المعلّقة — وسجل التغييرات يبقى كما كُتب (تاريخ ما حدث) ويُضاف له سطر التعديل
+    RENAME_TABLES = ("names", "invoices", "monthly_archive", "suspended_sales")
+
+    def account_rename_block(self, name):
+        """سبب منع تعديل اسم الحساب (نص الرسالة)، أو "" إن جاز: الحسابات الأساسية (الخزينة والمواد والمبيعات والمصنع
+        وصناديق الخياس وفواقدها ومسترجعاتها) وأسماء الأقسام والمكائن يقوم عليها منطق النظام فلا تُعدَّل"""
+        name = self.clean_name(name)
+        if not name or name in ("الإجمالي العام", "لا يوجد أسماء"):
+            return "اختر الاسم المراد تعديله أولاً."
+        if name in self.system_account_names() or name == self.SB_NAME:
+            return f"({name}) حساب أساسي في النظام تقوم عليه الحسابات — لا يُعدَّل اسمه."
+        fixed = set(self.categories)
+        for cat in ("أقسام_خياس_إضافية", "الآلة/المكائن", "نسب_خصم_احجار"):
+            fixed |= {str(n) for n in self.categories.get(cat, [])}
+        if name in fixed:
+            return f"({name}) اسم قسم أو مكينة في النظام — لا يُعدَّل اسمه من هنا."
+        if not (self.check_name_exists(name) or name in self.invoices_by_name()):
+            return f"({name}) ليس حساباً مسجّلاً."
+        return ""
+
+    def account_name_taken(self, name):
+        """الاسم مستخدم: مسجّل في أي قسم، أو لحساب أساسي أو قسم، أو عليه حركات (حساب قيود بلا تسجيل)"""
+        name = self.clean_name(name)
+        return bool(self.check_name_exists(name) or name in self.invoices_by_name() or name in self.categories
+                    or name in self.system_account_names() or name in ("الإجمالي العام", self.SB_NAME))
+
+    def _rename_in_db(self, cur, old, new):
+        """الاسم في كل جداول القاعدة (داخل معاملة المستدعي)"""
+        for table in self.RENAME_TABLES:
+            try:
+                cur.execute(f"UPDATE {table} SET name = ? WHERE name = ?", (new, old))
+            except sqlite3.OperationalError as e:
+                if "no such table" not in str(e):      # قاعدة قديمة بلا جدول المعلّقات مثلاً
+                    raise
+
+    def _rename_in_memory(self, old, new):
+        """الاسم في الذاكرة: موضعه في قوائم الأقسام كما هو، وكل حركاته — وتُبطل الفهارس المبنية بالأسماء"""
+        for names in self.categories.values():
+            for i, n in enumerate(names):
+                if n == old:
+                    names[i] = new
+        for inv in self.invoices.values():
+            if inv.get("الاسم") == old:
+                inv["الاسم"] = new
+        self._deleted_accounts = None
+        self._sb_all_cache = None
+        self.mark_backup_dirty()
+
+    def _rename_settings(self, old, new):
+        """الإعدادات التي تحمل الاسم ← {المفتاح: (القيمة السابقة، الجديدة)}: قوالب أرقام التشغيل (العميل والمركّب)،
+        وقائمة الحسابات المحذوفة"""
+        out = {}
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT key, value FROM settings WHERE key LIKE ? AND value LIKE ?",
+                                (self.SB_PREFIX + "%", f"%{old}%")).fetchall()
+        for key, raw in rows:
+            try:
+                rec = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(rec, dict):
+                continue
+            hit = [f for f in ("customer", "assembler") if self.clean_name(rec.get(f)) == old]
+            if hit:
+                for f in hit:
+                    rec[f] = new
+                out[key] = (raw, json.dumps(rec, ensure_ascii=False, sort_keys=True))
+        deleted = set(self.deleted_account_names())
+        if old in deleted or new in deleted:
+            kept = (deleted - {old, new}) | ({new} if old in deleted else set())
+            out[self.DELETED_ACCOUNTS_KEY] = (self.get_setting(self.DELETED_ACCOUNTS_KEY, None),
+                                              json.dumps(sorted(kept), ensure_ascii=False))
+        return out
+
+    def rename_account(self, old, new, parent=None):
+        """يعدّل اسم الحساب في كل مكان بمعاملة واحدة: شجرة الأسماء، وكل حركاته في كل الفترات (المبيعات والوارد والقيود
+        والمراحل وصناديق الخياس — حتى الفترات المقفلة: الاسم وحده يتغيّر لا رقم ولا رصيد)، وأرشيف الإقفال، والفواتير
+        المعلّقة، وقوالب أرقام التشغيل، وقائمة الحسابات المحذوفة؛ ثم الذاكرة والشاشات. خطوة تراجع واحدة (Ctrl+Z).
+        يرجع True إن عُدِّل"""
+        old, new = self.clean_name(old), self.clean_name(new)
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return False
+        if not self.check_edit_permission():
+            return False
+        reason = self.account_rename_block(old)
+        if reason:
+            messagebox.showwarning("تعديل الاسم", reason, parent=parent)
+            return False
+        if not new:
+            messagebox.showwarning("تعديل الاسم", "اكتب الاسم الجديد.", parent=parent)
+            return False
+        if new == old:
+            return False
+        if self.account_name_taken(new):
+            messagebox.showwarning("الاسم مستخدم", f"الاسم ({new}) مستخدم لحسابٍ آخر — اختر اسماً غيره.\n"
+                                   "(تعديل الاسم لا يدمج حسابين في حساب واحد)", parent=parent)
+            return False
+        n = len(self.invoices_by_name().get(old, ()))
+        settings = self._rename_settings(old, new)
+        step = self.push_undo(f"تعديل اسم الحساب ({old} ← {new})")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.cursor()
+                cur.execute("BEGIN")
+                try:
+                    if cur.execute("SELECT 1 FROM names WHERE name = ?", (new,)).fetchone():
+                        raise ValueError(f"الاسم ({new}) مسجّل في القاعدة لحسابٍ آخر")
+                    self._rename_in_db(cur, old, new)
+                    for key, (_old_raw, value) in settings.items():
+                        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+                    self._log_change(cur, "تعديل اسم حساب", {"الاسم": new}, period="",
+                                     detail=f"({old}) ← ({new}) — {n} حركة")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        except Exception as e:
+            log_cloud_error("تعذّر تعديل اسم الحساب", e)
+            messagebox.showerror("تعديل الاسم", f"تعذّر تعديل الاسم — لم يتغيّر شيء:\n{e}", parent=parent)
+            return False
+        self._rename_in_memory(old, new)
+        if step is not None:
+            saved = step.setdefault("settings", {})
+            for key, (old_raw, _value) in settings.items():
+                saved.setdefault(key, old_raw)
+            step["rename"] = {"old": old, "new": new, "n": n}
+        self.after_account_rename(old, new)
+        self.toast(f"✏️ ({old}) ← ({new}) في {n} حركة وكل الشاشات", "success")
+        return True
+
+    def undo_account_rename(self, cur, rename):
+        """التراجع عن تعديل اسم (داخل معاملة التراجع): الاسم السابق في كل الجداول — ما لم يصر لحسابٍ آخر"""
+        old, new = rename["old"], rename["new"]
+        if cur.execute("SELECT 1 FROM names WHERE name = ?", (old,)).fetchone() or old in self.invoices_by_name():
+            raise ValueError(f"الاسم ({old}) صار لحسابٍ آخر بعد التعديل — لا يمكن إرجاعه")
+        self._rename_in_db(cur, new, old)
+        self._log_change(cur, "تراجع (تعديل اسم حساب)", {"الاسم": old}, period="", detail=f"({new}) ← ({old})")
+
+    def after_account_rename(self, old, new, recalc=True):
+        """الشاشات بعد تعديل الاسم: القوائم، والخانات التي كان الاسم مختاراً فيها (المبيعات، الوارد، الرصيد الافتتاحي،
+        كشف الحساب، القيود، مراحل التصنيع)، ثم الأرصدة والشاشة الظاهرة"""
+        self.refresh_account_name_lists()
+        for attr in ("sale_name", "in_supplier", "opening_name", "kh_account_name", "je_from_name", "je_to_name"):
+            combo = getattr(self, attr, None)
+            try:
+                if combo is not None and self.clean_name(combo.get()) == old:
+                    combo.set(new)
+            except Exception:
+                continue
+        combo, cat = getattr(self, "combo_op_name", None), getattr(self, "current_op_cat", None)
+        if combo is not None and new in self.categories.get(cat, []):
+            try:
+                picked = self.clean_name(combo.get())
+                combo.configure(values=[self.rtl(n) for n in self.categories[cat]])
+                if picked == old:
+                    combo.set(self.rtl(new))
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث أسماء مراحل التصنيع بعد تعديل الاسم", e)
+        if recalc:
+            self.recalculate_all()
+        if getattr(self, "suspended_table_frame", None):              # «المعلقات» لا تُحدَّث مع شاشة المبيعات
+            try:
+                self.refresh_suspended_sales_table()
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث المعلقات بعد تعديل الاسم", e)
+        st = getattr(self, "_sb_state", None)
+        if st and st.get("key"):
+            try:
+                self.sb_render()
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث قالب رقم التشغيل بعد تعديل الاسم", e)
+
+    def rename_account_dialog(self, old, parent=None):
+        """نافذة «✏️ تعديل الاسم»: الاسم الجديد مكتوباً فوق الحالي — Enter يحفظ بعد التأكيد، وEsc يغلق"""
+        old = self.clean_name(old)
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return None
+        reason = self.account_rename_block(old)
+        if reason:
+            messagebox.showwarning("تعديل الاسم", reason, parent=parent)
+            return None
+        if not self.check_edit_permission():
+            return None
+        n = len(self.invoices_by_name().get(old, ()))
+        win = ctk.CTkToplevel(self)
+        win.title("تعديل اسم الحساب")
+        self.fit_dialog_to_screen(win, 480, 260)
+        win.transient(self)
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+        win.focus_force()
+        ctk.CTkLabel(win, text=f"✏️ تعديل اسم: {old}", font=(UI_FONT, 16, "bold"),
+                     text_color=UI_TITLE).pack(pady=(18, 6))
+        entry = ctk.CTkEntry(win, font=(UI_FONT, 17, "bold"), justify="center", width=320, height=42)
+        entry.insert(0, old)
+        entry.pack(pady=4)
+        ctk.CTkLabel(win, text=f"يتغيّر في كل حركاته ({n}) وكل الشاشات — والأرقام والأرصدة كما هي",
+                     font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2")).pack(pady=(4, 0))
+
+        def save(_e=None):
+            new = self.clean_name(entry.get())
+            if not new:
+                return "break"
+            if new == old:
+                win.destroy()
+                return "break"
+            if self.account_name_taken(new):
+                messagebox.showwarning("الاسم مستخدم", f"الاسم ({new}) مستخدم لحسابٍ آخر — اختر اسماً غيره.\n"
+                                       "(تعديل الاسم لا يدمج حسابين في حساب واحد)", parent=win)
+                return "break"
+            if not messagebox.askyesno(
+                    "تأكيد تعديل الاسم",
+                    f"تعديل اسم الحساب ({old}) إلى ({new})؟\n\n"
+                    f"يتغيّر الاسم في كل حركاته ({n}) في كل الفترات — حتى المقفلة — وفي كل الشاشات: الموردين "
+                    "والمبيعات والوارد وكشف الحساب والقيود اليومية ومراحل التصنيع وصناديق الخياس وقالب رقم التشغيل "
+                    "والفواتير المعلّقة وأرشيف الإقفال.\nالأرقام والأرصدة لا تتغيّر.\n\n"
+                    "وللتراجع: ↩️ تراجع (Ctrl+Z).", parent=win):
+                return "break"
+            if self.rename_account(old, new, parent=win):
+                win.destroy()
+            return "break"
+        entry.bind("<Return>", save)
+        entry.bind("<KP_Enter>", save)
+        win.bind("<Escape>", lambda e: win.destroy())
+        ctk.CTkButton(win, text="💾 حفظ الاسم", font=(UI_FONT, 15, "bold"), width=160, height=38, command=save,
+                      **BUTTON_STYLES["primary"]).pack(pady=12)
+
+        def take_focus():
+            if win.winfo_exists():
+                win.focus_force()
+                entry.focus_set()
+                entry.select_range(0, "end")
+        win.after(80, take_focus)
+        return win
+
+    def rename_selected_account(self):
+        """زر «✏️ تعديل اسم الحساب» في شجرة الحسابات"""
+        tree = getattr(self, "coa_tree", None)
+        sel = tree.selection() if tree else ()
+        if not sel or "leaf" not in tree.item(sel[0], "tags"):
+            messagebox.showwarning("تنبيه", "حدّد الحساب المراد تعديل اسمه من داخل فرعه في الشجرة أولاً.")
+            return None
+        return self.rename_account_dialog(tree.item(sel[0], "text"))
+
+    def rename_selected_supplier(self):
+        """زر «✏️ تعديل اسم المورد» في شاشة الموردين"""
+        tree = getattr(self, "suppliers_tree", None)
+        sel = tree.selection() if tree else ()
+        if not sel or "total_tag" in tree.item(sel[0], "tags"):
+            messagebox.showwarning("تنبيه", "حدّد المورد المراد تعديل اسمه في الجدول أولاً.")
+            return None
+        return self.rename_account_dialog(tree.item(sel[0], "values")[0])
+
+    def rename_selected_worker_ui(self):
+        """زر «✏️ تعديل الاسم» في صناديق الخياس (المصنعين والمركبين وبقية الأقسام)"""
+        tree = getattr(self, "tree", None)
+        sel = tree.selection() if tree else ()
+        if not sel or "total_tag" in tree.item(sel[0], "tags"):
+            messagebox.showwarning("تنبيه", "حدّد الاسم المراد تعديله في الجدول أولاً.")
+            return None
+        return self.rename_account_dialog(tree.item(sel[0], "values")[0])
 
     def open_add_account_dialog(self):
         # تحديد الفرع المختار حالياً بالشجرة (إن وجد) لمعرفة نوع الحساب المطلوب إضافته
@@ -28481,6 +28783,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         ctk.CTkLabel(top_bar, text="👥 كشف حسابات الموردين", font=ctk.CTkFont(family=UI_FONT, size=17, weight="bold"), text_color="#d4af37").pack(side="right", padx=10)
         ctk.CTkButton(top_bar, text="➕ إضافة مورد", font=(UI_FONT, 15, "bold"), fg_color="#1e8449", hover_color="#145a32", width=140, height=38, command=self.add_supplier_dialog).pack(side="left", padx=10)
+        # تعديل اسم المورد المحدد: الاسم الجديد في كل حركاته (المبيعات والوارد والقيود) وكل الشاشات
+        btn_rename = ctk.CTkButton(top_bar, text="✏️ تعديل اسم المورد", font=(UI_FONT, 15, "bold"), width=170, height=38,
+                                   command=self.rename_selected_supplier, **BUTTON_STYLES["secondary"])
+        btn_rename.pack(side="left", padx=(0, 10))
+        HoverTip(btn_rename, "حدّد المورد في الجدول ثم عدّل اسمه — يتغيّر في المبيعات وكل حركاته")
 
         self.suppliers_table_frame = ttk.Frame(tab)
         self.suppliers_table_frame.pack(fill="both", expand=True, padx=15, pady=10)
