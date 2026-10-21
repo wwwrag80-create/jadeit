@@ -68,7 +68,8 @@ METHODS = [
     # الوارد والقيد اليومي
     "submit_inbound", "submit_journal_entry",
     # الكاستنج
-    "get_cast_operation", "_read_weight", "submit_casting_op", "submit_casting_loss_op",
+    "get_cast_operation", "_read_weight", "submit_casting_op", "submit_casting_loss_op", "post_casting_loss",
+    "note_head", "with_note_head",
     "submit_casting_recovery_op", "collect_stage_ops_rows", "render_stage_ops_table", "section_ops_khayas_text",
     "is_row_recovery", "is_recovery_op", "row_sort_key", "stage_row_extra", "norm_row_no",
     "carat_factor", "carat_equivalent", "analysis_statement_label",
@@ -89,8 +90,11 @@ ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_DATE_DIG
 ATTRS += ["SB_NAME"]
 ATTRS += ["SB_P2_IN"]
 ATTRS += ["SB_P2_OUT"]
+# 1.86: نوع صرف الكاستنج (كسر/سبيكة) في أول بيانه — المحرّك post_casting_loss
+ATTRS += ["CHAINS_HEAD", "RECEIPT_KINDS", "TREE_HEAD", "CAST_SARF_KINDS", "NOTE_HEADS", "CAST_NAME"]
 
 EXTRA = '''
+def sub_balance_lines(self, deltas): return []
 def check_edit_permission(self): return True
 def get_setting(self, key, default=None): return default
 def deleted_account_names(self): return frozenset()
@@ -727,6 +731,7 @@ cast_ui = seg("build_casting_ui")
 assert "operations=self.CAST_OPERATIONS" in cast_ui and "name_values" not in cast_ui
 assert '("dir", "صرف / قبض"), ("weight", "الوزن"), ("carat", "العيار")' in cast_ui
 assert 'toggles={"dir": ("صرف", "قبض")}' in cast_ui and "🖨️ معاينة السند" in cast_ui
+assert 'kind_buttons={"sarf": ("عام",) + self.CAST_SARF_KINDS}' in cast_ui, "نوع الصرف زرٌّ بجانب الصرف (1.86)"
 assert "self.cast_dir, self.cast_weight, self.cast_carat = f[\"dir\"], f[\"weight\"], f[\"carat\"]" in cast_ui
 panel = seg("build_stage_panel")
 assert 'specs.append(("op", "العملية", 2))' in panel and "CTkSegmentedButton" in panel

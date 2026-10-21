@@ -117,7 +117,7 @@ assert [r for r, _n, g in rows if g["op"] == "فاقد"] == ["4", "7", "9"]
 assert [g["op"] for _r, _n, g in rows][-2:] == ["صب وتحليل / أبيض", "صب وتحليل / أصفر"]
 print("✔ صفوف الفاقد مرتبة تصاعدياً برقم الصف، ثم «صب وتحليل / أبيض» ثم «صب وتحليل / أصفر»")
 
-cast = seg("submit_casting_loss_op")
+cast = seg("post_casting_loss")                    # المحرّك المشترك لمراحل التصنيع والقالب (1.86)
 assert '"الاسم": self.TREE_RETURN_NAME' in cast and '"النوع": "قبض كاستنج", "الوزن": recover_v' in cast
 assert "skipped.append(\"مسترجع الأشجار\")" in cast
 print("✔ الترحيل: مسترجع الأشجار قبضٌ للكاستنج برقم الصف، وخانته مرة واحدة لكل صف")
@@ -134,7 +134,7 @@ print("✔ نافذة التعديل تعرض مسترجع الأشجار وتح
 # ═══ ٣) قاعدة الصف والخانة للمصنعين والمركبين ═══
 P = build(["plan_unified_values", "row_set_numbers", "inv_period", "inv_in_period", "normalize_set_number",
            "movement_slot", "note_head"],
-          attrs=("_SET_DIGITS", "CHAINS_HEAD", "MFG_CHAINS_SLOT"))
+          attrs=("_SET_DIGITS", "CHAINS_HEAD", "MFG_CHAINS_SLOT", "TREE_HEAD", "MFG_SARF_KINDS", "MFG_SARF_SLOTS"))
 
 
 class Ent:

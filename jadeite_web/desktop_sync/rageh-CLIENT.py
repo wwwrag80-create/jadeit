@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.85.0"
+APP_VERSION = "1.86.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -10001,9 +10001,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         main_ids = {i["رقم الفاتورة"] for i in sarf_invs + qabd_invs}
         base_inv = (sarf_invs or qabd_invs or [None])[0]
         common_note = (base_inv.get("البيان") or "") if base_inv else ""
-        # نوع القبض (سبيكة/واير/لحام) في أول بيان حركة القبض يخصّها: لا يظهر في البيان المشترك ويبقى معها عند الحفظ
+        # نوع القبض (سبيكة/واير/لحام) ونوع الصرف (كسر/سبيكة/شجر) في أول بيان حركتهما يخصّها: لا يظهر في البيان
+        # المشترك ويبقى معها عند الحفظ
         qabd_head = next((self.note_head(i) for i in qabd_invs if self.note_head(i) in self.RECEIPT_KINDS), "")
-        if self.note_head(base_inv) in self.RECEIPT_KINDS:
+        sarf_head = next((self.note_head(i) for i in sarf_invs if self.note_head(i) in self.ISSUE_HEADS), "")
+        if self.note_head(base_inv) in self.RECEIPT_KINDS + self.ISSUE_HEADS:
             common_note = self.with_note_head("", common_note)
         ref_set = (base_inv.get("set_number", "") or "") if base_inv else ""
         cur_trees = max([(i.get("trees_count", 0.0) or 0.0) for i in invs] or [0.0])
@@ -10117,7 +10119,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     if not self.delete_invoice_from_db(existing["رقم الفاتورة"]):
                         any_blocked = True
 
-            upsert(sarf_invs, new_sarf, madin_type)
+            upsert(sarf_invs, new_sarf, madin_type,
+                   note=self.with_note_head(sarf_head, new_note) if sarf_head else new_note)
             upsert(qabd_invs, new_qabd, qabd_type,
                    note=self.with_note_head(qabd_head, new_note) if qabd_head else new_note)
 
@@ -13001,10 +13004,33 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # =========================================================================
     # --- نظام صرف/قبض عام لأي "صندوق خياس" يُضاف ديناميكياً من شجرة الحسابات (مطابق لنمط الكاستنج) ---
     # =========================================================================
+    def make_kind_button(self, parent, values, width=44, height=36):
+        """زر نوعٍ صغير بجانب خانة (مثل «نوع» القبض في المصنعين): النقر يعرض قائمة الأنواع، و get()/set() كخانة
+        الاختيار. الأول («عام») يُكتب «نوع»"""
+        values = tuple(values)
+        state = {"v": values[0]}
+        btn = ctk.CTkButton(parent, text="نوع", width=width, height=height, font=(UI_FONT, 12, "bold"),
+                            fg_color="#1f77b4")
+
+        def set_(v):
+            if v in values:
+                state["v"] = v
+                btn.configure(text="نوع" if v == values[0] else v)
+
+        def menu():
+            m = tk.Menu(self, tearoff=0, font=(UI_FONT, 13))
+            for v in values:
+                m.add_command(label=v, command=lambda x=v: set_(x))
+            m.post(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+        btn.configure(command=menu)
+        btn.get, btn.set, btn.kind_values = (lambda: state["v"]), set_, values
+        HoverTip(btn, "النوع: " + " / ".join(values[1:]) + " — ينقص من رصيده في تفصيل الخزينة (و«نوع» = عام)")
+        return btn
+
     def build_stage_panel(self, parent, *, key, title, name_values=None, fields, submit_text, submit_cmd,
                           on_edit, on_delete, neg_section, neg_refresh, view,
                           operations=None, mode_fields=None, on_operation_change=None, extra_buttons=(),
-                          toggles=None):
+                          toggles=None, kind_buttons=None):
         """لوحة قسم من مراحل التصنيع بترتيب مضغوط واحد لكل الأقسام:
 
             بطاقة إدخال بصف واحد ← [التاريخ][الاسم أو العملية][الخانات…][البيان][زر الترحيل]
@@ -13022,6 +13048,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         toggles: خانات تُختار بزرّين لا تُكتب ({المفتاح: (القيم…)}) — مثل «صرف / قبض» لعمليتي صب وتحليل.
         """
         toggles = toggles or {}
+        # kind_buttons (1.86): زر نوعٍ صغير بجانب خانة (مثل «نوع» القبض في المصنعين) — {المفتاح: (الأنواع…)}؛
+        # يُقرأ من w["fields"]["<المفتاح>_kind"].get() ولا يأخذ عموداً (الصف يتّسع على شاشة ١٣٦٦)
+        kind_buttons = kind_buttons or {}
+        holders = {}
         w = {}
         card = ctk.CTkFrame(parent, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                             border_width=1, border_color=(UI["line"], "#2A313B"))
@@ -13074,9 +13104,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                              selected_color=UI["primary"], selected_hover_color=UI["primary_hover"],
                                              command=lambda _v, k=k: focus_after(k))
                 ent.set(toggles[k][0])
+            elif k in kind_buttons:
+                holder = ctk.CTkFrame(grid, fg_color="transparent")
+                ent = ctk.CTkEntry(holder, justify="center", font=(UI_FONT, 15), width=50, height=36)
+                ent.pack(side="right", fill="x", expand=True, padx=(0, 3))
+                kb = self.make_kind_button(holder, kind_buttons[k])
+                kb.pack(side="right")
+                w.setdefault("fields", {})[f"{k}_kind"] = kb
+                holders[k] = holder
             else:
                 ent = ctk.CTkEntry(grid, justify="center", font=(UI_FONT, 15), width=70, height=36)
-            ent.grid(row=1, column=col, padx=4, sticky="ew")
+            holders.get(k, ent).grid(row=1, column=col, padx=4, sticky="ew")
             if k in ("date", "name", "op", "note", "submit"):
                 w[k] = ent
             else:
@@ -13136,13 +13174,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             w["mode"] = mode
             for k, _l in fields:
                 col = col_of[k]
+                cell = holders.get(k, widget_of[k])
                 if k in visible:
                     labels[k].grid()
-                    widget_of[k].grid()
-                    grid.grid_columnconfigure(col, weight=1, uniform=f"stage_{key}")
+                    cell.grid()
+                    # خانة الاختيار بعرض أزرارها (لا عرضٌ موحّد يُضيّق البيان)
+                    grid.grid_columnconfigure(col, weight=0 if k in toggles else 1,
+                                              uniform="" if k in toggles else f"stage_{key}")
                 else:
                     labels[k].grid_remove()
-                    widget_of[k].grid_remove()
+                    cell.grid_remove()
                     grid.grid_columnconfigure(col, weight=0, uniform="")
             if notify and on_operation_change:
                 on_operation_change(mode)
@@ -13192,9 +13233,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.dynamic_stage_widgets = {}
         p = self.build_stage_panel(
             parent, key=f"dyn_{stage_name}", title=f"كشف حركة {stage_name}",
-            # نوع القبض (1.84): سبيكة أو واير أو لحام — يُحفظ في أول بيان القبض ويظهر في تفصيل رصيد الخزينة
+            # نوع الصرف (1.86): سبيكة أو شجر، ونوع القبض (1.84): سبيكة أو واير أو لحام — كلٌّ في أول بيان حركته،
+            # فينقص الصرف من رصيد نوعه ويزيد القبض رصيد نوعه في تفصيل الخزينة
             fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض"), ("qabd_kind", "نوع القبض")],
             toggles={"qabd_kind": ("عام",) + self.RECEIPT_KINDS},
+            kind_buttons={"sarf": ("عام",) + self.STAGE_SARF_KINDS},
             submit_text="ترحيل 💾", submit_cmd=lambda s=stage_name: self.submit_generic_stage_op(s),
             on_edit=lambda s=stage_name: self.edit_selected_generic_stage_row(s),
             on_delete=lambda s=stage_name: self.delete_selected_generic_stage_row(s),
@@ -13206,31 +13249,57 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.dynamic_stage_widgets[stage_name] = w
 
     def submit_generic_stage_op(self, stage_name):
+        """قسمٌ مضاف من مراحل التصنيع: خاناته ← post_generic_stage (المحرّك نفسه الذي يرحّل منه قالب رقم التشغيل)"""
         w = self.dynamic_stage_widgets[stage_name]
-        madin_type, qabd_type, mustarja_name = self.get_stage_config(stage_name)
-        date_val = w["date"].get().strip()
-        name = stage_name
-        note = w["note"].get().strip()
-        row_num = w["row_num"].get().strip()
-        date_val = self.read_entry_date(date_val)
+        date_val = self.read_entry_date(w["date"].get().strip())
         if not date_val:
             return
+
+        def num(entry):
+            try:
+                return round(float(entry.get().strip()), 2) if entry.get().strip() else 0.0
+            except ValueError:
+                return 0.0
+        sarf_box, kind_box = w.get("sarf_kind"), w.get("qabd_kind")
+        ok = self.post_generic_stage(stage_name, w["row_num"].get().strip(), num(w["sarf"]), num(w["qabd"]),
+                                     sarf_kind=sarf_box.get() if sarf_box is not None else "",
+                                     qabd_kind=kind_box.get() if kind_box is not None else "",
+                                     note=w["note"].get().strip(), date_val=date_val)
+        if ok:
+            w["sarf"].delete(0, 'end')
+            w["qabd"].delete(0, 'end')
+            w["note"].delete(0, 'end')
+            w["row_num"].delete(0, 'end')
+            if sarf_box is not None:
+                sarf_box.set("عام")               # نوع الصرف يعود «عام» بعد كل ترحيل
+            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {stage_name} لـ ({stage_name})")
+            self.after(2500, lambda: self.lbl_op_status.configure(text=""))
+            self.refresh_generic_stage_table(stage_name)
+
+    def post_generic_stage(self, stage_name, row_num, sarf_v, qabd_v, sarf_kind="", qabd_kind="", note="",
+                           date_val=None, parent=None):
+        """صرف وقبض قسمٍ مضاف (مثل «صب الداخلي») — من مراحل التصنيع أو من قالب رقم التشغيل. نوع الصرف (1.86):
+        سبيكة أو شجر، ونوع القبض: سبيكة أو واير أو لحام — كلٌّ في أول بيان حركته، فينقص الصرف من رصيد نوعه ويزيد القبض
+        رصيد نوعه في تفصيل الخزينة. كل خانة مرة واحدة لكل صف في الفترة. يرجع True إن رُحِّل"""
+        madin_type, qabd_type, _mustarja_name = self.get_stage_config(stage_name)
+        name = stage_name
+        row_num = str(row_num or "").strip()
+        date_val = date_val or self.get_smart_default_date()
+        kw = {"parent": parent} if parent is not None else {}
         if not row_num:
-            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
-            return
-
-        try:
-            sarf_v = round(float(w["sarf"].get().strip()), 2) if w["sarf"].get().strip() else 0.0
-        except ValueError:
-            sarf_v = 0.0
-        try:
-            qabd_v = round(float(w["qabd"].get().strip()), 2) if w["qabd"].get().strip() else 0.0
-        except ValueError:
-            qabd_v = 0.0
-
+            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.", **kw)
+            return False
+        if sarf_v is None or qabd_v is None:
+            messagebox.showwarning("قيمة غير صحيحة", "الصرف والقبض أوزانٌ بالجرام.", **kw)
+            return False
+        if sarf_v < 0 or qabd_v < 0:
+            messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.", **kw)
+            return False
         if sarf_v <= 0 and qabd_v <= 0:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.")
-            return
+            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أولاً.", **kw)
+            return False
+        sarf_kind = sarf_kind if sarf_kind in self.STAGE_SARF_KINDS else ""
+        qabd_kind = qabd_kind if qabd_kind in self.RECEIPT_KINDS else ""
 
         skipped = []
         if sarf_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == madin_type for inv in self.invoices.values()):
@@ -13239,42 +13308,35 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if qabd_v > 0 and any(inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE" and self.inv_in_period(inv, self.current_display_month) and (inv.get("row_number", "") or "") == row_num and inv.get("النوع") == qabd_type for inv in self.invoices.values()):
             skipped.append("القبض")
             qabd_v = 0.0
-        if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
-            return
+        if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟", **kw):
+            return False
         if sarf_v <= 0 and qabd_v <= 0:
-            return
+            return False
 
-        if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل حركة {stage_name}؟"):
-            return
-
-        if name != stage_name and not self.check_name_exists(name):
-            self.categories.setdefault(stage_name, []).append(name)
-            self.save_name_to_db(name, stage_name)
+        lines = [f"• الصرف{(' — ' + sarf_kind) if sarf_kind else ''}: {sarf_v:g}" if sarf_v > 0 else "",
+                 f"• القبض{(' — ' + qabd_kind) if qabd_kind else ''}: {qabd_v:g}" if qabd_v > 0 else ""]
+        deltas = {}
+        if sarf_v > 0 and sarf_kind:
+            deltas[sarf_kind] = -sarf_v
+        if qabd_v > 0 and qabd_kind:
+            deltas[qabd_kind] = round(deltas.get(qabd_kind, 0.0) + qabd_v, 2)
+        lines = [x for x in lines if x] + self.sub_balance_lines(deltas)
+        if not messagebox.askyesno("تأكيد الترحيل", f"هل أنت متأكد من ترحيل حركة {stage_name} — الصف ({row_num})؟\n\n"
+                                   + "\n".join(lines), **kw):
+            return False
 
         full_date_time = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
         saved_any = False
-
-        if sarf_v > 0:
+        for value, op_type, inv_note in (
+                (sarf_v, madin_type, self.with_note_head(sarf_kind, note) if sarf_kind else note),
+                # نوع القبض المختار (سبيكة/واير/لحام) في أول بيانه — يُصنَّف به في تفصيل رصيد الخزينة
+                (qabd_v, qabd_type, self.with_note_head(qabd_kind, note) if qabd_kind in self.RECEIPT_KINDS else note)):
+            if value <= 0:
+                continue
             self.invoice_counter += 1
             inv_data = {
                 "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": name,
-                "النوع": madin_type, "الوزن": sarf_v, "البيان": note, "settled_status": "ACTIVE",
-                "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
-            }
-            self.invoices[self.invoice_counter] = inv_data
-            self.save_invoice_to_db(self.invoice_counter, inv_data)
-            saved_any = True
-
-        if qabd_v > 0:
-            # نوع القبض المختار (سبيكة/واير/لحام) في أول بيانه — يُصنَّف به في تفصيل رصيد الخزينة
-            kind_box = w.get("qabd_kind")
-            kind = kind_box.get() if kind_box is not None else ""
-            self.invoice_counter += 1
-            inv_data = {
-                "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": name,
-                "النوع": qabd_type, "الوزن": qabd_v,
-                "البيان": self.with_note_head(kind, note) if kind in self.RECEIPT_KINDS else note,
-                "settled_status": "ACTIVE",
+                "النوع": op_type, "الوزن": value, "البيان": inv_note, "settled_status": "ACTIVE",
                 "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
@@ -13284,19 +13346,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if saved_any:
             self.register_operation_period(date_val)
             self.recalculate_all()
-
-            w["sarf"].delete(0, 'end')
-            w["qabd"].delete(0, 'end')
-            w["note"].delete(0, 'end')
-            w["row_num"].delete(0, 'end')
-
-
-            self.lbl_op_status.configure(text=f"✅ تم ترحيل حركة {stage_name} لـ ({name})")
-            self.after(2500, lambda: self.lbl_op_status.configure(text=""))
-            self.refresh_generic_stage_table(stage_name)
-            # التركيز يعود لرقم الصف لبدء العملية التالية مباشرة.
-            # يُؤجَّل بعد إعادة رسم الجدول لأن الرسم يسحب التركيز.
-            self.after(60, lambda w=w: w["row_num"].focus_set())
+        return saved_any
 
     def refresh_generic_stage_table(self, stage_name):
         if not hasattr(self, 'dynamic_stage_widgets') or stage_name not in self.dynamic_stage_widgets:
@@ -13375,6 +13425,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     ("recover", "مسترجع الأشجار"), ("trees", "عدد الأشجار"),
                     ("dir", "صرف / قبض"), ("weight", "الوزن"), ("carat", "العيار")],
             toggles={"dir": ("صرف", "قبض")},
+            # نوع الصرف (1.86): زرٌّ بجانب الصرف — عام أو كسر أو سبيكة (ينقصان من رصيدهما في تفصيل الخزينة)
+            kind_buttons={"sarf": ("عام",) + self.CAST_SARF_KINDS},
             submit_text="ترحيل 💾", submit_cmd=self.submit_casting_op,
             on_edit=self.edit_selected_casting_row, on_delete=self.delete_selected_casting_row,
             neg_section="الكاستنج", neg_refresh=self.refresh_casting_table,
@@ -13387,6 +13439,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         f = p["fields"]
         self.cast_row_num, self.cast_sarf, self.cast_qabd = f["row_num"], f["sarf"], f["qabd"]
         self.cast_recover, self.cast_trees = f["recover"], f["trees"]
+        self.cast_sarf_kind = f["sarf_kind"]
         self.cast_dir, self.cast_weight, self.cast_carat = f["dir"], f["weight"], f["carat"]
         self.cast_table_frame = p["table_frame"]
         self.cast_tree = None
@@ -13422,29 +13475,53 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return self.submit_casting_loss_op()
 
     def submit_casting_loss_op(self):
-        """عملية «فاقد»: صرف وقبض الكاستنج بصفوفها، ومسترجع الأشجار وعدد الأشجار للصف"""
-        date_val = self.cast_date.get().strip()
-        name = "كاستنج"
-        note = self.cast_note.get().strip()
-        row_num = self.cast_row_num.get().strip()
-        month = self.current_display_month
-        date_val = self.read_entry_date(date_val)
+        """عملية «فاقد» من مراحل التصنيع: خاناتها ← post_casting_loss (المحرّك نفسه الذي يرحّل منه قالب رقم التشغيل)"""
+        date_val = self.read_entry_date(self.cast_date.get().strip())
         if not date_val:
             return
-        if not row_num:
-            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.")
-            return
+        kind_w = getattr(self, "cast_sarf_kind", None)
+        ok = self.post_casting_loss(
+            self.cast_row_num.get().strip(), self._read_weight(self.cast_sarf) or 0.0,
+            self._read_weight(self.cast_qabd) or 0.0, self._read_weight(self.cast_trees) or 0.0,
+            self._read_weight(getattr(self, "cast_recover", None)) or 0.0, note=self.cast_note.get().strip(),
+            date_val=date_val, sarf_kind=kind_w.get() if kind_w is not None else "")
+        if ok:
+            for entry in (self.cast_sarf, self.cast_qabd, getattr(self, "cast_recover", None),
+                          self.cast_trees, self.cast_note, self.cast_row_num):
+                if entry is not None:
+                    entry.delete(0, 'end')
+            if kind_w is not None:
+                kind_w.set("عام")                  # نوع الصرف يعود «عام» بعد كل ترحيل (لا يُرحَّل التالي كسراً سهواً)
+            self.lbl_op_status.configure(text="✅ تم ترحيل حركة الكاستنج (فاقد)")
+            self.after(2500, lambda: self.lbl_op_status.configure(text=""))
+            self.refresh_casting_table()
+            # التركيز يعود لرقم الصف لتسجيل العملية التالية مباشرة بلا نقر.
+            # يُؤجَّل بعد إعادة رسم الجدول لأن إعادة الرسم تسحب التركيز.
+            self.after(60, lambda: self.cast_row_num.focus_set())
 
-        sarf_v = self._read_weight(self.cast_sarf) or 0.0
-        qabd_v = self._read_weight(self.cast_qabd) or 0.0
-        trees_v = self._read_weight(self.cast_trees) or 0.0
-        recover_v = self._read_weight(getattr(self, "cast_recover", None)) or 0.0
+    def post_casting_loss(self, row_num, sarf_v, qabd_v, trees_v, recover_v, note="", date_val=None, sarf_kind="",
+                          parent=None):
+        """«فاقد» الكاستنج: صرف وقبض الكاستنج بصفوفها، ومسترجع الأشجار وعدد الأشجار للصف — من مراحل التصنيع أو من
+        قالب رقم التشغيل. نوع الصرف (1.86): كسر أو سبيكة في أول بيانه (ينقص من رصيدهما في تفصيل الخزينة)، والقبض هو
+        الشجر (يزيد رصيده). كل خانة مرة واحدة لكل صف في الفترة. يرجع True إن رُحِّل"""
+        name = self.CAST_NAME
+        row_num = str(row_num or "").strip()
+        month = self.current_display_month
+        date_val = date_val or self.get_smart_default_date()
+        kw = {"parent": parent} if parent is not None else {}
+        if not row_num:
+            messagebox.showwarning("رقم الصف مطلوب", "لازم تسجل رقم الصف أولاً قبل ترحيل أي عملية.", **kw)
+            return False
+        if None in (sarf_v, qabd_v, trees_v, recover_v):
+            messagebox.showwarning("قيمة غير صحيحة", "الصرف والقبض ومسترجع الأشجار أوزانٌ بالجرام.", **kw)
+            return False
         if trees_v < 0 or recover_v < 0 or sarf_v < 0 or qabd_v < 0:
-            messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.")
-            return
+            messagebox.showwarning("تنبيه", "لا تُدخل قيماً بالسالب.", **kw)
+            return False
         if sarf_v <= 0 and qabd_v <= 0 and recover_v <= 0:
-            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أو مسترجع الأشجار أولاً.")
-            return
+            messagebox.showwarning("تنبيه", "الرجاء إدخال قيمة الصرف أو القبض أو مسترجع الأشجار أولاً.", **kw)
+            return False
+        sarf_kind = sarf_kind if sarf_kind in self.CAST_SARF_KINDS else ""
         _m, _q, recover_name = self.get_stage_config("الكاستنج")
 
         # الخانة الواحدة تُسجَّل مرة واحدة لكل صف في الفترة (أياً كان اسم الحركة القديمة)
@@ -13466,25 +13543,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if recover_v > 0 and row_has(lambda i: self.is_row_recovery(i, recover_name)):
             skipped.append("مسترجع الأشجار")
             recover_v = 0.0
-        if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟"):
-            return
+        if skipped and not messagebox.askyesno("عملية مكررة", "تم تجاهل: " + "، ".join(skipped) + f" لأنها مسجلة بالفعل بنفس رقم الصف ({row_num}).\nهل تريد المتابعة بباقي القيم المُدخلة (إن وُجدت)؟", **kw):
+            return False
 
         if sarf_v <= 0 and qabd_v <= 0 and recover_v <= 0:
-            return
+            return False
 
-        if not messagebox.askyesno("تأكيد الترحيل", "هل أنت متأكد من ترحيل حركة الكاستنج (فاقد)؟"):
-            return
+        # الرسالة: ما يُرحَّل بنوعه، ورصيد الكسر/السبيكة والشجر في تفصيل الخزينة قبله وبعده
+        lines = [f"• الصرف{(' — ' + sarf_kind) if sarf_kind else ''}: {sarf_v:g}" if sarf_v > 0 else "",
+                 f"• القبض (شجر): {qabd_v:g}" if qabd_v > 0 else "",
+                 f"• مسترجع الأشجار: {recover_v:g}" if recover_v > 0 else ""]
+        deltas = {}
+        if sarf_v > 0 and sarf_kind:
+            deltas[sarf_kind] = -sarf_v
+        if qabd_v > 0:
+            deltas[self.TREE_HEAD] = qabd_v
+        lines = [x for x in lines if x] + self.sub_balance_lines(deltas)
+        msg = f"هل أنت متأكد من ترحيل حركة الكاستنج (فاقد) — الصف ({row_num})؟\n\n" + "\n".join(lines)
+        if not messagebox.askyesno("تأكيد الترحيل", msg, **kw):
+            return False
 
         full_date_time = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
         saved_any = False
 
-        for value, op_type in ((sarf_v, "صرف كاستنج"), (qabd_v, "قبض كاستنج")):
+        for value, op_type, inv_note in ((sarf_v, "صرف كاستنج", self.with_note_head(sarf_kind, note) if sarf_kind else note),
+                                         (qabd_v, "قبض كاستنج", note)):
             if value <= 0:
                 continue
             self.invoice_counter += 1
             inv_data = {
                 "رقم الفاتورة": self.invoice_counter, "التاريخ": full_date_time, "الاسم": name,
-                "النوع": op_type, "الوزن": value, "البيان": note, "settled_status": "ACTIVE",
+                "النوع": op_type, "الوزن": value, "البيان": inv_note, "settled_status": "ACTIVE",
                 "trees_count": trees_v, "قبل": 0.0, "بعد": 0.0, "set_number": "", "row_number": row_num
             }
             self.invoices[self.invoice_counter] = inv_data
@@ -13509,16 +13598,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if saved_any:
             self.register_operation_period(date_val)
             self.recalculate_all()
-            for entry in (self.cast_sarf, self.cast_qabd, getattr(self, "cast_recover", None),
-                          self.cast_trees, self.cast_note, self.cast_row_num):
-                if entry is not None:
-                    entry.delete(0, 'end')
-            self.lbl_op_status.configure(text="✅ تم ترحيل حركة الكاستنج (فاقد)")
-            self.after(2500, lambda: self.lbl_op_status.configure(text=""))
-            self.refresh_casting_table()
-            # التركيز يعود لرقم الصف لتسجيل العملية التالية مباشرة بلا نقر.
-            # يُؤجَّل بعد إعادة رسم الجدول لأن إعادة الرسم تسحب التركيز.
-            self.after(60, lambda: self.cast_row_num.focus_set())
+        return saved_any
 
     def submit_casting_recovery_op(self):
         """عمليتا «صب وتحليل» في الكاستنج (أبيض وأصفر): كل ترحيلٍ حركةٌ واحدة وصفٌّ مستقل في كشف عمليتها.
@@ -14293,7 +14373,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         self.current_win_labels = dict(fields)
         if cat == "المصنعين":
-            self.current_win_labels.update({"صرف لحام": "صرف/لحام", "صرف واير": "صرف/واير"})
+            self.current_win_labels.update({"صرف لحام": "صرف/لحام", "صرف واير": "صرف/واير", "صرف شجر": "صرف/شجر"})
         # عرض كل حقول العملية في صف أفقي واحد مضغوط (تسمية أعلى وخانة أصغر أسفلها)،
         # بأعمدة متساوية تتمدّد مع عرض الشاشة. تُصفَّر أعمدة القسم السابق أولاً
         # (المصنعون ١٠ خانات والمركبون ٧) فلا تبقى أعمدة فارغة تأخذ مساحة
@@ -14334,7 +14414,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                          font=(UI_FONT, 12, "bold"), fg_color="#1f77b4")
                 btn_sarf.configure(command=lambda b=btn_sarf: self.choose_sarf_type(b))
                 btn_sarf.pack(side="right")
-                HoverTip(btn_sarf, "نوع الصرف: ذهب (من الذهب العام) أو لحام أو واير (من رصيدهما في تفصيل الخزينة)")
+                HoverTip(btn_sarf, "نوع الصرف: ذهب (من الذهب العام) أو لحام أو واير أو شجر (من رصيدها في تفصيل الخزينة)")
                 self.current_win_entries[key] = (ent, btn_sarf)
                 entries_list.append(ent)
             else:
@@ -14417,14 +14497,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     MFG_WORK_SLOTS = {"شغل 4": "المفنش ٤ بالالف", "شغل 8": "المفنش ٨ بالالف", "سلاسل": MFG_CHAINS_SLOT}
     # أنواع القبض التي تُكتب في أول البيان («زركون — بيان»): نوع قبض الكسر، والسلاسل، وقبض الأقسام المضافة
     RECEIPT_KINDS = ("سبيكة", "واير", "لحام")
-    NOTE_HEADS = ("ايطالي", "زركون", "احجار", "الماس", CHAINS_HEAD) + RECEIPT_KINDS
-    # صرف المصنّع (1.85): ذهب (من الذهب العام) أو لحام أو واير (من رصيدهما في تفصيل الخزينة) — الحركة «صرف ذهب» نفسها
-    # (فحساب المصنّع كما هو) وأول بيانها النوع، وكل نوع خانته في الصف («صرف لحام» / «صرف واير»)
-    MFG_SARF_KINDS = ("ذهب", "لحام", "واير")
-    MFG_SARF_SLOTS = {"ذهب": "صرف ذهب", "لحام": "صرف لحام", "واير": "صرف واير"}
+    # نوع الصرف في الكاستنج (كسر أو سبيكة) وفي الأقسام المضافة (سبيكة أو شجر) — في أول بيان الصرف، وينقص من رصيده
+    # في تفصيل الخزينة (1.86)؛ والشجر قبض الكاستنج نفسه
+    TREE_HEAD = "شجر"
+    CAST_SARF_KINDS = ("كسر", "سبيكة")
+    STAGE_SARF_KINDS = ("سبيكة", TREE_HEAD)
+    ISSUE_HEADS = ("كسر", "سبيكة", TREE_HEAD)
+    NOTE_HEADS = ("ايطالي", "زركون", "احجار", "الماس", CHAINS_HEAD) + RECEIPT_KINDS + ("كسر", TREE_HEAD)
+    # صرف المصنّع (1.85): ذهب (من الذهب العام) أو لحام أو واير أو شجر (من رصيدها في تفصيل الخزينة) — الحركة «صرف ذهب»
+    # نفسها (فحساب المصنّع كما هو) وأول بيانها النوع، وكل نوع خانته في الصف («صرف لحام» / «صرف واير» / «صرف شجر»)
+    MFG_SARF_KINDS = ("ذهب", "لحام", "واير", TREE_HEAD)
+    MFG_SARF_SLOTS = {"ذهب": "صرف ذهب", "لحام": "صرف لحام", "واير": "صرف واير", TREE_HEAD: "صرف شجر"}
     # الخانة ← نوع حركتها، والخانة ← أول بيانها
-    SLOT_TYPES = {MFG_CHAINS_SLOT: "المفنش ٨ بالالف", "صرف لحام": "صرف ذهب", "صرف واير": "صرف ذهب"}
-    SLOT_HEADS = {MFG_CHAINS_SLOT: CHAINS_HEAD, "صرف لحام": "لحام", "صرف واير": "واير"}
+    SLOT_TYPES = {MFG_CHAINS_SLOT: "المفنش ٨ بالالف", "صرف لحام": "صرف ذهب", "صرف واير": "صرف ذهب",
+                  "صرف شجر": "صرف ذهب"}
+    SLOT_HEADS = {MFG_CHAINS_SLOT: CHAINS_HEAD, "صرف لحام": "لحام", "صرف واير": "واير", "صرف شجر": TREE_HEAD}
 
     @staticmethod
     def note_head(inv):
@@ -14448,52 +14535,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return self.MFG_CHAINS_SLOT
         if t == "صرف ذهب":
             head = self.note_head(inv)
-            if head in ("لحام", "واير") and inv.get("الاسم") in self.categories.get("المصنعين", []):
+            if head in ("لحام", "واير", self.TREE_HEAD) and inv.get("الاسم") in self.categories.get("المصنعين", []):
                 return self.MFG_SARF_SLOTS[head]
         return t
 
     def slot_op_type(self, slot):
         return self.SLOT_TYPES.get(slot, slot)
 
-    def work4_totals(self):
-        """رقم التشغيل ← مجموع قبض «شغل 4» (المفنش ٤ بالالف) له في كل الفترات"""
-        out = {}
-        for inv in self.invoices.values():
-            if inv.get("النوع") != "المفنش ٤ بالالف" or inv.get("settled_status") != "ACTIVE":
-                continue
-            key = self.normalize_set_number(inv.get("set_number"))
-            if key:
-                out[key] = round(out.get(key, 0.0) + (inv.get("الوزن") or 0.0), 2)
-        return out
-
-    def sync_work4_polish(self, before, parent=None):
-        """بعد إضافة قبض «شغل 4» أو تعديله أو حذفه أو تغيير رقم تشغيله: «قبل» بوليش 1 لرقم التشغيل (من قالب رقم
-        التشغيل) = شغل 4 نفسه — يُرحَّل أو يُعدَّل بلا رسالة ثانية؛ وإن زال شغل 4 يُحذف «قبل» الذي رُحِّل منه ما دام
-        بقيمته (و«قبل» كُتب بغير قيمته يبقى). في خطوة التراجع المفتوحة نفسها. يرجع أرقام التشغيل التي تغيّرت"""
-        after = self.work4_totals()
-        changed = []
-        for key in sorted(set(before) | set(after)):
-            old, new = before.get(key, 0.0), after.get(key, 0.0)
-            if abs(old - new) < 0.005:
-                continue
-            moves = self.sb_field_moves(key, "p1_before")
-            posted = round(sum(i.get("الوزن", 0.0) or 0.0 for i in moves), 2) if moves else None
-            if new > 0:
-                if (posted is None or abs(posted - new) >= 0.005) and \
-                        self.sb_post(key, "p1_before", new, parent=parent, confirm=False):
-                    changed.append(key)
-            elif posted is not None and abs(posted - old) < 0.005:
-                if self.sb_post(key, "p1_before", None, parent=parent, confirm=False):
-                    changed.append(key)
-        return changed
-
     def post_manufacturer_receipt(self, name, set_number, row, kasr, work, kind, parent=None, sarf=0.0,
                                   sarf_kind="ذهب"):
-        """صرفٌ للمصنّع وقبضٌ منه لرقم تشغيل (من قالب رقم التشغيل) بقواعد قسم المصنعين نفسها: الصرف حسب نوعه ←
-        «صرف» (ذهب من الذهب العام) أو «صرف/لحام» أو «صرف/واير» (ينقصان من رصيدهما في تفصيل الخزينة)، وقبض الكسر ←
-        «قبض/كسر»، والشغل حسب نوعه ← «قبض/٤» (شغل 4) أو «قبض/٨» (شغل 8) أو «قبض/سلاسل» (تُحسب مثل شغل 8) في صف رقم
-        التشغيل بحساب المصنّع؛ وشغل 4 يرحّل «قبل» بوليش 1 للرقم بقيمته. رقم التشغيل يعرّف الصف: المسجّل يُكمل صفّه،
-        والجديد يلزمه رقم صف؛ وكل خانة مرة واحدة في الصف. تأكيدٌ بالملخص، وخطوة تراجع واحدة. يرجع True إن رُحِّل"""
+        """صرفٌ للمصنّع وقبضٌ منه (من قالب رقم التشغيل) بقواعد قسم المصنعين نفسها: الصرف حسب نوعه ← «صرف» (ذهب من
+        الذهب العام) أو «صرف/لحام» أو «صرف/واير» أو «صرف/شجر» (تنقص من رصيدها في تفصيل الخزينة)، وقبض الكسر ←
+        «قبض/كسر»، والشغل حسب نوعه ← «قبض/٤» أو «قبض/٨» أو «قبض/سلاسل» (مثل شغل 8) في صف المصنّع.
+        رقم التشغيل اختياري (1.86): المسجّل يُكمل صفّه، والجديد يلزمه رقم صف، وبلا رقمٍ يعرّف الصفُّ الحركة (وتأخذ رقم
+        تشغيله المسجّل إن كان له). كل خانة مرة واحدة في الصف. تأكيدٌ بالملخص، وخطوة تراجع واحدة. يرجع True إن رُحِّل.
+        (لا يُرحَّل «قبل» بوليش 1 من شغل 4 منذ 1.86: جداول القالب تحت التصنيع تُكتب يدوياً)"""
         if getattr(self, "view_only", False):
             self.view_only_blocked()
             return False
@@ -14512,15 +14568,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("لا قيمة", "اكتب الصرف أو قبض الكسر أو الشغل أولاً.", parent=parent)
             return False
         if sarf > 0 and sarf_kind not in self.MFG_SARF_SLOTS:
-            messagebox.showwarning("نوع الصرف", "اختر نوع الصرف: ذهب أو لحام أو واير.", parent=parent)
+            messagebox.showwarning("نوع الصرف", "اختر نوع الصرف: ذهب أو لحام أو واير أو شجر.", parent=parent)
             return False
         if work > 0 and kind not in self.MFG_WORK_SLOTS:
             messagebox.showwarning("نوع الشغل", "اختر نوع الشغل: شغل 4 أو شغل 8 أو سلاسل.", parent=parent)
             return False
-        if not key:
-            messagebox.showwarning("رقم التشغيل", "اكتب رقم التشغيل أولاً.", parent=parent)
-            return False
-        owner, owner_row = self.find_row_by_set_number("المصنعين", key)
+        owner, owner_row = self.find_row_by_set_number("المصنعين", key) if key else (None, None)
         if owner and owner != name:
             messagebox.showwarning("رقم تشغيل مستخدم", f"رقم التشغيل ({key}) مسجّل للمصنّع ({owner}) في الصف "
                                    f"({owner_row}).\nاختر اسمه نفسه.", parent=parent)
@@ -14533,19 +14586,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             row = owner_row
         else:
             if not row:
-                messagebox.showwarning("رقم الصف مطلوب", f"رقم التشغيل ({key}) غير مسجّل للمصنّع ({name}) في هذه "
-                                       "الفترة — اكتب رقم الصف لإنشاء صفّه.", parent=parent)
+                messagebox.showwarning("رقم الصف مطلوب", (f"رقم التشغيل ({key}) غير مسجّل للمصنّع ({name}) في هذه "
+                                       "الفترة — اكتب رقم الصف لإنشاء صفّه." if key else
+                                       "اكتب رقم الصف (أو رقم تشغيلٍ مسجّل) — رقم التشغيل نفسه اختياري."),
+                                       parent=parent)
                 return False
             row_sets = self.row_set_numbers(name, row)
-            if row_sets and key not in row_sets:
+            if key and row_sets and key not in row_sets:
                 messagebox.showwarning("رقم تشغيل مختلف", f"الصف ({row}) للمصنّع ({name}) مسجّل برقم التشغيل "
                                        f"({'، '.join(sorted(row_sets))}).", parent=parent)
                 return False
+            if not key and len(row_sets) == 1:
+                key = next(iter(row_sets))                # بلا رقم: حركات الصف برقم تشغيله المسجّل
         month = self.current_display_month
         existing = {self.movement_slot(inv) for inv in self.invoices.values()
                     if inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE"
                     and self.inv_in_period(inv, month) and (inv.get("row_number", "") or "").strip() == row}
         labels = {"صرف ذهب": "صرف ذهب", "صرف لحام": "صرف لحام (صرف/لحام)", "صرف واير": "صرف واير (صرف/واير)",
+                  "صرف شجر": "صرف شجر (صرف/شجر)",
                   "قبض ذهب": "قبض/كسر", "المفنش ٤ بالالف": "شغل 4 (قبض/٤)", "المفنش ٨ بالالف": "شغل 8 (قبض/٨)",
                   self.MFG_CHAINS_SLOT: "سلاسل (قبض/سلاسل — مثل شغل 8)"}
         plan, skipped = [], []
@@ -14558,18 +14616,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                    + "\n".join(f"• {labels[s]}" for s, _v in skipped)
                                    + "\n\nلتغيير قيمة موجودة عدّلها من مراحل التصنيع (✏️ تعديل).", parent=parent)
             return False
-        lines = [f"حساب المصنّع ({name}) — الصف ({row}) — رقم التشغيل ({key}):"]
+        lines = [f"حساب المصنّع ({name}) — الصف ({row}) — "
+                 + (f"رقم التشغيل ({key}):" if key else "بلا رقم تشغيل ⊘:")]
         lines += [f"• {labels[s]}: {v:g}" for s, v in plan]
-        if any(s == "المفنش ٤ بالالف" for s, _v in plan):
-            lines.append(f"• و«قبل» بوليش 1 لرقم التشغيل ({key}) يُرحَّل بقيمة شغل 4 نفسها")
         lines += self.sub_balance_lines(self.slot_kind_deltas("المصنعين", plan))
         if skipped:
             lines += ["", "لن تُسجَّل (موجودة في الصف نفسه):"] + [f"• {labels[s]}" for s, _v in skipped]
         lines += ["", f"تُرحَّل بالفترة المعروضة ({month}).", "— Enter للتأكيد"]
         if not messagebox.askyesno("ترحيل لحساب المصنّع", "\n".join(lines), default=messagebox.YES, parent=parent):
             return False
-        self.push_undo(f"المصنّع ({name}) — الصف ({row}) — {key}")
-        work4_before = self.work4_totals()
+        self.push_undo(f"المصنّع ({name}) — الصف ({row})" + (f" — {key}" if key else ""))
         dt = self.get_operation_datetime()
         saved = False
         for slot, val in plan:
@@ -14586,7 +14642,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.invoices.pop(self.invoice_counter, None)
         if not saved:
             return False
-        self.sync_work4_polish(work4_before, parent=parent)
         self.register_operation_period(dt[:10])
         self.recalculate_all()
         return True
@@ -14704,9 +14759,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return
             msg = (f"ترحيل إلى الصف ({row_now}) — {name}:\n"
                    + "\n".join(f"• {labels.get(t, t)}: {v:g}" for t, v in plan))
-            set_now = self.normalize_set_number(set_entry.get()) if set_entry is not None else ""
-            if cat == "المصنعين" and set_now and any(t == "المفنش ٤ بالالف" for t, _v in plan):
-                msg += f"\n\n• و«قبل» بوليش 1 لرقم التشغيل ({set_now}) يُرحَّل بقيمة شغل 4 نفسها (قالب رقم التشغيل)"
             # السدايا (شغل 4/8 ينقص منها صرف المركبين) والسلاسل والواير واللحام: رصيدها قبل الترحيل وبعده
             balance_lines = self.sub_balance_lines(self.slot_kind_deltas(cat, plan))
             if balance_lines:
@@ -14772,10 +14824,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 
             # الترحيل من خطة قاعدة الصف والخانة نفسها التي عُرضت في التأكيد
             plan, _skipped = self.plan_unified_values(name, row_num)
-            work4_before = self.work4_totals() if cat == "المصنعين" else None
-            if work4_before is not None and set_num and any(s == "المفنش ٤ بالالف" for s, _v in plan):
-                # قبض الصف و«قبل» بوليش 1 الذي يُرحَّل معه خطوة تراجع واحدة باسم الصف
-                self.push_undo(f"ترحيل الصف ({row_num}) — {name} و«قبل» بوليش 1")
             for slot, val in plan:
                 try:
                     self.invoice_counter += 1
@@ -14797,8 +14845,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     self.save_invoice_to_db(self.invoice_counter, inv_data)
                     saved_any = True
                 except ValueError: pass
-            if saved_any and work4_before is not None:
-                self.sync_work4_polish(work4_before)        # شغل 4 برقم تشغيل ← «قبل» بوليش 1 له
 
 
         if saved_any:
@@ -15146,7 +15192,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("تنبيه", "لم يعد لهذا الصف حركات مسجّلة.")
             return
 
-        work4_before = self.work4_totals() if self.current_op_cat == "المصنعين" else None
         self.push_undo(f"رقم التشغيل للصف ({gkey or 'بدون ترقيم'}) — {worker_name}")
         blocked = False
         for inv_id in target_ids:
@@ -15154,8 +15199,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             updated["set_number"] = new_val
             if not self.save_invoice_to_db(inv_id, updated):
                 blocked = True
-        if work4_before is not None:
-            self.sync_work4_polish(work4_before)             # شغل 4 انتقل لرقم آخر ← «قبل» البوليش معه
         if blocked:
             return
         self.recalculate_all()
@@ -15259,22 +15302,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 to_delete = [inv["رقم الفاتورة"] for inv in self.invoices.values() if inv.get("الاسم") == worker_name and (inv.get("row_number", "") or "") == ref_key]
             else:
                 to_delete = [inv["رقم الفاتورة"] for inv in self.invoices.values() if inv.get("الاسم") == worker_name and inv.get("التاريخ") == ref_key]
-            work4_before = self.work4_totals() if self.current_op_cat == "المصنعين" else None
-            if work4_before is not None:
-                self.push_undo(f"حذف الصف ({ref_key or 'بدون ترقيم'}) — {worker_name}")
             any_blocked = False
             for inv_ref in to_delete:
                 if not self.delete_invoice_from_db(inv_ref):
                     any_blocked = True
-            if work4_before is not None:
-                self.sync_work4_polish(work4_before)         # حُذف شغل 4 ← يُحذف «قبل» البوليش المرحَّل منه
             if any_blocked:
                 return  # تم منع حذف بعض/كل الحركات (رسالة "غير مسموح" ظهرت بالفعل)
             self.recalculate_all()
             messagebox.showinfo("تم الحذف", "تم حذف العمليات بنجاح وتحديث الأرصدة المرتبطة.")
 
     ROW_EDIT_FIELDS = {
-        "المصنعين": [("صرف ذهب", "صرف"), ("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/واير"), ("قبض ذهب", "قبض/كسر"),
+        "المصنعين": [("صرف ذهب", "صرف"), ("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/واير"), ("صرف شجر", "صرف/شجر"),
+                     ("قبض ذهب", "قبض/كسر"),
                      ("المفنش ٨ بالالف", "قبض/٨"), ("المفنش ٤ بالالف", "قبض/٤"), ("قبض سلاسل", "قبض/سلاسل"),
                      ("البوليش", "بوليش"), ("الليز", "الليز"),
                      ("السلك الراجع", "سلك راجع"), ("العيار بعد الفحص", "العيار بعد الفحص")],
@@ -15393,9 +15432,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             old_time = str(ref_dt)[11:] or datetime.datetime.now().strftime("%H:%M:%S")
             new_dt = f"{new_date} {old_time}"
 
-            # الحفظ كله خطوة تراجع واحدة (Ctrl+Z يعيد الصف كما كان) — ومعه «قبل» بوليش 1 الذي يتبع شغل 4
+            # الحفظ كله خطوة تراجع واحدة (Ctrl+Z يعيد الصف كما كان)
             self.push_undo(f"تعديل الصف ({row_key or 'بدون ترقيم'}) — {worker_name}")
-            work4_before = self.work4_totals() if cat == "المصنعين" else None
             blocked = False
             for slot, _label in fields:
                 value = values[slot]
@@ -15451,8 +15489,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 inv["التاريخ"] = new_dt
                 if not self.save_invoice_to_db(inv["رقم الفاتورة"], inv):
                     blocked = True
-            if work4_before is not None:
-                self.sync_work4_polish(work4_before, parent=win)     # شغل 4 أو رقم تشغيله تغيّر ← «قبل» البوليش
 
             if blocked:
                 return
@@ -16783,14 +16819,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # من المصنعين وينقص منها كل صرفٍ للمركبين (من مراحل التصنيع أو «قبل التركيب» في القالب)، والواير واللحام من قبض
     # الأقسام المضافة وينقص منهما صرفهما للمصنّع، والسلاسل والسبيكة داخلٌ فقط — ورصيد الخزينة نفسه كما هو
     SADAYA = "سدايا"
+    CAST_NAME = "كاستنج"                  # اسم حركات «فاقد» الكاستنج (صرفه وقبضه — والقبض هو الشجر)
     TREASURY_KINDS = (("سدايا", "شغل 4 + شغل 8 − صرف المركبين"),
                       ("سلاسل", "المصنعين قبض/سلاسل"),
-                      ("سبيكة", "قبض الأقسام المضافة"),
+                      ("كسر", "قبض/كسر − صرف الكاستنج كسر"),
+                      ("سبيكة", "قبض الأقسام − صرف سبيكة"),
+                      ("شجر", "قبض الكاستنج − صرف شجر"),
                       ("واير", "قبض الأقسام − صرف واير للمصنّع"),
                       ("لحام", "قبض الأقسام − صرف لحام للمصنّع"))
 
-    def treasury_kind_of(self, inv, makers, assemblers, qabd_types):
-        """(النوع، 1 داخل أو ‎-1 خارج) للحركة في تفصيل الخزينة، أو None"""
+    def treasury_kind_of(self, inv, makers, assemblers, qabd_types, sarf_types=()):
+        """(النوع، 1 داخل أو ‎-1 خارج) للحركة في تفصيل الخزينة، أو None:
+          المصنّع: شغل 4/8 ← السدايا، والسلاسل، وقبض/كسر ← الكسر داخل؛ وصرف لحام/واير/شجر ← خارج من رصيدها
+          المركّب: كل صرفٍ له ← السدايا خارج
+          الكاستنج (فاقد): القبض ← الشجر داخل، والصرف بنوعه (كسر/سبيكة) ← خارج
+          الأقسام: الصرف بنوعه (سبيكة/شجر) ← خارج، والقبض بنوعه (سبيكة/واير/لحام) ← داخل"""
         if inv.get("settled_status") != "ACTIVE":
             return None
         t, name = inv.get("النوع"), inv.get("الاسم")
@@ -16799,13 +16842,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return self.SADAYA, 1
             if t == "المفنش ٨ بالالف":
                 return (self.CHAINS_HEAD if self.movement_slot(inv) == self.MFG_CHAINS_SLOT else self.SADAYA), 1
-            if t == "صرف ذهب" and self.movement_slot(inv) in ("صرف لحام", "صرف واير"):
+            if t == "قبض ذهب":
+                return "كسر", 1
+            if t == "صرف ذهب" and self.movement_slot(inv) in ("صرف لحام", "صرف واير", "صرف شجر"):
                 return self.note_head(inv), -1
             return None
         if name in assemblers:
             return (self.SADAYA, -1) if t == "صرف ذهب" else None
-        if t in qabd_types and self.note_head(inv) in self.RECEIPT_KINDS:
-            return self.note_head(inv), 1
+        if name == self.CAST_NAME and t == "قبض كاستنج":
+            return self.TREE_HEAD, 1
+        head = self.note_head(inv)
+        if t in sarf_types and head in self.ISSUE_HEADS:
+            return head, -1
+        if t in qabd_types and head in self.RECEIPT_KINDS:
+            return head, 1
         return None
 
     def treasury_kind_breakdown(self, month=None):
@@ -16814,18 +16864,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         month = month or self.current_display_month
         makers = set(self.categories.get("المصنعين", []))
         assemblers = set(self.categories.get("المركبين", []))
-        qabd_types = set()
+        qabd_types, sarf_types = set(), set()
         for cat in self.get_all_stage_categories():
             try:
-                qabd_types.add(self.get_stage_config(cat)[1])
+                madin, qabd = self.get_stage_config(cat)[:2]
             except Exception:
                 continue
+            sarf_types.add(madin)
+            qabd_types.add(qabd)
         out = {k: {"opening": 0.0, "in": 0.0, "out": 0.0, "moves": []} for k, _src in self.TREASURY_KINDS}
         for period, invs in self.invoices_by_period().items():
             if not period or period > month:
                 continue
             for inv in invs:
-                hit = self.treasury_kind_of(inv, makers, assemblers, qabd_types)
+                hit = self.treasury_kind_of(inv, makers, assemblers, qabd_types, sarf_types)
                 if not hit or hit[0] not in out:
                     continue
                 kind, sign = hit
@@ -16845,7 +16897,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """ما يغيّره ترحيل خانات الصف في تفصيل الخزينة ← {النوع: +الداخل/−الخارج}"""
         if cat == "المصنعين":
             m = {"المفنش ٤ بالالف": (self.SADAYA, 1), "المفنش ٨ بالالف": (self.SADAYA, 1),
-                 self.MFG_CHAINS_SLOT: (self.CHAINS_HEAD, 1), "صرف لحام": ("لحام", -1), "صرف واير": ("واير", -1)}
+                 self.MFG_CHAINS_SLOT: (self.CHAINS_HEAD, 1), "قبض ذهب": ("كسر", 1), "صرف لحام": ("لحام", -1),
+                 "صرف واير": ("واير", -1), "صرف شجر": (self.TREE_HEAD, -1)}
         elif cat == "المركبين":
             m = {"صرف ذهب": (self.SADAYA, -1)}
         else:
@@ -16881,7 +16934,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         data = self.treasury_kind_breakdown(month)
         win = ctk.CTkToplevel(self)
         win.title("تفصيل رصيد الخزينة")
-        self.fit_dialog_to_screen(win, 900, 670)
+        self.fit_dialog_to_screen(win, 900, 700)
         win.transient(self)
         try:
             win.grab_set()
@@ -16935,10 +16988,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                                 inv.get("row_number", "") or "-", inv.get("set_number", "") or "-",
                                                 f"{inv.get('الوزن', 0.0):.2f}", inv.get("البيان", "") or ""))
         tree.bind("<<TreeviewSelect>>", show_kind, add="+")
-        ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين، وينقص منها كل صرفٍ للمركبين (مراحل التصنيع أو «قبل "
-                               "التركيب» في القالب). الواير واللحام من خانة القبض في الأقسام المضافة، وينقص منهما صرفهما "
-                               "للمصنّع. «رصيد سابق» ما بقي من الفترات السابقة، والرصيد = سابق + داخل − خارج — ورصيد "
-                               "الخزينة نفسه كما هو",
+        ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين وينقص منها صرف المركبين. الكسر من قبض/كسر وينقص بصرف "
+                               "الكاستنج كسراً. الشجر من قبض الكاستنج وينقص بصرفه للمصنّع أو للأقسام. السبيكة والواير "
+                               "واللحام من قبض الأقسام وتنقص بصرفها. «رصيد سابق» ما بقي من الفترات السابقة، والرصيد = "
+                               "سابق + داخل − خارج — ورصيد الخزينة نفسه كما هو",
                      font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=840,
                      justify="center").pack(pady=(0, 4))
         ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=36,
@@ -24329,103 +24382,87 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         body = ctk.CTkFrame(tab, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=8, pady=(2, 6))
 
-        # ── بجانب الورقة (يساراً): البحث وطقم جديد والسهمان، ثم الأزرار وحال الطقم وحركاته المرحَّلة —
-        #    فتأخذ الورقة ارتفاع الشاشة كله ويظهر القالب كاملاً ──
+        # ── بجانب الورقة (يساراً) — بسيطٌ بلا نصوص (1.86): حال الطقم (وتفاصيله ومفتاح الألوان في تلميحه)، والبحث،
+        #    والسهمان وطقم جديد، وتوليد الطقم وأزراره أيقونات، ثم بطاقة المرحلة وأزرار المراحل أسفلها ──
         side = ctk.CTkFrame(body, width=300, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                             border_width=1, border_color=(UI["line"], "#2A313B"))
         side.pack(side="left", fill="y", padx=(0, 6))
         side.pack_propagate(False)
+        st["side"] = side
         st["chip"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 14, "bold"), corner_radius=10, height=30,
                                   fg_color=(UI["primary_soft"], "#22324A"), text_color=UI_TITLE)
-        st["chip"].pack(fill="x", padx=10, pady=(8, 2))          # حال الطقم (والعنوان في رأس الشاشة)
+        st["chip"].pack(fill="x", padx=10, pady=(8, 4))          # حال الطقم (والعنوان في رأس الشاشة)
+        st["chip_tip"] = HoverTip(st["chip"], "")
         srow = ctk.CTkFrame(side, fg_color="transparent")
         srow.pack(fill="x", padx=10, pady=2)
-        ctk.CTkButton(srow, text="🔎 فتح", font=(UI_FONT, 13, "bold"), width=70, height=32,
-                      command=lambda: self.sb_open_search(), **BUTTON_STYLES["primary"]).pack(side="left")
-        search = ctk.CTkEntry(srow, font=(UI_FONT, 14, "bold"), justify="center", height=32,
-                              placeholder_text="رقم التشغيل أو باركود")
+        b_open = ctk.CTkButton(srow, text="🔎", font=(UI_FONT, 15, "bold"), width=40, height=32,
+                               command=lambda: self.sb_open_search(), **BUTTON_STYLES["primary"])
+        b_open.pack(side="left")
+        HoverTip(b_open, "فتح الطقم (أو Enter في الخانة)")
+        search = ctk.CTkEntry(srow, font=(UI_FONT, 15, "bold"), justify="center", height=32,
+                              placeholder_text="رقم التشغيل")
         search.pack(side="right", fill="x", expand=True, padx=(0, 4))
+        HoverTip(search, "رقم التشغيل أو امسح باركوده ثم Enter")
         st["search"] = search
-        # طقم جديد والسهمان بين الطقوم في صفٍّ واحد (العمود الجانبي يتسع للوحة المصنّع على شاشة ٧٦٨)
         nav = ctk.CTkFrame(side, fg_color="transparent")
         nav.pack(fill="x", padx=8, pady=2)
-        nav.grid_columnconfigure(3, weight=1)
-        btn_new = ctk.CTkButton(nav, text="➕ طقم جديد", font=(UI_FONT, 13, "bold"), height=30,
-                                command=self.sb_new_set, **BUTTON_STYLES["secondary"])
-        btn_new.grid(row=0, column=3, padx=2, sticky="ew")
-        HoverTip(btn_new, "توليد طقم جديد: يضع رقم التشغيل التالي في خانة NO بالقالب — اكتب رقمك أو اتركه ثم Enter")
-        st["btn_prev"] = ctk.CTkButton(nav, text="▶", font=(UI_FONT, 13, "bold"), height=30, width=38,
+        nav.grid_columnconfigure(1, weight=1)
+        st["btn_prev"] = ctk.CTkButton(nav, text="▶", font=(UI_FONT, 13, "bold"), height=30, width=40,
                                        command=lambda: self.sb_step(-1), **BUTTON_STYLES["secondary"])
         st["btn_prev"].grid(row=0, column=2, padx=2)
         HoverTip(st["btn_prev"], "الطقم السابق")
-        st["counter"] = ctk.CTkLabel(nav, text="-", font=(UI_FONT, 13, "bold"), width=56,
+        st["counter"] = ctk.CTkLabel(nav, text="-", font=(UI_FONT, 13, "bold"),
                                      text_color=(UI["muted"], "#9AA4B2"))
-        st["counter"].grid(row=0, column=1, padx=2)
-        st["btn_next"] = ctk.CTkButton(nav, text="◀", font=(UI_FONT, 13, "bold"), height=30, width=38,
+        st["counter"].grid(row=0, column=1, padx=2, sticky="ew")
+        st["btn_next"] = ctk.CTkButton(nav, text="◀", font=(UI_FONT, 13, "bold"), height=30, width=40,
                                        command=lambda: self.sb_step(1), **BUTTON_STYLES["secondary"])
         st["btn_next"].grid(row=0, column=0, padx=2)
         HoverTip(st["btn_next"], "الطقم التالي")
-        # قبض من المصنّع (1.84) — مرتبط بقسم المصنعين في مراحل التصنيع: الاسم، وقبض الكسر، والشغل بنوعه، ورقم التشغيل
-        self.sb_build_mfg_panel(side)
-        ctk.CTkFrame(side, height=1, fg_color=(UI["line"], "#2A313B")).pack(fill="x", padx=10, pady=(4, 3))
-        st["btn_produce"] = ctk.CTkButton(side, text="🏭 توليد الطقم", height=36,
+        btn_new = ctk.CTkButton(nav, text="➕", font=(UI_FONT, 15, "bold"), height=30, width=40,
+                                command=self.sb_new_set, **BUTTON_STYLES["secondary"])
+        btn_new.grid(row=0, column=3, padx=(8, 2))
+        HoverTip(btn_new, "طقم جديد: يضع رقم التشغيل التالي في خانة NO بالقالب — اكتب رقمك أو اتركه ثم Enter")
+        st["btn_produce"] = ctk.CTkButton(side, text="🏭 توليد الطقم", height=34,
                                           font=ctk.CTkFont(family=UI_FONT, size=15, weight="bold"),
                                           command=lambda: self.sb_produce_current(), **BUTTON_STYLES["primary"])
-        st["btn_produce"].pack(fill="x", padx=10, pady=2)
+        st["btn_produce"].pack(fill="x", padx=10, pady=(6, 2))
         HoverTip(st["btn_produce"], "يجعل الطقم جاهزاً للبيع: رقمه في المبيعات يملأ الذهب (الصافي) والفصوص والأحجار والماس")
-        grid = ctk.CTkFrame(side, fg_color="transparent")
-        grid.pack(fill="x", padx=8, pady=2)
-        grid.grid_columnconfigure((0, 1), weight=1, uniform="sb_side")
-        st["btn_unproduce"] = ctk.CTkButton(grid, text="↩️ إلغاء التوليد", height=30, font=(UI_FONT, 13, "bold"),
-                                            command=lambda: self.sb_unproduce_current(), **BUTTON_STYLES["secondary"])
-        st["btn_unproduce"].grid(row=0, column=0, padx=2, pady=2, sticky="ew")
-        st["btn_edit"] = ctk.CTkButton(grid, text="✏️ تعديل", height=30, font=(UI_FONT, 13, "bold"),
-                                       command=lambda: self.sb_toggle_edit(), **BUTTON_STYLES["secondary"])
-        st["btn_edit"].grid(row=0, column=1, padx=2, pady=2, sticky="ew")
-        # الطباعة وكل الطقوم والحذف في صفٍّ واحد (كان الحذف صفاً وحده)
-        grid3 = ctk.CTkFrame(side, fg_color="transparent")
-        grid3.pack(fill="x", padx=8, pady=(0, 2))
-        grid3.grid_columnconfigure((0, 1, 2), weight=1)
-        for (text, cmd, tip, style), col in zip((
-                ("🖨️ طباعة", lambda: self.sb_print(), "سند رقم التشغيل محمّلاً بكل قيم القالب", "primary"),
-                ("📋 كل الطقوم", self.open_sb_list_window, "كل الطقوم في القالب: الحالة والأوزان — والبحث والفتح",
+        # أزرار الطقم أيقوناتٌ في صفٍّ واحد (اسم كلٍّ في تلميحه)
+        icons = ctk.CTkFrame(side, fg_color="transparent")
+        icons.pack(fill="x", padx=8, pady=2)
+        icons.grid_columnconfigure(tuple(range(5)), weight=1, uniform="sb_icons")
+        for col, (key, text, cmd, tip, style) in enumerate((
+                ("btn_delete", "🗑️", lambda: self.sb_delete_current(), "حذف قالب الطقم (وحركاته المرحَّلة منه إن وافقت)",
+                 "danger"),
+                ("btn_unproduce", "↩️", lambda: self.sb_unproduce_current(), "إلغاء التوليد", "secondary"),
+                ("btn_list", "📋", self.open_sb_list_window, "كل الطقوم في القالب: الحالة والأوزان — والبحث والفتح",
                  "secondary"),
-                ("🗑️ حذف", lambda: self.sb_delete_current(), "حذف قالب الطقم (وحركاته المرحَّلة منه إن وافقت)",
-                 "danger")), (2, 1, 0)):
-            b = ctk.CTkButton(grid3, text=text, height=30, width=60, font=(UI_FONT, 12, "bold"), command=cmd,
+                ("btn_print", "🖨️", lambda: self.sb_print(), "طباعة سند رقم التشغيل محمّلاً بكل قيم القالب", "secondary"),
+                ("btn_edit", "✏️", lambda: self.sb_toggle_edit(), "تعديل الطقم / إنهاء التعديل", "secondary"))):
+            b = ctk.CTkButton(icons, text=text, height=32, width=44, font=(UI_FONT, 15), command=cmd,
                               **BUTTON_STYLES[style])
             b.grid(row=0, column=col, padx=2, pady=2, sticky="ew")
             HoverTip(b, tip)
-            if style == "danger":
-                st["btn_delete"] = b
+            st[key] = b
         if view_only:
             for b in (btn_new, st["btn_edit"], st["btn_delete"]):
                 b.configure(state="disabled")
-        st["info"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12), text_color=(UI["muted"], "#9AA4B2"),
-                                  anchor="e", justify="right", wraplength=270)
-        st["info"].pack(fill="x", padx=10, pady=(4, 0))
+        # تنبيهات الطقم (الخياس السالب…) تظهر هنا حين توجد فقط
         st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12, "bold"), wraplength=270, justify="right",
                                   text_color=(UI["danger"], "#F08A8F"), anchor="e")
-        st["warn"].pack(fill="x", padx=10)
-        # مفتاح الألوان في سطرٍ واحد بخطٍّ أصغر ومربعاتٍ أصغر (العمود الجانبي يتسع للوحة المصنّع على شاشة ٧٦٨)
-        legend = ctk.CTkFrame(side, fg_color="transparent")
-        legend.pack(fill="x", padx=8, pady=(3, 0))
-        for color, text in ((self.SB_PAPER["posted"], "مُرحَّل"), (self.SB_PAPER["pending"], "لم يُرحَّل"),
-                            (self.SB_PAPER["calc"], "محسوب"), (self.SB_PAPER["ext"], "من المبيعات")):
-            tk.Label(legend, bg=color, width=1, relief="solid", bd=1).pack(side="right", padx=(4, 2))
-            ctk.CTkLabel(legend, text=text, font=(UI_FONT, 11), text_color=(UI["ink"], "#E5E7EB"),
-                         height=16).pack(side="right")
-        # مفاتيح الورقة في تلميح «حركات الطقم» (كانت سطرين ثابتين يأخذان مكان لوحة المصنّع)
-        log_title = ctk.CTkLabel(side, text="حركات الطقم المرحَّلة  ⌨️", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE,
-                                 anchor="e")
-        log_title.pack(fill="x", padx=10, pady=(4, 0))
-        HoverTip(log_title, "Enter: ترحيل الخانة والتالية  •  الأسهم: بين الخانات\n"
-                            "المسافة: النوع  •  Esc: إلغاء ما لم يُرحَّل")
-        log_frame = ttk.Frame(side)
-        log_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
-        st["log"] = self.create_standard_treeview(log_frame, ("التاريخ", "الحركة", "الوزن"), height=4)
-        st["log"].bind("<Double-1>", lambda e: self.sb_open_log_row(), add="+")
-        self.sb_log_columns()
+        st["warn_anchor"] = ctk.CTkFrame(side, height=1, fg_color=(UI["line"], "#2A313B"))
+        st["warn_anchor"].pack(fill="x", padx=10, pady=(6, 4))
+        # بطاقة المرحلة: المصنعين (الافتراضي) أو مرحلةٌ أُضيفت (الكاستنج، صب الداخلي…) — وأزرار المراحل تحتها
+        st["stage_card"] = ctk.CTkFrame(side, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"), border_width=1,
+                                        border_color=(UI["line"], "#2A313B"))
+        st["stage_card"].pack(fill="x", padx=8, pady=(0, 4))
+        st["stage_forms"], st["stage_sel"] = {}, None
+        self.sb_build_mfg_panel(st["stage_card"])
+        st["stage_forms"][self.SB_MFG_STAGE] = {"frame": st["mfgp"]["card"], "first": st["mfgp"]["name"]._entry}
+        st["stage_bar"] = ctk.CTkFrame(side, fg_color="transparent")
+        st["stage_bar"].pack(fill="x", padx=8, pady=(0, 8))
+        self.sb_build_stage_bar()
+        self.sb_select_stage(self.SB_MFG_STAGE, focus=False)
 
         # ── الورقة: القالب نفسه كاملاً بارتفاع المساحة ──
         holder = ctk.CTkFrame(body, corner_radius=12, fg_color=(UI["canvas"], "#0F1318"))
@@ -24469,12 +24506,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # ── قبض من المصنّع في القالب (1.84): بطاقة صغيرة بجانب الورقة مرتبطة بقسم المصنعين — Enter والأسهم بين خاناتها ──
     def sb_build_mfg_panel(self, side):
+        """نموذج المصنعين في بطاقة المرحلة (side): يُعرض بزر «المصنعين» أسفلها — sb_select_stage"""
         st = self._sb_state
         m = {"kind": self.MFG_WORK_KINDS[0], "sarf_kind": self.MFG_SARF_KINDS[0]}
         st["mfgp"] = m
-        card = ctk.CTkFrame(side, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"), border_width=1,
-                            border_color=(UI["line"], "#2A313B"))
-        card.pack(fill="x", padx=8, pady=(4, 2))
+        card = ctk.CTkFrame(side, fg_color="transparent")
         m["card"] = card
         grid = ctk.CTkFrame(card, fg_color="transparent")
         grid.pack(fill="x", padx=6, pady=(4, 2))
@@ -24511,20 +24547,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         m["name"].set("")
         m["name"].grid(row=0, column=0, sticky="ew", pady=1)
         self.bind_name_autocomplete(m["name"], makers)
-        # الصرف بنوعه: ذهب (من الذهب العام) أو لحام أو واير (ينقصان من رصيدهما في تفصيل الخزينة)
-        srow2 = ctk.CTkFrame(grid, fg_color="transparent")
-        srow2.grid(row=1, column=0, columnspan=2, sticky="ew", pady=1)
-        srow2.grid_columnconfigure(1, weight=1)
-        label("صرف", 2, parent=srow2, padx=(4, 0))
-        m["sarf"] = ctk.CTkEntry(srow2, font=(UI_FONT, 13), justify="center", height=27, width=50)
-        m["sarf"].grid(row=0, column=1, sticky="ew", padx=(0, 4))
-        m["sarf_kinds"], m["sarf_btns"] = options(srow2, self.MFG_SARF_KINDS, "sarf", 40)
-        m["sarf_kinds"].grid(row=0, column=0, sticky="w")
-        HoverTip(m["sarf_kinds"], "نوع الصرف: ذهب (من الذهب العام)، أو لحام أو واير (ينقصان من رصيدهما في تفصيل الخزينة)")
+        # الصرف بنوعه: ذهب (من الذهب العام) أو لحام أو واير أو شجر (تنقص من رصيدها في تفصيل الخزينة) —
+        # الخيارات الأربعة في صفٍّ تحت خانته فلا تضيّقها
+        label("صرف", 1)
+        m["sarf"] = ctk.CTkEntry(grid, font=(UI_FONT, 13), justify="center", height=27, width=50)
+        m["sarf"].grid(row=1, column=0, sticky="ew", pady=1)
+        m["sarf_kinds"], m["sarf_btns"] = options(grid, self.MFG_SARF_KINDS, "sarf", 40)
+        m["sarf_kinds"].grid(row=2, column=0, columnspan=2, sticky="e", pady=(0, 2))
+        HoverTip(m["sarf_kinds"], "نوع الصرف: ذهب (من الذهب العام)، أو لحام أو واير أو شجر (تنقص من رصيدها في تفصيل "
+                                  "الخزينة)")
         # تحتها خانتا «قبض كسر» و«شغل» جنباً إلى جنب، وتحتهما خيارات الشغل الثلاثة
-        label("قبض كسر", 2)
+        label("قبض كسر", 3)
         wrow = ctk.CTkFrame(grid, fg_color="transparent")
-        wrow.grid(row=2, column=0, sticky="ew", pady=1)
+        wrow.grid(row=3, column=0, sticky="ew", pady=1)
         wrow.grid_columnconfigure((0, 2), weight=1, uniform="sb_mfg_w")
         m["kasr"] = ctk.CTkEntry(wrow, font=(UI_FONT, 13), justify="center", height=27, width=50)
         m["kasr"].grid(row=0, column=2, sticky="ew")
@@ -24534,27 +24569,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         m["work"].grid(row=0, column=0, sticky="ew")
         # نوع الشغل: صفٌّ بعرض اللوحة كلها (الأزرار الثلاثة بأسمائها كاملة)
         krow = ctk.CTkFrame(grid, fg_color="transparent")
-        krow.grid(row=3, column=0, columnspan=2, sticky="ew", pady=1)
+        krow.grid(row=4, column=0, columnspan=2, sticky="ew", pady=1)
         ctk.CTkLabel(krow, text="النوع", font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e",
                      height=26).pack(side="right")
         kinds, m["kind_btns"] = options(krow, self.MFG_WORK_KINDS, "work", 48)
         kinds.pack(side="right", padx=(0, 6))
         m["kinds"] = kinds
-        label("رقم التشغيل", 4)
+        label("رقم التشغيل", 5)
         srow = ctk.CTkFrame(grid, fg_color="transparent")
-        srow.grid(row=4, column=0, sticky="ew", pady=1)
+        srow.grid(row=5, column=0, sticky="ew", pady=1)
         m["row"] = ctk.CTkEntry(srow, font=(UI_FONT, 13), justify="center", height=27, width=44,
                                 placeholder_text="الصف")
         m["row"].pack(side="left", padx=(0, 3))
-        m["set"] = ctk.CTkEntry(srow, font=(UI_FONT, 13, "bold"), justify="center", height=27, width=60)
+        # رقم التشغيل اختياري (1.86): فارغاً تظهر فيه علامة ⊘ (لم يُسجَّل)، والترحيل يمضي بالصف وحده
+        m["set"] = ctk.CTkEntry(srow, font=(UI_FONT, 13, "bold"), justify="center", height=27, width=60,
+                                placeholder_text="⊘")
         m["set"].pack(side="right", fill="x", expand=True)
-        HoverTip(m["row"], "رقم الصف: يُملأ من صف رقم التشغيل المسجّل للمصنّع — ويُكتب لرقمٍ جديد")
+        HoverTip(m["set"], "رقم التشغيل اختياري — ⊘ يعني لم يُسجَّل: تُرحَّل الحركة لصفّها (وتأخذ رقم تشغيله المسجّل إن "
+                           "كان له)")
+        HoverTip(m["row"], "رقم الصف: يُملأ من صف رقم التشغيل المسجّل للمصنّع — ويُكتب لصفٍّ جديد أو بلا رقم تشغيل")
         m["btn"] = ctk.CTkButton(card, text="💾 ترحيل لحساب المصنّع", height=27, font=(UI_FONT, 13, "bold"),
                                  command=self.sb_mfg_submit, **BUTTON_STYLES["primary"])
         m["btn"].pack(fill="x", padx=8, pady=(1, 5))
-        HoverTip(m["btn"], "الصرف ← صرف (ذهب) أو صرف/لحام أو صرف/واير، وقبض الكسر ← قبض/كسر، وشغل 4 ← قبض/٤ (ويُرحَّل "
-                           "«قبل» بوليش 1 بقيمته)، وشغل 8 ← قبض/٨، والسلاسل ← قبض/سلاسل (مثل شغل 8) — في صف رقم "
-                           "التشغيل بحساب المصنّع")
+        HoverTip(m["btn"], "الصرف ← صرف (ذهب) أو صرف/لحام أو صرف/واير أو صرف/شجر، وقبض الكسر ← قبض/كسر، وشغل 4 ← "
+                           "قبض/٤، وشغل 8 ← قبض/٨، والسلاسل ← قبض/سلاسل (مثل شغل 8) — في صف المصنّع بقسم المصنعين")
         chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,
                  m["set"]._entry, m["row"]._entry]
         m["chain"] = chain
@@ -24609,6 +24647,276 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         values = list(values)
         self.sb_mfg_set_kind(values[(values.index(m[sel_key]) + step) % len(values)], group=group)
 
+    # ── مراحل جانب القالب (1.86): المصنعين دائماً، ومراحل تُضاف بزر ＋ (الكاستنج وأي قسمٍ مضاف مثل «صب الداخلي»).
+    #    زر المرحلة يحوّل البطاقة إلى خاناتها، والترحيل منها بمحرّك مراحل التصنيع نفسه (فيظهر هناك كما لو أُدخل منها) ──
+    SB_MFG_STAGE = "المصنعين"
+    SB_STAGES_KEY = "sb_side_stages"
+
+    def sb_side_stage_options(self):
+        """المراحل التي تُضاف لجانب القالب: الكاستنج، والأقسام المضافة"""
+        return ["الكاستنج"] + [c for c in self.categories.get("أقسام_خياس_إضافية", []) if c != "الكاستنج"]
+
+    def sb_side_stages(self):
+        """المراحل المضافة لجانب القالب بترتيب إضافتها (محفوظة؛ وقسمٌ حُذف أو أُعيدت تسميته يسقط منها)"""
+        try:
+            saved = json.loads(self.get_setting(self.SB_STAGES_KEY, "[]") or "[]")
+        except (TypeError, ValueError):
+            saved = []
+        avail = self.sb_side_stage_options()
+        out = []
+        for x in saved if isinstance(saved, list) else []:
+            if x in avail and x not in out:
+                out.append(x)
+        return out
+
+    def sb_set_side_stages(self, stages):
+        self.set_setting(self.SB_STAGES_KEY, json.dumps(list(stages), ensure_ascii=False))
+
+    def sb_stage_label(self, stage):
+        return "المصنعين" if stage == self.SB_MFG_STAGE else self.get_display_label(stage)
+
+    def sb_build_stage_bar(self):
+        """أزرار المراحل تحت البطاقة: المصنعين، ثم المضافة، ثم ＋ — اثنان في كل صف فتظهر أسماؤها كاملة (والزر الأيمن
+        على مرحلةٍ يزيلها)"""
+        st = self._sb_state
+        bar = st["stage_bar"]
+        for w in bar.winfo_children():
+            w.destroy()
+        st["stage_btns"] = {}
+        items = [self.SB_MFG_STAGE] + self.sb_side_stages() + ["+"]
+        cols = 2
+        for c in range(cols):
+            bar.grid_columnconfigure(c, weight=1, uniform="sb_stages")
+        for i, key in enumerate(items):
+            r, c = divmod(i, cols)
+            if key == "+":
+                b = ctk.CTkButton(bar, text="＋", height=30, font=(UI_FONT, 15, "bold"),
+                                  command=self.sb_add_stage_menu, **BUTTON_STYLES["secondary"])
+                HoverTip(b, "إضافة مرحلة: الكاستنج أو قسمٌ مضاف (مثل صب الداخلي) — والزر الأيمن على مرحلةٍ يزيلها")
+                if getattr(self, "view_only", False):
+                    b.configure(state="disabled")
+                st["stage_add_btn"] = b
+            else:
+                b = ctk.CTkButton(bar, text=self.sb_stage_label(key), height=30, font=(UI_FONT, 12, "bold"),
+                                  command=lambda k=key: self.sb_select_stage(k), **BUTTON_STYLES["secondary"])
+                if key != self.SB_MFG_STAGE:
+                    b.bind("<Button-3>", lambda e, k=key: self.sb_stage_context(e, k), add="+")
+                st["stage_btns"][key] = b
+            b.grid(row=r, column=cols - 1 - c, padx=2, pady=2, sticky="ew")
+        self.style_segment_buttons(st["stage_btns"], st.get("stage_sel"))
+
+    def sb_select_stage(self, stage, focus=True):
+        """زر مرحلة: بطاقة الجانب بخاناتها (تُبنى أول مرة)، والزر بلون المختار"""
+        st = self._sb_state
+        if stage != self.SB_MFG_STAGE and stage not in self.sb_side_stages():
+            stage = self.SB_MFG_STAGE
+        form = st["stage_forms"].get(stage)
+        if form is None:
+            form = self.sb_build_stage_form(stage)
+            st["stage_forms"][stage] = form
+        for k, f in st["stage_forms"].items():
+            if k != stage:
+                f["frame"].pack_forget()
+        form["frame"].pack(fill="x", padx=2, pady=2)
+        st["stage_sel"] = stage
+        self.style_segment_buttons(st.get("stage_btns", {}), stage)
+        if focus:
+            self.after(30, lambda: form["first"].focus_set())
+        return form
+
+    def sb_add_stage_menu(self):
+        st = self._sb_state
+        current = self.sb_side_stages()
+        avail = [x for x in self.sb_side_stage_options() if x not in current]
+        if not avail:
+            self.toast("كل المراحل مضافة", "info")
+            return
+        btn = st["stage_add_btn"]
+        menu = tk.Menu(self, tearoff=0, font=(UI_FONT, 13))
+        for x in avail:
+            menu.add_command(label=self.get_display_label(x), command=lambda v=x: self.sb_add_stage(v))
+        menu.post(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+
+    def sb_add_stage(self, stage):
+        if getattr(self, "view_only", False) or stage not in self.sb_side_stage_options():
+            return False
+        stages = self.sb_side_stages()
+        if stage not in stages:
+            self.sb_set_side_stages(stages + [stage])
+        self.sb_build_stage_bar()
+        self.sb_select_stage(stage)
+        return True
+
+    def sb_remove_stage(self, stage):
+        if getattr(self, "view_only", False):
+            return False
+        st = self._sb_state
+        self.sb_set_side_stages([x for x in self.sb_side_stages() if x != stage])
+        form = st["stage_forms"].pop(stage, None)
+        if form is not None:
+            form["frame"].destroy()
+        self.sb_build_stage_bar()
+        if st.get("stage_sel") == stage or st.get("stage_sel") not in st["stage_forms"]:
+            self.sb_select_stage(self.SB_MFG_STAGE, focus=False)
+        return True
+
+    def sb_stage_context(self, event, stage):
+        if getattr(self, "view_only", False):
+            return
+        menu = tk.Menu(self, tearoff=0, font=(UI_FONT, 13))
+        menu.add_command(label=f"✖ إزالة «{self.sb_stage_label(stage)}» من القالب",
+                         command=lambda: self.sb_remove_stage(stage))
+        menu.post(event.x_root, event.y_root)
+
+    def sb_build_stage_form(self, stage):
+        """خانات مرحلةٍ في بطاقة الجانب، بسيطةً كمرحلتها في مراحل التصنيع:
+          الكاستنج: الصف، والصرف بنوعه (كسر / سبيكة)، وقبض الشجر ومسترجع الأشجار، وعدد الأشجار
+          قسمٌ مضاف: الصف، والصرف بنوعه (سبيكة / شجر)، والقبض بنوعه (عام / سبيكة / واير / لحام)
+        Enter للتالية وفي آخرها يرحّل، و↑ ↓ بين الخانات، و← → أو المسافة على الخيارات"""
+        st = self._sb_state
+        frame = ctk.CTkFrame(st["stage_card"], fg_color="transparent")
+        grid = ctk.CTkFrame(frame, fg_color="transparent")
+        grid.pack(fill="x", padx=6, pady=(4, 2))
+        grid.grid_columnconfigure(0, weight=1)
+        dark = ctk.get_appearance_mode() == "Dark"
+        ink = (UI["ink"], "#E5E7EB")
+        sf = {"stage": stage, "frame": frame, "entries": {}, "groups": {}}
+
+        def label(parent, text, **gkw):
+            return ctk.CTkLabel(parent, text=text, font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e", height=26,
+                                **gkw)
+
+        def entry(parent, **kw):
+            return ctk.CTkEntry(parent, font=(UI_FONT, 13), justify="center", height=27, width=50, **kw)
+
+        def options(parent, group, values, width):
+            box = tk.Frame(parent, takefocus=1, highlightthickness=2, bd=0,
+                           bg="#1D232B" if dark else UI["surface_alt"],
+                           highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
+            btns = {}
+            for kd in values:
+                b = ctk.CTkButton(box, text=kd, width=width, height=25, font=(UI_FONT, 12, "bold"), corner_radius=6,
+                                  command=lambda k=kd: self.sb_stage_set_option(sf, group, k, focus=True))
+                b.pack(side="right", padx=1)
+                btns[kd] = b
+            sf["groups"][group] = {"values": tuple(values), "sel": values[0], "btns": btns, "frame": box}
+            return box
+
+        def line(r, text, widget_builder):
+            label(grid, text, width=70).grid(row=r, column=1, sticky="e", padx=(4, 0))
+            holder = ctk.CTkFrame(grid, fg_color="transparent")
+            holder.grid(row=r, column=0, sticky="ew", pady=1)
+            widget_builder(holder)
+
+        def kinds(r, group, values, width):
+            """خيارات الصرف أو القبض في صفٍّ تحت خانته (كلوحة المصنّع) فلا تضيّقها"""
+            options(grid, group, values, width).grid(row=r, column=0, columnspan=2, sticky="e", pady=(0, 2))
+
+        def one(key):
+            def build(holder):
+                sf["entries"][key] = entry(holder)
+                sf["entries"][key].pack(fill="x", expand=True)
+            return build
+
+        def pair(key_a, text_b, key_b):
+            def build(holder):
+                holder.grid_columnconfigure((0, 2), weight=1, uniform=f"sb_pair_{key_a}")
+                sf["entries"][key_a] = entry(holder)
+                sf["entries"][key_a].grid(row=0, column=2, sticky="ew")
+                label(holder, text_b).grid(row=0, column=1, padx=4)
+                sf["entries"][key_b] = entry(holder)
+                sf["entries"][key_b].grid(row=0, column=0, sticky="ew")
+            return build
+
+        e = sf["entries"]
+        if stage == "الكاستنج":
+            line(0, "الصف", one("row"))
+            line(1, "صرف", one("sarf"))
+            kinds(2, "sarf", self.CAST_SARF_KINDS, 50)
+            line(3, "قبض شجر", pair("qabd", "مسترجع", "recover"))
+            line(4, "عدد الأشجار", one("trees"))
+            chain = [e["row"], e["sarf"], sf["groups"]["sarf"]["frame"], e["qabd"], e["recover"], e["trees"]]
+            HoverTip(sf["groups"]["sarf"]["frame"], "نوع الصرف: كسر أو سبيكة — ينقص من رصيده في تفصيل الخزينة")
+            HoverTip(e["qabd"], "قبض الكاستنج هو الشجر — يزيد رصيد الشجر في تفصيل الخزينة")
+        else:
+            line(0, "الصف", one("row"))
+            line(1, "صرف", one("sarf"))
+            kinds(2, "sarf", self.STAGE_SARF_KINDS, 50)
+            line(3, "قبض", one("qabd"))
+            kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 44)
+            chain = [e["row"], e["sarf"], sf["groups"]["sarf"]["frame"], e["qabd"], sf["groups"]["qabd"]["frame"]]
+            HoverTip(sf["groups"]["sarf"]["frame"], "نوع الصرف: سبيكة أو شجر — ينقص من رصيده في تفصيل الخزينة")
+            HoverTip(sf["groups"]["qabd"]["frame"], "نوع القبض: سبيكة أو واير أو لحام — يزيد رصيده في تفصيل الخزينة")
+        chain = [getattr(w, "_entry", w) for w in chain]
+        sf["chain"], sf["first"] = chain, chain[0]
+        sf["btn"] = ctk.CTkButton(frame, text=f"💾 ترحيل لـ{self.sb_stage_label(stage)}", height=27,
+                                  font=(UI_FONT, 13, "bold"), command=lambda: self.sb_stage_submit(stage),
+                                  **BUTTON_STYLES["primary"])
+        sf["btn"].pack(fill="x", padx=8, pady=(1, 5))
+        if getattr(self, "view_only", False):
+            sf["btn"].configure(state="disabled")
+
+        def go(widget, step):
+            i = chain.index(widget) + step
+            if 0 <= i < len(chain):
+                chain[i].focus_set()
+            return "break"
+
+        def on_return(widget):
+            if widget is chain[-1]:
+                self.sb_stage_submit(stage)
+                return "break"
+            return go(widget, 1)
+        for wdg in chain:
+            wdg.bind("<Return>", lambda ev, w=wdg: on_return(w), add="+")
+            wdg.bind("<KP_Enter>", lambda ev, w=wdg: on_return(w), add="+")
+            wdg.bind("<Down>", lambda ev, w=wdg: go(w, 1), add="+")
+            wdg.bind("<Up>", lambda ev, w=wdg: go(w, -1), add="+")
+        for group, g in sf["groups"].items():
+            for k, d in {"Right": -1, "Left": 1, "space": 1}.items():
+                g["frame"].bind(f"<{k}>", lambda ev, d=d, gr=group: (self.sb_stage_step_option(sf, gr, d), "break")[1])
+            self.sb_stage_set_option(sf, group, g["values"][0])
+        return sf
+
+    def sb_stage_set_option(self, sf, group, value, focus=False):
+        g = sf["groups"].get(group)
+        if not g or value not in g["values"]:
+            return
+        g["sel"] = value
+        for kd, b in g["btns"].items():
+            b.configure(**(BUTTON_STYLES["primary"] if kd == value else BUTTON_STYLES["secondary"]))
+        if focus:
+            g["frame"].focus_set()
+
+    def sb_stage_step_option(self, sf, group, step):
+        g = sf["groups"][group]
+        values = list(g["values"])
+        self.sb_stage_set_option(sf, group, values[(values.index(g["sel"]) + step) % len(values)])
+
+    def sb_stage_submit(self, stage):
+        """«💾 ترحيل» في بطاقة مرحلةٍ مضافة: بمحرّك مرحلتها في مراحل التصنيع نفسه (post_casting_loss /
+        post_generic_stage) — التأكيد بالقيم وبرصيد كل نوعٍ يتغيّر في تفصيل الخزينة"""
+        st = self._sb_state
+        sf = st["stage_forms"].get(stage)
+        if not sf:
+            return False
+        e, g, rw = sf["entries"], sf["groups"], self._read_weight
+        row = e["row"].get().strip()
+        if stage == "الكاستنج":
+            ok = self.post_casting_loss(row, rw(e["sarf"]), rw(e["qabd"]), rw(e["trees"]), rw(e["recover"]),
+                                        sarf_kind=g["sarf"]["sel"], parent=self)
+        else:
+            ok = self.post_generic_stage(stage, row, rw(e["sarf"]), rw(e["qabd"]), sarf_kind=g["sarf"]["sel"],
+                                         qabd_kind=g["qabd"]["sel"], parent=self)
+        if ok:
+            for ent in e.values():
+                ent.delete(0, "end")
+            for group, gg in g.items():
+                self.sb_stage_set_option(sf, group, gg["values"][0])      # الخيارات تعود لأولها بعد كل ترحيل
+            self.toast(f"✅ {self.sb_stage_label(stage)} — الصف {row}: في مراحل التصنيع", "success")
+            self.after(40, lambda: e["row"].focus_set())
+        return ok
+
     def sb_mfg_fill_owner(self, set_number=None):
         """رقم التشغيل في لوحة المصنّع: صفّه المسجّل لمصنّع (في الفترة المعروضة) يملأ الاسم والصف"""
         m = self._sb_state.get("mfgp")
@@ -24652,9 +24960,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # نوع الصرف يعود «ذهب» بعد كل ترحيل (فلا يُرحَّل صرفٌ تالٍ لحاماً أو وايراً سهواً)
             self.sb_mfg_set_kind(self.MFG_SARF_KINDS[0], group="sarf")
             key = self.normalize_set_number(m["set"].get())
-            if self.sb_load(key) is None:
+            if key and self.sb_load(key) is None:
                 self.sb_save(self.sb_new_record(key))        # رُحِّل من القالب: للرقم قالبه (كترحيل أي خانة منه)
-            self.toast(f"✅ رقم التشغيل {key} — في حساب المصنّع بقسم المصنعين", "success")
+            self.toast(f"✅ {('رقم التشغيل ' + key) if key else 'الصف ' + m['row'].get().strip()} — في حساب المصنّع "
+                       "بقسم المصنعين", "success")
             if st.get("key"):
                 self.sb_render()
             self.after(40, lambda: m["sarf"].focus_set())
@@ -25010,7 +25319,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
         st["editing"] = bool(editing) and not getattr(self, "view_only", False) and bool(st.get("key"))
         try:
-            st["btn_edit"].configure(text="🔒 إنهاء التعديل" if st["editing"] else "✏️ تعديل")
+            st["btn_edit"].configure(text="🔒" if st["editing"] else "✏️")
         except Exception:
             pass
         for key, cell in st["w"].items():
@@ -25164,11 +25473,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for k in list(st["w"]) + list(st["calc_items"]):
                 if k != "set_no":
                     self.sb_put(k, "")
-            st["info"].configure(text="اكتب رقم التشغيل في NO بالقالب (أو امسح باركوده) ثم Enter — أو «➕ طقم جديد»")
+            self.sb_set_info("اكتب رقم التشغيل في NO بالقالب (أو امسح باركوده) ثم Enter — أو «➕» لطقمٍ جديد")
             st["chip"].configure(text="لا طقم")
-            st["warn"].configure(text="")
+            self.sb_set_warn("")
             self.sb_fill_pieces([])
-            self.sb_fill_log(None)
             return
         rec = self.sb_load(key) or self.sb_new_record(key)
         v = self.sb_values(key, rec)
@@ -25233,7 +25541,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         sale = v.get("sale")
         if sale and "p2_after" not in v["ext"] and v["net"] is not None and abs(sale["gold"] - v["net"]) > 0.005:
             notes.append(f"⚠️ الذهب في فاتورة البيع ({sale['gold']:.2f}) يخالف الوزن الصافي في القالب ({v['net']:.2f})")
-        st["warn"].configure(text="\n".join(notes))
+        self.sb_set_warn("\n".join(notes))
         status = self.sb_status(key, rec)
         st["chip"].configure(text={"مباع": "🔵 مباع", "جاهز للبيع": "🟢 جاهز للبيع"}.get(status, "🟡 قيد التشغيل"))
         ready = rec.get("status") == self.SB_READY
@@ -25248,11 +25556,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sale:
             sale_txt = (f"\nبيع لـ {sale['name']} — فاتورة {sale['manual_no'] or '-'} ({sale['date']})"
                         + ("\nالخانات الخضراء من فاتورة البيع والتتبع" if v["ext"] else ""))
-        # رقم الطقم وحاله في البحث والشارة فوقها — هنا المركّب والبيع وآخر تعديل (سطران يتّسع لهما العمود على ٧٦٨)
-        st["info"].configure(text=f"{asm_txt}{sale_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
-                                  + ("" if st["editing"] else " — للعرض (✏️ تعديل)"))
+        # رقم الطقم وحاله في البحث والشارة — والمركّب والبيع وآخر تعديل في تلميح الشارة (الجانب بلا نصوص)
+        self.sb_set_info(f"الطقم {key} — {status}\n{asm_txt}{sale_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
+                         + ("" if st["editing"] else "\n(للعرض — ✏️ تعديل)"))
         self.sb_fill_pieces(pieces)
-        self.sb_fill_log(key)
 
     def sb_fill_pieces(self, pieces):
         st = self._sb_state
@@ -25292,52 +25599,29 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sb_focus(f"piece:{r}:{c}")
         return "break"
 
-    def sb_fill_log(self, key):
-        tree = self._sb_state.get("log")
-        if tree is None:
-            return
-        tree.delete(*tree.get_children())
-        self._sb_state["log_ids"] = {}
-        if not key:
-            return
-        rows = [inv for inv in self.invoices.values()
-                if self.normalize_set_number(inv.get("set_number")) == key
-                and inv.get("settled_status") in ("ACTIVE", "SETTLED", "SETTLED_INOUT")]
-        groups = self.sb_assembler_groups(key)
-        ids = {i["رقم الفاتورة"] for i in rows}
-        for g in groups:
-            for t in ("صرف ذهب", "قبض ذهب"):
-                rows += [i for i in g[t] if i["رقم الفاتورة"] not in ids]
-        type_map = self._stage_type_map()
-        names = {"صرف تلميع بف": "قبل (صرف)", "قبض تلميع بف": "بعد (قبض)",
-                 self.SB_P2_IN: "قبل (صرف)", self.SB_P2_OUT: "بعد (قبض)"}
-        for inv in sorted(rows, key=lambda x: (str(x.get("التاريخ", "")), x.get("رقم الفاتورة", 0))):
-            sec, label = self.movement_section(inv, type_map)
-            t = inv.get("النوع")
-            if sec == "المركبين" and t in ("صرف ذهب", "قبض ذهب"):
-                what = f"التركيب: {'قبل (صرف)' if t == 'صرف ذهب' else 'بعد (قبض)'} — {inv.get('الاسم')}"
-            elif sec in ("المصنعين", "المركبين"):
-                what = f"{label}: {t} — {inv.get('الاسم')} (الصف {inv.get('row_number') or '-'})"
-            else:
-                what = f"{label}: {names.get(t, t)}"
-            date, period = str(inv.get("التاريخ", ""))[:10], self.inv_period(inv)
-            shown = date[5:] if period and date.startswith(period) else (f"{date[5:]} ({period})" if period else date)
-            item = tree.insert("", "end", values=(shown, what, f"{inv.get('الوزن', 0.0):.2f}"))
-            self._sb_state["log_ids"][item] = inv["رقم الفاتورة"]
-        self.sb_log_columns()
+    # مفتاح الألوان ومفاتيح الورقة في تلميح شارة حال الطقم (كانت نصوصاً ثابتة في الجانب)
+    SB_HELP = ("الألوان: أزرق = مُرحَّل • أصفر = لم يُرحَّل • رمادي = محسوب • أخضر = من المبيعات\n"
+               "Enter: ترحيل الخانة والتالية • الأسهم: بين الخانات • المسافة: النوع • Esc: إلغاء ما لم يُرحَّل")
 
-    def sb_log_columns(self):
-        tree = self._sb_state["log"]
-        tree.column("التاريخ", width=66, stretch=False)          # الشهر-اليوم (والفترة إن اختلفت)
-        tree.column("الوزن", width=58, stretch=False)
-        tree.column("الحركة", width=170, stretch=True)
+    def sb_set_info(self, text):
+        """تفاصيل الطقم في تلميح شارة حاله (مع مفتاح الألوان)"""
+        tip = self._sb_state.get("chip_tip")
+        if tip is not None:
+            tip.text = (text + "\n\n" if text else "") + self.SB_HELP
+        self._sb_state["info_text"] = text
 
-    def sb_open_log_row(self):
+    def sb_set_warn(self, text):
+        """تنبيهات الطقم: تظهر في الجانب حين توجد فقط"""
         st = self._sb_state
-        sel = st["log"].selection()
-        inv_id = st.get("log_ids", {}).get(sel[0]) if sel else None
-        if inv_id in self.invoices:
-            self.show_stage_row_details([inv_id], f"حركة رقم التشغيل {st.get('key')}")
+        w = st.get("warn")
+        if w is None:
+            return
+        w.configure(text=text)
+        if text:
+            if not w.winfo_ismapped():
+                w.pack(fill="x", padx=10, pady=(2, 0), before=st["warn_anchor"])
+        else:
+            w.pack_forget()
 
     # ── الإدخال ──
     def sb_on_key(self, key, event=None):

@@ -79,7 +79,8 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "sb_voucher_sections", "SB_FLOW", "SB_POST_CELLS", "SB_PAIR_BEFORE", "sb_flow_next", "CARAT_PER_GRAM", "SALE_KIND_GOLD",
            "SALE_KIND_DIAMOND", "SALE_KINDS", "sb_p2_incomplete", "sb_sale_index", "sb_apply_sale",
            "sb_sync_from_sale", "sb_mfg_receipts", "movement_slot", "note_head", "CHAINS_HEAD", "MFG_CHAINS_SLOT",
-           "RECEIPT_KINDS", "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SADAYA", "TREASURY_KINDS", "invoices_by_period",
+           "RECEIPT_KINDS", "TREE_HEAD", "ISSUE_HEADS", "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SADAYA", "CAST_NAME",
+           "TREASURY_KINDS", "invoices_by_period",
            "treasury_kind_of", "treasury_kind_breakdown", "sub_balance_lines")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
       "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"), "IS_ADMIN_BUILD": False,

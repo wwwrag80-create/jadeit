@@ -96,7 +96,8 @@ for node in ast.walk(cls):
             if isinstance(t, ast.Name) and t.id == "ROW_EDIT_FIELDS":
                 fields = ast.literal_eval(node.value)
 # المصنعين ٩ خانات منذ 1.84: «قبض/سلاسل» (تُحسب مثل شغل 8) بعد قبض/٤ — و١١ منذ 1.85: «صرف/لحام» و«صرف/واير»
-assert len(fields["المصنعين"]) == 11 and len(fields["المركبين"]) == 5
+assert len(fields["المصنعين"]) == 12 and len(fields["المركبين"]) == 5        # و١٢ منذ 1.86: «صرف/شجر»
+assert ("صرف شجر", "صرف/شجر") in fields["المصنعين"]
 assert ("قبض سلاسل", "قبض/سلاسل") in fields["المصنعين"]
 assert ("صرف لحام", "صرف/لحام") in fields["المصنعين"] and ("صرف واير", "صرف/واير") in fields["المصنعين"]
 print(f"✔ خانات المصنعين: {len(fields['المصنعين'])} | المركبين: {len(fields['المركبين'])} — كل عمليات الصف")

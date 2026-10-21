@@ -40,11 +40,14 @@ def module_src(name):
 
 
 MEMBERS = ("_SET_DIGITS", "normalize_set_number", "inv_period", "inv_in_period", "clean_name", "rtl",
-           "CHAINS_HEAD", "MFG_CHAINS_SLOT", "MFG_WORK_KINDS", "MFG_WORK_SLOTS", "RECEIPT_KINDS", "NOTE_HEADS",
-           "note_head", "with_note_head", "movement_slot", "slot_op_type", "work4_totals", "sync_work4_polish",
+           "CHAINS_HEAD", "MFG_CHAINS_SLOT", "MFG_WORK_KINDS", "MFG_WORK_SLOTS", "RECEIPT_KINDS",
+           "TREE_HEAD", "CAST_SARF_KINDS", "STAGE_SARF_KINDS", "ISSUE_HEADS", "NOTE_HEADS",
+           "note_head", "with_note_head", "movement_slot", "slot_op_type",
+           "post_casting_loss", "post_generic_stage", "is_recovery_op", "is_row_recovery", "TREE_RETURN_NAME",
+           "CAST_ANALYSIS_OPS",
            "post_manufacturer_receipt", "find_row_by_set_number", "row_set_numbers", "plan_unified_values",
            "calculate_single_ledger", "worker_rows_raji", "invoices_by_name", "invoices_by_name_period",
-           "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SLOT_TYPES", "SLOT_HEADS", "SADAYA", "invoices_by_period",
+           "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SLOT_TYPES", "SLOT_HEADS", "SADAYA", "CAST_NAME", "invoices_by_period",
            "TREASURY_KINDS", "treasury_kind_of", "treasury_kind_breakdown", "slot_kind_deltas", "sub_balance_lines",
            "_read_weight")
 
@@ -85,6 +88,7 @@ class App(ns["Base"]):
     def recalculate_all(self): self.recalcs += 1
     def register_operation_period(self, d): pass
     def get_operation_datetime(self): return f"{M}-12 10:00:00"
+    def get_smart_default_date(self): return f"{M}-12"
     def push_undo(self, label, auto=False):
         self.undo.append(label)
         return {"label": label}
@@ -172,37 +176,22 @@ plan, skipped = a.plan_unified_values("أحمد", "2")
 assert plan == [("المفنش ٨ بالالف", 7.0), ("المفنش ٤ بالالف", 4.0)] and skipped == [("قبض سلاسل", 20.0)], (plan, skipped)
 print("✔ قاعدة الصف والخانة: صفٌّ فيه سلاسل يقبل شغل 8 وشغل 4، والسلاسل لا تُكرَّر فيه")
 
-# ═══ ٤) شغل 4 ← «قبل» بوليش 1 لرقم التشغيل: ترحيل وتعديل وحذف ═══
-before = {}
-assert a.sync_work4_polish(before) == ["5001"] and a.polish("5001") == [30.0], a.polish("5001")
+# ═══ ٤) لا «قبل» بوليش 1 تلقائياً (1.86): جداول القالب تحت التصنيع تُكتب يدوياً ═══
+assert "sync_work4_polish" not in src and "work4_totals" not in src, "لا ترحيل تلقائي لبوليش 1 من شغل 4"
 four = next(i for i in a.invoices.values() if i["النوع"] == "المفنش ٤ بالالف")
-before = a.work4_totals()
-four["الوزن"] = 29.5
-assert a.sync_work4_polish(before) == ["5001"] and a.polish("5001") == [29.5]
-before = a.work4_totals()
-assert a.sync_work4_polish(before) == [] and a.posts[-1] == ("5001", 29.5), "بلا تغيير لا ترحيل"
-before = a.work4_totals()
 a.delete_invoice_from_db(four["رقم الفاتورة"])
-assert a.sync_work4_polish(before) == ["5001"] and a.polish("5001") == []
-# «قبل» كُتب بغير قيمة شغل 4: لا يُحذف بحذف شغل 4
-f2 = a.add("أحمد", "المفنش ٤ بالالف", 10.0, row="1", set_no="5001")
-a.sync_work4_polish({})
-next(i for i in a.sb_field_moves("5001", "p1_before"))["الوزن"] = 10.4
-before = a.work4_totals()
-a.delete_invoice_from_db(f2)
-assert a.sync_work4_polish(before) == [] and a.polish("5001") == [10.4]
-print("✔ شغل 4 برقم تشغيل ← «قبل» بوليش 1 بقيمته (ترحيل، تعديل، حذف) — و«قبل» كُتب بغير قيمته يبقى")
+print("✔ شغل 4 لا يرحّل «قبل» بوليش 1 — يُكتب يدوياً في القالب (وما رُحِّل من قبل يبقى كما هو)")
 
 # ═══ ٥) القبض من القالب: قواعد قسم المصنعين، والتأكيد، والحركات في مكانها ═══
 MB.log.clear()
 a.posts.clear()
 assert a.post_manufacturer_receipt("أحمد", "5003", "3", 2.5, 41.0, "شغل 4") is True
 ask = [x for x in MB.log if x[0] == "ask"][-1]
-assert "قبض/كسر: 2.5" in ask[2] and "شغل 4 (قبض/٤): 41" in ask[2] and "«قبل» بوليش 1 لرقم التشغيل (5003)" in ask[2]
+assert "قبض/كسر: 2.5" in ask[2] and "شغل 4 (قبض/٤): 41" in ask[2] and "بوليش" not in ask[2]
 row3 = sorted((i["النوع"], i["الوزن"], i["row_number"], i["set_number"], i["البيان"]) for i in a.invoices.values()
               if i["الاسم"] == "أحمد" and i["row_number"] == "3")
 assert row3 == [("المفنش ٤ بالالف", 41.0, "3", "5003", ""), ("قبض ذهب", 2.5, "3", "5003", "")], row3
-assert a.polish("5003") == [41.0] and a.undo[-1] == "المصنّع (أحمد) — الصف (3) — 5003"
+assert a.polish("5003") == [] and a.undo[-1] == "المصنّع (أحمد) — الصف (3) — 5003", "شغل 4 بلا «قبل» بوليش 1"
 assert ask[1] == "ترحيل لحساب المصنّع" and "• رصيد سدايا في الخزينة:" in ask[2]
 # رقم مسجّل: يُكمل صفّه بلا رقم صف، والسلاسل حركتها مفنش ٨ بأول بيانها «سلاسل»
 assert a.post_manufacturer_receipt("أحمد", "٥٠٠١", "", 0.0, 12.0, "سلاسل") is True
@@ -219,7 +208,7 @@ cases = ((("سالم", "5009", "1", 1.0, 0.0, "شغل 4"), "اسم المصنّ�
          (("أحمد", "5009", "1", -1.0, 0.0, "شغل 4"), "قيمة غير صحيحة"),
          (("أحمد", "5009", "1", 0.0, 0.0, "شغل 4"), "لا قيمة"),
          (("أحمد", "5009", "1", 0.0, 3.0, "؟"), "نوع الشغل"),
-         (("أحمد", "", "1", 1.0, 0.0, "شغل 4"), "رقم التشغيل"),
+         (("أحمد", "", "", 1.0, 0.0, "شغل 4"), "رقم الصف مطلوب"),
          (("خالد", "5001", "", 1.0, 0.0, "شغل 4"), "رقم تشغيل مستخدم"),
          (("أحمد", "5001", "9", 1.0, 0.0, "شغل 4"), "رقم تشغيل مستخدم"),
          (("أحمد", "5009", "", 1.0, 0.0, "شغل 4"), "رقم الصف مطلوب"),
@@ -235,8 +224,21 @@ a.view_only = True
 assert a.post_manufacturer_receipt("أحمد", "5009", "9", 1.0, 0.0, "شغل 4") is False
 a.view_only = False
 assert len(a.invoices) == n0
-print("✔ يُرفض: غير المصنّع، والقيمة غير الرقمية أو السالبة أو الصفر، ونوعٌ غير الثلاثة، وبلا رقم تشغيل، ورقمٌ لمصنّع "
-      "آخر أو لصف آخر، ورقمٌ جديد بلا صف، وصفٌّ برقم آخر — و«لا» في التأكيد، ووضع العرض")
+print("✔ يُرفض: غير المصنّع، والقيمة غير الرقمية أو السالبة أو الصفر، ونوعٌ غير الثلاثة، وبلا رقم تشغيل ولا صف، ورقمٌ "
+      "لمصنّع آخر أو لصف آخر، ورقمٌ جديد بلا صف، وصفٌّ برقم آخر — و«لا» في التأكيد، ووضع العرض")
+# رقم التشغيل اختياري (1.86): الصف يعرّف الحركة، ورقم تشغيل الصف المسجّل يُعطى لها
+MB.log.clear()
+assert a.post_manufacturer_receipt("أحمد", "", "1", 1.5, 0.0, "شغل 4") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "الصف (1) — رقم التشغيل (5001)" in ask[2], ask[2]
+k1 = [i for i in a.invoices.values() if i["الاسم"] == "أحمد" and i["row_number"] == "1" and i["النوع"] == "قبض ذهب"]
+assert len(k1) == 1 and k1[0]["set_number"] == "5001" and k1[0]["الوزن"] == 1.5
+assert a.post_manufacturer_receipt("أحمد", "", "7", 0.0, 6.0, "شغل 8") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "الصف (7) — بلا رقم تشغيل ⊘" in ask[2], ask[2]
+r7 = [(i["النوع"], i["الوزن"], i["set_number"]) for i in a.invoices.values() if i["الاسم"] == "أحمد" and i["row_number"] == "7"]
+assert r7 == [("المفنش ٨ بالالف", 6.0, "")], r7
+print("✔ رقم التشغيل اختياري: بلا رقمٍ تُرحَّل الحركة لصفّها (برقم تشغيله المسجّل إن كان له، وإلا ⊘ بلا رقم)")
 
 # ═══ ٥ب) صرف المصنّع بنوعه: ذهب / لحام / واير — كل نوع خانته في الصف، والحركة «صرف ذهب» نفسها ═══
 MB.log.clear()
@@ -259,6 +261,13 @@ for kw, title in (({"sarf": 1.0, "sarf_kind": "فضة"}, "نوع الصرف"), (
     assert a.post_manufacturer_receipt("أحمد", "5003", "", 0.0, 0.0, "شغل 4", **kw) is False and MB.log[-1][1] == title
 L = a.calculate_single_ledger("أحمد", "المصنعين")
 assert L["الصرف"] == 165.0, f"حساب المصنّع: كل الصرف بأنواعه في «الصرف» (100 + 50 + 3 + 10 + 2) — {L['الصرف']}"
+# صرف الشجر للمصنّع (1.86): خانته «صرف/شجر»، وينقص من رصيد الشجر
+MB.log.clear()
+assert a.post_manufacturer_receipt("أحمد", "5002", "", 0.0, 0.0, "شغل 4", sarf=4.0, sarf_kind="شجر") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "صرف شجر (صرف/شجر): 4" in ask[2] and "• رصيد شجر في الخزينة: 0.00 ← -4.00" in ask[2], ask[2]
+tree_mv = [i for i in a.invoices.values() if a.movement_slot(i) == "صرف شجر"]
+assert len(tree_mv) == 1 and tree_mv[0]["البيان"] == "شجر" and tree_mv[0]["row_number"] == "2"
 # صرف المركّب ببيان «لحام» ليس صرف لحامٍ للمصنّع (خانته صرف ذهب)
 assert a.movement_slot({"النوع": "صرف ذهب", "البيان": "لحام", "الاسم": "سالم"}) == "صرف ذهب"
 # خطة الصف في مراحل التصنيع: خانة الصرف حسب نوعه المختار
@@ -270,8 +279,45 @@ a.selected_sarf_type = "واير"
 assert a.plan_unified_values("أحمد", "3") == ([("صرف واير", 5.0)], [])
 a.selected_sarf_type = "ذهب"
 assert a.plan_unified_values("أحمد", "3") == ([], [("صرف ذهب", 10.0)])
-print("✔ صرف المصنّع بنوعه: ذهب ← صرف، ولحام ← صرف/لحام، وواير ← صرف/واير (حركة صرف ذهب بنوعها في أول البيان)، وكلٌّ "
-      "مرة في الصف، وكل الصرف في حساب المصنّع؛ والتأكيد برصيد اللحام قبل وبعد (وتنبيه السالب)")
+print("✔ صرف المصنّع بنوعه: ذهب ← صرف، ولحام ← صرف/لحام، وواير ← صرف/واير، وشجر ← صرف/شجر (حركة صرف ذهب بنوعها "
+      "في أول البيان)، وكلٌّ مرة في الصف، وكل الصرف في حساب المصنّع؛ والتأكيد برصيد النوع قبل وبعد (وتنبيه السالب)")
+
+# ═══ ٥ج) الكاستنج والأقسام المضافة — بمحرّك مراحل التصنيع نفسه (الذي يرحّل منه القالب) ═══
+MB.log.clear()
+assert a.post_casting_loss("1", 10.0, 9.0, 3.0, 0.5, sarf_kind="كسر") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "• الصرف — كسر: 10" in ask[2] and "• القبض (شجر): 9" in ask[2] and "• مسترجع الأشجار: 0.5" in ask[2], ask[2]
+assert "• رصيد كسر في الخزينة: 9.00 ← -1.00  ⚠️ يصير بالسالب" in ask[2] and "• رصيد شجر في الخزينة: -4.00 ← 5.00" in ask[2]
+cast = sorted((i["الاسم"], i["النوع"], i["الوزن"], i["البيان"], i["row_number"], i["trees_count"])
+              for i in a.invoices.values() if i["الاسم"] in ("كاستنج", "مسترجع الأشجار"))
+assert cast == [("كاستنج", "صرف كاستنج", 10.0, "كسر", "1", 3.0), ("كاستنج", "قبض كاستنج", 9.0, "", "1", 3.0),
+                ("مسترجع الأشجار", "قبض كاستنج", 0.5, "مسترجع الأشجار", "1", 0.0)], cast
+MB.log.clear()
+assert a.post_casting_loss("1", 5.0, 0.0, 0.0, 0.0, sarf_kind="سبيكة") is False and MB.log[0][1] == "عملية مكررة"
+assert a.post_casting_loss("2", 4.0, 0.0, 0.0, 0.0, sarf_kind="سبيكة") is True
+assert a.post_casting_loss("3", 2.0, 0.0, 0.0, 0.0) is True, "صرفٌ عام (بلا نوع) كما في مراحل التصنيع"
+for args, title in ((("", 1.0, 0.0, 0.0, 0.0), "رقم الصف مطلوب"), (("4", None, 0.0, 0.0, 0.0), "قيمة غير صحيحة"),
+                    (("4", -1.0, 0.0, 0.0, 0.0), "تنبيه"), (("4", 0.0, 0.0, 0.0, 0.0), "تنبيه")):
+    MB.log.clear()
+    assert a.post_casting_loss(*args) is False and MB.log[-1][1] == title, (args, MB.log)
+notes = sorted((i["row_number"], i["البيان"]) for i in a.invoices.values() if i["النوع"] == "صرف كاستنج")
+assert notes == [("1", "كسر"), ("2", "سبيكة"), ("3", "")], notes
+MB.log.clear()
+assert a.post_generic_stage("صب الداخلي", "5", 3.0, 0.0, sarf_kind="شجر") is True
+assert a.post_generic_stage("صب الداخلي", "6", 2.0, 1.0, sarf_kind="سبيكة", qabd_kind="لحام", note="x") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "• الصرف — سبيكة: 2" in ask[2] and "• القبض — لحام: 1" in ask[2] and "• رصيد لحام في الخزينة:" in ask[2]
+gen = sorted((i["row_number"], i["النوع"], i["الوزن"], i["البيان"]) for i in a.invoices.values() if i["الاسم"] == "صب الداخلي")
+assert gen == [("5", "صرف صب الداخلي", 3.0, "شجر"), ("6", "صرف صب الداخلي", 2.0, "سبيكة — x"),
+               ("6", "قبض صب الداخلي", 1.0, "لحام — x")], gen
+MB.log.clear()
+assert a.post_generic_stage("صب الداخلي", "6", 1.0, 0.0, sarf_kind="شجر") is False and MB.log[0][1] == "عملية مكررة"
+for args, title in ((("صب الداخلي", "", 1.0, 0.0), "رقم الصف مطلوب"), (("صب الداخلي", "9", None, 0.0), "قيمة غير صحيحة"),
+                    (("صب الداخلي", "9", 0.0, 0.0), "تنبيه")):
+    MB.log.clear()
+    assert a.post_generic_stage(*args) is False and MB.log[-1][1] == title, (args, MB.log)
+print("✔ الكاستنج: الصرف بنوعه (كسر/سبيكة/عام) والقبض شجرٌ ومسترجع الأشجار وعددها، وكل خانة مرة في الصف؛ "
+      "وصب الداخلي: الصرف بنوعه (سبيكة/شجر) والقبض بنوعه — كلٌّ في أول بيان حركته، والتأكيد بأرصدتها")
 
 # ═══ ٦) تفصيل الخزينة: أرصدة متراكمة — السدايا (شغل 4 + شغل 8 − صرف المركبين)، والسلاسل، والسبيكة، والواير واللحام ═══
 a.add("صب الداخلي", "قبض صب الداخلي", 6.0, row="1", note="واير — شحنة")
@@ -288,47 +334,57 @@ a.add("صب الداخلي", "قبض صب الداخلي", 1.5, row="1", note="�
 a.add("أحمد", "المفنش ٨ بالالف", 100.0, row="1", set_no="6001", period="2026-11")
 br = a.treasury_kind_breakdown(M)
 got = {k: (v["opening"], v["in"], v["out"], v["balance"]) for k, v in br.items()}
-assert got == {"سدايا": (3.0, 81.0, 15.0, 69.0), "سلاسل": (0.0, 32.0, 0.0, 32.0), "سبيكة": (0.0, 9.0, 0.0, 9.0),
-               "واير": (1.5, 6.0, 2.0, 5.5), "لحام": (0.0, 2.0, 3.0, -1.0)}, got
-assert [k for k, _s in a.TREASURY_KINDS] == ["سدايا", "سلاسل", "سبيكة", "واير", "لحام"]
-assert sorted((i["الوزن"], sg) for i, sg in br["سدايا"]["moves"]) == [(15.0, -1), (40.0, 1), (41.0, 1)]
+assert got == {"سدايا": (3.0, 87.0, 15.0, 75.0), "سلاسل": (0.0, 32.0, 0.0, 32.0), "كسر": (0.0, 9.0, 10.0, -1.0),
+               "سبيكة": (0.0, 9.0, 6.0, 3.0), "شجر": (0.0, 9.0, 7.0, 2.0), "واير": (1.5, 6.0, 2.0, 5.5),
+               "لحام": (0.0, 3.0, 3.0, 0.0)}, got
+assert [k for k, _s in a.TREASURY_KINDS] == ["سدايا", "سلاسل", "كسر", "سبيكة", "شجر", "واير", "لحام"]
+assert sorted((i["الوزن"], sg) for i, sg in br["سدايا"]["moves"]) == [(6.0, 1), (15.0, -1), (40.0, 1), (41.0, 1)]
+assert sorted((i["الوزن"], sg) for i, sg in br["شجر"]["moves"]) == [(3.0, -1), (4.0, -1), (9.0, 1)], "مسترجع الأشجار لا يدخل"
 prev = a.treasury_kind_breakdown("2026-09")
 assert (prev["سدايا"]["balance"], prev["واير"]["balance"]) == (3.0, 1.5) and prev["سدايا"]["opening"] == 0.0
-assert a.treasury_kind_breakdown("2026-11")["سدايا"]["opening"] == 69.0
+assert a.treasury_kind_breakdown("2026-11")["سدايا"]["opening"] == 75.0
 assert a.slot_kind_deltas("المصنعين", [("صرف لحام", 3), ("المفنش ٤ بالالف", 41), ("قبض سلاسل", 12), ("صرف واير", 2),
                                         ("المفنش ٨ بالالف", 5), ("قبض ذهب", 1), ("صرف ذهب", 9)]) \
-    == {"لحام": -3, "سدايا": 46, "سلاسل": 12, "واير": -2}
+    == {"لحام": -3, "سدايا": 46, "سلاسل": 12, "واير": -2, "كسر": 1}
 assert a.slot_kind_deltas("المركبين", [("صرف ذهب", 10), ("قبض ذهب", 9)]) == {"سدايا": -10}
-assert a.sub_balance_lines({"سدايا": -10}) == ["• رصيد سدايا في الخزينة: 69.00 ← 59.00"]
+assert a.sub_balance_lines({"سدايا": -10}) == ["• رصيد سدايا في الخزينة: 75.00 ← 65.00"]
 assert a.sub_balance_lines({}) == [] and a.sub_balance_lines({"سدايا": 0.0}) == []
-print(f"✔ تفصيل الخزينة (متراكم): {got} — السدايا = شغل 4 + شغل 8 − صرف المركبين، والواير واللحام − صرفهما للمصنّع، "
-      "والفترة التالية لا تدخل")
+print(f"✔ تفصيل الخزينة (متراكم): {got} — السدايا = شغل 4 + شغل 8 − صرف المركبين، والكسر = قبض/كسر − صرف الكاستنج "
+      "كسراً، والشجر = قبض الكاستنج − صرفه، والسبيكة والواير واللحام = قبض الأقسام − صرفها، والفترة التالية لا تدخل")
 
 # ═══ ٧) الواجهة والمصادر ═══
 ruf = member("render_unified_fields")
 assert '(self.MFG_CHAINS_SLOT, "قبض/سلاسل")' in ruf
 sub = member("submit_unified_op")
-assert "op_type = self.slot_op_type(slot)" in sub and "self.sync_work4_polish(work4_before)" in sub
-assert "«قبل» بوليش 1 لرقم التشغيل" in sub
+assert "op_type = self.slot_op_type(slot)" in sub and "بوليش" not in sub
 assert '("قبض سلاسل", "قبض/سلاسل")' in member("ROW_EDIT_FIELDS")
 row_edit = member("open_row_full_edit_dialog")
 assert "self.movement_slot(inv)" in row_edit and "move_note = self.with_note_head(head, new_note)" in row_edit
-assert "self.sync_work4_polish(work4_before, parent=win)" in row_edit
-assert "self.sync_work4_polish(work4_before)" in member("op_ledger_delete_selected")
-assert "self.sync_work4_polish(work4_before)" in member("rename_op_ledger_set_number")
+
 led = member("refresh_op_ledger_table")
 assert 'field = "سلاسل"' in led and "- data['سلاسل']" in led and "(data['مفنش 8'] + data['سلاسل']) * ALLOWANCE_8" in led
 assert '"سلاسل"' in member("build_op_ledger_columns")
 stage_edit = member("open_stage_op_edit_dialog")
 assert "self.with_note_head(qabd_head, new_note)" in stage_edit
 gen = member("build_generic_stage_ui")
-assert '("qabd_kind", "نوع القبض")' in gen and 'toggles={"qabd_kind": ("عام",) + self.RECEIPT_KINDS}' in gen
-assert "self.with_note_head(kind, note) if kind in self.RECEIPT_KINDS" in member("submit_generic_stage_op")
+assert '("qabd_kind", "نوع القبض")' in gen and 'kind_buttons={"sarf": ("عام",) + self.STAGE_SARF_KINDS}' in gen
+gen_post = member("post_generic_stage")
+assert "self.with_note_head(qabd_kind, note) if qabd_kind in self.RECEIPT_KINDS" in gen_post
+assert "self.with_note_head(sarf_kind, note) if sarf_kind" in gen_post
+assert "self.post_generic_stage(stage_name," in member("submit_generic_stage_op")
+assert "self.post_casting_loss(" in member("submit_casting_loss_op")
+assert 'toggles={"qabd_kind": ("عام",) + self.RECEIPT_KINDS}' in gen
+assert 'kind_buttons={"sarf": ("عام",) + self.CAST_SARF_KINDS}' in member("build_casting_ui")
+bsp = member("build_stage_panel")
+assert 'w.setdefault("fields", {})[f"{k}_kind"] = kb' in bsp and "cell = holders.get(k, widget_of[k])" in bsp
+assert "weight=0 if k in toggles else 1" in bsp, "خانة الاختيار لا تأخذ عرضاً موحّداً بعد تبديل العملية"
+edit_dlg = member("open_stage_op_edit_dialog")
+assert "note=self.with_note_head(sarf_head, new_note) if sarf_head else new_note" in edit_dlg, "نوع الصرف يبقى بالتعديل"
 assert 'self.lbl_live_treasury.bind("<Button-1>", lambda e: self.show_treasury_breakdown())' in src
 assert "self.tabview.treasury_click_callback = self.show_treasury_breakdown" in src
 panel = member("sb_build_mfg_panel")
 assert 'chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,' in panel
-assert 'options(srow2, self.MFG_SARF_KINDS, "sarf", 40)' in panel and 'options(krow, self.MFG_WORK_KINDS, "work", 48)' in panel
+assert 'options(grid, self.MFG_SARF_KINDS, "sarf", 40)' in panel and 'placeholder_text="⊘"' in panel and 'options(krow, self.MFG_WORK_KINDS, "work", 48)' in panel
 for k in ('"<Return>"', '"<Down>"', '"<Up>"', '"Right": -1, "Left": 1, "space": 1'):
     assert k in panel, k
 assert "self.post_manufacturer_receipt(" in member("sb_mfg_submit")
@@ -348,8 +404,8 @@ assert 'if set_number is not None or cur not in self.categories.get("المصن�
     "مصنّعٌ اختاره المستخدم لا يُبدَّل بصمت بصاحب الرقم"
 assert "self.sb_save(self.sb_new_record(key))" in member("sb_mfg_submit"), "الترحيل من لوحة القالب ← للرقم قالبه"
 assert "or key in self.sb_mfg_receipts())" in member("sb_open_search")
-assert 'krow.grid(row=3, column=0, columnspan=2' in panel and 'srow2.grid(row=1, column=0, columnspan=2' in panel, \
-    "خيارات الصرف والشغل بأسمائها كاملة في صفٍّ بعرض اللوحة"
+assert 'krow.grid(row=4, column=0, columnspan=2' in panel and 'm["sarf_kinds"].grid(row=2, column=0, columnspan=2' in panel, \
+    "خيارات الصرف والشغل بأسمائها كاملة في صفٍّ بعرض اللوحة (خيارات الصرف تحت خانته فلا تضيّقها)"
 sub_mfg = member("sb_mfg_submit")
 assert 'sarf=self._read_weight(m["sarf"]), sarf_kind=m["sarf_kind"]' in sub_mfg
 assert 'self.sb_mfg_set_kind(self.MFG_SARF_KINDS[0], group="sarf")' in sub_mfg, "نوع الصرف يعود ذهب بعد الترحيل"
@@ -369,5 +425,30 @@ assert bar.index("self.lbl_op_status.pack(side=\"left\", padx=6)") > bar.index("
     "رسالة الترحيل بعد أزرار المراحل (لا تضيّقها)"
 assert 'w["note"].focus_set()' in member("build_stage_panel"), "اختيار نوع القبض ← البيان"
 print("✔ التتبع ⇄ القالب ⇄ المركبين، والمصنّع لا يُبدَّل بصمت، وللرقم المرحَّل من اللوحة قالبه، وأزرار المراحل كاملة")
+
+# 1.86: جانب القالب بسيط — بلا سجل حركات ولا نصوص ثابتة (التفاصيل ومفتاح الألوان في تلميح الشارة)، وبطاقة المرحلة
+# وأزرار المراحل تحتها (المصنعين دائماً، و＋ يضيف الكاستنج أو قسماً مضافاً، والزر الأيمن يزيله)
+sbt = member("build_set_builder_tab")
+assert 'st["chip_tip"] = HoverTip(st["chip"], "")' in sbt and "self.sb_build_stage_bar()" in sbt
+assert 'self.sb_select_stage(self.SB_MFG_STAGE, focus=False)' in sbt and 'self.sb_build_mfg_panel(st["stage_card"])' in sbt
+assert "ttk.Treeview" not in sbt and "sb_fill_log" not in src and "log_title" not in src, "لا سجل حركات في جانب القالب"
+assert "tip.text = (text + \"\\n\\n\" if text else \"\") + self.SB_HELP" in member("sb_set_info")
+bar186 = member("sb_build_stage_bar")
+assert 'items = [self.SB_MFG_STAGE] + self.sb_side_stages() + ["+"]' in bar186
+assert 'b.bind("<Button-3>", lambda e, k=key: self.sb_stage_context(e, k), add="+")' in bar186
+assert 'self.set_setting(self.SB_STAGES_KEY, json.dumps(list(stages), ensure_ascii=False))' in member("sb_set_side_stages")
+assert 'return ["الكاستنج"] + [c for c in self.categories.get("أقسام_خياس_إضافية", []) if c != "الكاستنج"]' in \
+    member("sb_side_stage_options")
+form186 = member("sb_build_stage_form")
+assert 'line(1, "صرف", one("sarf"))' in form186 and 'kinds(2, "sarf", self.CAST_SARF_KINDS, 50)' in form186
+assert 'line(3, "قبض شجر", pair("qabd", "مسترجع", "recover"))' in form186
+assert 'kinds(2, "sarf", self.STAGE_SARF_KINDS, 50)' in form186
+assert 'kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 44)' in form186
+sub186 = member("sb_stage_submit")
+assert "ok = self.post_casting_loss(row, rw(e[\"sarf\"]), rw(e[\"qabd\"]), rw(e[\"trees\"]), rw(e[\"recover\"])," in sub186
+assert "ok = self.post_generic_stage(stage, row, rw(e[\"sarf\"]), rw(e[\"qabd\"]), sarf_kind=g[\"sarf\"][\"sel\"]," in sub186
+assert 'self.sb_stage_set_option(sf, group, gg["values"][0])' in sub186, "الخيارات تعود لأولها بعد الترحيل"
+print("✔ جانب القالب البسيط: الشارة بتلميحها، وبطاقة المرحلة، وأزرار المراحل (＋ والإزالة)، والكاستنج وصب الداخلي "
+      "بمحرّك مراحل التصنيع")
 
 print("\n✅ قبض المصنّعين وشغل 4 وبوليش 1 والسلاسل ونوع القبض وتفصيل الخزينة: كل قيمة إلى مكانها")
