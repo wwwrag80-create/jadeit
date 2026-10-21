@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.84.0"
+APP_VERSION = "1.85.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -14243,6 +14243,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn.configure(text=val)
         self.selected_qabd_type = val
 
+    def choose_sarf_type(self, btn):
+        """نوع صرف المصنّع (1.85): ذهب (من الذهب العام) أو لحام أو واير (من رصيدهما في تفصيل الخزينة)"""
+        menu = tk.Menu(self, tearoff=0, font=(UI_FONT, 13))
+        for t in self.MFG_SARF_KINDS:
+            menu.add_command(label=t, command=lambda v=t, b=btn: self.set_sarf_type(b, v))
+        menu.post(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+
+    def set_sarf_type(self, btn, val):
+        self.selected_sarf_type = val if val in self.MFG_SARF_KINDS else "ذهب"
+        if btn is not None:
+            try:
+                btn.configure(text=self.selected_sarf_type)
+            except tk.TclError:
+                pass
+
     def render_unified_fields(self, name):
         # الاسم قد يأتي من القائمة حاملاً علامة الاتجاه، فيُنظَّف قبل أي استخدام
         name = self.clean_name(name)
@@ -14253,6 +14268,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # تم إزالة تفريغ النوع من هنا ليحتفظ بآخر قيمة في حال تم تعيينها سابقاً
         if not hasattr(self, 'selected_qabd_type'):
             self.selected_qabd_type = "عام"
+        if not hasattr(self, 'selected_sarf_type'):
+            self.selected_sarf_type = "ذهب"
             
         cat = self.current_op_cat
         fields = []
@@ -14275,6 +14292,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       ("السلك الراجع", "سلك راجع"), ("العيار بعد الفحص", "عيار بعد الفحص")]
 
         self.current_win_labels = dict(fields)
+        if cat == "المصنعين":
+            self.current_win_labels.update({"صرف لحام": "صرف/لحام", "صرف واير": "صرف/واير"})
         # عرض كل حقول العملية في صف أفقي واحد مضغوط (تسمية أعلى وخانة أصغر أسفلها)،
         # بأعمدة متساوية تتمدّد مع عرض الشاشة. تُصفَّر أعمدة القسم السابق أولاً
         # (المصنعون ١٠ خانات والمركبون ٧) فلا تبقى أعمدة فارغة تأخذ مساحة
@@ -14304,6 +14323,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 btn_type.pack(side="right")
                 
                 self.current_win_entries[key] = (ent, btn_type)
+                entries_list.append(ent)
+            elif key == "صرف ذهب" and cat == "المصنعين":
+                # الصرف للمصنّع بنوعه: ذهب أو لحام أو واير (اللحام والواير ينقصان من رصيدهما في تفصيل الخزينة)
+                sarf_frame = ctk.CTkFrame(self.unified_inputs_frame, fg_color="transparent")
+                sarf_frame.grid(row=1, column=col, padx=4, pady=(0, 4), sticky="ew")
+                ent = ctk.CTkEntry(sarf_frame, justify="center", font=(UI_FONT, 15), width=50, height=34)
+                ent.pack(side="right", padx=(0, 3), fill="x", expand=True)
+                btn_sarf = ctk.CTkButton(sarf_frame, text=self.selected_sarf_type, width=40, height=34,
+                                         font=(UI_FONT, 12, "bold"), fg_color="#1f77b4")
+                btn_sarf.configure(command=lambda b=btn_sarf: self.choose_sarf_type(b))
+                btn_sarf.pack(side="right")
+                HoverTip(btn_sarf, "نوع الصرف: ذهب (من الذهب العام) أو لحام أو واير (من رصيدهما في تفصيل الخزينة)")
+                self.current_win_entries[key] = (ent, btn_sarf)
                 entries_list.append(ent)
             else:
                 ent = ctk.CTkEntry(self.unified_inputs_frame, justify="center", font=(UI_FONT, 15), width=70, height=34)
@@ -14353,9 +14385,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 t = self.movement_slot(inv)          # السلاسل خانة مستقلة عن قبض/٨ (حركتهما من النوع نفسه)
                 existing[t] = round(existing.get(t, 0.0) + (inv.get("الوزن") or 0.0), 2)
         plan, skipped = [], []
+        mfg = getattr(self, "current_op_cat", None) == "المصنعين"
         for op_type, ent in getattr(self, "current_win_entries", {}).items():
             if op_type in ("رقم التشغيل", "رقم الصف"):
                 continue
+            if mfg and op_type == "صرف ذهب":
+                # صرف المصنّع بنوعه المختار: كل نوع خانته في الصف (صرف / صرف لحام / صرف واير)
+                op_type = self.MFG_SARF_SLOTS.get(getattr(self, "selected_sarf_type", "ذهب"), "صرف ذهب")
             widget = ent[0] if isinstance(ent, tuple) else ent
             raw = widget.get().strip()
             if not raw:
@@ -14382,6 +14418,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # أنواع القبض التي تُكتب في أول البيان («زركون — بيان»): نوع قبض الكسر، والسلاسل، وقبض الأقسام المضافة
     RECEIPT_KINDS = ("سبيكة", "واير", "لحام")
     NOTE_HEADS = ("ايطالي", "زركون", "احجار", "الماس", CHAINS_HEAD) + RECEIPT_KINDS
+    # صرف المصنّع (1.85): ذهب (من الذهب العام) أو لحام أو واير (من رصيدهما في تفصيل الخزينة) — الحركة «صرف ذهب» نفسها
+    # (فحساب المصنّع كما هو) وأول بيانها النوع، وكل نوع خانته في الصف («صرف لحام» / «صرف واير»)
+    MFG_SARF_KINDS = ("ذهب", "لحام", "واير")
+    MFG_SARF_SLOTS = {"ذهب": "صرف ذهب", "لحام": "صرف لحام", "واير": "صرف واير"}
+    # الخانة ← نوع حركتها، والخانة ← أول بيانها
+    SLOT_TYPES = {MFG_CHAINS_SLOT: "المفنش ٨ بالالف", "صرف لحام": "صرف ذهب", "صرف واير": "صرف ذهب"}
+    SLOT_HEADS = {MFG_CHAINS_SLOT: CHAINS_HEAD, "صرف لحام": "لحام", "صرف واير": "واير"}
 
     @staticmethod
     def note_head(inv):
@@ -14398,14 +14441,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return " — ".join(x for x in (head, note) if x)
 
     def movement_slot(self, inv):
-        """خانة الحركة في صف العامل: نوعها، والسلاسل خانة مستقلة («قبض سلاسل») وإن كانت حركتها مفنش ٨"""
+        """خانة الحركة في صف العامل: نوعها — والسلاسل خانة مستقلة («قبض سلاسل») وإن كانت حركتها مفنش ٨، وصرف
+        اللحام والواير للمصنّع خانتان مستقلتان («صرف لحام» / «صرف واير») وإن كانت حركتهما صرف ذهب"""
         t = inv.get("النوع")
         if t == "المفنش ٨ بالالف" and self.note_head(inv) == self.CHAINS_HEAD:
             return self.MFG_CHAINS_SLOT
+        if t == "صرف ذهب":
+            head = self.note_head(inv)
+            if head in ("لحام", "واير") and inv.get("الاسم") in self.categories.get("المصنعين", []):
+                return self.MFG_SARF_SLOTS[head]
         return t
 
     def slot_op_type(self, slot):
-        return "المفنش ٨ بالالف" if slot == self.MFG_CHAINS_SLOT else slot
+        return self.SLOT_TYPES.get(slot, slot)
 
     def work4_totals(self):
         """رقم التشغيل ← مجموع قبض «شغل 4» (المفنش ٤ بالالف) له في كل الفترات"""
@@ -14439,11 +14487,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     changed.append(key)
         return changed
 
-    def post_manufacturer_receipt(self, name, set_number, row, kasr, work, kind, parent=None):
-        """قبض من المصنّع لرقم تشغيل (من قالب رقم التشغيل) بقواعد قسم المصنعين نفسها: قبض الكسر ← «قبض/كسر»،
-        والشغل حسب نوعه ← «قبض/٤» (شغل 4) أو «قبض/٨» (شغل 8) أو «قبض/سلاسل» (تُحسب مثل شغل 8) في صف رقم التشغيل
-        بحساب المصنّع؛ وشغل 4 يرحّل «قبل» بوليش 1 للرقم بقيمته. رقم التشغيل يعرّف الصف: المسجّل يُكمل صفّه، والجديد
-        يلزمه رقم صف؛ وكل خانة مرة واحدة في الصف. تأكيدٌ بالملخص، وخطوة تراجع واحدة. يرجع True إن رُحِّل"""
+    def post_manufacturer_receipt(self, name, set_number, row, kasr, work, kind, parent=None, sarf=0.0,
+                                  sarf_kind="ذهب"):
+        """صرفٌ للمصنّع وقبضٌ منه لرقم تشغيل (من قالب رقم التشغيل) بقواعد قسم المصنعين نفسها: الصرف حسب نوعه ←
+        «صرف» (ذهب من الذهب العام) أو «صرف/لحام» أو «صرف/واير» (ينقصان من رصيدهما في تفصيل الخزينة)، وقبض الكسر ←
+        «قبض/كسر»، والشغل حسب نوعه ← «قبض/٤» (شغل 4) أو «قبض/٨» (شغل 8) أو «قبض/سلاسل» (تُحسب مثل شغل 8) في صف رقم
+        التشغيل بحساب المصنّع؛ وشغل 4 يرحّل «قبل» بوليش 1 للرقم بقيمته. رقم التشغيل يعرّف الصف: المسجّل يُكمل صفّه،
+        والجديد يلزمه رقم صف؛ وكل خانة مرة واحدة في الصف. تأكيدٌ بالملخص، وخطوة تراجع واحدة. يرجع True إن رُحِّل"""
         if getattr(self, "view_only", False):
             self.view_only_blocked()
             return False
@@ -14452,14 +14502,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("اسم المصنّع", "اختر اسم المصنّع من قائمة المصنعين (أو أضفه بزر ➕ في مراحل "
                                    "التصنيع — المصنعين).", parent=parent)
             return False
-        if kasr is None or work is None:
-            messagebox.showwarning("قيمة غير صحيحة", "قبض الكسر والشغل أوزانٌ بالجرام.", parent=parent)
+        if kasr is None or work is None or sarf is None:
+            messagebox.showwarning("قيمة غير صحيحة", "الصرف وقبض الكسر والشغل أوزانٌ بالجرام.", parent=parent)
             return False
-        if kasr < 0 or work < 0:
+        if kasr < 0 or work < 0 or sarf < 0:
             messagebox.showwarning("قيمة غير صحيحة", "لا تُدخل قيمة بالسالب.", parent=parent)
             return False
-        if kasr <= 0 and work <= 0:
-            messagebox.showwarning("لا قيمة", "اكتب قبض الكسر أو الشغل أولاً.", parent=parent)
+        if kasr <= 0 and work <= 0 and sarf <= 0:
+            messagebox.showwarning("لا قيمة", "اكتب الصرف أو قبض الكسر أو الشغل أولاً.", parent=parent)
+            return False
+        if sarf > 0 and sarf_kind not in self.MFG_SARF_SLOTS:
+            messagebox.showwarning("نوع الصرف", "اختر نوع الصرف: ذهب أو لحام أو واير.", parent=parent)
             return False
         if work > 0 and kind not in self.MFG_WORK_SLOTS:
             messagebox.showwarning("نوع الشغل", "اختر نوع الشغل: شغل 4 أو شغل 8 أو سلاسل.", parent=parent)
@@ -14492,10 +14545,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         existing = {self.movement_slot(inv) for inv in self.invoices.values()
                     if inv.get("الاسم") == name and inv.get("settled_status") == "ACTIVE"
                     and self.inv_in_period(inv, month) and (inv.get("row_number", "") or "").strip() == row}
-        labels = {"قبض ذهب": "قبض/كسر", "المفنش ٤ بالالف": "شغل 4 (قبض/٤)", "المفنش ٨ بالالف": "شغل 8 (قبض/٨)",
+        labels = {"صرف ذهب": "صرف ذهب", "صرف لحام": "صرف لحام (صرف/لحام)", "صرف واير": "صرف واير (صرف/واير)",
+                  "قبض ذهب": "قبض/كسر", "المفنش ٤ بالالف": "شغل 4 (قبض/٤)", "المفنش ٨ بالالف": "شغل 8 (قبض/٨)",
                   self.MFG_CHAINS_SLOT: "سلاسل (قبض/سلاسل — مثل شغل 8)"}
         plan, skipped = [], []
-        for slot, val in (("قبض ذهب", kasr), (self.MFG_WORK_SLOTS.get(kind), work)):
+        for slot, val in ((self.MFG_SARF_SLOTS.get(sarf_kind), sarf), ("قبض ذهب", kasr),
+                          (self.MFG_WORK_SLOTS.get(kind), work)):
             if val and val > 0:
                 (skipped if slot in existing else plan).append((slot, val))
         if not plan:
@@ -14503,16 +14558,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                    + "\n".join(f"• {labels[s]}" for s, _v in skipped)
                                    + "\n\nلتغيير قيمة موجودة عدّلها من مراحل التصنيع (✏️ تعديل).", parent=parent)
             return False
-        lines = [f"قبض من المصنّع ({name}) — الصف ({row}) — رقم التشغيل ({key}):"]
+        lines = [f"حساب المصنّع ({name}) — الصف ({row}) — رقم التشغيل ({key}):"]
         lines += [f"• {labels[s]}: {v:g}" for s, v in plan]
         if any(s == "المفنش ٤ بالالف" for s, _v in plan):
             lines.append(f"• و«قبل» بوليش 1 لرقم التشغيل ({key}) يُرحَّل بقيمة شغل 4 نفسها")
+        lines += self.sub_balance_lines(self.slot_kind_deltas("المصنعين", plan))
         if skipped:
             lines += ["", "لن تُسجَّل (موجودة في الصف نفسه):"] + [f"• {labels[s]}" for s, _v in skipped]
         lines += ["", f"تُرحَّل بالفترة المعروضة ({month}).", "— Enter للتأكيد"]
-        if not messagebox.askyesno("ترحيل قبض المصنّع", "\n".join(lines), default=messagebox.YES, parent=parent):
+        if not messagebox.askyesno("ترحيل لحساب المصنّع", "\n".join(lines), default=messagebox.YES, parent=parent):
             return False
-        self.push_undo(f"قبض المصنّع ({name}) — الصف ({row}) — {key}")
+        self.push_undo(f"المصنّع ({name}) — الصف ({row}) — {key}")
         work4_before = self.work4_totals()
         dt = self.get_operation_datetime()
         saved = False
@@ -14520,7 +14576,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.invoice_counter += 1
             inv = {"رقم الفاتورة": self.invoice_counter, "التاريخ": dt, "الاسم": name,
                    "النوع": self.slot_op_type(slot), "الوزن": round(val, 2),
-                   "البيان": self.CHAINS_HEAD if slot == self.MFG_CHAINS_SLOT else "",
+                   "البيان": self.SLOT_HEADS.get(slot, ""),
                    "settled_status": "ACTIVE", "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0,
                    "set_number": key, "row_number": row}
             self.invoices[self.invoice_counter] = inv
@@ -14651,6 +14707,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             set_now = self.normalize_set_number(set_entry.get()) if set_entry is not None else ""
             if cat == "المصنعين" and set_now and any(t == "المفنش ٤ بالالف" for t, _v in plan):
                 msg += f"\n\n• و«قبل» بوليش 1 لرقم التشغيل ({set_now}) يُرحَّل بقيمة شغل 4 نفسها (قالب رقم التشغيل)"
+            # السدايا (شغل 4/8 ينقص منها صرف المركبين) والسلاسل والواير واللحام: رصيدها قبل الترحيل وبعده
+            balance_lines = self.sub_balance_lines(self.slot_kind_deltas(cat, plan))
+            if balance_lines:
+                msg += "\n\n" + "\n".join(balance_lines)
             if skipped:
                 msg += ("\n\nلن تُسجَّل (موجودة في الصف نفسه):\n"
                         + "\n".join(f"• {labels.get(t, t)}: {v:g}" for t, v in skipped))
@@ -14720,10 +14780,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 try:
                     self.invoice_counter += 1
                     # البيان المكتوب يُحفظ مع كل خانة مُرحَّلة (كان يُهمل فلا يظهر في
-                    # عمود البيان)؛ ونوع القبض يبقى في أوله ليُصنَّف به القبض — والسلاسل «سلاسل»
+                    # عمود البيان)؛ ونوع القبض يبقى في أوله ليُصنَّف به القبض — والسلاسل «سلاسل»، وصرف اللحام/الواير نوعه
                     op_type = self.slot_op_type(slot)
                     type_label = (qabd_t if (slot == "قبض ذهب" and qabd_t != 'عام')
-                                  else self.CHAINS_HEAD if slot == self.MFG_CHAINS_SLOT else "")
+                                  else self.SLOT_HEADS.get(slot, ""))
                     current_note = " — ".join(x for x in (type_label, note) if x)
 
                     inv_data = {
@@ -14745,6 +14805,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.register_operation_period(date_val)
             self.recalculate_all()
 
+            # نوع الصرف يعود «ذهب» بعد كل ترحيل (فلا يُرحَّل صرف ذهبٍ تالٍ لحاماً أو وايراً سهواً)
+            sarf_ent = self.current_win_entries.get("صرف ذهب")
+            if cat == "المصنعين" and isinstance(sarf_ent, tuple):
+                self.set_sarf_type(sarf_ent[1], "ذهب")
             # تفريغ المدخلات مع الاحتفاظ بذاكرة نوع القبض الأخير
             for k, ent in self.current_win_entries.items():
                 if isinstance(ent, tuple):
@@ -15210,7 +15274,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showinfo("تم الحذف", "تم حذف العمليات بنجاح وتحديث الأرصدة المرتبطة.")
 
     ROW_EDIT_FIELDS = {
-        "المصنعين": [("صرف ذهب", "صرف"), ("قبض ذهب", "قبض/كسر"),
+        "المصنعين": [("صرف ذهب", "صرف"), ("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/واير"), ("قبض ذهب", "قبض/كسر"),
                      ("المفنش ٨ بالالف", "قبض/٨"), ("المفنش ٤ بالالف", "قبض/٤"), ("قبض سلاسل", "قبض/سلاسل"),
                      ("البوليش", "بوليش"), ("الليز", "الليز"),
                      ("السلك الراجع", "سلك راجع"), ("العيار بعد الفحص", "العيار بعد الفحص")],
@@ -15345,10 +15409,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
                 # العيار قد يكون صفراً بشكل مشروع، فلا يُحذف بسبب ذلك
                 keep_zero = (op_type == "العيار بعد الفحص")
-                # نوع القبض في أول بيان حركته يبقى معها (والسلاسل «سلاسل» دائماً)
-                head = (self.CHAINS_HEAD if slot == self.MFG_CHAINS_SLOT
-                        else self.note_head(existing) if existing and self.note_head(existing) in self.NOTE_HEADS
-                        else "")
+                # نوع القبض في أول بيان حركته يبقى معها (والسلاسل «سلاسل» وصرف اللحام/الواير نوعه دائماً)
+                head = (self.SLOT_HEADS.get(slot)
+                        or (self.note_head(existing) if existing and self.note_head(existing) in self.NOTE_HEADS
+                            else ""))
                 move_note = self.with_note_head(head, new_note)
 
                 if value > 0 or (keep_zero and existing and entries[slot].get().strip() != ""):
@@ -16715,77 +16779,145 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # «+ 0.0»: بعد الإقفال قد يبقى فرق كسري سالب يُقرَّب إلى «-0.00»
         return round(tot_madin - tot_daen, 2) + 0.0
 
-    # تفصيل الخزينة (1.84): قبض الفترة المعروضة من كل نوع — النوع ومصدره
-    TREASURY_KINDS = (("شغل 4", "المصنعين — قبض/٤"), ("شغل 8", "المصنعين — قبض/٨"),
-                      ("سلاسل", "المصنعين — قبض/سلاسل"), ("سبيكة", "الأقسام المضافة — القبض"),
-                      ("واير", "الأقسام المضافة — القبض"), ("لحام", "الأقسام المضافة — القبض"))
+    # تفصيل الخزينة (1.85): أرصدة متراكمة كرصيد الخزينة (ما قبل الفترة + داخلها − خارجها). السدايا = شغل 4 + شغل 8
+    # من المصنعين وينقص منها كل صرفٍ للمركبين (من مراحل التصنيع أو «قبل التركيب» في القالب)، والواير واللحام من قبض
+    # الأقسام المضافة وينقص منهما صرفهما للمصنّع، والسلاسل والسبيكة داخلٌ فقط — ورصيد الخزينة نفسه كما هو
+    SADAYA = "سدايا"
+    TREASURY_KINDS = (("سدايا", "شغل 4 + شغل 8 − صرف المركبين"),
+                      ("سلاسل", "المصنعين قبض/سلاسل"),
+                      ("سبيكة", "قبض الأقسام المضافة"),
+                      ("واير", "قبض الأقسام − صرف واير للمصنّع"),
+                      ("لحام", "قبض الأقسام − صرف لحام للمصنّع"))
+
+    def treasury_kind_of(self, inv, makers, assemblers, qabd_types):
+        """(النوع، 1 داخل أو ‎-1 خارج) للحركة في تفصيل الخزينة، أو None"""
+        if inv.get("settled_status") != "ACTIVE":
+            return None
+        t, name = inv.get("النوع"), inv.get("الاسم")
+        if name in makers:
+            if t == "المفنش ٤ بالالف":
+                return self.SADAYA, 1
+            if t == "المفنش ٨ بالالف":
+                return (self.CHAINS_HEAD if self.movement_slot(inv) == self.MFG_CHAINS_SLOT else self.SADAYA), 1
+            if t == "صرف ذهب" and self.movement_slot(inv) in ("صرف لحام", "صرف واير"):
+                return self.note_head(inv), -1
+            return None
+        if name in assemblers:
+            return (self.SADAYA, -1) if t == "صرف ذهب" else None
+        if t in qabd_types and self.note_head(inv) in self.RECEIPT_KINDS:
+            return self.note_head(inv), 1
+        return None
 
     def treasury_kind_breakdown(self, month=None):
-        """قبض الفترة من كل نوع ← {النوع: (الوزن، [الحركات])}: شغل 4 وشغل 8 والسلاسل من قسم المصنعين (من مراحل
-        التصنيع أو من قالب رقم التشغيل — الحركات نفسها)، والسبيكة والواير واللحام من خانة القبض في الأقسام المضافة"""
+        """تفصيل الخزينة حتى الفترة المعروضة ← {النوع: {opening, in, out, balance, moves}}: opening ما قبل الفترة
+        (متراكم من الفترات السابقة)، وin و out داخل الفترة وخارجها، و moves حركات الفترة [(الحركة، 1 أو ‎-1)]"""
         month = month or self.current_display_month
         makers = set(self.categories.get("المصنعين", []))
+        assemblers = set(self.categories.get("المركبين", []))
         qabd_types = set()
         for cat in self.get_all_stage_categories():
             try:
                 qabd_types.add(self.get_stage_config(cat)[1])
             except Exception:
                 continue
-        out = {k: [0.0, []] for k, _src in self.TREASURY_KINDS}
-        for inv in self.period_invoices(month):
-            if inv.get("settled_status") != "ACTIVE":
+        out = {k: {"opening": 0.0, "in": 0.0, "out": 0.0, "moves": []} for k, _src in self.TREASURY_KINDS}
+        for period, invs in self.invoices_by_period().items():
+            if not period or period > month:
                 continue
-            t = inv.get("النوع")
-            kind = None
-            if inv.get("الاسم") in makers and t == "المفنش ٤ بالالف":
-                kind = "شغل 4"
-            elif inv.get("الاسم") in makers and t == "المفنش ٨ بالالف":
-                kind = "سلاسل" if self.movement_slot(inv) == self.MFG_CHAINS_SLOT else "شغل 8"
-            elif t in qabd_types and self.note_head(inv) in self.RECEIPT_KINDS:
-                kind = self.note_head(inv)
-            if kind:
-                out[kind][0] += inv.get("الوزن", 0.0) or 0.0
-                out[kind][1].append(inv)
-        return {k: (round(w, 2), lst) for k, (w, lst) in out.items()}
+            for inv in invs:
+                hit = self.treasury_kind_of(inv, makers, assemblers, qabd_types)
+                if not hit or hit[0] not in out:
+                    continue
+                kind, sign = hit
+                w = inv.get("الوزن", 0.0) or 0.0
+                d = out[kind]
+                if period < month:
+                    d["opening"] += sign * w
+                else:
+                    d["in" if sign > 0 else "out"] += w
+                    d["moves"].append((inv, sign))
+        for d in out.values():
+            d["opening"], d["in"], d["out"] = (round(d[k], 2) + 0.0 for k in ("opening", "in", "out"))
+            d["balance"] = round(d["opening"] + d["in"] - d["out"], 2) + 0.0
+        return out
+
+    def slot_kind_deltas(self, cat, plan):
+        """ما يغيّره ترحيل خانات الصف في تفصيل الخزينة ← {النوع: +الداخل/−الخارج}"""
+        if cat == "المصنعين":
+            m = {"المفنش ٤ بالالف": (self.SADAYA, 1), "المفنش ٨ بالالف": (self.SADAYA, 1),
+                 self.MFG_CHAINS_SLOT: (self.CHAINS_HEAD, 1), "صرف لحام": ("لحام", -1), "صرف واير": ("واير", -1)}
+        elif cat == "المركبين":
+            m = {"صرف ذهب": (self.SADAYA, -1)}
+        else:
+            return {}
+        out = {}
+        for slot, val in plan:
+            if slot in m:
+                kind, sign = m[slot]
+                out[kind] = round(out.get(kind, 0.0) + sign * val, 2)
+        return out
+
+    def sub_balance_lines(self, deltas):
+        """سطور رسالة التأكيد: رصيد كل نوعٍ يغيّره الترحيل في تفصيل الخزينة قبله وبعده (وتنبيه إن صار بالسالب)"""
+        deltas = {k: v for k, v in (deltas or {}).items() if abs(v) >= 0.005}
+        if not deltas:
+            return []
+        br = self.treasury_kind_breakdown()
+        lines = []
+        for kind, delta in deltas.items():
+            if kind not in br:
+                continue
+            bal = br[kind]["balance"]
+            after = round(bal + delta, 2) + 0.0
+            lines.append(f"• رصيد {kind} في الخزينة: {bal:.2f} ← {after:.2f}"
+                         + ("  ⚠️ يصير بالسالب" if after < -0.005 else ""))
+        return lines
 
     def show_treasury_breakdown(self):
-        """النقر على رصيد الخزينة: قبض الفترة المعروضة من كل نوع (شغل 4، شغل 8، سلاسل، سبيكة، واير، لحام)، واختيار
-        نوعٍ يعرض حركاته تحته — والأرقام من الحركات نفسها التي في مراحل التصنيع وقالب رقم التشغيل"""
+        """النقر على رصيد الخزينة: أرصدة السدايا والسلاسل والسبيكة والواير واللحام (متراكمة حتى الفترة المعروضة:
+        ما قبلها + داخلها − خارجها)، واختيار نوعٍ يعرض حركاته في الفترة — والأرقام من الحركات نفسها التي في مراحل
+        التصنيع وقالب رقم التشغيل"""
         month = self.current_display_month
         data = self.treasury_kind_breakdown(month)
         win = ctk.CTkToplevel(self)
         win.title("تفصيل رصيد الخزينة")
-        self.fit_dialog_to_screen(win, 760, 600)
+        self.fit_dialog_to_screen(win, 900, 670)
         win.transient(self)
         try:
             win.grab_set()
         except tk.TclError:
             pass
         win.focus_force()
-        ctk.CTkLabel(win, text=f"🏦 تفصيل رصيد الخزينة — الفترة ({month})", font=(UI_FONT, 18, "bold"),
+        ctk.CTkLabel(win, text=f"🏦 تفصيل رصيد الخزينة — حتى الفترة ({month})", font=(UI_FONT, 18, "bold"),
                      text_color=UI_TITLE).pack(pady=(14, 2))
         ctk.CTkLabel(win, text=f"رصيد الخزينة: {en(getattr(self, 'current_treasury_balance', 0.0))} جم",
                      font=(UI_FONT, 15, "bold"), text_color=(UI["gold"], "#F0CF6A")).pack(pady=(0, 6))
         top = ttk.Frame(win)
         top.pack(fill="x", padx=16, pady=4)
-        cols = ("النوع", "المصدر", "قبض الفترة", "عدد الحركات")
+        cols = ("النوع", "المصدر", "رصيد سابق", "داخل", "خارج", "الرصيد")
         tree = self.create_standard_treeview(top, cols, height=len(self.TREASURY_KINDS) + 1)
         tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
-        for c, wdt in zip(cols, (110, 250, 130, 125)):
+        tree.tag_configure("neg_tag", foreground="#e74c3c")
+        for c, wdt in zip(cols, (95, 305, 125, 100, 100, 100)):
             tree.column(c, width=wdt, anchor="center")
-        total = 0.0
+        tot = {"opening": 0.0, "in": 0.0, "out": 0.0, "balance": 0.0}
         for kind, src in self.TREASURY_KINDS:
-            w, lst = data[kind]
-            total += w
-            tree.insert("", "end", iid=kind, values=(kind, src, f"{w:.2f}", len(lst)))
-        tree.insert("", "end", iid="__total", values=("الإجمالي", "-", f"{total:.2f}", "-"), tags=("total_tag",))
-        lbl = ctk.CTkLabel(win, text="اختر نوعاً لعرض حركاته", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE)
+            d = data[kind]
+            for k in tot:
+                tot[k] += d[k]
+            tree.insert("", "end", iid=kind, values=(kind, src, f"{d['opening']:.2f}", f"{d['in']:.2f}",
+                                                     f"{d['out']:.2f}", f"{d['balance']:.2f}"),
+                        tags=("neg_tag",) if d["balance"] < -0.005 else ())
+        tree.insert("", "end", iid="__total", values=("الإجمالي", "-", f"{tot['opening']:.2f}", f"{tot['in']:.2f}",
+                                                       f"{tot['out']:.2f}", f"{tot['balance']:.2f}"),
+                    tags=("total_tag",))
+        lbl = ctk.CTkLabel(win, text="اختر نوعاً لعرض حركاته في الفترة", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE)
         lbl.pack(pady=(8, 2))
         bottom = ttk.Frame(win)
         bottom.pack(fill="both", expand=True, padx=16, pady=(2, 6))
-        mcols = ("التاريخ", "الاسم", "الصف", "رقم التشغيل", "الوزن", "البيان")
-        moves = self.create_standard_treeview(bottom, mcols, height=8)
-        for c, wdt in zip(mcols, (100, 140, 70, 125, 90, 160)):
+        mcols = ("التاريخ", "الاسم", "الحركة", "الصف", "رقم التشغيل", "الوزن", "البيان")
+        moves = self.create_standard_treeview(bottom, mcols, height=7)
+        for c, wdt in zip(mcols, (100, 140, 80, 70, 130, 90, 190)):
             moves.column(c, width=wdt, anchor="center")
 
         def show_kind(_e=None):
@@ -16793,18 +16925,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             kind = sel[0] if sel else None
             moves.delete(*moves.get_children())
             if kind not in data:
-                lbl.configure(text="اختر نوعاً لعرض حركاته")
+                lbl.configure(text="اختر نوعاً لعرض حركاته في الفترة")
                 return
             lbl.configure(text=f"حركات «{kind}» في الفترة ({month})")
-            for inv in sorted(data[kind][1], key=lambda i: (str(i.get("التاريخ", "")), i.get("رقم الفاتورة", 0))):
+            for inv, sign in sorted(data[kind]["moves"],
+                                    key=lambda x: (str(x[0].get("التاريخ", "")), x[0].get("رقم الفاتورة", 0))):
                 moves.insert("", "end", values=(str(inv.get("التاريخ", ""))[:10], inv.get("الاسم", ""),
+                                                "داخل" if sign > 0 else "خارج",
                                                 inv.get("row_number", "") or "-", inv.get("set_number", "") or "-",
                                                 f"{inv.get('الوزن', 0.0):.2f}", inv.get("البيان", "") or ""))
         tree.bind("<<TreeviewSelect>>", show_kind, add="+")
-        ctk.CTkLabel(win, text="قبض الفترة المعروضة من كل نوع: شغل 4 وشغل 8 والسلاسل من قسم المصنعين (من مراحل التصنيع "
-                               "أو قالب رقم التشغيل)، والسبيكة والواير واللحام من خانة القبض في الأقسام المضافة — "
-                               "ورصيد الخزينة نفسه كما هو",
-                     font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=700,
+        ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين، وينقص منها كل صرفٍ للمركبين (مراحل التصنيع أو «قبل "
+                               "التركيب» في القالب). الواير واللحام من خانة القبض في الأقسام المضافة، وينقص منهما صرفهما "
+                               "للمصنّع. «رصيد سابق» ما بقي من الفترات السابقة، والرصيد = سابق + داخل − خارج — ورصيد "
+                               "الخزينة نفسه كما هو",
+                     font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=840,
                      justify="center").pack(pady=(0, 4))
         ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=36,
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(pady=(0, 12))
@@ -23777,6 +23912,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if old is None:
                 lines.append(f"تُرحَّل بالفترة المعروضة ({self.current_display_month}).")
             title = f"ترحيل «{label}»" if old is None else f"تعديل «{label}»"
+        if field == "asm_before":
+            # صرف المركّب ينقص من رصيد السدايا في تفصيل الخزينة (1.85)
+            lines += self.sub_balance_lines({self.SADAYA: -round((value or 0.0) - (old or 0.0), 2)})
         lines += ["", "— Enter للتأكيد"]
         if confirm and not messagebox.askyesno(title, "\n".join(lines), default=messagebox.YES, parent=parent):
             return False
@@ -24332,60 +24470,79 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ── قبض من المصنّع في القالب (1.84): بطاقة صغيرة بجانب الورقة مرتبطة بقسم المصنعين — Enter والأسهم بين خاناتها ──
     def sb_build_mfg_panel(self, side):
         st = self._sb_state
-        m = {"kind": self.MFG_WORK_KINDS[0]}
+        m = {"kind": self.MFG_WORK_KINDS[0], "sarf_kind": self.MFG_SARF_KINDS[0]}
         st["mfgp"] = m
         card = ctk.CTkFrame(side, corner_radius=10, fg_color=(UI["surface_alt"], "#1D232B"), border_width=1,
                             border_color=(UI["line"], "#2A313B"))
         card.pack(fill="x", padx=8, pady=(4, 2))
         m["card"] = card
-        ctk.CTkLabel(card, text="🏭 قبض من المصنّع — المصنعين", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE,
-                     anchor="e", height=20).pack(fill="x", padx=8, pady=(2, 0))
         grid = ctk.CTkFrame(card, fg_color="transparent")
-        grid.pack(fill="x", padx=6, pady=(0, 2))
+        grid.pack(fill="x", padx=6, pady=(4, 2))
         grid.grid_columnconfigure(0, weight=1)
+        dark = ctk.get_appearance_mode() == "Dark"
+        ink = (UI["ink"], "#E5E7EB")
 
-        def label(text, r):
-            ctk.CTkLabel(grid, text=text, font=(UI_FONT, 12, "bold"), text_color=(UI["ink"], "#E5E7EB"),
-                         anchor="e", width=70, height=26).grid(row=r, column=1, sticky="e", padx=(4, 0), pady=0)
+        def label(text, r, parent=None, **grid_kw):
+            lbl = ctk.CTkLabel(parent or grid, text=text, font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e",
+                               height=26, **({} if parent else {"width": 70}))
+            if parent is None:
+                lbl.grid(row=r, column=1, sticky="e", padx=(4, 0), pady=0)
+            else:
+                lbl.grid(row=0, column=r, sticky="e", **grid_kw)
+            return lbl
+
+        def options(parent, values, group, width):
+            """أزرار الخيارات في إطارٍ يأخذ التركيز (← → أو المسافة تغيّر الاختيار)"""
+            frame = tk.Frame(parent, takefocus=1, highlightthickness=2, bd=0,
+                             bg="#1D232B" if dark else UI["surface_alt"],
+                             highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
+            btns = {}
+            for kd in values:
+                b = ctk.CTkButton(frame, text=kd, width=width, height=25, font=(UI_FONT, 12, "bold"), corner_radius=6,
+                                  command=lambda k=kd: self.sb_mfg_set_kind(k, focus=True, group=group))
+                b.pack(side="right", padx=1)
+                btns[kd] = b
+            return frame, btns
 
         def makers():
             return [self.rtl(n) for n in self.categories.get("المصنعين", [])]
-        label("المصنّع", 0)
+        HoverTip(label("🏭 المصنّع", 0), "صرفٌ للمصنّع وقبضٌ منه لرقم التشغيل — في حسابه بقسم المصنعين (مراحل التصنيع)")
         m["name"] = ctk.CTkComboBox(grid, values=makers(), font=(UI_FONT, 13), height=27, justify="right")
         m["name"].set("")
         m["name"].grid(row=0, column=0, sticky="ew", pady=1)
         self.bind_name_autocomplete(m["name"], makers)
-        # تحت الاسم خانتا «قبض كسر» و«شغل» جنباً إلى جنب، وتحتهما خيارات الشغل الثلاثة
-        label("قبض كسر", 1)
+        # الصرف بنوعه: ذهب (من الذهب العام) أو لحام أو واير (ينقصان من رصيدهما في تفصيل الخزينة)
+        srow2 = ctk.CTkFrame(grid, fg_color="transparent")
+        srow2.grid(row=1, column=0, columnspan=2, sticky="ew", pady=1)
+        srow2.grid_columnconfigure(1, weight=1)
+        label("صرف", 2, parent=srow2, padx=(4, 0))
+        m["sarf"] = ctk.CTkEntry(srow2, font=(UI_FONT, 13), justify="center", height=27, width=50)
+        m["sarf"].grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        m["sarf_kinds"], m["sarf_btns"] = options(srow2, self.MFG_SARF_KINDS, "sarf", 40)
+        m["sarf_kinds"].grid(row=0, column=0, sticky="w")
+        HoverTip(m["sarf_kinds"], "نوع الصرف: ذهب (من الذهب العام)، أو لحام أو واير (ينقصان من رصيدهما في تفصيل الخزينة)")
+        # تحتها خانتا «قبض كسر» و«شغل» جنباً إلى جنب، وتحتهما خيارات الشغل الثلاثة
+        label("قبض كسر", 2)
         wrow = ctk.CTkFrame(grid, fg_color="transparent")
-        wrow.grid(row=1, column=0, sticky="ew", pady=1)
+        wrow.grid(row=2, column=0, sticky="ew", pady=1)
         wrow.grid_columnconfigure((0, 2), weight=1, uniform="sb_mfg_w")
         m["kasr"] = ctk.CTkEntry(wrow, font=(UI_FONT, 13), justify="center", height=27, width=50)
         m["kasr"].grid(row=0, column=2, sticky="ew")
-        ctk.CTkLabel(wrow, text="شغل", font=(UI_FONT, 12, "bold"), text_color=(UI["ink"], "#E5E7EB"),
-                     height=26).grid(row=0, column=1, padx=4)
+        ctk.CTkLabel(wrow, text="شغل", font=(UI_FONT, 12, "bold"), text_color=ink, height=26).grid(row=0, column=1,
+                                                                                                padx=4)
         m["work"] = ctk.CTkEntry(wrow, font=(UI_FONT, 13), justify="center", height=27, width=50)
         m["work"].grid(row=0, column=0, sticky="ew")
-        # نوع الشغل: ثلاثة أزرار، وبالمفاتيح: التركيز على الإطار ثم ← → أو المسافة تغيّر الاختيار
-        # (صفٌّ بعرض اللوحة كلها: الأزرار الثلاثة بأسمائها كاملة)
+        # نوع الشغل: صفٌّ بعرض اللوحة كلها (الأزرار الثلاثة بأسمائها كاملة)
         krow = ctk.CTkFrame(grid, fg_color="transparent")
-        krow.grid(row=2, column=0, columnspan=2, sticky="ew", pady=1)
-        ctk.CTkLabel(krow, text="النوع", font=(UI_FONT, 12, "bold"), text_color=(UI["ink"], "#E5E7EB"),
-                     anchor="e", height=26).pack(side="right")
-        dark = ctk.get_appearance_mode() == "Dark"
-        kinds = tk.Frame(krow, takefocus=1, highlightthickness=2, bd=0,
-                         bg="#1D232B" if dark else UI["surface_alt"],
-                         highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
+        krow.grid(row=3, column=0, columnspan=2, sticky="ew", pady=1)
+        ctk.CTkLabel(krow, text="النوع", font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e",
+                     height=26).pack(side="right")
+        kinds, m["kind_btns"] = options(krow, self.MFG_WORK_KINDS, "work", 48)
         kinds.pack(side="right", padx=(0, 6))
-        m["kinds"], m["kind_btns"] = kinds, {}
-        for kd in self.MFG_WORK_KINDS:
-            b = ctk.CTkButton(kinds, text=kd, width=48, height=25, font=(UI_FONT, 12, "bold"), corner_radius=6,
-                              command=lambda k=kd: self.sb_mfg_set_kind(k, focus=True))
-            b.pack(side="right", padx=1)
-            m["kind_btns"][kd] = b
-        label("رقم التشغيل", 3)
+        m["kinds"] = kinds
+        label("رقم التشغيل", 4)
         srow = ctk.CTkFrame(grid, fg_color="transparent")
-        srow.grid(row=3, column=0, sticky="ew", pady=1)
+        srow.grid(row=4, column=0, sticky="ew", pady=1)
         m["row"] = ctk.CTkEntry(srow, font=(UI_FONT, 13), justify="center", height=27, width=44,
                                 placeholder_text="الصف")
         m["row"].pack(side="left", padx=(0, 3))
@@ -24395,9 +24552,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         m["btn"] = ctk.CTkButton(card, text="💾 ترحيل لحساب المصنّع", height=27, font=(UI_FONT, 13, "bold"),
                                  command=self.sb_mfg_submit, **BUTTON_STYLES["primary"])
         m["btn"].pack(fill="x", padx=8, pady=(1, 5))
-        HoverTip(m["btn"], "قبض الكسر ← قبض/كسر، وشغل 4 ← قبض/٤ (ويُرحَّل «قبل» بوليش 1 بقيمته)، وشغل 8 ← قبض/٨، "
-                           "والسلاسل ← قبض/سلاسل (مثل شغل 8) — في صف رقم التشغيل بحساب المصنّع")
-        chain = [m["name"]._entry, m["kasr"]._entry, m["work"]._entry, kinds, m["set"]._entry, m["row"]._entry]
+        HoverTip(m["btn"], "الصرف ← صرف (ذهب) أو صرف/لحام أو صرف/واير، وقبض الكسر ← قبض/كسر، وشغل 4 ← قبض/٤ (ويُرحَّل "
+                           "«قبل» بوليش 1 بقيمته)، وشغل 8 ← قبض/٨، والسلاسل ← قبض/سلاسل (مثل شغل 8) — في صف رقم "
+                           "التشغيل بحساب المصنّع")
+        chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,
+                 m["set"]._entry, m["row"]._entry]
         m["chain"] = chain
 
         def go(widget, step):
@@ -24420,27 +24579,35 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             wdg.bind("<Up>", lambda e, w=wdg: go(w, -1), add="+")
         m["set"]._entry.bind("<FocusOut>", lambda e: self.sb_mfg_fill_owner(), add="+")
         step = {"Right": -1, "Left": 1, "space": 1}           # الأزرار من اليمين: ← التالي و→ السابق
-        for key, d in step.items():
-            kinds.bind(f"<{key}>", lambda e, d=d: (self.sb_mfg_step_kind(d), "break")[1])
+        for group, frame in (("work", kinds), ("sarf", m["sarf_kinds"])):
+            for key, d in step.items():
+                frame.bind(f"<{key}>", lambda e, d=d, g=group: (self.sb_mfg_step_kind(d, group=g), "break")[1])
         if getattr(self, "view_only", False):
             m["btn"].configure(state="disabled")
         self.sb_mfg_set_kind(m["kind"])
+        self.sb_mfg_set_kind(m["sarf_kind"], group="sarf")
 
-    def sb_mfg_set_kind(self, kind, focus=False):
-        """نوع الشغل في لوحة المصنّع: شغل 4 أو شغل 8 أو سلاسل"""
+    # مجموعتا الخيارات في لوحة المصنّع: نوع الشغل ونوع الصرف ← (القيم، مفتاح المختار، مفتاح الأزرار، مفتاح الإطار)
+    SB_MFG_GROUPS = {"work": (MFG_WORK_KINDS, "kind", "kind_btns", "kinds"),
+                     "sarf": (MFG_SARF_KINDS, "sarf_kind", "sarf_btns", "sarf_kinds")}
+
+    def sb_mfg_set_kind(self, kind, focus=False, group="work"):
+        """الخيار في لوحة المصنّع: نوع الشغل (شغل 4 / شغل 8 / سلاسل) أو نوع الصرف (ذهب / لحام / واير)"""
         m = self._sb_state.get("mfgp")
-        if not m or kind not in self.MFG_WORK_KINDS:
+        values, sel_key, btns_key, frame_key = self.SB_MFG_GROUPS[group]
+        if not m or kind not in values:
             return
-        m["kind"] = kind
-        for kd, b in m["kind_btns"].items():
+        m[sel_key] = kind
+        for kd, b in m[btns_key].items():
             b.configure(**(BUTTON_STYLES["primary"] if kd == kind else BUTTON_STYLES["secondary"]))
         if focus:
-            m["kinds"].focus_set()
+            m[frame_key].focus_set()
 
-    def sb_mfg_step_kind(self, step):
+    def sb_mfg_step_kind(self, step, group="work"):
         m = self._sb_state["mfgp"]
-        kinds = list(self.MFG_WORK_KINDS)
-        self.sb_mfg_set_kind(kinds[(kinds.index(m["kind"]) + step) % len(kinds)])
+        values, sel_key, _b, _f = self.SB_MFG_GROUPS[group]
+        values = list(values)
+        self.sb_mfg_set_kind(values[(values.index(m[sel_key]) + step) % len(values)], group=group)
 
     def sb_mfg_fill_owner(self, set_number=None):
         """رقم التشغيل في لوحة المصنّع: صفّه المسجّل لمصنّع (في الفترة المعروضة) يملأ الاسم والصف"""
@@ -24468,7 +24635,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             m["row"].delete(0, "end")
 
     def sb_mfg_submit(self):
-        """«💾 ترحيل لحساب المصنّع» (أو Enter في آخر خانة): قبض الكسر والشغل لحساب المصنّع في صف رقم التشغيل"""
+        """«💾 ترحيل لحساب المصنّع» (أو Enter في آخر خانة): الصرف بنوعه وقبض الكسر والشغل بنوعه لحساب المصنّع في صف
+        رقم التشغيل"""
         st = self._sb_state
         m = st.get("mfgp")
         if not m:
@@ -24476,17 +24644,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sb_mfg_fill_owner()
         ok = self.post_manufacturer_receipt(
             self.clean_name(m["name"].get()), m["set"].get(), m["row"].get(),
-            self._read_weight(m["kasr"]), self._read_weight(m["work"]), m["kind"], parent=self)
+            self._read_weight(m["kasr"]), self._read_weight(m["work"]), m["kind"], parent=self,
+            sarf=self._read_weight(m["sarf"]), sarf_kind=m["sarf_kind"])
         if ok:
-            for e in (m["kasr"], m["work"]):
+            for e in (m["sarf"], m["kasr"], m["work"]):
                 e.delete(0, "end")
+            # نوع الصرف يعود «ذهب» بعد كل ترحيل (فلا يُرحَّل صرفٌ تالٍ لحاماً أو وايراً سهواً)
+            self.sb_mfg_set_kind(self.MFG_SARF_KINDS[0], group="sarf")
             key = self.normalize_set_number(m["set"].get())
             if self.sb_load(key) is None:
                 self.sb_save(self.sb_new_record(key))        # رُحِّل من القالب: للرقم قالبه (كترحيل أي خانة منه)
-            self.toast(f"✅ قبض المصنّع لرقم التشغيل {key} — في حسابه بقسم المصنعين", "success")
+            self.toast(f"✅ رقم التشغيل {key} — في حساب المصنّع بقسم المصنعين", "success")
             if st.get("key"):
                 self.sb_render()
-            self.after(40, lambda: m["kasr"].focus_set())
+            self.after(40, lambda: m["sarf"].focus_set())
         return ok
 
     def sb_make_entry(self, justify="center"):
@@ -25077,8 +25248,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if sale:
             sale_txt = (f"\nبيع لـ {sale['name']} — فاتورة {sale['manual_no'] or '-'} ({sale['date']})"
                         + ("\nالخانات الخضراء من فاتورة البيع والتتبع" if v["ext"] else ""))
-        st["info"].configure(text=f"الطقم {key} — {status}\n{asm_txt}{sale_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
-                                  + ("" if st["editing"] else "\n(للعرض — ✏️ تعديل)"))
+        # رقم الطقم وحاله في البحث والشارة فوقها — هنا المركّب والبيع وآخر تعديل (سطران يتّسع لهما العمود على ٧٦٨)
+        st["info"].configure(text=f"{asm_txt}{sale_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
+                                  + ("" if st["editing"] else " — للعرض (✏️ تعديل)"))
         self.sb_fill_pieces(pieces)
         self.sb_fill_log(key)
 

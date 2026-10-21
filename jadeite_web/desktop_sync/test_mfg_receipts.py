@@ -2,6 +2,8 @@
 """
 1.84: قبض المصنّعين (كسر، شغل 4، شغل 8، سلاسل) من مراحل التصنيع ومن قالب رقم التشغيل، و«قبل» بوليش 1 من شغل 4،
 ونوع القبض في الأقسام المضافة (سبيكة/واير/لحام)، وتفصيل رصيد الخزينة.
+1.85: صرف المصنّع بنوعه (ذهب / لحام / واير — كل نوع خانته في الصف)، والسدايا (شغل 4 + شغل 8 ينقص منها صرف المركبين)،
+وأرصدة التفصيل متراكمة من الفترات السابقة.
 
   • السلاسل تُحسب مثل شغل 8 (المسموح ٨ بالألف): حركتها «المفنش ٨ بالالف» وأول بيانها «سلاسل» — والمعادلة كما هي.
   • خانة السلاسل مستقلة في الصف (قاعدة الصف والخانة) وفي التعديل والجدول.
@@ -42,7 +44,9 @@ MEMBERS = ("_SET_DIGITS", "normalize_set_number", "inv_period", "inv_in_period",
            "note_head", "with_note_head", "movement_slot", "slot_op_type", "work4_totals", "sync_work4_polish",
            "post_manufacturer_receipt", "find_row_by_set_number", "row_set_numbers", "plan_unified_values",
            "calculate_single_ledger", "worker_rows_raji", "invoices_by_name", "invoices_by_name_period",
-           "TREASURY_KINDS", "treasury_kind_breakdown", "_read_weight")
+           "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SLOT_TYPES", "SLOT_HEADS", "SADAYA", "invoices_by_period",
+           "TREASURY_KINDS", "treasury_kind_of", "treasury_kind_breakdown", "slot_kind_deltas", "sub_balance_lines",
+           "_read_weight")
 
 
 class MB:
@@ -198,7 +202,8 @@ assert "قبض/كسر: 2.5" in ask[2] and "شغل 4 (قبض/٤): 41" in ask[2] a
 row3 = sorted((i["النوع"], i["الوزن"], i["row_number"], i["set_number"], i["البيان"]) for i in a.invoices.values()
               if i["الاسم"] == "أحمد" and i["row_number"] == "3")
 assert row3 == [("المفنش ٤ بالالف", 41.0, "3", "5003", ""), ("قبض ذهب", 2.5, "3", "5003", "")], row3
-assert a.polish("5003") == [41.0] and a.undo[-1] == "قبض المصنّع (أحمد) — الصف (3) — 5003"
+assert a.polish("5003") == [41.0] and a.undo[-1] == "المصنّع (أحمد) — الصف (3) — 5003"
+assert ask[1] == "ترحيل لحساب المصنّع" and "• رصيد سدايا في الخزينة:" in ask[2]
 # رقم مسجّل: يُكمل صفّه بلا رقم صف، والسلاسل حركتها مفنش ٨ بأول بيانها «سلاسل»
 assert a.post_manufacturer_receipt("أحمد", "٥٠٠١", "", 0.0, 12.0, "سلاسل") is True
 ch = [i for i in a.invoices.values() if i["row_number"] == "1" and a.movement_slot(i) == "قبض سلاسل"]
@@ -233,18 +238,71 @@ assert len(a.invoices) == n0
 print("✔ يُرفض: غير المصنّع، والقيمة غير الرقمية أو السالبة أو الصفر، ونوعٌ غير الثلاثة، وبلا رقم تشغيل، ورقمٌ لمصنّع "
       "آخر أو لصف آخر، ورقمٌ جديد بلا صف، وصفٌّ برقم آخر — و«لا» في التأكيد، ووضع العرض")
 
-# ═══ ٦) تفصيل الخزينة: قبض الفترة المعروضة من كل نوع ═══
+# ═══ ٥ب) صرف المصنّع بنوعه: ذهب / لحام / واير — كل نوع خانته في الصف، والحركة «صرف ذهب» نفسها ═══
+MB.log.clear()
+assert a.post_manufacturer_receipt("أحمد", "5003", "", 0.0, 0.0, "شغل 4", sarf=3.0, sarf_kind="لحام") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "صرف لحام (صرف/لحام): 3" in ask[2] and "• رصيد لحام في الخزينة: 0.00 ← -3.00  ⚠️ يصير بالسالب" in ask[2], ask[2]
+sol = [i for i in a.invoices.values() if i["الاسم"] == "أحمد" and i["row_number"] == "3" and i["النوع"] == "صرف ذهب"]
+assert len(sol) == 1 and sol[0]["البيان"] == "لحام" and sol[0]["الوزن"] == 3.0 and sol[0]["set_number"] == "5003"
+assert a.movement_slot(sol[0]) == "صرف لحام" and a.slot_op_type("صرف لحام") == "صرف ذهب"
+assert a.post_manufacturer_receipt("أحمد", "5003", "", 0.0, 0.0, "شغل 4", sarf=10.0, sarf_kind="ذهب") is True
+gold = [i for i in a.invoices.values() if i["row_number"] == "3" and i["الاسم"] == "أحمد" and a.movement_slot(i) == "صرف ذهب"]
+assert len(gold) == 1 and gold[0]["البيان"] == "" and gold[0]["الوزن"] == 10.0, "صرف الذهب خانته (لا ينقص من رصيدٍ مفصّل)"
+MB.log.clear()
+assert a.post_manufacturer_receipt("أحمد", "5003", "", 0.0, 0.0, "شغل 4", sarf=1.0, sarf_kind="لحام") is False
+assert MB.log[-1][1] == "مسجّل بالفعل", "صرف اللحام مرة في الصف"
+assert a.post_manufacturer_receipt("أحمد", "5002", "", 0.0, 0.0, "شغل 4", sarf=2.0, sarf_kind="واير") is True
+for kw, title in (({"sarf": 1.0, "sarf_kind": "فضة"}, "نوع الصرف"), ({"sarf": -1.0}, "قيمة غير صحيحة"),
+                  ({"sarf": None}, "قيمة غير صحيحة")):
+    MB.log.clear()
+    assert a.post_manufacturer_receipt("أحمد", "5003", "", 0.0, 0.0, "شغل 4", **kw) is False and MB.log[-1][1] == title
+L = a.calculate_single_ledger("أحمد", "المصنعين")
+assert L["الصرف"] == 165.0, f"حساب المصنّع: كل الصرف بأنواعه في «الصرف» (100 + 50 + 3 + 10 + 2) — {L['الصرف']}"
+# صرف المركّب ببيان «لحام» ليس صرف لحامٍ للمصنّع (خانته صرف ذهب)
+assert a.movement_slot({"النوع": "صرف ذهب", "البيان": "لحام", "الاسم": "سالم"}) == "صرف ذهب"
+# خطة الصف في مراحل التصنيع: خانة الصرف حسب نوعه المختار
+a.current_op_cat = "المصنعين"
+a.selected_sarf_type = "لحام"
+a.current_win_entries = {"رقم الصف": Ent("3"), "صرف ذهب": (Ent("5"), None)}
+assert a.plan_unified_values("أحمد", "3") == ([], [("صرف لحام", 3.0)])
+a.selected_sarf_type = "واير"
+assert a.plan_unified_values("أحمد", "3") == ([("صرف واير", 5.0)], [])
+a.selected_sarf_type = "ذهب"
+assert a.plan_unified_values("أحمد", "3") == ([], [("صرف ذهب", 10.0)])
+print("✔ صرف المصنّع بنوعه: ذهب ← صرف، ولحام ← صرف/لحام، وواير ← صرف/واير (حركة صرف ذهب بنوعها في أول البيان)، وكلٌّ "
+      "مرة في الصف، وكل الصرف في حساب المصنّع؛ والتأكيد برصيد اللحام قبل وبعد (وتنبيه السالب)")
+
+# ═══ ٦) تفصيل الخزينة: أرصدة متراكمة — السدايا (شغل 4 + شغل 8 − صرف المركبين)، والسلاسل، والسبيكة، والواير واللحام ═══
 a.add("صب الداخلي", "قبض صب الداخلي", 6.0, row="1", note="واير — شحنة")
 a.add("صب الداخلي", "قبض صب الداخلي", 2.0, row="2", note="لحام")
 a.add("صب الداخلي", "قبض صب الداخلي", 9.0, row="3", note="سبيكة")
 a.add("صب الداخلي", "قبض صب الداخلي", 4.0, row="4")                        # بلا نوع: لا يُعدّ
-a.add("أحمد", "المفنش ٤ بالالف", 7.0, row="1", set_no="4001", period="2026-09")  # فترة أخرى
+a.add("سالم", "صرف ذهب", 15.0, row="1", set_no="5001")                      # صرفٌ للمركّب ← ينقص من السدايا
+a.add("سالم", "قبض ذهب", 14.0, row="1", set_no="5001")                      # القبض منه لا يمسّها
+# الفترة السابقة: تدخل في «ما قبل الفترة»
+a.add("أحمد", "المفنش ٤ بالالف", 7.0, row="1", set_no="4001", period="2026-09")
+a.add("سالم", "صرف ذهب", 4.0, row="1", set_no="4001", period="2026-09")
+a.add("صب الداخلي", "قبض صب الداخلي", 1.5, row="1", note="واير", period="2026-09")
+# الفترة التالية: لا تدخل
+a.add("أحمد", "المفنش ٨ بالالف", 100.0, row="1", set_no="6001", period="2026-11")
 br = a.treasury_kind_breakdown(M)
-got = {k: v[0] for k, v in br.items()}
-assert got == {"شغل 4": 41.0, "شغل 8": 40.0, "سلاسل": 32.0, "سبيكة": 9.0, "واير": 6.0, "لحام": 2.0}, got
-assert [k for k, _s in a.TREASURY_KINDS] == ["شغل 4", "شغل 8", "سلاسل", "سبيكة", "واير", "لحام"]
-assert a.treasury_kind_breakdown("2026-09")["شغل 4"][0] == 7.0
-print(f"✔ تفصيل الخزينة (قبض الفترة): {got} — من المصنعين ومن خانة القبض في الأقسام المضافة، والفترة وحدها")
+got = {k: (v["opening"], v["in"], v["out"], v["balance"]) for k, v in br.items()}
+assert got == {"سدايا": (3.0, 81.0, 15.0, 69.0), "سلاسل": (0.0, 32.0, 0.0, 32.0), "سبيكة": (0.0, 9.0, 0.0, 9.0),
+               "واير": (1.5, 6.0, 2.0, 5.5), "لحام": (0.0, 2.0, 3.0, -1.0)}, got
+assert [k for k, _s in a.TREASURY_KINDS] == ["سدايا", "سلاسل", "سبيكة", "واير", "لحام"]
+assert sorted((i["الوزن"], sg) for i, sg in br["سدايا"]["moves"]) == [(15.0, -1), (40.0, 1), (41.0, 1)]
+prev = a.treasury_kind_breakdown("2026-09")
+assert (prev["سدايا"]["balance"], prev["واير"]["balance"]) == (3.0, 1.5) and prev["سدايا"]["opening"] == 0.0
+assert a.treasury_kind_breakdown("2026-11")["سدايا"]["opening"] == 69.0
+assert a.slot_kind_deltas("المصنعين", [("صرف لحام", 3), ("المفنش ٤ بالالف", 41), ("قبض سلاسل", 12), ("صرف واير", 2),
+                                        ("المفنش ٨ بالالف", 5), ("قبض ذهب", 1), ("صرف ذهب", 9)]) \
+    == {"لحام": -3, "سدايا": 46, "سلاسل": 12, "واير": -2}
+assert a.slot_kind_deltas("المركبين", [("صرف ذهب", 10), ("قبض ذهب", 9)]) == {"سدايا": -10}
+assert a.sub_balance_lines({"سدايا": -10}) == ["• رصيد سدايا في الخزينة: 69.00 ← 59.00"]
+assert a.sub_balance_lines({}) == [] and a.sub_balance_lines({"سدايا": 0.0}) == []
+print(f"✔ تفصيل الخزينة (متراكم): {got} — السدايا = شغل 4 + شغل 8 − صرف المركبين، والواير واللحام − صرفهما للمصنّع، "
+      "والفترة التالية لا تدخل")
 
 # ═══ ٧) الواجهة والمصادر ═══
 ruf = member("render_unified_fields")
@@ -269,7 +327,8 @@ assert "self.with_note_head(kind, note) if kind in self.RECEIPT_KINDS" in member
 assert 'self.lbl_live_treasury.bind("<Button-1>", lambda e: self.show_treasury_breakdown())' in src
 assert "self.tabview.treasury_click_callback = self.show_treasury_breakdown" in src
 panel = member("sb_build_mfg_panel")
-assert "chain = [m[\"name\"]._entry, m[\"kasr\"]._entry, m[\"work\"]._entry, kinds, m[\"set\"]._entry, m[\"row\"]._entry]" in panel
+assert 'chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,' in panel
+assert 'options(srow2, self.MFG_SARF_KINDS, "sarf", 40)' in panel and 'options(krow, self.MFG_WORK_KINDS, "work", 48)' in panel
 for k in ('"<Return>"', '"<Down>"', '"<Up>"', '"Right": -1, "Left": 1, "space": 1'):
     assert k in panel, k
 assert "self.post_manufacturer_receipt(" in member("sb_mfg_submit")
@@ -289,8 +348,21 @@ assert 'if set_number is not None or cur not in self.categories.get("المصن�
     "مصنّعٌ اختاره المستخدم لا يُبدَّل بصمت بصاحب الرقم"
 assert "self.sb_save(self.sb_new_record(key))" in member("sb_mfg_submit"), "الترحيل من لوحة القالب ← للرقم قالبه"
 assert "or key in self.sb_mfg_receipts())" in member("sb_open_search")
-assert 'text=kd, width=48' in panel and 'krow.grid(row=2, column=0, columnspan=2' in panel, \
-    "خيارات الشغل بأسمائها كاملة في صفٍّ بعرض اللوحة"
+assert 'krow.grid(row=3, column=0, columnspan=2' in panel and 'srow2.grid(row=1, column=0, columnspan=2' in panel, \
+    "خيارات الصرف والشغل بأسمائها كاملة في صفٍّ بعرض اللوحة"
+sub_mfg = member("sb_mfg_submit")
+assert 'sarf=self._read_weight(m["sarf"]), sarf_kind=m["sarf_kind"]' in sub_mfg
+assert 'self.sb_mfg_set_kind(self.MFG_SARF_KINDS[0], group="sarf")' in sub_mfg, "نوع الصرف يعود ذهب بعد الترحيل"
+assert 'elif key == "صرف ذهب" and cat == "المصنعين":' in ruf and "self.choose_sarf_type(b)" in ruf
+assert 'self.MFG_SARF_SLOTS.get(getattr(self, "selected_sarf_type", "ذهب"), "صرف ذهب")' in member("plan_unified_values")
+assert 'else self.SLOT_HEADS.get(slot, ""))' in sub and "self.sub_balance_lines(self.slot_kind_deltas(cat, plan))" in sub
+assert 'self.set_sarf_type(sarf_ent[1], "ذهب")' in sub
+assert '("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/واير")' in member("ROW_EDIT_FIELDS")
+assert "head = (self.SLOT_HEADS.get(slot)" in row_edit
+assert "self.sub_balance_lines({self.SADAYA: -round((value or 0.0) - (old or 0.0), 2)})" in member("sb_post")
+tb = member("show_treasury_breakdown")
+assert '("النوع", "المصدر", "رصيد سابق", "داخل", "خارج", "الرصيد")' in tb and '"داخل" if sign > 0 else "خارج"' in tb
+assert 'text=f"الطقم {key} — {status}' not in member("sb_render"), "معلومات الطقم سطران (يتّسع العمود للوحة)"
 assert 'specs += [(k, label, 0 if k in toggles else 1) for k, label in fields]' in member("build_stage_panel")
 bar = member("refresh_stage_buttons")
 assert bar.index("self.lbl_op_status.pack(side=\"left\", padx=6)") > bar.index("self.stage_buttons[key] = b"), \
