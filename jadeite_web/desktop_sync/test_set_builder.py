@@ -78,7 +78,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "sb_unproduce", "sb_delete", "sb_next_set_number", "sb_sale_fill", "sb_stage_rows", "sb_ids",
            "sb_voucher_sections", "SB_FLOW", "SB_POST_CELLS", "SB_PAIR_BEFORE", "sb_flow_next", "CARAT_PER_GRAM", "SALE_KIND_GOLD",
            "SALE_KIND_DIAMOND", "SALE_KINDS", "sb_p2_incomplete", "sb_sale_index", "sb_apply_sale",
-           "sb_sync_from_sale")
+           "sb_sync_from_sale", "sb_mfg_receipts", "movement_slot", "note_head", "CHAINS_HEAD", "MFG_CHAINS_SLOT")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
       "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"), "IS_ADMIN_BUILD": False,
       "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH"), "KHAYAS_MARK_NET": module_value("KHAYAS_MARK_NET"),
@@ -622,5 +622,16 @@ assert "self.open_sb_stage_statement(\"p1\")" in member("edit_selected_polish_bu
 p2 = member("polish2_month_parts")
 assert "self.SB_P2_IN" in p2 and "self.SB_P2_OUT" in p2 and '"khayas": round(sales + before - after, 2)' in p2
 print("✔ بوليش 1: أرقام القالب صفٌّ واحد بكشفٍ لكل رقم؛ وصندوق بوليش 2: قبل/بعد/خياس من القالب + المبيعات القديمة")
+
+# 1.84: «قبل» بوليش 1 مُرحَّل (من شغل 4 تلقائياً) و«بعد» لم يُرحَّل ← «بعد البوليش» في التتبع صرف المركّب (لا يضيع)
+S3 = "9077"
+assert a.sb_post(S3, "p1_before", 30.0) is True
+assert a.sb_post(S3, "asm_before", 29.5, assembler="سالم", row="11") is True
+t = a.set_tracking_values(S3)
+assert (t["polish_before"], t["polish_after"], t["polish_khayas"]) == (30.0, 29.5, 0.5), t
+assert a.sb_post(S3, "p1_after", 29.6) is True
+t = a.set_tracking_values(S3)
+assert (t["polish_before"], t["polish_after"], t["polish_khayas"]) == (30.0, 29.6, 0.4), t
+print("✔ التتبع: «قبل» من القالب و«بعد» ما لم يُرحَّل من القالب = صرف المركّب (ثم المرحَّل منه)")
 
 print("\n✅ قالب رقم التشغيل: كل خانة تُرحَّل لمكانها، والأوزان محسوبة، والتوليد يملأ المبيعات بلا ازدواج")

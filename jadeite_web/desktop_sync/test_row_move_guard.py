@@ -82,7 +82,8 @@ print("✔ المنع قبل أي حفظ في نافذة تعديل الأقسا
 
 # الخانة = ما في الجدول: مجموع حركات النوع، والحفظ يجعلها حركة واحدة
 assert "shown(total(sarf_invs))" in stage and "for dup in existing_list[1:]:" in stage
-assert "for dup in existing_list[1:]:" in row and "by_type.setdefault(inv.get(\"النوع\"), []).append(inv)" in row
+# خانة الحركة (movement_slot): نوعها، والسلاسل خانة مستقلة عن قبض/٨ وإن كانت حركتها مفنش ٨ (1.84)
+assert "for dup in existing_list[1:]:" in row and "by_type.setdefault(self.movement_slot(inv), []).append(inv)" in row
 print("✔ صف فيه أكثر من حركة للنوع نفسه: الخانة مجموعها (كما في الجدول) والحفظ يجعلها حركة واحدة بالقيمة المكتوبة")
 
 save = member("save_invoice_to_db")

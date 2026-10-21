@@ -46,7 +46,8 @@ print("✔ وحجمه صغير مريح (٢٤٠–٤٢٠ بكسل)")
 assert "logo_tint_for(TREASURY_BAR_TEXT[0])" in hb and "logo_tint_for(TREASURY_BAR_TEXT[1]" in hb
 assert "opacity=" not in hb.split("logo_tint_for(TREASURY_BAR_TEXT[0])")[1].split("\n")[0]
 _bar_line = next(l for l in src.splitlines() if "self.lbl_live_treasury = ctk.CTkLabel(" in l)
-assert "text_color=TREASURY_BAR_TEXT)" in _bar_line, _bar_line
+# (ومنذ 1.84 بعده cursor="hand2": النقر عليه يفتح تفصيل رصيد الخزينة)
+assert "text_color=TREASURY_BAR_TEXT" in _bar_line, _bar_line
 print("✔ الشعار والشريط يأخذان لونهما من ثابت واحد (TREASURY_BAR_TEXT) — لا يفترقان مستقبلاً")
 
 import re as _re

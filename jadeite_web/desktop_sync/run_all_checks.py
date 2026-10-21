@@ -76,6 +76,7 @@ CHECKS = [
     ("لا دمج للصفوف بالتعديل",  [PY, "test_row_move_guard.py", TARGET]),
     ("حذف حساب وعرض العميل",  [PY, "test_account_delete_viewonly.py", TARGET]),
     ("تعديل اسم الحساب",       [PY, "test_account_rename.py", TARGET]),
+    ("قبض المصنّعين وشغل 4 والسلاسل والخزينة", [PY, "test_mfg_receipts.py", TARGET]),
     ("تعديل فواتير المبيعات الصادرة", [PY, "test_sale_invoice_edit.py", TARGET]),
     ("تتبع رقم التشغيل والقالب والتحليل", [PY, "test_set_tracking.py", TARGET]),
     ("قالب رقم التشغيل: بناء الطقم", [PY, "test_set_builder.py", TARGET]),

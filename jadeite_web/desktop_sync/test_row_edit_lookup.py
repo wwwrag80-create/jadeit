@@ -95,7 +95,9 @@ for node in ast.walk(cls):
         for t in node.targets:
             if isinstance(t, ast.Name) and t.id == "ROW_EDIT_FIELDS":
                 fields = ast.literal_eval(node.value)
-assert len(fields["المصنعين"]) == 8 and len(fields["المركبين"]) == 5
+# المصنعين ٩ خانات منذ 1.84: «قبض/سلاسل» (تُحسب مثل شغل 8) بعد قبض/٤
+assert len(fields["المصنعين"]) == 9 and len(fields["المركبين"]) == 5
+assert ("قبض سلاسل", "قبض/سلاسل") in fields["المصنعين"]
 print(f"✔ خانات المصنعين: {len(fields['المصنعين'])} | المركبين: {len(fields['المركبين'])} — كل عمليات الصف")
 
 assert "delete_invoice_from_db" in edit and "save_invoice_to_db" in edit
