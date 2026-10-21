@@ -105,6 +105,7 @@ exec(compile(ast.Module(body=[draw_fn, method("set_voucher_sections")], type_ign
 fake.set_voucher_layout = lambda: ns["set_voucher_layout"](fake)
 fake.set_voucher_values = lambda d: ns["set_voucher_values"](fake, d)
 fake.set_voucher_sections = lambda d: ns["set_voucher_sections"](fake, d)
+fake.CARAT_PER_GRAM = 5
 fake.sb_load = lambda k: None          # رقمٌ لم يُبنَ في «قالب رقم التشغيل»: السند من التتبع وسطر البيع
 fake.set_tracking_values = lambda k: {"polish_before": 33.6, "polish_after": 33.0, "polish_khayas": 0.6,
                                       "asm_before": 33.0, "asm_after": 32.5, "asm_khayas": 0.5, "names": ["سالم"]}

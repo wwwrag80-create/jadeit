@@ -76,10 +76,13 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "sb_values", "sb_polish2_khayas", "sb_polish1_posted", "sb_is_sold", "sb_status",
            "sb_check_assembler", "sb_ensure_assembler", "check_name_exists", "sb_post", "sb_set_field", "sb_set_pieces", "sb_pieces_totals", "sb_produce",
            "sb_unproduce", "sb_delete", "sb_next_set_number", "sb_sale_fill", "sb_stage_rows", "sb_ids",
-           "sb_voucher_sections", "SB_FLOW", "SB_POST_CELLS")
+           "sb_voucher_sections", "SB_FLOW", "SB_POST_CELLS", "SB_PAIR_BEFORE", "sb_flow_next", "CARAT_PER_GRAM", "SALE_KIND_GOLD",
+           "SALE_KIND_DIAMOND", "SALE_KINDS", "sb_p2_incomplete", "sb_sale_index", "sb_apply_sale",
+           "sb_sync_from_sale")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
       "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"), "IS_ADMIN_BUILD": False,
-      "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH")}
+      "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH"), "KHAYAS_MARK_NET": module_value("KHAYAS_MARK_NET"),
+      "KHAYAS_MARK_ASSEMBLER": module_value("KHAYAS_MARK_ASSEMBLER")}
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 exec(module_src("sale_net_weight"), ns)
 sale_net_weight = ns["sale_net_weight"]
@@ -341,8 +344,9 @@ a.sale_discount_pct = Entry("30%")
 a.sale_discount_pct.set = lambda t: setattr(a.sale_discount_pct, "text", t)
 text = a.autofill_sale_from_build(S)
 assert a.sale_discount_pct.get() == "80%", "نسبة خصم الأحجار في المبيعات = نسبة القالب (لا يعيد «إضافة» حسابها بغيرها)"
-assert [getattr(a, attr).get() for attr, _k in a.SB_SALE_FIELDS] == ["51.8", "2", "1.5", "0.5", "1.2", "0.6"]
-assert a.sale_khayas.get() == "" and "مُرحَّل من القالب" in text and a._polish_set_fetched == S
+assert [getattr(a, attr).get() for attr, _k in a.SB_SALE_FIELDS] == ["51.8", "2", "1.5", "0.5", "1.2", "0.6", "0.3"]
+assert a.sale_khayas.get() == "0.3" and "من القالب (مُرحَّل منه" in text and a._polish_set_fetched == S, \
+    "1.82: خانة خياس بوليش 2 في المبيعات تُظهر خياس القالب (مُرحَّل منه — لا يُرحَّل ثانية)"
 a.sale_gold.text = "51.9"                       # تعديلٌ يدوي بعد الملء
 assert a.autofill_sale_from_build("٩٠٠١") == text and a.sale_gold.get() == "51.9", "الرقم نفسه لا يُعاد ملؤه"
 assert "لم يُولَّد بعد" in a.autofill_sale_from_build("9002")
@@ -356,9 +360,10 @@ assert sale_net_weight(dict(row, **{"خياس": a.sb_polish2_khayas(S)})) == rou
 post = member("post_sale_rows")
 assert "sb_p2 = self.sb_polish2_khayas(set_num)" in post and "khayas_v = 0.0" in post
 assert 'net_v = sale_net_weight(dict(row, **{"خياس": sb_p2}))' in post
-seg_all = src[src.index("sb_p2 = self.sb_polish2_khayas(set_num)\n        if sb_p2 is not None and khayas_v > 0:"):][:600]
-assert "لن يُرحَّل من المبيعات مرة ثانية" in seg_all and "khayas_v = 0.0" in seg_all
-print("✔ خياس بوليش 2 لطقم القالب: يدخل صافيه، ولا يُرحَّل من المبيعات ثانية (الإضافة تنبّه وتصفّره، والترحيل كذلك)")
+stage = member("stage_sale_row")
+assert "if self.sb_p2_incomplete(set_num):" in stage and "khayas_v = sb_p2" in stage
+assert stage.index("khayas_v = sb_p2") < stage.index('"خياس": khayas_v'), "السطر يحمل خياس بوليش 2 من القالب (للعرض)"
+print("✔ خياس بوليش 2 لطقم القالب: يظهر في خانته وسطره وصافيه، ولا يُرحَّل من المبيعات ثانية (post_sale_rows)")
 inv_data = member("get_invoice_group_data")
 assert "sb_p2 = self.sb_polish2_khayas(set_number)" in inv_data and 'data["khayas"] = sb_p2' in inv_data
 brk = member("get_set_khayas_breakdown")
@@ -392,6 +397,76 @@ assert a.sb_produce(S) is False
 a.view_only = False
 print("✔ «طقم جديد» يقترح أكبر رقم + ١، والطقوم مرتّبة من أولها لآخرها للسهمين، ووضع العرض لا يرحّل شيئاً")
 
+# ═══ ١٥أ) 1.82: الفصوص والأحجار بالقيراط (الجرام × ٥) — والعكس ═══
+K = "9300"
+a.sb_set_field(K, "gems", "2.5")
+assert a.sb_values(K)["gems_ct"] == 12.5 and a.sb_values(K)["stones_ct"] is None
+a.sb_set_field(K, "gems", 12.37 / 5)                 # ما يفعله «قيراط ← جرام» عند الكتابة في الجدول الأيمن
+a.sb_set_field(K, "gems_ct", "12.37")
+v = a.sb_values(K)
+assert (v["gems"], v["gems_ct"]) == (2.47, 12.37), "القيراط المكتوب يبقى كما كُتب، وجرامه = ÷ ٥"
+a.sb_set_field(K, "gems", "3")
+assert a.sb_values(K)["gems_ct"] == 15.0, "تغيير الجرام يعيد القيراط = الجرام × ٥"
+a.sb_set_field(K, "stones", "1.2")
+assert a.sb_values(K)["stones_ct"] == 6.0
+commit = member("sb_commit_cell")
+assert 'grams_key = {"gems_ct": "gems", "stones_ct": "stones"}[key]' in commit and "ct / self.CARAT_PER_GRAM" in commit
+assert a.set_voucher_sections({"set_number": K, "invoice_no": None})["carats"] == (15.0, 6.0)
+assert 'carats = sec.get("carats")' in member("draw_set_voucher_page"), "السند المطبوع: الاجمالي فصوص/احجار بالقيراط"
+print("✔ الاجمالي (فصوص / احجار) بالقيراط = الجرام × ٥، والمكتوب فيه بالقيراط ÷ ٥ في خانتيهما بالجرام — والسند كذلك")
+
+# ═══ ١٥ب) 1.82: المبيعات ⇄ القالب — طقمٌ بيع من شاشة المبيعات يُحفظ قالبه مولَّداً بقيم فاتورته ═══
+D = {"التاريخ": "2026-10-15 11:00:00"}
+for t, w, extra in (("مبيعات ذهب", 30.0, {}), ("مبيعات فصوص وأحجار", 2.0, {}),
+                    ("مبيعات فصوص وأحجار", 2.4, {"trees_count": 3.0, "قبل": 3.0}), ("مبيعات الماس", 0.5, {}),
+                    ("خياس طقوم", 0.4, {}), ("خياس طقوم", 0.3, {"trees_count": 7.0, "settled_status": "MEMO"})):
+    a.add("عميل س", t, w, set_no="9400", **dict(D, **extra))
+sale = a.sb_sale_index()["9400"]
+assert (sale["gold"], sale["gems"], sale["stones"], sale["stones_discount"], sale["diamond"], sale["khayas"],
+        sale["khayas_polish"], sale["name"], sale["date"]) == (30.0, 2.0, 3.0, 2.4, 0.5, 0.4, 0.3, "عميل س", "2026-10-15")
+row = {"set_number": "9400", "فصوص": 2.0, "أحجار": 3.0, "أحجار بعد الخصم": 2.4, "الماس": 0.5}
+a._undo_open = step = {}
+assert a.sb_sync_from_sale(row, "عميل س", "2026-10-15 11:00:00", "ذهب") is True
+a._undo_open = None
+assert "set_build:9400" in step["settings"] and step["settings"]["set_build:9400"] is None, "Ctrl+Z يعيده (لم يكن له قالب)"
+rec = a.sb_load("9400")
+assert (rec["source"], rec["status"], rec["gems"], rec["stones"], rec["stones_pct"], rec["diamond"], rec["customer"],
+        rec["date"], rec["kind"]) == ("sale", "ready", 2.0, 3.0, 80.0, 0.5, "عميل س", "2026-10-15", "ذهب"), rec
+v = a.sb_values("9400")
+assert (v["p2_before"], v["p2_after"], v["p2_khayas"], v["final"], v["net"], v["p1_khayas"]) == (
+    35.9, 35.5, 0.4, 35.5, 30.0, 0.3), v
+assert v["ext"] == {"p2_before", "p2_after"} and a.sb_status("9400") == "مباع"
+assert a.sb_polish2_khayas("9400") is None, "بوليش 2 لطقم المبيعات مُرحَّل من المبيعات وحدها — لا ازدواج"
+assert a.sb_values(S)["ext"] == set(), "طقم القالب: مراحله من حركات القالب"
+print("✔ بيع رقمٍ من المبيعات ← قالبه يُحفظ مولَّداً بقيم الفاتورة (الفصوص والأحجار ونسبة خصمها والماس والعميل والتاريخ)")
+print("✔ وقالبه يعرض بوليش 2 من الفاتورة (بعد = الذهب + الفصوص + الأحجار + الماس، قبل = بعد + خياسه) والصافي = الذهب — للعرض")
+# تحديث قالبٍ موجود من فاتورة بيعه: القيم المباعة فعلاً
+a._undo_open = None
+assert a.sb_sync_from_sale({"set_number": "9300", "فصوص": 3.0, "أحجار": 1.5, "أحجار بعد الخصم": 1.05, "الماس": 0},
+                           "عميل ص", "2026-10-16 09:00:00", "ذهب") is True
+r9300 = a.sb_load("9300")
+assert (r9300["gems"], r9300["stones"], r9300["stones_pct"], r9300["diamond"], r9300["status"]) == (3.0, 1.5, 70.0, None, "ready")
+assert r9300.get("source", "") != "sale"
+post = member("post_sale_rows")
+assert "self.sb_sync_from_sale(row, name, full_dt, kind)" in post
+search = member("sb_open_search")
+assert "sale = self.sb_sale_index().get(key)" in search and "self.sb_apply_sale(rec" in search
+render = member("sb_render")
+assert 'self.sb_put(cell_key, f(posted), "ext")' in render and "يخالف الوزن الصافي في القالب" in render
+assert 'if key in st["ext"]:' in commit, "خانات المبيعات في القالب لا تُرحَّل منه ثانية"
+print("✔ والقالب الموجود يأخذ قيم فاتورة بيعه، والبحث برقمٍ مباع ينشئ قالبه منها، والتنبيه إن خالف ذهبُ البيع صافيَ القالب")
+# بوليش 2 ناقص («قبل» بلا «بعد») ← لا يُضاف سطر بيعه
+assert a.sb_post("9500", "p2_before", 10.0) is True and a.sb_p2_incomplete("9500") is True
+assert a.sb_post("9500", "p2_after", 9.8) is True and a.sb_p2_incomplete("9500") is False
+assert "if self.sb_p2_incomplete(set_num):" in member("stage_sale_row")
+print("✔ وطقمٌ «قبل» بوليش 2 له بلا «بعد» لا يُضاف سطر بيعه حتى يكتمل")
+mfg = member("build_mfg_ui")
+assert "command=lambda: self.quick_add_worker()" in mfg
+qa = member("quick_add_worker")
+assert "self.save_name_to_db(name, cat)" in qa and "self.check_name_exists(name)" in qa and "self.update_op_names(cat)" in qa
+assert "win.grab_set()" in qa and "win.focus_force()" in qa     # تأخذ لوحة المفاتيح فوراً: Enter فيها لا في الشاشة خلفها
+print("✔ مراحل التصنيع: زر «➕» بجانب الاسم في المصنعين والمركبين يضيف عاملاً للقسم مباشرة ويختاره")
+
 # ═══ ١٤) الشاشة: مسجّلة، وترتيب الخانات بـ Enter كالقالب الورقي، وكل خانة مرحلة لمكانها ═══
 prim = next(ast.literal_eval(n.value) for n in ast.walk(cls) if isinstance(n, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "SIDEBAR_PRIMARY" for t in n.targets))
@@ -403,9 +478,11 @@ assert '"7": 6' in src and '"٧": 6' in src and '"Ctrl + 1 … 7"' in src
 print("✔ الشاشة في الشريط الجانبي (السابعة، Ctrl+7) وتُبنى عند أول فتح وتُحدَّث بالحساب الشامل")
 
 flow = list(a.SB_FLOW)
-assert flow.index("p04") < flow.index("p1_before") < flow.index("p1_after") < flow.index("assembler") \
-    < flow.index("asm_row") < flow.index("asm_before") < flow.index("asm_after") < flow.index("gems") \
-    < flow.index("chain") < flow.index("p2_before") < flow.index("p2_after") == len(flow) - 1
+assert flow == ["customer", "model", "label", "date", "assembler", "asm_row", "kind", "p08", "p04", "mfg_khayas",
+                "p1_before", "p1_after", "asm_before", "asm_after", "gems", "stones", "stones_pct", "diamond",
+                "chain", "p2_before", "p2_after", "gems_ct", "stones_ct"], flow
+assert a.sb_flow_next("stones_ct") == "piece:0:0" and a.sb_flow_next("p1_after") == "asm_before", \
+    "1.82: Enter بترتيب الورقة — من «بعد» البوليش إلى «قبل» التركيب (لا رجوع إلى اسم المركّب)، وآخرها ← جدول القطع"
 assert set(a.SB_POST_CELLS.values()) == set(a.SB_POSTED) and a.SB_POST_CELLS["p04"] == "p1_before"
 enter = member("sb_on_enter")
 assert "self.sb_commit_cell(key)" in enter and 'st["btn_produce"].focus_set()' in enter
@@ -450,7 +527,7 @@ assert set(keys) - pieces == set(paper.SB_CELL_KINDS) | {"set_no"}, set(keys) ^ 
 assert len(pieces) == a.SB_PIECE_ROWS * len(a.SB_PIECE_COLS) == 90
 calcs = {el[1] for el in spec if el[0] == "calc"}
 assert calcs == {"p1_khayas", "asm_khayas", "weight_after", "total", "p2_khayas", "final", "minus_gems", "minus_stones",
-                 "minus_diamond", "net", "net2", "gems2", "stones_disc", "bound", "ptot_gems", "ptot_stones", "pct2"}, calcs
+                 "minus_diamond", "net", "net2", "gems2", "stones_disc", "bound", "pct2"}, calcs
 titles = {el[3] for el in spec if el[0] == "text"}
 assert {"مصنع جاديت", "NO:", "التصنيع", "البوليش", "التركيب", "بوليش 2", "الوزن النهائي", "الاجمالي", "الأجمالي",
         "اسم العميل:", "رقم الموديل:", ":NAME", ":DATE", "اسم المركب:", "النوع:", "الوزن بعد", "السلسال",
@@ -463,7 +540,7 @@ lx0, lx1 = L["col_left"]
 rx0, rx1 = L["col_right"]
 for k, (x0, t0, x1, t1) in rects.items():
     assert L["left"] - 0.01 <= x0 < x1 <= L["right"] + 0.01 and L["head"][0] <= t0 < t1 <= L["body_bottom"] + 0.01, k
-    if k.startswith("piece:"):
+    if k.startswith("piece:") or k in ("gems_ct", "stones_ct"):
         assert rx0 - 0.01 <= x0 and x1 <= rx1 + 0.01, k
     elif k in ("p08", "p04", "mfg_khayas", "p1_before", "p1_after", "asm_before", "asm_after", "gems", "stones",
                "stones_pct", "diamond", "chain", "p2_before", "p2_after"):
@@ -483,11 +560,13 @@ assert nb("p1_after", "down") == "asm_after" and nb("asm_after", "up") == "p1_af
 assert nb("customer", "down") == "assembler" and nb("p08", "up") == "kind" and nb("date", "up") == "set_no"
 assert nb("customer", "up") is None, "لا خانة فوق «اسم العميل» في عموده (NO فوق التاريخ وNAME)"
 assert nb("piece:0:0", "down") == "piece:1:0" and nb("piece:0:0", "left") == "piece:0:1"
-assert nb("piece:17:0", "down") is None and nb("stones", "right") == "stones_pct"
+assert nb("piece:17:0", "down") == "gems_ct" and nb("stones", "right") == "stones_pct"
+assert nb("gems_ct", "left") == "stones_ct" and nb("gems_ct", "up") in ("piece:17:0", "piece:17:1")
 print("✔ الأسهم على الورقة: ← → في السطر نفسه، و↑ ↓ في العمود نفسه (لا قفز للعمود الآخر)، وجدول القطع خانةً خانة")
 
 flow = list(a.SB_FLOW)
-assert flow[:5] == ["customer", "model", "label", "date", "kind"] and set(flow) <= set(paper.SB_CELL_KINDS)
+assert flow[:7] == ["customer", "model", "label", "date", "assembler", "asm_row", "kind"] \
+    and set(flow) <= set(paper.SB_CELL_KINDS)
 arrow = member("sb_arrow")
 assert 'cell["kind"] != "post" or key in st["pending"]' in arrow, "المقترح (بالأصفر) لا يُرحَّل بالمرور عليه"
 assert "self.sb_commit_cell(key)" in arrow and "self.sb_neighbor(key, direction)" in arrow

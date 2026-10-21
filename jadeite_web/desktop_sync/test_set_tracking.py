@@ -45,7 +45,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "assembler_hint_values", "polish_before_confirm_text",
            "autofill_polish_khayas", "get_setting", "set_setting", "push_undo", "_close_undo_step",
            "apply_undo_step", "undo_step_label", "invoice_from_row", "is_recovery_op", "get_display_label",
-           "analysis_voucher_fields", "set_track_row_values", "set_track_row_tags",
+           "analysis_voucher_fields", "set_track_row_values", "set_track_row_tags", "CARAT_PER_GRAM",
            # قالب رقم التشغيل (1.79): قبل/بعد البوليش من حركاته إن بُني الطقم فيه
            "SB_PREFIX", "SB_NAME", "SB_P2_IN", "SB_P2_OUT", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS",
            "sb_moves_index", "sb_new_record", "sb_load")

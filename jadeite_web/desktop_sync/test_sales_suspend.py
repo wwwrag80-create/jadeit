@@ -79,6 +79,7 @@ ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "UNDO_LIMI
 EXTRA = '''
 def check_edit_permission(self): return True
 def sb_polish2_khayas(self, k): return None
+def sb_sync_from_sale(self, *a, **k): return False
 def recalculate_all(self): self.recalcs += 1
 def register_operation_period(self, d): pass
 def refresh_pending_sales_table(self): self.pending_refreshes += 1

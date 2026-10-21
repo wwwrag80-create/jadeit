@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.81.0"
+APP_VERSION = "1.82.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7719,6 +7719,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if step.get("settings"):
             self._deleted_accounts = None
             self._polish_before_cache = None
+            self._sb_all_cache = None                    # قوالب أرقام التشغيل
         for cat in step["cats"]:
             self.categories.setdefault(cat, [])
         for name, cat, idx in reversed(step["names"]):
@@ -12230,6 +12231,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         sel_label("الاسم:")
         self.combo_op_name = ctk.CTkComboBox(sel_frame, values=["لا يوجد أسماء"], font=(UI_FONT, 14), width=200, height=36, justify="right", command=self.render_unified_fields)
         self.combo_op_name.pack(side="right", padx=4)
+        btn_add = ctk.CTkButton(sel_frame, text="➕", font=(UI_FONT, 16, "bold"), width=36, height=36,
+                                command=lambda: self.quick_add_worker(), **BUTTON_STYLES["primary"])
+        btn_add.pack(side="right", padx=(0, 4))
+        HoverTip(btn_add, "إضافة عامل جديد لهذا القسم مباشرة (المصنعين أو المركبين)")
         # اقتراح أقرب الأسماء أثناء الكتابة، واختيار الاسم يعرض خاناته مباشرة
         self.bind_name_autocomplete(
             self.combo_op_name,
@@ -17916,6 +17921,60 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.recalculate_all()
         messagebox.showinfo("تم الإقفال", "تمت الأرشفة وإغلاق فترة القسم بنجاح!")
 
+    def quick_add_worker(self, cat=None):
+        """زر «➕» بجانب الاسم في المصنعين والمركبين: إضافة عامل للقسم مباشرة — يُفتح حسابه (ويظهر في صناديق خياس
+        القسم) ويُختار في خانة الاسم فوراً. Enter يحفظ وEsc يغلق"""
+        cat = cat or getattr(self, "current_op_cat", "المصنعين")
+        if getattr(self, "view_only", False):
+            self.view_only_blocked()
+            return None
+        label = self.get_display_label(cat)
+        win = ctk.CTkToplevel(self)
+        win.title(f"إضافة عامل — {label}")
+        self.fit_dialog_to_screen(win, 420, 210)
+        win.transient(self)
+        try:
+            win.grab_set()                   # نافذة مستقلة: الكتابة وEnter فيها لا في الشاشة خلفها
+        except tk.TclError:
+            pass
+        win.focus_force()
+        ctk.CTkLabel(win, text=f"اسم العامل الجديد في ({label}):", font=(UI_FONT, 15, "bold"),
+                     text_color=UI_TITLE).pack(pady=(18, 6))
+        entry = ctk.CTkEntry(win, font=(UI_FONT, 17, "bold"), justify="center", width=300, height=42)
+        entry.pack(pady=4)
+
+        def save(_e=None):
+            name = self.clean_name(entry.get())
+            if not name:
+                return "break"
+            if self.check_name_exists(name):
+                owner = next((c for c, names in self.categories.items() if name in names), cat)
+                messagebox.showwarning("الاسم موجود", f"الاسم ({name}) مسجّل في ({self.get_display_label(owner)}).",
+                                       parent=win)
+                return "break"
+            self.categories.setdefault(cat, []).append(name)
+            self.save_name_to_db(name, cat)
+            win.destroy()
+            if getattr(self, "current_op_cat", None) == cat and hasattr(self, "combo_op_name"):
+                self.update_op_names(cat)
+                self.combo_op_name.set(self.rtl(name))
+                self.render_unified_fields(name)
+                self.refresh_op_ledger_table()
+            self.toast(f"✅ أُضيف ({name}) إلى {label}", "success")
+            return "break"
+        entry.bind("<Return>", save)
+        entry.bind("<KP_Enter>", save)
+        win.bind("<Escape>", lambda e: win.destroy())
+        ctk.CTkButton(win, text="➕ إضافة", font=(UI_FONT, 15, "bold"), width=150, height=38, command=save,
+                      **BUTTON_STYLES["primary"]).pack(pady=12)
+
+        def take_focus():
+            if win.winfo_exists():
+                win.focus_force()
+                entry.focus_set()
+        win.after(80, take_focus)
+        return win
+
     def add_new_name_dialog(self):
         win = ctk.CTkToplevel(self)
         win.title("تأسيس اسم جديد")
@@ -20492,6 +20551,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 store(khayas_data)
 
             committed_groups.append((set_num, full_dt, name))
+            try:
+                self.sb_sync_from_sale(row, name, full_dt, kind)       # قالب رقم التشغيل بقيم البيع نفسها
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث قالب رقم التشغيل من فاتورة البيع", e)
         return committed_groups
 
     def preview_selected_sale_invoice(self):
@@ -21520,7 +21583,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             log_cloud_error("تعذّر جلب خياس المركب تلقائياً", e)
 
     SB_SALE_FIELDS = (("sale_gold", "ذهب"), ("sale_gems", "فصوص"), ("sale_stones", "أحجار"), ("sale_diamond", "الماس"),
-                      ("sale_stones_discount", "أحجار بعد الخصم"), ("sale_khayas_polish", "خياس البوليش"))
+                      ("sale_stones_discount", "أحجار بعد الخصم"), ("sale_khayas_polish", "خياس البوليش"),
+                      ("sale_khayas", "p2_khayas"))
 
     def autofill_sale_from_build(self, key):
         """رقم تشغيل طقمٍ مولَّد في «قالب رقم التشغيل» ← تُملأ خانات سطر البيع منه مرة واحدة لكل رقم: الذهب =
@@ -21552,9 +21616,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             v = fill.get(k)
             if v:
                 entry.insert(0, f"{v:g}")
-        sale_p2 = getattr(self, "sale_khayas", None)
-        if sale_p2 is not None:
-            sale_p2.delete(0, "end")
         pct_box = getattr(self, "sale_discount_pct", None)
         if pct_box is not None and fill.get("أحجار") and fill.get("stones_pct") is not None:
             # نسبة خصم الأحجار في القالب نسبةُ السطر: «إضافة» يعيد حساب «الأحجار بعد الخصم» بالنسبة الظاهرة
@@ -21563,7 +21624,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self._sb_sale_filled = True
         p2 = fill.get("p2_khayas")
         self._sb_sale_text = (f"🧩 من قالب رقم التشغيل {key}: الذهب (الصافي) {fill['ذهب']:.2f}"
-                              + (f" — خياس بوليش 2 ({p2:.2f}) مُرحَّل من القالب فلا يُكتب هنا" if p2 is not None else ""))
+                              + (f" — خياس بوليش 2 ({p2:.2f}) من القالب (مُرحَّل منه، لا يُرحَّل ثانية)"
+                                 if p2 is not None else ""))
         if hasattr(self, "_recompute_sale_totals"):
             self._recompute_sale_totals()
         return self._sb_sale_text
@@ -21763,13 +21825,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if khayas_v < 0 or khayas_polish_v < 0:
             messagebox.showwarning("تنبيه", "لا يمكن إدخال خياس بالسالب.")
             return
+        if self.sb_p2_incomplete(set_num):
+            messagebox.showwarning("بوليش 2 غير مكتمل", f"رقم التشغيل ({self.normalize_set_number(set_num)}) في «قالب رقم "
+                                   "التشغيل» رُحِّل له «قبل» بوليش 2 ولم يُرحَّل «بعد».\nسجّل «بعد» بوليش 2 في القالب أولاً "
+                                   "(هو الوزن النهائي) ثم أضف السطر.")
+            return
         sb_p2 = self.sb_polish2_khayas(set_num)
-        if sb_p2 is not None and khayas_v > 0:
-            # بوليش 2 لهذا الرقم مُرحَّل من قالب رقم التشغيل: لا يُرحَّل ثانية من هنا
-            messagebox.showinfo("خياس بوليش 2", f"خياس بوليش 2 لرقم التشغيل ({self.normalize_set_number(set_num)}) "
-                                f"مُرحَّل من «قالب رقم التشغيل» ({sb_p2:.2f}) — لن يُرحَّل من المبيعات مرة ثانية.\n"
-                                "يدخل صافي الطقم كما هو.")
-            khayas_v = 0.0
+        if sb_p2 is not None:
+            # خياس بوليش 2 من القالب (مُرحَّل منه): يظهر في السطر وفي صافي الطقم كما هو، ولا يُرحَّل من المبيعات
+            # ثانية (post_sale_rows) — وقيمةٌ أخرى مكتوبة هنا يحلّ محلها خياس القالب
+            if khayas_v > 0 and abs(khayas_v - sb_p2) > 0.005:
+                messagebox.showinfo("خياس بوليش 2", f"خياس بوليش 2 لرقم التشغيل ({self.normalize_set_number(set_num)}) "
+                                    f"من «قالب رقم التشغيل»: {sb_p2:.2f} — هو المعتمد (مُرحَّل منه، لا يُرحَّل مرة ثانية).")
+            khayas_v = sb_p2
         if self.check_sale_row_duplicate(self.pending_sale_rows, row_num, set_num):
             return
 
@@ -22844,7 +22912,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         "p2_after": ("بعد بوليش 2", "بعد بوليش 2", "قبضٌ من صندوق بوليش 2"),
     }
     # خانات القالب غير المُرحَّلة (أرقام) — تُحفظ في سجله
-    SB_NUMBER_FIELDS = ("p08", "mfg_khayas", "gems", "stones", "stones_pct", "diamond", "chain")
+    SB_NUMBER_FIELDS = ("p08", "mfg_khayas", "gems", "stones", "stones_pct", "diamond", "chain", "gems_ct", "stones_ct")
+    CARAT_PER_GRAM = 5                       # القيراط = ٠٫٢ جم: الفصوص والأحجار بالقيراط = وزنها بالجرام × ٥
     SB_TEXT_FIELDS = ("customer", "model", "label", "kind", "date", "assembler", "asm_row", "note")
 
     def sb_new_record(self, key):
@@ -23015,6 +23084,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def diff(a, b):
             return round(a - b, 2) if a is not None and b is not None else None
         p1b, p1a, p2b, p2a = (posted(f) for f in ("p1_before", "p1_after", "p2_before", "p2_after"))
+        # طقمٌ بيع ولم تُرحَّل مراحله من القالب: قيمه من فاتورة بيعه (بوليش 2: «بعد» = الذهب + الفصوص + الأحجار + الماس،
+        # و«قبل» = بعد + خياس بوليش 2 المُرحَّل من المبيعات) ومن تتبع رقم التشغيل (البوليش) — للعرض فقط (ext)
+        sale = self.sb_sale_index().get(key)
+        ext = set()
+        p1_khayas_sale = None
+        if sale is not None:
+            if p2b is None and p2a is None:
+                pieces_w = round(sale["gold"] + sale["gems"] + sale["stones"] + sale["diamond"], 2)
+                if pieces_w > 0:
+                    p2a, p2b = pieces_w, round(pieces_w + sale["khayas"], 2)
+                    ext |= {"p2_before", "p2_after"}
+            if p1b is None and p1a is None:
+                track = self.set_tracking_values(key)
+                p1b, p1a = track["polish_before"], track["polish_after"]
+                ext |= {f for f, val in (("p1_before", p1b), ("p1_after", p1a)) if val is not None}
+                p1_khayas_sale = sale["khayas_polish"] or None
         asm = self.assembler_set_index().get(key) or {}
         ab = round(asm["sarf"], 2) if abs(asm.get("sarf", 0.0) or 0.0) > 0.0001 else None
         aa = round(asm["qabd"], 2) if abs(asm.get("qabd", 0.0) or 0.0) > 0.0001 else None
@@ -23029,19 +23114,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bound = round(net + (gems or 0.0) + (stones_disc or 0.0) + (diamond or 0.0), 2) if net is not None else None
         p08 = num["p08"]
         mfg_khayas = num["mfg_khayas"] if num["mfg_khayas"] is not None else diff(p08, p1b)
+        cpg = self.CARAT_PER_GRAM
+
+        def carats(grams, typed):
+            """بالقيراط = الجرام × ٥ — والمكتوب بالقيراط يبقى كما كُتب ما دام يطابق جرامه"""
+            if grams is None:
+                return None
+            if typed is not None and abs(typed / cpg - grams) <= 0.006:
+                return typed
+            return round(grams * cpg, 2)
         group = self.sb_assembler_target_group(key)
         return {
             "set_number": key, "p08": p08, "p04": p1b, "mfg_khayas": mfg_khayas,
-            "p1_before": p1b, "p1_after": p1a, "p1_khayas": diff(p1b, p1a),
+            "p1_before": p1b, "p1_after": p1a,
+            "p1_khayas": diff(p1b, p1a) if diff(p1b, p1a) is not None else p1_khayas_sale,
             "asm_before": ab, "asm_after": aa, "asm_khayas": diff(ab, aa),
             "assembler": (group or {}).get("name") or rec.get("assembler") or "",
             "asm_row": (group or {}).get("row") or rec.get("asm_row") or "",
             "asm_period": (group or {}).get("period") or "",
             "gems": gems, "stones": stones, "stones_pct": pct, "diamond": diamond, "chain": chain,
+            "gems_ct": carats(gems, num["gems_ct"]), "stones_ct": carats(stones, num["stones_ct"]),
             "weight_after": weight_after, "total": total,
             "p2_before": p2b, "p2_after": p2a, "p2_khayas": diff(p2b, p2a),
             "final": p2a, "net": net, "stones_disc": stones_disc, "bound": bound,
             "legacy_polish_before": self.polish_before_map().get(key),
+            "ext": ext, "sale": sale,
         }
 
     def sb_polish2_khayas(self, set_number):
@@ -23057,6 +23154,109 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """هل لرقم التشغيل «قبل البوليش» أو «بعده» مُرحَّل من القالب (فهو مصدرهما لا تتبع رقم التشغيل)"""
         moves = self.sb_moves_index().get(self.normalize_set_number(set_number), {})
         return bool(moves.get("p1_before") or moves.get("p1_after"))
+
+    def sb_p2_incomplete(self, set_number):
+        """بوليش 2 من القالب رُحِّل له «قبل» ولم يُرحَّل «بعد» (الطقم ما زال في صندوق بوليش 2)"""
+        moves = self.sb_moves_index().get(self.normalize_set_number(set_number), {})
+        return bool(moves.get("p2_before")) and not moves.get("p2_after")
+
+    def sb_sale_index(self):
+        """أرقام التشغيل المباعة ← سطور آخر فاتورة بيع لكل رقم (كما في get_invoice_group_data، وخياس بوليش 2 هنا ما
+        رُحِّل من المبيعات وحدها): الذهب والفصوص والأحجار وبعد خصمها والماس وخياس بوليش 2 وخياس البوليش والمركب، والاسم
+        والتاريخ ورقم الفاتورة والنوع — تُبنى مرة ما دامت الحركات لم تتغيّر"""
+        sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0))
+        cache = self.__dict__.get("_sb_sale_idx")
+        if cache and cache[0] == sig:
+            return cache[1]
+        latest = {}
+        for inv in self.invoices.values():
+            if inv.get("settled_status") not in SALE_READ_STATUSES or inv.get("النوع") not in self.SALE_TYPES:
+                continue
+            key = self.normalize_set_number(inv.get("set_number"))
+            if not key:
+                continue
+            mark = (str(inv.get("التاريخ") or ""), inv.get("رقم الفاتورة", 0) or 0)
+            if key not in latest or mark > latest[key][0]:
+                latest[key] = (mark, (inv.get("set_number"), inv.get("التاريخ"), inv.get("الاسم")))
+        groups = {g: key for key, (_m, g) in latest.items()}
+        out = {key: {"gold": 0.0, "gems": 0.0, "stones": 0.0, "stones_discount": 0.0, "diamond": 0.0, "khayas": 0.0,
+                     "khayas_polish": 0.0, "khayas_assembler": 0.0, "name": g[2], "date": str(g[1] or "")[:10],
+                     "manual_no": "", "kind": ""} for key, (_m, g) in latest.items()}
+        for inv in self.invoices.values():
+            key = groups.get((inv.get("set_number"), inv.get("التاريخ"), inv.get("الاسم")))
+            if key is None or inv.get("settled_status") not in SALE_READ_STATUSES:
+                continue
+            d, t, w = out[key], inv.get("النوع"), inv.get("الوزن", 0.0) or 0.0
+            if t in ("مبيعات ذهب", "مبيعات ذهب مع الماس"):
+                d["gold"] += w
+            elif t == "مبيعات فصوص وأحجار":
+                if inv.get("trees_count") == 3.0:
+                    d["stones"] += inv.get("قبل", 0.0) or 0.0
+                    d["stones_discount"] += w
+                else:
+                    d["gems"] += w
+            elif t == "مبيعات الماس":
+                d["diamond"] += w
+            elif t == "خياس طقوم":
+                mark = inv.get("trees_count", 0.0) or 0.0
+                if mark == KHAYAS_MARK_POLISH:
+                    d["khayas_polish"] += w
+                elif mark == KHAYAS_MARK_ASSEMBLER:
+                    d["khayas_assembler"] += w
+                elif mark != KHAYAS_MARK_NET:
+                    d["khayas"] += w
+            if not d["manual_no"] and inv.get("رقم الفاتورة اليدوي"):
+                d["manual_no"] = str(inv.get("رقم الفاتورة اليدوي")).strip()
+            if not d["kind"] and inv.get("sale_kind"):
+                d["kind"] = inv.get("sale_kind")
+        for d in out.values():
+            for k in ("gold", "gems", "stones", "stones_discount", "diamond", "khayas", "khayas_polish", "khayas_assembler"):
+                d[k] = round(d[k], 2)
+        self.__dict__["_sb_sale_idx"] = (sig, out)
+        return out
+
+    def sb_apply_sale(self, rec, gems, stones, disc, diamond, name, date, kind):
+        """قيم فاتورة البيع في سجل القالب: الفصوص والأحجار ونسبة خصمها والماس (ما بيع فعلاً)، والنوع، والعميل والتاريخ
+        إن لم يُكتبا — ويصير الطقم مولَّداً"""
+        for field, val in (("gems", gems), ("stones", stones), ("diamond", diamond)):
+            rec[field] = round(val, 2) if val else None
+        if stones and disc:
+            rec["stones_pct"] = round(disc / stones * 100, 2)
+        if kind in self.SALE_KINDS:
+            rec["kind"] = kind
+        if not rec.get("customer") and name:
+            rec["customer"] = name
+        if (not rec.get("date") or rec.get("source") == "sale") and date:
+            rec["date"] = str(date)[:10]
+        if rec.get("status") != self.SB_READY:
+            rec["status"] = self.SB_READY
+            rec["produced"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return rec
+
+    def sb_sync_from_sale(self, row, name, full_dt, kind=None):
+        """سطر بيع رُحِّل برقم تشغيل ← قالبه في «قالب رقم التشغيل»: يُنشأ له قالب إن لم يكن (مصدره المبيعات) أو يُحدَّث
+        بقيم البيع، ويصير مولَّداً — فالشاشتان على البيانات نفسها. خطوة التراجع نفسها (Ctrl+Z) تعيده"""
+        key = self.normalize_set_number(row.get("set_number"))
+        if not key or getattr(self, "view_only", False):
+            return False
+
+        def num(k):
+            try:
+                return float(row.get(k) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        skey = self.SB_PREFIX + key
+        old_raw = self.get_setting(skey, None)
+        rec = self.sb_load(key)
+        if rec is None:
+            rec = self.sb_new_record(key)
+            rec["source"] = "sale"
+        self.sb_apply_sale(rec, num("فصوص"), num("أحجار"), num("أحجار بعد الخصم"), num("الماس"), name, full_dt, kind)
+        step = getattr(self, "_undo_open", None)
+        if step is not None:
+            step.setdefault("settings", {}).setdefault(skey, old_raw)
+        return self.sb_save(rec)
 
     def sb_is_sold(self, set_number):
         """هل لرقم التشغيل فاتورة بيع؟ — الأرقام المباعة تُجمع مرة ما دامت الحركات لم تتغيّر (كشف كل الطقوم
@@ -23413,9 +23613,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ─────────────────── شاشة «قالب رقم التشغيل» ───────────────────
     SB_SCREEN = "قالب رقم التشغيل"
     # ترتيب الخانات بزر Enter: بترتيب العمل على الطقم (البيانات، التصنيع، البوليش، التركيب، الأحجار، بوليش 2)
-    SB_FLOW = ("customer", "model", "label", "date", "kind", "p08", "p04", "mfg_khayas", "p1_before", "p1_after",
-               "assembler", "asm_row", "asm_before", "asm_after", "gems", "stones", "stones_pct", "diamond",
-               "chain", "p2_before", "p2_after")
+    SB_FLOW = ("customer", "model", "label", "date", "assembler", "asm_row", "kind", "p08", "p04", "mfg_khayas",
+               "p1_before", "p1_after", "asm_before", "asm_after", "gems", "stones", "stones_pct", "diamond",
+               "chain", "p2_before", "p2_after", "gems_ct", "stones_ct")
     # خانات المرحلة المُرحَّلة: خانة الشاشة ← خانة الترحيل (٠٫٠٤٪ في التصنيع هو قبل البوليش نفسه)
     SB_POST_CELLS = {"p04": "p1_before", "p1_before": "p1_before", "p1_after": "p1_after",
                      "asm_before": "asm_before", "asm_after": "asm_after",
@@ -23427,16 +23627,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                      "assembler": "name", "asm_row": "text", "p08": "num", "p04": "post", "mfg_khayas": "num",
                      "p1_before": "post", "p1_after": "post", "asm_before": "post", "asm_after": "post",
                      "gems": "num", "stones": "num", "stones_pct": "num", "diamond": "num", "chain": "num",
-                     "p2_before": "post", "p2_after": "post"}
+                     "p2_before": "post", "p2_after": "post", "gems_ct": "ct", "stones_ct": "ct"}
     SB_CELL_TITLES = {"customer": "اسم العميل", "model": "رقم الموديل", "label": "NAME", "date": "التاريخ",
                       "kind": "النوع", "assembler": "اسم المركب", "asm_row": "رقم الصف", "p08": "0.08%",
                       "p04": "0.04%", "mfg_khayas": "خياس التصنيع", "p1_before": "قبل البوليش",
                       "p1_after": "بعد البوليش", "asm_before": "قبل التركيب", "asm_after": "بعد التركيب",
                       "gems": "فصوص", "stones": "احجار", "stones_pct": "خصم الأحجار %", "diamond": "الماس",
-                      "chain": "السلسال", "p2_before": "قبل بوليش 2", "p2_after": "بعد بوليش 2"}
+                      "chain": "السلسال", "p2_before": "قبل بوليش 2", "p2_after": "بعد بوليش 2",
+                      "gems_ct": "فصوص (قيراط)", "stones_ct": "احجار (قيراط)"}
     # ألوان الورقة: بيضاء كالقالب المطبوع في المظهرين؛ المُرحَّل بخلفية زرقاء خفيفة، وما لم يُرحَّل بالأصفر
     SB_PAPER = {"page": "#FFFFFF", "line": "#3F4650", "head": "#CCCCCC", "label": "#DBDBDB", "calc": "#F1F3F5",
-                "ink": "#111827", "muted": "#8A94A3", "posted": "#E3ECF9", "pending": "#FFF1CC",
+                "ink": "#111827", "muted": "#8A94A3", "posted": "#E3ECF9", "pending": "#FFF1CC", "ext": "#E3F2E6",
                 "focus": UI["primary"], "shadow": "#C9D0DA"}
 
     def sb_paper_spec(self):
@@ -23560,10 +23761,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         label(rx0, t, rx1, t + r, "الاجمالي", "head", 13)
         t += r
         rhalf = (rx1 - rx0) / 2
-        for i, (text, key) in enumerate((("فصوص:", "ptot_gems"), ("احجار:", "ptot_stones"))):
+        # الفصوص والأحجار بالقيراط (= جرامها × ٥) — وما يُكتب هنا يُقسم على ٥ في خانتيهما بالجرام يساراً
+        for i, (text, key) in enumerate((("فصوص:", "gems_ct"), ("احجار:", "stones_ct"))):
             x1 = rx1 - i * rhalf
             label(x1 - 20 * MM, t, x1, t + r, text)
-            calc(key, x1 - rhalf, t, x1 - 20 * MM, t + r, 12)
+            cell(key, x1 - rhalf, t, x1 - 20 * MM, t + r, 12)
         t += r + g
         label(rx0, t, rx1, t + r, "الأجمالي", "head", 13)
         t += r
@@ -23593,7 +23795,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tab = self.tabview.tab(self.SB_SCREEN)
         st = {"key": None, "editing": False, "pending": {}, "w": {}, "auto": {}, "calc_items": {}, "calc_text": {},
               "rects": {}, "wins": {}, "pieces": [], "layout_w": None, "shown": {}, "filled": set(), "by_widget": {},
-              "fonts": {}, "cell_font": {}}
+              "fonts": {}, "cell_font": {}, "ext": set()}
         self._sb_state = st
         view_only = getattr(self, "view_only", False)
 
@@ -23669,13 +23871,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12, "bold"), wraplength=270, justify="right",
                                   text_color=(UI["danger"], "#F08A8F"), anchor="e")
         st["warn"].pack(fill="x", padx=10)
-        legend = ctk.CTkFrame(side, fg_color="transparent")
-        legend.pack(fill="x", padx=10, pady=(4, 0))
-        for color, text in ((self.SB_PAPER["posted"], "مُرحَّل"), (self.SB_PAPER["pending"], "لم يُرحَّل"),
-                            (self.SB_PAPER["calc"], "محسوب")):
-            tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="right", padx=(6, 3))
-            ctk.CTkLabel(legend, text=text, font=(UI_FONT, 12), text_color=(UI["ink"], "#E5E7EB"),
-                         height=18).pack(side="right")
+        # مفتاح الألوان سطران (اثنان في كل سطر) — في سطرٍ واحد يُقصّ آخرها في العمود الجانبي
+        for pair in (((self.SB_PAPER["posted"], "مُرحَّل"), (self.SB_PAPER["pending"], "لم يُرحَّل")),
+                     ((self.SB_PAPER["calc"], "محسوب"), (self.SB_PAPER["ext"], "من المبيعات"))):
+            legend = ctk.CTkFrame(side, fg_color="transparent")
+            legend.pack(fill="x", padx=10, pady=(4, 0))
+            for color, text in pair:
+                tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="right", padx=(6, 3))
+                ctk.CTkLabel(legend, text=text, font=(UI_FONT, 12), text_color=(UI["ink"], "#E5E7EB"),
+                             height=18).pack(side="right")
         ctk.CTkLabel(side, text="Enter: ترحيل الخانة والتالية  •  الأسهم: بين الخانات\n"
                                 "المسافة: النوع  •  Esc: إلغاء ما لم يُرحَّل",
                      font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), justify="right",
@@ -24058,7 +24262,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             names = "، ".join(st["w"][k]["title"] for k in st["pending"] if k in st["w"])
             self.toast(f"لم تُرحَّل: {names} — تُركت", "warn")
         st["pending"] = {}
-        st["last_focus"] = None
+        st["last_focus"] = st["resume"] = None
         st["key"] = self.normalize_set_number(key) or None
         self.sb_set_editing(bool(edit) and not getattr(self, "view_only", False), render=False)
         self.sb_render()
@@ -24169,11 +24373,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if fit is not None:
             wdg.configure(font=self.sb_fit_font(text, *fit))       # النص الطويل (كالتاريخ) يتسع في خانته
         wdg.configure(state=state_before)
+        if state == "ext":
+            st["ext"].add(key)
+            wdg.configure(state="disabled")                         # من فاتورة البيع: لا يُرحَّل من القالب ثانية
+        elif key in st["ext"]:
+            st["ext"].discard(key)
+            if st.get("editing"):
+                wdg.configure(state="normal")
         st["shown"][key] = text
         st["auto"].pop(key, None)
         if state == "auto":
             st["auto"][key] = text
-        if text and state in (None, "posted"):
+        if text and state in (None, "posted", "ext"):
             st["filled"].add(key)
         else:
             st["filled"].discard(key)
@@ -24185,7 +24396,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cell is None:
             return
         P = self.SB_PAPER
-        bg = {"posted": P["posted"], "pending": P["pending"]}.get(state, P["page"])
+        bg = {"posted": P["posted"], "pending": P["pending"], "ext": P["ext"]}.get(state, P["page"])
         fg = P["muted"] if state == "auto" else P["ink"]
         cell["widget"].configure(bg=bg, disabledbackground=bg, readonlybackground=bg, highlightbackground=bg,
                                  fg=fg, disabledforeground=fg)
@@ -24239,7 +24450,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             val = v.get(k) if k in ("assembler", "asm_row") else rec.get(k)
             self.sb_put(k, pending.get(k, val or ""))
         self.sb_put("kind", rec.get("kind") or ("الماس" if v["diamond"] else "ذهب"))
-        for k in ("p08", "gems", "stones", "stones_pct", "diamond", "chain"):
+        for k in ("p08", "gems", "stones", "stones_pct", "diamond", "chain", "gems_ct", "stones_ct"):
             self.sb_put(k, pending.get(k, f(v[k])))
         written = self.sb_num(rec.get("mfg_khayas"))
         if "mfg_khayas" in pending:
@@ -24253,7 +24464,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                    "p2_before": v["total"]}
         for cell_key, field in self.SB_POST_CELLS.items():
             posted = v[field]
-            if cell_key in pending:
+            if field in v["ext"]:
+                self.sb_put(cell_key, f(posted), "ext")            # من فاتورة البيع/التتبع — للعرض
+            elif cell_key in pending:
                 self.sb_put(cell_key, pending[cell_key], "pending")
             elif posted is not None:
                 self.sb_put(cell_key, f(posted), "posted")
@@ -24262,13 +24475,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             else:
                 self.sb_put(cell_key, "")
         pieces = rec.get("pieces") or []
-        ptot = self.sb_pieces_totals(pieces)
         for k, val in (("p1_khayas", v["p1_khayas"]), ("asm_khayas", v["asm_khayas"]),
                        ("weight_after", v["weight_after"]), ("total", v["total"]), ("p2_khayas", v["p2_khayas"]),
                        ("final", v["final"]), ("minus_gems", v["gems"]), ("minus_stones", v["stones"]),
                        ("minus_diamond", v["diamond"]), ("net", v["net"]), ("net2", v["net"]),
-                       ("gems2", v["gems"]), ("stones_disc", v["stones_disc"]), ("bound", v["bound"]),
-                       ("ptot_gems", ptot[0] or None), ("ptot_stones", ptot[1] or None)):
+                       ("gems2", v["gems"]), ("stones_disc", v["stones_disc"]), ("bound", v["bound"])):
             self.sb_put(k, calc(val))
         self.sb_put("pct2", f"{v['stones_pct']:g}%" if v["stones_pct"] is not None else "")
         # تنبيهات: الخياس السالب، و«قبل» بوليش 2 يخالف الإجمالي، والصافي غير الصحيح
@@ -24280,6 +24491,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             notes.append(f"⚠️ «قبل» بوليش 2 ({v['p2_before']:.2f}) يختلف عن الوزن الإجمالي ({v['total']:.2f})")
         if v["net"] is not None and v["net"] <= 0:
             notes.append("⚠️ الوزن الصافي غير صحيح")
+        sale = v.get("sale")
+        if sale and "p2_after" not in v["ext"] and v["net"] is not None and abs(sale["gold"] - v["net"]) > 0.005:
+            notes.append(f"⚠️ الذهب في فاتورة البيع ({sale['gold']:.2f}) يخالف الوزن الصافي في القالب ({v['net']:.2f})")
         st["warn"].configure(text="\n".join(notes))
         status = self.sb_status(key, rec)
         st["chip"].configure(text={"مباع": "🔵 مباع", "جاهز للبيع": "🟢 جاهز للبيع"}.get(status, "🟡 قيد التشغيل"))
@@ -24291,7 +24505,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                       else "disabled")
         asm_txt = (f"المركّب: {v['assembler']} — الصف {v['asm_row']}" + (f" ({v['asm_period']})" if v["asm_period"] else "")
                    if v["assembler"] else "لم يُسجَّل المركّب بعد")
-        st["info"].configure(text=f"الطقم {key} — {status}\n{asm_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
+        sale_txt = ""
+        if sale:
+            sale_txt = (f"\nبيع لـ {sale['name']} — فاتورة {sale['manual_no'] or '-'} ({sale['date']})"
+                        + ("\nالخانات الخضراء من فاتورة البيع والتتبع" if v["ext"] else ""))
+        st["info"].configure(text=f"الطقم {key} — {status}\n{asm_txt}{sale_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
                                   + ("" if st["editing"] else "\n(للعرض — ✏️ تعديل)"))
         self.sb_fill_pieces(pieces)
         self.sb_fill_log(key)
@@ -24316,20 +24534,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         st = getattr(self, "_sb_state", None)
         if not st or not st.get("editing") or not st.get("key"):
             return
-        if self.sb_set_pieces(st["key"], self.sb_read_pieces()):
-            g, s, _d, _t = self.sb_pieces_totals(self.sb_read_pieces())
-            self.sb_put("ptot_gems", f"{g:.2f}" if g else "")
-            self.sb_put("ptot_stones", f"{s:.2f}" if s else "")
+        self.sb_set_pieces(st["key"], self.sb_read_pieces())
 
     def sb_piece_next(self, r, c):
-        """Enter في جدول القطع: الخانة التالية في الصف، ثم أول خانة في الصف التالي"""
-        rows = self._sb_state.get("pieces", [])
+        """Enter في جدول القطع: الخانة التالية في الصف، ثم أول خانة في الصف التالي — وEnter في أول خانة من سطرٍ
+        فارغ (انتهت القطع) أو بعد آخر سطر ← زر «توليد الطقم»"""
+        st = self._sb_state
+        rows = st.get("pieces", [])
+        empty_row = r < len(rows) and not any(e.get().strip() for e in rows[r])
+        self.sb_save_pieces()
         c += 1
         if c >= len(self.SB_PIECE_COLS):
             r, c = r + 1, 0
-        self.sb_save_pieces()
-        if r < len(rows):
-            self.sb_focus(f"piece:{r}:{c}")
+        if (empty_row and c == 1) or r >= len(rows):
+            st["btn_produce"].focus_set()
+            return "break"
+        self.sb_focus(f"piece:{r}:{c}")
         return "break"
 
     def sb_fill_log(self, key):
@@ -24426,8 +24646,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after(30, lambda: self.sb_focus(target))
 
     def sb_flow_next(self, key):
+        """الخانة التالية بترتيب الورقة: البيانات ثم المراحل من أعلاها لأسفلها ثم القيراط ثم جدول القطع"""
         flow = list(self.SB_FLOW)
         i = flow.index(key) if key in flow else -1
+        if i == len(flow) - 1:
+            return "piece:0:0"
         return flow[i + 1] if 0 <= i < len(flow) - 1 else None
 
     def sb_on_enter(self, key):
@@ -24445,7 +24668,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.sb_focus(nxt)
             return "break"
         if self.sb_commit_cell(key):
-            nxt = self.sb_flow_next(key)
+            resume = st.get("resume")
+            if resume and key in ("assembler", "asm_row"):
+                # جاء من «قبل/بعد» التركيب لأن المركّب ناقص: الاسم ← الصف ← خانة التركيب نفسها
+                nxt = "asm_row" if key == "assembler" and not self.sb_cell_text("asm_row") else resume
+                if nxt == resume:
+                    st["resume"] = None
+            else:
+                nxt = self.sb_flow_next(key)
             if nxt:
                 self.after(30, lambda: self.sb_focus(nxt))
             else:
@@ -24465,6 +24695,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         parent = self
         if value is None and key in st["auto"] and text == st["auto"][key]:
             return True                  # القيمة المحسوبة المعروضة بخطٍّ خافت (لم تُكتب) — لا تُحفظ
+        if key in st["ext"]:
+            return True                  # من فاتورة البيع أو التتبع (مُرحَّلة هناك) — لا تُرحَّل من القالب ثانية
         if kind == "post":
             field = self.SB_POST_CELLS[key]
             num = self.sb_num(text)
@@ -24497,13 +24729,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 missing = "assembler" if not self.sb_cell_text("assembler") else (
                     "asm_row" if not self.sb_cell_text("asm_row") else None)
                 if missing:
+                    st["resume"] = key           # بعد كتابة الاسم والصف يعود Enter إلى خانة التركيب نفسها
                     self.after(30, lambda: self.sb_focus(missing))
             return bool(ok)
-        if kind == "num" and text and self.sb_num(text) is None:
+        if kind in ("num", "ct") and text and self.sb_num(text) is None:
             if not quiet:
                 messagebox.showwarning("قيمة غير صحيحة", f"«{cell['title']}» رقم.", parent=parent)
             return False
-        if kind == "num" and key != "stones_pct" and (self.sb_num(text) or 0) < 0:
+        if kind in ("num", "ct") and key != "stones_pct" and (self.sb_num(text) or 0) < 0:
             if not quiet:
                 messagebox.showwarning("قيمة غير صحيحة", "لا تُدخل قيمة بالسالب.", parent=parent)
             return False
@@ -24532,6 +24765,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                            "لتغييره عدّل حركاته من شاشة المركبين.", parent=parent)
                 self.sb_put("asm_row", g["row"])
                 return False
+        if kind == "ct":
+            # بالقيراط ← بالجرام (÷ ٥) في خانة الفصوص أو الأحجار يساراً، ويبقى المكتوب بالقيراط كما هو
+            ct = self.sb_num(text)
+            grams_key = {"gems_ct": "gems", "stones_ct": "stones"}[key]
+            changed = self.sb_set_field(set_key, grams_key, None if ct is None else ct / self.CARAT_PER_GRAM)
+            changed = self.sb_set_field(set_key, key, ct) or changed
+            st["pending"].pop(key, None)
+            if changed:
+                self.sb_render()
+            return True
         changed = self.sb_set_field(set_key, field, text)
         st["pending"].pop(key, None)
         if changed:
@@ -24570,7 +24813,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             rec["stones_pct"] = float(self.get_last_discount_percentage())
         except Exception:
             rec["stones_pct"] = None
+        sale = self.sb_sale_index().get(key)
+        if sale is not None:
+            # طقمٌ بيع من شاشة المبيعات: قالبه بقيم فاتورته (مولَّد)
+            rec["source"] = "sale"
+            self.sb_apply_sale(rec, sale["gems"], sale["stones"], sale["stones_discount"], sale["diamond"],
+                               sale["name"], sale["date"], sale["kind"])
         self.sb_save(rec)
+        if sale is not None:
+            self.sb_show(key, edit=False)
+            self.toast(f"🧩 قالب الطقم المباع {key} من فاتورة بيعه", "success")
+            return key
         self.sb_show(key, edit=True)
         self.after(40, lambda: self.sb_focus("customer"))
         self.toast(f"🧩 طقمٌ جديد: {key}", "success")
@@ -24834,6 +25087,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "polish2": (total, pieces, sale(polish2)),
             "net": sale(gold), "stones_discount": sale(disc),
             "bound": round(gold + gems + disc + diamond, 2) if sold else None,
+            "carats": (round(gems * self.CARAT_PER_GRAM, 2) if sold and gems else None,
+                       round(stones * self.CARAT_PER_GRAM, 2) if sold and stones else None),
             "assemblers": "، ".join(track.get("names", [])),
             "kind": (data.get("kind") or ("الماس" if diamond > 0 else "ذهب")) if sold else "",
             "name": str(data.get("name") or "") if sold else "",
@@ -24860,6 +25115,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "date": rec.get("date") or (str(data.get("date") or "")[:10] if sold else ""),
             "model": rec.get("model") or "", "label": rec.get("label") or "",
             "pieces": rec.get("pieces") or [], "pieces_totals": self.sb_pieces_totals(rec.get("pieces")),
+            "carats": (v["gems_ct"], v["stones_ct"]),
             "final_values": [("الوزن النهائي", v["final"]), ("ناقص فصوص", v["gems"]), ("ناقص احجار", v["stones"]),
                              ("ناقص الماس", v["diamond"]), ("الوزن الصافي", v["net"])],
         }
@@ -25029,11 +25285,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         cell(rx0, t, rx1, t + r, "الاجمالي", HEAD, size=13)
         t += r
         rhalf = (rx1 - rx0) / 2
-        ptot = sec.get("pieces_totals")
+        carats = sec.get("carats") or (None, None)                   # الفصوص والأحجار بالقيراط (الجرام × ٥)
         for i, label in enumerate(("فصوص:", "احجار:")):
             x1 = rx1 - i * rhalf
             cell(x1 - 20 * MM, t, x1, t + r, label, LABEL)
-            cell(x1 - rhalf, t, x1 - 20 * MM, t + r, f"{ptot[i]:.2f}" if ptot and ptot[i] else "")
+            cell(x1 - rhalf, t, x1 - 20 * MM, t + r, f"{carats[i]:.2f}" if carats[i] else "")
         t += r + g
         cell(rx0, t, rx1, t + r, "الأجمالي", HEAD, size=13)
         t += r

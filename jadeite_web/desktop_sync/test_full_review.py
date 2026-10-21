@@ -112,6 +112,8 @@ class Rec:
 
     def sb_polish2_khayas(self, k): return None
 
+    def sb_sync_from_sale(self, *a, **k): return False
+
     def __init__(self):
         self.invoices, self.invoice_counter, self.saved = {}, 0, []
 
