@@ -81,7 +81,8 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "sb_sync_from_sale", "sb_mfg_receipts", "movement_slot", "note_head", "CHAINS_HEAD", "MFG_CHAINS_SLOT",
            "RECEIPT_KINDS", "TREE_HEAD", "ISSUE_HEADS", "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SADAYA", "CAST_NAME",
            "TREASURY_KINDS", "invoices_by_period",
-           "treasury_kind_of", "treasury_kind_breakdown", "sub_balance_lines")
+           "treasury_kind_of", "treasury_kind_breakdown", "sub_balance_lines", "POLISH1_SADAYA",
+           "SB_DISMISSED_KEY", "sb_dismissed", "sb_set_dismissed", "_sb_undo_setting")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
       "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"), "IS_ADMIN_BUILD": False,
       "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH"), "KHAYAS_MARK_NET": module_value("KHAYAS_MARK_NET"),
@@ -168,6 +169,7 @@ assert a.sb_post(S, "p1_before", 50.0) is True
 kind, title, msg, kw = mb.last()
 assert kind == "ask" and title == "ترحيل «قبل البوليش»" and kw.get("default") == "yes", mb.last()
 assert "Enter للتأكيد" in msg and "رقم التشغيل: 9001" in msg and "(2026-10)" in msg
+assert "• رصيد سدايا في الخزينة: 0.00 ← -50.00  ⚠️ يصير بالسالب" in msg, "«قبل البوليش» ينقص من السدايا (1.87)"
 (inv,) = a.moves(النوع="صرف تلميع بف")
 assert (inv["الاسم"], inv["set_number"], inv["الوزن"], inv["row_number"]) == ("قالب رقم التشغيل", S, 50.0, "")
 assert inv["البيان"] == "قبل البوليش — رقم التشغيل 9001" and inv["التاريخ"].startswith("2026-10-12 ")
@@ -185,6 +187,7 @@ assert a.sb_post(S, "p1_after", 49.6) is False and len(a.invoices) == n
 mb.answer = True
 assert a.sb_post(S, "p1_after", 49.6) is True
 assert "الخياس: 50.00 − 49.60 = 0.40" in mb.last()[2]
+assert "• رصيد سدايا في الخزينة: -50.00 ← -0.40  ⚠️ يصير بالسالب" in mb.last()[2], "«بعد البوليش» يزيد السدايا (1.87)"
 (out,) = a.moves(النوع="قبض تلميع بف")
 assert out["الاسم"] == "قالب رقم التشغيل" and out["البيان"] == "بعد البوليش — رقم التشغيل 9001"
 assert a.sb_values(S)["p1_khayas"] == 0.4
@@ -193,6 +196,7 @@ print("✔ «لا» في التأكيد لا يرحّل شيئاً؛ و«بعد�
 # التعديل يعدّل الحركة نفسها، والقيمة نفسها لا تسأل، والتفريغ (أو الصفر) يحذف
 assert a.sb_post(S, "p1_before", 50.2) is True
 assert mb.last()[1] == "تعديل «قبل البوليش»" and "القيمة المرحَّلة: 50.00" in mb.last()[2]
+assert "• رصيد سدايا في الخزينة: -0.40 ← -0.60" in mb.last()[2], "التعديل بفرقه وحده"
 assert a.invoices[inv["رقم الفاتورة"]]["الوزن"] == 50.2 and len(a.moves(النوع="صرف تلميع بف")) == 1
 k = len(mb.log)
 assert a.sb_post(S, "p1_before", 50.2) is True and len(mb.log) == k
@@ -228,8 +232,9 @@ assert a.moves(النوع="صرف ذهب", set_number=S) == []
 assert a.sb_post(S, "asm_before", 49.6, assembler="‏سالم", row="3") is True
 assert "صرف ذهب للمركّب (سالم) — الصف (3)" in mb.last()[2]
 _sad = a.treasury_kind_breakdown()["سدايا"]
-assert "• رصيد سدايا في الخزينة: -30.00 ← -79.60  ⚠️ يصير بالسالب" in mb.last()[2] and _sad["out"] == 79.6, \
-    "صرف المركّب من القالب ينقص من السدايا (1.85) — بعد صرف خالد 30 من قبل"
+assert "• رصيد سدايا في الخزينة: -30.60 ← -80.20  ⚠️ يصير بالسالب" in mb.last()[2], mb.last()[2]
+assert (_sad["in"], _sad["out"]) == (49.6, 129.8), \
+    "صرف المركّب من القالب ينقص من السدايا (1.85) — بعد صرف خالد 30، وبوليش 1: قبل 50.2 (خارج) وبعد 49.6 (داخل)"
 (sarf,) = a.moves(النوع="صرف ذهب", set_number=S)
 assert (sarf["الاسم"], sarf["row_number"], sarf["البيان"]) == ("سالم", "3", "")
 rec = a.sb_load(S)

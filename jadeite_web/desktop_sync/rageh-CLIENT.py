@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.86.0"
+APP_VERSION = "1.87.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7362,6 +7362,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if self.invoices.get(inv_id) is not inv_data:
             self.invoices[inv_id] = inv_data
             self._inv_version = getattr(self, "_inv_version", 0) + 1
+        # كل حفظٍ يغيّر بصمة فهارس أرقام التشغيل (القالب والمركبين والمبيعات): تعديلٌ في مكانه (رقم تشغيل الصف أو وزنه
+        # من نافذة تعديل الصف) لا يغيّر عدد الحركات ولا كائنها، فكانت تبقى على القيمة السابقة (1.87)
+        self._inv_edits = getattr(self, "_inv_edits", 0) + 1
         self.mark_backup_dirty()
         return True
 
@@ -13233,7 +13236,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.dynamic_stage_widgets = {}
         p = self.build_stage_panel(
             parent, key=f"dyn_{stage_name}", title=f"كشف حركة {stage_name}",
-            # نوع الصرف (1.86): سبيكة أو شجر، ونوع القبض (1.84): سبيكة أو واير أو لحام — كلٌّ في أول بيان حركته،
+            # نوع الصرف (1.86): سبيكة أو شجر أو كسر، ونوع القبض (1.84): سبيكة أو واير أو لحام — كلٌّ في أول بيان حركته،
             # فينقص الصرف من رصيد نوعه ويزيد القبض رصيد نوعه في تفصيل الخزينة
             fields=[("row_num", "رقم الصف"), ("sarf", "الصرف"), ("qabd", "القبض"), ("qabd_kind", "نوع القبض")],
             toggles={"qabd_kind": ("عام",) + self.RECEIPT_KINDS},
@@ -13279,8 +13282,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def post_generic_stage(self, stage_name, row_num, sarf_v, qabd_v, sarf_kind="", qabd_kind="", note="",
                            date_val=None, parent=None):
         """صرف وقبض قسمٍ مضاف (مثل «صب الداخلي») — من مراحل التصنيع أو من قالب رقم التشغيل. نوع الصرف (1.86):
-        سبيكة أو شجر، ونوع القبض: سبيكة أو واير أو لحام — كلٌّ في أول بيان حركته، فينقص الصرف من رصيد نوعه ويزيد القبض
-        رصيد نوعه في تفصيل الخزينة. كل خانة مرة واحدة لكل صف في الفترة. يرجع True إن رُحِّل"""
+        سبيكة أو شجر أو كسر (1.87)، ونوع القبض: سبيكة أو واير أو لحام — كلٌّ في أول بيان حركته، فينقص الصرف من رصيد
+        نوعه ويزيد القبض رصيد نوعه في تفصيل الخزينة. كل خانة مرة واحدة لكل صف في الفترة. يرجع True إن رُحِّل"""
         madin_type, qabd_type, _mustarja_name = self.get_stage_config(stage_name)
         name = stage_name
         row_num = str(row_num or "").strip()
@@ -14203,8 +14206,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
 
         op_text = "الليزر" if laser_op else "الفاقد"
+        # الفاقد: صرفه («قبل البوليش») ينقص من رصيد السدايا وقبضه («بعده») يزيده (1.87) — والليزر لا يدخلها
+        balance = [] if laser_op else self.sub_balance_lines(
+            self.slot_kind_deltas("التلميع/البف", [("صرف تلميع بف", sarf_v), ("قبض تلميع بف", qabd_v)]))
         if not messagebox.askyesno("تأكيد الترحيل",
-                                   f"هل أنت متأكد من ترحيل حركة {self.get_display_label('التلميع/البف')} ({op_text})؟"):
+                                   f"هل أنت متأكد من ترحيل حركة {self.get_display_label('التلميع/البف')} ({op_text})؟"
+                                   + ("\n\n" + "\n".join(balance) if balance else "")):
             return
 
         full_dt = f"{date_val} {datetime.datetime.now().strftime('%H:%M:%S')}"
@@ -14497,11 +14504,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     MFG_WORK_SLOTS = {"شغل 4": "المفنش ٤ بالالف", "شغل 8": "المفنش ٨ بالالف", "سلاسل": MFG_CHAINS_SLOT}
     # أنواع القبض التي تُكتب في أول البيان («زركون — بيان»): نوع قبض الكسر، والسلاسل، وقبض الأقسام المضافة
     RECEIPT_KINDS = ("سبيكة", "واير", "لحام")
-    # نوع الصرف في الكاستنج (كسر أو سبيكة) وفي الأقسام المضافة (سبيكة أو شجر) — في أول بيان الصرف، وينقص من رصيده
+    # نوع الصرف في الكاستنج (كسر أو سبيكة) وفي الأقسام المضافة (سبيكة أو شجر أو كسر) — في أول بيان الصرف، وينقص من رصيده
     # في تفصيل الخزينة (1.86)؛ والشجر قبض الكاستنج نفسه
     TREE_HEAD = "شجر"
     CAST_SARF_KINDS = ("كسر", "سبيكة")
-    STAGE_SARF_KINDS = ("سبيكة", TREE_HEAD)
+    STAGE_SARF_KINDS = ("سبيكة", TREE_HEAD, "كسر")
     ISSUE_HEADS = ("كسر", "سبيكة", TREE_HEAD)
     NOTE_HEADS = ("ايطالي", "زركون", "احجار", "الماس", CHAINS_HEAD) + RECEIPT_KINDS + ("كسر", TREE_HEAD)
     # صرف المصنّع (1.85): ذهب (من الذهب العام) أو لحام أو واير أو شجر (من رصيدها في تفصيل الخزينة) — الحركة «صرف ذهب»
@@ -14644,6 +14651,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return False
         self.register_operation_period(dt[:10])
         self.recalculate_all()
+        self.sb_ensure_born({key}, revive=bool(self.normalize_set_number(set_number)))     # الشغل = ولادة الطقم
         return True
 
     def find_row_by_set_number(self, cat, set_num, month=None):
@@ -14850,6 +14858,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if saved_any:
             self.register_operation_period(date_val)
             self.recalculate_all()
+            if cat == "المصنعين":
+                # الشغل برقم تشغيل (المكتوب أو رقم الصف) = ولادة الطقم: يُحفظ للرقم قالبه (1.87)
+                row_key = (self.current_win_entries["رقم الصف"].get().strip()
+                           if "رقم الصف" in self.current_win_entries else "")
+                typed = (self.normalize_set_number(self.current_win_entries["رقم التشغيل"].get())
+                         if "رقم التشغيل" in self.current_win_entries else "")
+                self.sb_ensure_born({typed} if typed else self.row_set_numbers(name, row_key), revive=bool(typed))
 
             # نوع الصرف يعود «ذهب» بعد كل ترحيل (فلا يُرحَّل صرف ذهبٍ تالٍ لحاماً أو وايراً سهواً)
             sarf_ent = self.current_win_entries.get("صرف ذهب")
@@ -15193,6 +15208,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return
 
         self.push_undo(f"رقم التشغيل للصف ({gkey or 'بدون ترقيم'}) — {worker_name}")
+        old_sets = {self.normalize_set_number(self.invoices[i].get("set_number")) for i in target_ids} - {""}
         blocked = False
         for inv_id in target_ids:
             updated = dict(self.invoices[inv_id])
@@ -15202,6 +15218,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if blocked:
             return
         self.recalculate_all()
+        # قالب الرقم القديم ينتقل إلى الجديد، وللشغل برقمه قالبه (1.87)
+        for old in old_sets:
+            self.sb_follow_set_number(old, new_val)
+        self.sb_ensure_born({new_val}, revive=True)
         messagebox.showinfo("تم", f"تم تحديث رقم التشغيل إلى ({new_val or '-'}) لكل حركات هذا الصف.")
 
     def reassign_op_ledger_row(self, current_worker, cat):
@@ -15493,6 +15513,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if blocked:
                 return
             self.recalculate_all()
+            # رقم التشغيل يُعطى للصف أو يتغيّر (1.87): قالب الرقم القديم ينتقل إليه، وللشغل برقمه قالبه — وكله في
+            # خطوة التراجع نفسها
+            changed = self.normalize_set_number(new_set_no) != self.normalize_set_number(cur_set)
+            if changed:
+                self.sb_follow_set_number(cur_set, new_set_no)
+            self.sb_ensure_born({new_set_no}, revive=changed)
             win.destroy()
             self.toast("✅ تم تحديث كل خانات الصف — وللتراجع: ↩️ تراجع (Ctrl+Z)", "success")
 
@@ -16816,13 +16842,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return round(tot_madin - tot_daen, 2) + 0.0
 
     # تفصيل الخزينة (1.85): أرصدة متراكمة كرصيد الخزينة (ما قبل الفترة + داخلها − خارجها). السدايا = شغل 4 + شغل 8
-    # من المصنعين وينقص منها كل صرفٍ للمركبين (من مراحل التصنيع أو «قبل التركيب» في القالب)، والواير واللحام من قبض
-    # الأقسام المضافة وينقص منهما صرفهما للمصنّع، والسلاسل والسبيكة داخلٌ فقط — ورصيد الخزينة نفسه كما هو
+    # من المصنعين، وينقص منها «قبل البوليش» ويزيد «بعد البوليش» (بوليش 1 — 1.87، بلا الليزر)، وينقص كل صرفٍ للمركبين
+    # (من مراحل التصنيع أو «قبل التركيب» في القالب)؛ والواير واللحام من قبض الأقسام المضافة وينقص منهما صرفهما —
+    # ورصيد الخزينة نفسه كما هو
     SADAYA = "سدايا"
     CAST_NAME = "كاستنج"                  # اسم حركات «فاقد» الكاستنج (صرفه وقبضه — والقبض هو الشجر)
-    TREASURY_KINDS = (("سدايا", "شغل 4 + شغل 8 − صرف المركبين"),
+    POLISH1_SADAYA = {"صرف تلميع بف": -1, "قبض تلميع بف": 1}     # بوليش 1: قبل ← السدايا خارج، وبعد ← داخل
+    TREASURY_KINDS = (("سدايا", "شغل 4/8 − قبل البوليش + بعده − صرف المركبين"),
                       ("سلاسل", "المصنعين قبض/سلاسل"),
-                      ("كسر", "قبض/كسر − صرف الكاستنج كسر"),
+                      ("كسر", "قبض/كسر − صرف كسر (الكاستنج والأقسام)"),
                       ("سبيكة", "قبض الأقسام − صرف سبيكة"),
                       ("شجر", "قبض الكاستنج − صرف شجر"),
                       ("واير", "قبض الأقسام − صرف واير للمصنّع"),
@@ -16832,8 +16860,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """(النوع، 1 داخل أو ‎-1 خارج) للحركة في تفصيل الخزينة، أو None:
           المصنّع: شغل 4/8 ← السدايا، والسلاسل، وقبض/كسر ← الكسر داخل؛ وصرف لحام/واير/شجر ← خارج من رصيدها
           المركّب: كل صرفٍ له ← السدايا خارج
+          بوليش 1 (من مراحل التصنيع أو القالب، بلا الليزر): «قبل البوليش» (صرفه) ← السدايا خارج، و«بعده» (قبضه) ← داخل
           الكاستنج (فاقد): القبض ← الشجر داخل، والصرف بنوعه (كسر/سبيكة) ← خارج
-          الأقسام: الصرف بنوعه (سبيكة/شجر) ← خارج، والقبض بنوعه (سبيكة/واير/لحام) ← داخل"""
+          الأقسام: الصرف بنوعه (كسر/سبيكة/شجر) ← خارج، والقبض بنوعه (سبيكة/واير/لحام) ← داخل"""
         if inv.get("settled_status") != "ACTIVE":
             return None
         t, name = inv.get("النوع"), inv.get("الاسم")
@@ -16849,6 +16878,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return None
         if name in assemblers:
             return (self.SADAYA, -1) if t == "صرف ذهب" else None
+        if t in self.POLISH1_SADAYA and name in ("التلميع/البف", self.SB_NAME):      # فاقد بوليش 1 (بلا الليزر)
+            return self.SADAYA, self.POLISH1_SADAYA[t]
         if name == self.CAST_NAME and t == "قبض كاستنج":
             return self.TREE_HEAD, 1
         head = self.note_head(inv)
@@ -16901,6 +16932,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                  "صرف واير": ("واير", -1), "صرف شجر": (self.TREE_HEAD, -1)}
         elif cat == "المركبين":
             m = {"صرف ذهب": (self.SADAYA, -1)}
+        elif cat == "التلميع/البف":
+            m = {"صرف تلميع بف": (self.SADAYA, -1), "قبض تلميع بف": (self.SADAYA, 1)}
         else:
             return {}
         out = {}
@@ -16988,8 +17021,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                                 inv.get("row_number", "") or "-", inv.get("set_number", "") or "-",
                                                 f"{inv.get('الوزن', 0.0):.2f}", inv.get("البيان", "") or ""))
         tree.bind("<<TreeviewSelect>>", show_kind, add="+")
-        ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين وينقص منها صرف المركبين. الكسر من قبض/كسر وينقص بصرف "
-                               "الكاستنج كسراً. الشجر من قبض الكاستنج وينقص بصرفه للمصنّع أو للأقسام. السبيكة والواير "
+        ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين، وينقص منها «قبل البوليش» ويزيدها «بعده»، وينقص منها "
+                               "صرف المركبين. الكسر من قبض/كسر وينقص بصرفه للكاستنج أو للأقسام. الشجر من قبض الكاستنج "
+                               "وينقص بصرفه للمصنّع أو للأقسام. السبيكة والواير "
                                "واللحام من قبض الأقسام وتنقص بصرفها. «رصيد سابق» ما بقي من الفترات السابقة، والرصيد = "
                                "سابق + داخل − خارج — ورصيد الخزينة نفسه كما هو",
                      font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=840,
@@ -21775,7 +21809,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not assemblers:
             return {}
         sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
-               getattr(self, "_inv_version", 0), month, tuple(sorted(assemblers)))
+               getattr(self, "_inv_version", 0), getattr(self, "_inv_edits", 0), month, tuple(sorted(assemblers)))
         cache = self.__dict__.setdefault("_asm_set_idx_cache", {})
         if month in cache and cache[month][0] == sig:
             return cache[month][1]
@@ -23531,7 +23565,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """حركات بوليش 1 وبوليش 2 المُرحَّلة من القالب لكل رقم: {الرقم: {الخانة: [حركاتها]}} — تُبنى مرة
         وتُعاد ما دامت الحركات لم تتغيّر (التركيب من صفوف المركبين نفسها)"""
         sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
-               getattr(self, "_inv_version", 0))
+               getattr(self, "_inv_version", 0), getattr(self, "_inv_edits", 0))
         cache = self.__dict__.get("_sb_moves_cache")
         if cache and cache[0] == sig:
             return cache[1]
@@ -23657,10 +23691,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         pct = num["stones_pct"]
         stones_disc = round(stones * pct / 100.0, 2) if (stones and pct is not None) else None
         bound = round(net + (gems or 0.0) + (stones_disc or 0.0) + (diamond or 0.0), 2) if net is not None else None
-        # التصنيع من قبض المصنّع لرقم التشغيل (1.84): ٠٫٠٨٪ = شغل 8 (والسلاسل معه) و٠٫٠٤٪ = شغل 4 — وإلا ما كُتب
+        # التصنيع: ٠٫٠٨٪ = شغل 8 (والسلاسل معه) من قبض المصنّع لرقم التشغيل (1.84) — وإلا ما كُتب؛ و٠٫٠٤٪ = «قبل
+        # البوليش» دائماً (1.87): يُسجَّل يدوياً، وشغل 4 في حساب المصنّع وحده
         mfg = self.sb_mfg_receipts().get(key) or {}
         p08 = mfg.get("w8") if mfg.get("w8") is not None else num["p08"]
-        p04 = mfg.get("w4") if mfg.get("w4") is not None else p1b
+        p04 = p1b
         mfg_khayas = num["mfg_khayas"] if num["mfg_khayas"] is not None else diff(p08, p04)
         cpg = self.CARAT_PER_GRAM
 
@@ -23690,33 +23725,142 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         }
 
     def sb_mfg_receipts(self):
-        """رقم التشغيل ← قبض المصنّعين له: w8 (شغل 8 والسلاسل)، w4 (شغل 4)، kasr، chains، والمصنّع وصفّه (في كل الفترات)
-        — يُبنى مرة ما دامت الحركات لم تتغيّر"""
+        """رقم التشغيل ← قبض المصنّعين له: w8 (شغل 8 والسلاسل)، w4 (شغل 4)، kasr، chains، والمصنّع وصفّه، و born (أول
+        قبض شغلٍ له = ولادة الطقم) و periods (فترات شغله) — في كل الفترات. حركةٌ بلا رقم تشغيل في صفٍّ له رقم تُحسب لرقم
+        صفّها (أول رقمٍ في الصف كما يعرضه كشف المصنعين — 1.87). يُبنى مرة ما دامت الحركات لم تتغيّر"""
         sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
-               getattr(self, "_inv_version", 0))
+               getattr(self, "_inv_version", 0), getattr(self, "_inv_edits", 0))
         cache = self.__dict__.get("_sb_mfg_idx")
         if cache and cache[0] == sig:
             return cache[1]
         makers = set(self.categories.get("المصنعين", []))
+        moves = sorted((inv for inv in self.invoices.values()
+                        if inv.get("settled_status") == "ACTIVE" and inv.get("الاسم") in makers),
+                       key=lambda x: (str(x.get("التاريخ", "")), x.get("رقم الفاتورة", 0) or 0))
+
+        def row_of(inv):
+            row = (inv.get("row_number", "") or "").strip()
+            return (inv.get("الاسم"), self.inv_period(inv), row) if row else None
+        row_set = {}
+        for inv in moves:
+            own, rk = self.normalize_set_number(inv.get("set_number")), row_of(inv)
+            if own and rk is not None and rk not in row_set:
+                row_set[rk] = own
         out = {}
-        for inv in self.invoices.values():
-            if inv.get("settled_status") != "ACTIVE" or inv.get("الاسم") not in makers:
-                continue
+        for inv in moves:
             t = inv.get("النوع")
             if t not in ("المفنش ٨ بالالف", "المفنش ٤ بالالف", "قبض ذهب"):
                 continue
-            key = self.normalize_set_number(inv.get("set_number"))
+            key = self.normalize_set_number(inv.get("set_number")) or row_set.get(row_of(inv))
             if not key:
                 continue
-            d = out.setdefault(key, {"w8": None, "w4": None, "kasr": None, "chains": None,
-                                     "name": inv.get("الاسم"), "row": inv.get("row_number", "") or ""})
+            d = out.setdefault(key, {"w8": None, "w4": None, "kasr": None, "chains": None, "born": "",
+                                     "periods": set(), "name": inv.get("الاسم"), "row": inv.get("row_number", "") or ""})
             w = inv.get("الوزن", 0.0) or 0.0
             slot = {"المفنش ٤ بالالف": "w4", "قبض ذهب": "kasr"}.get(t, "w8")
             d[slot] = round((d[slot] or 0.0) + w, 2)
             if self.movement_slot(inv) == self.MFG_CHAINS_SLOT:
                 d["chains"] = round((d["chains"] or 0.0) + w, 2)
+            if slot != "kasr":
+                d["born"] = d["born"] or str(inv.get("التاريخ", "") or "")
+                d["periods"].add(self.inv_period(inv))
         self.__dict__["_sb_mfg_idx"] = (sig, out)
         return out
+
+    # ── ولادة الطقم (1.87): قبض شغل 4 أو شغل 8 (أو السلاسل) من المصنّع برقم تشغيل = طقمٌ وُلد، فيُحفظ للرقم قالبه —
+    #    من لوحة القالب أو مراحل التصنيع أو تعديل الصف ورقم تشغيله لاحقاً، وعند فتح القالب لشغل الفترة المعروضة.
+    #    وقالبٌ حذفه المستخدم لا يعود وحده (sb_dismissed) إلا إذا أُعطي رقمه لصفٍّ صراحةً ──
+    SB_DISMISSED_KEY = "sb_dismissed"
+
+    def sb_dismissed(self):
+        """أرقام التشغيل التي حذف المستخدم قوالبها (فلا يُولَد لها قالب من جديد وحده)"""
+        try:
+            lst = json.loads(self.get_setting(self.SB_DISMISSED_KEY, "[]") or "[]")
+        except (TypeError, ValueError):
+            lst = []
+        return {self.normalize_set_number(x) for x in lst if isinstance(x, str)} - {""}
+
+    def sb_set_dismissed(self, keys):
+        self._sb_undo_setting(self.SB_DISMISSED_KEY)
+        self.set_setting(self.SB_DISMISSED_KEY, json.dumps(sorted(keys), ensure_ascii=False))
+
+    def _sb_undo_setting(self, skey):
+        """قيمة الإعداد قبل تغييره في خطوة التراجع المفتوحة (إن كانت) — فيتراجع معها"""
+        step = getattr(self, "_undo_open", None)
+        if step is not None:
+            step.setdefault("settings", {}).setdefault(skey, self.get_setting(skey, None))
+
+    def sb_ensure_born(self, keys=None, month=None, revive=False):
+        """يحفظ قالب كل رقم تشغيلٍ له شغلٌ من المصنّع ولم يُحفظ له قالب:
+          keys: أرقامٌ بعينها (ترحيلٌ أو تعديلٌ الآن)، أو month: شغل تلك الفترة كله (عند فتح القالب)
+          revive: رقمٌ أُعطي لصفٍّ صراحةً يُولَد قالبه ولو حذفه المستخدم من قبل
+        تاريخ القالب تاريخ أول قبض شغلٍ له. يرجع الأرقام التي وُلد لها قالب"""
+        if getattr(self, "view_only", False):
+            return []
+        wanted = None if keys is None else {self.normalize_set_number(k) for k in keys} - {""}
+        if wanted is not None and not wanted:
+            return []
+        have = {r["set_number"] for r in self.sb_all()}
+        dismissed = self.sb_dismissed()
+        born = []
+        for key, d in sorted(self.sb_mfg_receipts().items(), key=lambda kv: (kv[1]["born"], kv[0])):
+            if key in have or (d["w4"] is None and d["w8"] is None):
+                continue
+            if wanted is not None and key not in wanted:
+                continue
+            if month and month not in d["periods"]:
+                continue
+            if key in dismissed and not revive:
+                continue
+            rec = self.sb_new_record(key)
+            dt = d["born"]
+            if len(dt) >= 10:
+                rec["date"] = dt[:10]
+                rec["created"] = rec["updated"] = dt if len(dt) >= 19 else f"{dt[:10]} 00:00:00"
+            self._sb_undo_setting(self.SB_PREFIX + key)
+            if self.sb_save(rec, touch=False):
+                born.append(key)
+        if revive and dismissed & set(born):
+            self.sb_set_dismissed(dismissed - set(born))
+        return born
+
+    def sb_record_empty(self, rec):
+        """قالبٌ لم يُكتب فيه شيء (لا قطع ولا أرقام ولا نصوص ولا توليد)"""
+        pieces = rec.get("pieces") or []
+        has_piece = any(str(v).strip() for p in pieces for v in (p.values() if isinstance(p, dict) else p or ()))
+        return (not has_piece and not rec.get("status")
+                and all(self.sb_num(rec.get(k)) is None for k in self.SB_NUMBER_FIELDS)
+                and all(not str(rec.get(k) or "").strip() for k in self.SB_TEXT_FIELDS if k != "date"))
+
+    def sb_follow_set_number(self, old, new):
+        """رقم تشغيل صفٍّ تغيّر (old ← new — 1.87): قالب الرقم القديم ينتقل إلى الجديد ما لم تبقَ للقديم حركة ولم يكن
+        للجديد قالب — فلا يبقى قالبٌ يتيم ولا يضيع ما كُتب فيه؛ وقالبٌ فارغ يُحذف إن كان للجديد قالبه. يرجع True إن تغيّر"""
+        old, new = self.normalize_set_number(old), self.normalize_set_number(new)
+        if not old or old == new or getattr(self, "view_only", False):
+            return False
+        rec = self.sb_load(old)
+        if rec is None:
+            return False
+        if old in self.sb_mfg_receipts() or any(self.normalize_set_number(inv.get("set_number")) == old
+                                                for inv in self.invoices.values()):
+            return False                     # للرقم القديم حركاتٌ باقية (صفٌّ آخر أو قسمٌ آخر أو بيع): قالبه باقٍ
+        if new and self.sb_load(new) is None:
+            rec["set_number"] = new
+            self._sb_undo_setting(self.SB_PREFIX + new)
+            self.sb_save(rec)
+        elif not self.sb_record_empty(rec):
+            return False
+        skey = self.SB_PREFIX + old
+        self._sb_undo_setting(skey)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM settings WHERE key = ?", (skey,))
+            conn.commit()
+        self.mark_backup_dirty()
+        self._sb_all_cache = None
+        st = getattr(self, "_sb_state", None)
+        if st and st.get("key") == old:
+            st["key"] = new or None
+        return True
 
     def sb_polish2_khayas(self, set_number):
         """خياس بوليش 2 المُرحَّل من القالب لرقم التشغيل (قبل − بعد)، أو None إن لم يُرحَّل منه شيء"""
@@ -23742,7 +23886,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         رُحِّل من المبيعات وحدها): الذهب والفصوص والأحجار وبعد خصمها والماس وخياس بوليش 2 وخياس البوليش والمركب، والاسم
         والتاريخ ورقم الفاتورة والنوع — تُبنى مرة ما دامت الحركات لم تتغيّر"""
         sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
-               getattr(self, "_inv_version", 0))
+               getattr(self, "_inv_version", 0), getattr(self, "_inv_edits", 0))
         cache = self.__dict__.get("_sb_sale_idx")
         if cache and cache[0] == sig:
             return cache[1]
@@ -23842,7 +23986,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not key:
             return False
         sig = (id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
-               getattr(self, "_inv_version", 0))
+               getattr(self, "_inv_version", 0), getattr(self, "_inv_edits", 0))
         cache = self.__dict__.get("_sb_sold_cache")
         if not cache or cache[0] != sig:
             cache = (sig, {k for k, v in self.sale_polish_by_set().items() if v[0]})
@@ -23965,9 +24109,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if old is None:
                 lines.append(f"تُرحَّل بالفترة المعروضة ({self.current_display_month}).")
             title = f"ترحيل «{label}»" if old is None else f"تعديل «{label}»"
-        if field == "asm_before":
-            # صرف المركّب ينقص من رصيد السدايا في تفصيل الخزينة (1.85)
-            lines += self.sub_balance_lines({self.SADAYA: -round((value or 0.0) - (old or 0.0), 2)})
+        if field in ("asm_before", "p1_before", "p1_after"):
+            # صرف المركّب و«قبل البوليش» ينقصان من رصيد السدايا في تفصيل الخزينة، و«بعد البوليش» يزيده (1.85، 1.87)
+            sign = 1 if field == "p1_after" else -1
+            lines += self.sub_balance_lines({self.SADAYA: sign * round((value or 0.0) - (old or 0.0), 2)})
         lines += ["", "— Enter للتأكيد"]
         if confirm and not messagebox.askyesno(title, "\n".join(lines), default=messagebox.YES, parent=parent):
             return False
@@ -24125,6 +24270,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         step = self.push_undo(f"حذف قالب الطقم ({key})")
         if step is not None:
             step.setdefault("settings", {}).setdefault(skey, self.get_setting(skey, None))
+        self.sb_set_dismissed(self.sb_dismissed() | {key})      # لا يُولَد قالبه وحده من جديد من شغل المصنّع
         for inv in moves + asm:
             if not self.delete_invoice_from_db(inv["رقم الفاتورة"]):
                 self.recalculate_all()
@@ -24528,7 +24674,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return lbl
 
         def options(parent, values, group, width):
-            """أزرار الخيارات في إطارٍ يأخذ التركيز (← → أو المسافة تغيّر الاختيار)"""
+            """أزرار الخيارات في إطارٍ يأخذ التركيز (المسافة تغيّر الاختيار، والأسهم تنتقل بين الخانات)"""
             frame = tk.Frame(parent, takefocus=1, highlightthickness=2, bd=0,
                              bg="#1D232B" if dark else UI["surface_alt"],
                              highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
@@ -24610,20 +24756,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.sb_mfg_submit()
                 return "break"
             return go(widget, 1)
+        # Enter و↓ و← للخانة التالية، و↑ و→ للسابقة (1.87 — الواجهة من اليمين)؛ والمسافة على الخيارات تغيّرها
         for wdg in chain:
             wdg.bind("<Return>", lambda e, w=wdg: on_return(w), add="+")
             wdg.bind("<KP_Enter>", lambda e, w=wdg: on_return(w), add="+")
-            wdg.bind("<Down>", lambda e, w=wdg: go(w, 1), add="+")
-            wdg.bind("<Up>", lambda e, w=wdg: go(w, -1), add="+")
+            for seq, d in self.SB_NAV_KEYS.items():
+                wdg.bind(seq, lambda e, w=wdg, d=d: go(w, d), add="+")
         m["set"]._entry.bind("<FocusOut>", lambda e: self.sb_mfg_fill_owner(), add="+")
-        step = {"Right": -1, "Left": 1, "space": 1}           # الأزرار من اليمين: ← التالي و→ السابق
         for group, frame in (("work", kinds), ("sarf", m["sarf_kinds"])):
-            for key, d in step.items():
-                frame.bind(f"<{key}>", lambda e, d=d, g=group: (self.sb_mfg_step_kind(d, group=g), "break")[1])
+            frame.bind("<space>", lambda e, g=group: (self.sb_mfg_step_kind(1, group=g), "break")[1])
         if getattr(self, "view_only", False):
             m["btn"].configure(state="disabled")
         self.sb_mfg_set_kind(m["kind"])
         self.sb_mfg_set_kind(m["sarf_kind"], group="sarf")
+
+    # التنقّل بين خانات جانب القالب: ↓ و← للتالية، و↑ و→ للسابقة (الواجهة من اليمين) — وEnter للتالية أيضاً
+    SB_NAV_KEYS = {"<Down>": 1, "<Left>": 1, "<Up>": -1, "<Right>": -1}
 
     # مجموعتا الخيارات في لوحة المصنّع: نوع الشغل ونوع الصرف ← (القيم، مفتاح المختار، مفتاح الأزرار، مفتاح الإطار)
     SB_MFG_GROUPS = {"work": (MFG_WORK_KINDS, "kind", "kind_btns", "kinds"),
@@ -24771,8 +24919,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def sb_build_stage_form(self, stage):
         """خانات مرحلةٍ في بطاقة الجانب، بسيطةً كمرحلتها في مراحل التصنيع:
           الكاستنج: الصف، والصرف بنوعه (كسر / سبيكة)، وقبض الشجر ومسترجع الأشجار، وعدد الأشجار
-          قسمٌ مضاف: الصف، والصرف بنوعه (سبيكة / شجر)، والقبض بنوعه (عام / سبيكة / واير / لحام)
-        Enter للتالية وفي آخرها يرحّل، و↑ ↓ بين الخانات، و← → أو المسافة على الخيارات"""
+          قسمٌ مضاف: الصف، والصرف بنوعه (سبيكة / شجر / كسر)، والقبض بنوعه (عام / سبيكة / واير / لحام)
+        Enter للتالية وفي آخرها يرحّل، والأسهم الأربعة بين الخانات (SB_NAV_KEYS)، والمسافة على الخيارات تغيّرها"""
         st = self._sb_state
         frame = ctk.CTkFrame(st["stage_card"], fg_color="transparent")
         grid = ctk.CTkFrame(frame, fg_color="transparent")
@@ -24845,7 +24993,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             line(3, "قبض", one("qabd"))
             kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 44)
             chain = [e["row"], e["sarf"], sf["groups"]["sarf"]["frame"], e["qabd"], sf["groups"]["qabd"]["frame"]]
-            HoverTip(sf["groups"]["sarf"]["frame"], "نوع الصرف: سبيكة أو شجر — ينقص من رصيده في تفصيل الخزينة")
+            HoverTip(sf["groups"]["sarf"]["frame"], "نوع الصرف: سبيكة أو شجر أو كسر — ينقص من رصيده في تفصيل الخزينة")
             HoverTip(sf["groups"]["qabd"]["frame"], "نوع القبض: سبيكة أو واير أو لحام — يزيد رصيده في تفصيل الخزينة")
         chain = [getattr(w, "_entry", w) for w in chain]
         sf["chain"], sf["first"] = chain, chain[0]
@@ -24870,11 +25018,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for wdg in chain:
             wdg.bind("<Return>", lambda ev, w=wdg: on_return(w), add="+")
             wdg.bind("<KP_Enter>", lambda ev, w=wdg: on_return(w), add="+")
-            wdg.bind("<Down>", lambda ev, w=wdg: go(w, 1), add="+")
-            wdg.bind("<Up>", lambda ev, w=wdg: go(w, -1), add="+")
+            for seq, d in self.SB_NAV_KEYS.items():
+                wdg.bind(seq, lambda ev, w=wdg, d=d: go(w, d), add="+")
         for group, g in sf["groups"].items():
-            for k, d in {"Right": -1, "Left": 1, "space": 1}.items():
-                g["frame"].bind(f"<{k}>", lambda ev, d=d, gr=group: (self.sb_stage_step_option(sf, gr, d), "break")[1])
+            g["frame"].bind("<space>", lambda ev, gr=group: (self.sb_stage_step_option(sf, gr, 1), "break")[1])
             self.sb_stage_set_option(sf, group, g["values"][0])
         return sf
 
@@ -25256,6 +25403,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         st = getattr(self, "_sb_state", None)
         if not st:
             return
+        self.sb_ensure_born(month=self.current_display_month)     # شغل الفترة من المصنّعين: لكل رقمٍ قالبه
         key = st.get("key")
         if not key or self.sb_load(key) is None:
             sets = self.sb_all()
@@ -25508,9 +25656,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                    "p2_before": v["total"]}
         for cell_key, field in self.SB_POST_CELLS.items():
             posted = v[field]
-            if cell_key == "p04" and v["mfg"].get("w4") is not None:
-                self.sb_put(cell_key, f(v["p04"]), "mfg")          # شغل 4 من قبض المصنّع («قبل» البوليش يُرحَّل معه)
-                continue
             if field in v["ext"]:
                 self.sb_put(cell_key, f(posted), "ext")            # من فاتورة البيع/التتبع — للعرض
             elif cell_key in pending:

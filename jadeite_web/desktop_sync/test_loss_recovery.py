@@ -92,6 +92,8 @@ ATTRS += ["SB_P2_IN"]
 ATTRS += ["SB_P2_OUT"]
 # 1.86: نوع صرف الكاستنج (كسر/سبيكة) في أول بيانه — المحرّك post_casting_loss
 ATTRS += ["CHAINS_HEAD", "RECEIPT_KINDS", "TREE_HEAD", "CAST_SARF_KINDS", "NOTE_HEADS", "CAST_NAME"]
+ATTRS += ["SADAYA", "MFG_CHAINS_SLOT"]
+METHODS.append("slot_kind_deltas")        # 1.87: تأكيد بوليش 1 برصيد السدايا
 
 EXTRA = '''
 def sub_balance_lines(self, deltas): return []

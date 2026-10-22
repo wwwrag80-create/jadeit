@@ -49,7 +49,10 @@ MEMBERS = ("_SET_DIGITS", "normalize_set_number", "inv_period", "inv_in_period",
            "calculate_single_ledger", "worker_rows_raji", "invoices_by_name", "invoices_by_name_period",
            "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SLOT_TYPES", "SLOT_HEADS", "SADAYA", "CAST_NAME", "invoices_by_period",
            "TREASURY_KINDS", "treasury_kind_of", "treasury_kind_breakdown", "slot_kind_deltas", "sub_balance_lines",
-           "_read_weight")
+           "_read_weight", "POLISH1_SADAYA",
+           "SB_PREFIX", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS", "sb_num", "sb_new_record", "sb_load", "sb_save", "sb_all",
+           "set_number_sort_key", "get_setting", "set_setting", "sb_mfg_receipts", "SB_DISMISSED_KEY", "sb_dismissed",
+           "sb_set_dismissed", "_sb_undo_setting", "sb_ensure_born", "sb_record_empty", "sb_follow_set_number")
 
 
 class MB:
@@ -68,7 +71,8 @@ class MB:
         return cls.answers.pop(0) if cls.answers else True
 
 
-ns = {"re": re, "datetime": datetime, "messagebox": MB, "log_cloud_error": lambda *a: None}
+ns = {"re": re, "datetime": datetime, "messagebox": MB, "log_cloud_error": lambda *a: None, "json": __import__("json"),
+      "sqlite3": sqlite3}
 exec("\n".join(module_src(n) for n in ("ALLOWANCE_8", "ALLOWANCE_4", "raji_ayar", "LEDGER_FIELD_BY_TYPE")), ns)
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 M = "2026-10"
@@ -78,6 +82,9 @@ class App(ns["Base"]):
     SB_NAME = "قالب رقم التشغيل"
 
     def __init__(self):
+        self.db_path = os.path.join(tempfile.mkdtemp(), "t.db")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
         self.invoices, self.invoice_counter = {}, 0
         self.categories = {"المصنعين": ["أحمد", "خالد"], "المركبين": ["سالم"], "أقسام_خياس_إضافية": ["صب الداخلي"]}
         self.current_display_month = M
@@ -352,6 +359,81 @@ assert a.sub_balance_lines({}) == [] and a.sub_balance_lines({"سدايا": 0.0}
 print(f"✔ تفصيل الخزينة (متراكم): {got} — السدايا = شغل 4 + شغل 8 − صرف المركبين، والكسر = قبض/كسر − صرف الكاستنج "
       "كسراً، والشجر = قبض الكاستنج − صرفه، والسبيكة والواير واللحام = قبض الأقسام − صرفها، والفترة التالية لا تدخل")
 
+# ═══ ٦ب) 1.87: «قبل البوليش» ينقص من السدايا و«بعده» يزيدها، والكسر في صرف الأقسام، وولادة الطقم من الشغل ═══
+assert a.sb_load("5003") is not None and a.sb_load("5003")["date"] == f"{M}-12", "شغل 4 من اللوحة برقمه ← قالبه"
+assert a.sb_load("5001")["created"] == f"{M}-05 10:00:00", "تاريخ ولادة الطقم = أول قبض شغلٍ له"
+assert a.sb_load("5002") is not None, "صرفٌ برقم طقمٍ له شغل (سلاسل) ← قالبه"
+assert not any(r["set_number"] == "" for r in a.sb_all()) and a.sb_load("7") is None, "بلا رقم تشغيل لا قالب"
+a.add("التلميع/البف", "صرف تلميع بف", 20.0, row="1")
+a.add("التلميع/البف", "قبض تلميع بف", 18.0, row="1")
+a.add(a.SB_NAME, "صرف تلميع بف", 5.0, set_no="5003")                       # «قبل البوليش» من القالب
+a.add("ليزر البوليش", "صرف تلميع بف", 1.0, row="2")                        # الليزر لا يدخل
+a.add("مسترجع بوليش 1", "قبض تلميع بف", 2.0)                                # حسابٌ آخر لا يدخل
+br2 = a.treasury_kind_breakdown(M)
+assert br2["سدايا"]["balance"] == round(75.0 - 20 - 5 + 18, 2), br2["سدايا"]
+assert sorted((i["الوزن"], sg) for i, sg in br2["سدايا"]["moves"] if i["النوع"].endswith("تلميع بف")) \
+    == [(5.0, -1), (18.0, 1), (20.0, -1)]
+assert a.slot_kind_deltas("التلميع/البف", [("صرف تلميع بف", 20), ("قبض تلميع بف", 18)]) == {"سدايا": -2}
+assert a.TREASURY_KINDS[0] == ("سدايا", "شغل 4/8 − قبل البوليش + بعده − صرف المركبين")
+assert "كسر" in a.STAGE_SARF_KINDS and a.STAGE_SARF_KINDS[0] == "سبيكة"
+MB.log.clear()
+assert a.post_generic_stage("صب الداخلي", "8", 2.0, 0.0, sarf_kind="كسر") is True
+ask = [x for x in MB.log if x[0] == "ask"][-1]
+assert "• الصرف — كسر: 2" in ask[2] and "• رصيد كسر في الخزينة: -1.00 ← -3.00  ⚠️ يصير بالسالب" in ask[2], ask[2]
+assert a.treasury_kind_breakdown(M)["كسر"]["balance"] == -3.0
+print("✔ السدايا: «قبل البوليش» (صرف بوليش 1 من مراحل التصنيع أو القالب) ينقص منها و«بعده» يزيدها — والليزر لا يدخل؛ "
+      "وصرف صب الداخلي «كسر» ينقص من رصيد الكسر")
+
+# الشغل بلا رقم في صفٍّ له رقم: يُحسب لرقم الصف
+a.add("أحمد", "المفنش ٨ بالالف", 3.0, row="3")
+assert a.sb_mfg_receipts()["5003"]["w8"] == 3.0, "شغل 8 بلا رقم في صف 5003 ← لـ 5003"
+# رقم تشغيلٍ يُعطى لصفٍّ له شغل (تعديل الصف): يولد قالبه
+for inv in a.invoices.values():
+    if inv["الاسم"] == "أحمد" and inv["row_number"] == "7":
+        inv["set_number"] = "5007"
+a.mark_backup_dirty()
+assert a.sb_ensure_born({"5007"}, revive=True) == ["5007"] and a.sb_load("5007")["date"] == f"{M}-12"
+assert a.sb_ensure_born({"5007"}) == [], "مرة واحدة"
+# عند فتح القالب: كل شغل الفترة المعروضة له قالبه (والفترات الأخرى لا)
+a.add("خالد", "المفنش ٤ بالالف", 9.0, row="1", set_no="5100")
+assert a.sb_ensure_born(month=M) == ["5100"]
+assert a.sb_load("6001") is None and a.sb_load("4001") is None
+# قالبٌ حذفه المستخدم لا يعود وحده — إلا إذا أُعطي رقمه لصفٍّ صراحةً
+a.sb_set_dismissed({"5200"})
+a.add("خالد", "المفنش ٤ بالالف", 1.0, row="2", set_no="5200")
+assert a.sb_ensure_born(month=M) == [] and a.sb_ensure_born({"5200"}) == []
+assert a.sb_ensure_born({"5200"}, revive=True) == ["5200"] and "5200" not in a.sb_dismissed()
+# وضع العرض لا يكتب، والولادة في خطوة التراجع المفتوحة
+a.add("خالد", "المفنش ٨ بالالف", 2.0, row="3", set_no="5300")
+a.view_only = True
+assert a.sb_ensure_born(month=M) == []
+a.view_only = False
+a._undo_open = step = {}
+assert a.sb_ensure_born({"5300"}) == ["5300"] and step["settings"] == {a.SB_PREFIX + "5300": None}
+a._undo_open = None
+print("✔ ولادة الطقم: الشغل (4/8/سلاسل) برقم تشغيل ← قالبه بتاريخ أول قبض — من اللوحة، أو رقمٌ يُعطى للصف لاحقاً، أو "
+      "عند فتح القالب لشغل الفترة؛ والمحذوف لا يعود وحده، ووضع العرض لا يكتب، والتراجع يشملها")
+
+# رقم تشغيل الصف يتغيّر: القالب ينتقل بما كُتب فيه ما لم يبقَ للرقم القديم شيء
+r = a.sb_load("5100")
+r["customer"] = "عميل"
+a.sb_save(r)
+for inv in a.invoices.values():
+    if inv["set_number"] == "5100":
+        inv["set_number"] = "5150"
+a.mark_backup_dirty()
+assert a.sb_follow_set_number("5100", "5150") is True
+assert a.sb_load("5100") is None and a.sb_load("5150")["customer"] == "عميل"
+assert a.sb_follow_set_number("5001", "5999") is False and a.sb_load("5001") is not None, "للقديم حركاتٌ باقية"
+for inv in a.invoices.values():
+    if inv["set_number"] == "5300":
+        inv["set_number"] = "5150"
+a.mark_backup_dirty()
+assert a.sb_record_empty(a.sb_load("5300")) and not a.sb_record_empty(a.sb_load("5150"))
+assert a.sb_follow_set_number("5300", "5150") is True and a.sb_load("5300") is None, "قالبٌ فارغ والجديد له قالبه ← يُحذف"
+print("✔ رقم تشغيل الصف يتغيّر: قالب الرقم القديم ينتقل إلى الجديد بما كُتب فيه (ويبقى إن بقيت للقديم حركات)، والفارغ "
+      "يُحذف إن كان للجديد قالبه")
+
 # ═══ ٧) الواجهة والمصادر ═══
 ruf = member("render_unified_fields")
 assert '(self.MFG_CHAINS_SLOT, "قبض/سلاسل")' in ruf
@@ -385,8 +467,12 @@ assert "self.tabview.treasury_click_callback = self.show_treasury_breakdown" in 
 panel = member("sb_build_mfg_panel")
 assert 'chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,' in panel
 assert 'options(grid, self.MFG_SARF_KINDS, "sarf", 40)' in panel and 'placeholder_text="⊘"' in panel and 'options(krow, self.MFG_WORK_KINDS, "work", 48)' in panel
-for k in ('"<Return>"', '"<Down>"', '"<Up>"', '"Right": -1, "Left": 1, "space": 1'):
+for k in ('"<Return>"', "for seq, d in self.SB_NAV_KEYS.items():", 'frame.bind("<space>"'):
     assert k in panel, k
+assert member("SB_NAV_KEYS").strip().endswith('{"<Down>": 1, "<Left>": 1, "<Up>": -1, "<Right>": -1}'), \
+    "1.87: الأسهم الأربعة بين الخانات (← التالية و→ السابقة)، والمسافة تغيّر الخيار"
+assert '"Right": -1, "Left": 1' not in panel and '"Right": -1, "Left": 1' not in member("sb_build_stage_form")
+assert "for seq, d in self.SB_NAV_KEYS.items():" in member("sb_build_stage_form")
 assert "self.post_manufacturer_receipt(" in member("sb_mfg_submit")
 assert 'self.sb_mfg_fill_owner(st["key"] or "")' in member("sb_show")
 print("✔ الواجهة: «قبض/سلاسل» في المصنعين وتعديل الصف وجدوله، ونوع القبض في الأقسام المضافة (ويبقى بالتعديل)، "
@@ -415,7 +501,27 @@ assert 'else self.SLOT_HEADS.get(slot, ""))' in sub and "self.sub_balance_lines(
 assert 'self.set_sarf_type(sarf_ent[1], "ذهب")' in sub
 assert '("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/واير")' in member("ROW_EDIT_FIELDS")
 assert "head = (self.SLOT_HEADS.get(slot)" in row_edit
-assert "self.sub_balance_lines({self.SADAYA: -round((value or 0.0) - (old or 0.0), 2)})" in member("sb_post")
+sbp = member("sb_post")
+assert 'if field in ("asm_before", "p1_before", "p1_after"):' in sbp and \
+    "self.sub_balance_lines({self.SADAYA: sign * round((value or 0.0) - (old or 0.0), 2)})" in sbp, \
+    "صرف المركّب و«قبل البوليش» ينقصان من السدايا و«بعده» يزيدها — في التأكيد"
+assert "self.slot_kind_deltas(\"التلميع/البف\", [(\"صرف تلميع بف\", sarf_v), (\"قبض تلميع بف\", qabd_v)])" in \
+    member("submit_polish_buff_op")
+# 1.87: ولادة الطقم من كل طريق، ورقم التشغيل يتبعه قالبه، و٠٫٠٤٪ = «قبل البوليش»
+assert "self.sb_ensure_born({key}, revive=bool(self.normalize_set_number(set_number)))" in \
+    member("post_manufacturer_receipt")
+assert "self.sb_ensure_born({typed} if typed else self.row_set_numbers(name, row_key), revive=bool(typed))" in sub
+row_edit_src = member("open_row_full_edit_dialog")
+assert "self.sb_follow_set_number(cur_set, new_set_no)" in row_edit_src and \
+    "self.sb_ensure_born({new_set_no}, revive=changed)" in row_edit_src
+ren = member("rename_op_ledger_set_number")
+assert "self.sb_follow_set_number(old, new_val)" in ren and "self.sb_ensure_born({new_val}, revive=True)" in ren
+assert "self.sb_ensure_born(month=self.current_display_month)" in member("refresh_set_builder")
+assert "self.sb_set_dismissed(self.sb_dismissed() | {key})" in member("sb_delete")
+assert 'self._inv_edits = getattr(self, "_inv_edits", 0) + 1' in member("save_invoice_to_db")
+for fn in ("sb_mfg_receipts", "sb_moves_index", "sb_sale_index", "sb_is_sold", "assembler_set_index"):
+    assert 'getattr(self, "_inv_edits", 0)' in member(fn), f"{fn}: تعديلٌ في مكانه (رقم تشغيل الصف) يحدّث الفهرس"
+assert "p04 = p1b\n" in member("sb_values") and 'cell_key == "p04" and v["mfg"]' not in member("sb_render")
 tb = member("show_treasury_breakdown")
 assert '("النوع", "المصدر", "رصيد سابق", "داخل", "خارج", "الرصيد")' in tb and '"داخل" if sign > 0 else "خارج"' in tb
 assert 'text=f"الطقم {key} — {status}' not in member("sb_render"), "معلومات الطقم سطران (يتّسع العمود للوحة)"
