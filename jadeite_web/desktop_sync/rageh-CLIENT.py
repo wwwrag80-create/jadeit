@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.87.0"
+APP_VERSION = "1.88.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -16848,10 +16848,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     SADAYA = "سدايا"
     CAST_NAME = "كاستنج"                  # اسم حركات «فاقد» الكاستنج (صرفه وقبضه — والقبض هو الشجر)
     POLISH1_SADAYA = {"صرف تلميع بف": -1, "قبض تلميع بف": 1}     # بوليش 1: قبل ← السدايا خارج، وبعد ← داخل
-    TREASURY_KINDS = (("سدايا", "شغل 4/8 − قبل البوليش + بعده − صرف المركبين"),
+    TREASURY_KINDS = (("سدايا", "شغل 4/8 − قبل البوليش + بعده − المركبين"),
                       ("سلاسل", "المصنعين قبض/سلاسل"),
-                      ("كسر", "قبض/كسر − صرف كسر (الكاستنج والأقسام)"),
-                      ("سبيكة", "قبض الأقسام − صرف سبيكة"),
+                      ("كسر", "قبض/كسر − صرف كسر"),
+                      ("سبيكة", "الوارد + قبض الأقسام − صرف سبيكة"),
                       ("شجر", "قبض الكاستنج − صرف شجر"),
                       ("واير", "قبض الأقسام − صرف واير للمصنّع"),
                       ("لحام", "قبض الأقسام − صرف لحام للمصنّع"))
@@ -16862,10 +16862,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
           المركّب: كل صرفٍ له ← السدايا خارج
           بوليش 1 (من مراحل التصنيع أو القالب، بلا الليزر): «قبل البوليش» (صرفه) ← السدايا خارج، و«بعده» (قبضه) ← داخل
           الكاستنج (فاقد): القبض ← الشجر داخل، والصرف بنوعه (كسر/سبيكة) ← خارج
-          الأقسام: الصرف بنوعه (كسر/سبيكة/شجر) ← خارج، والقبض بنوعه (سبيكة/واير/لحام) ← داخل"""
+          الأقسام: الصرف بنوعه (كسر/سبيكة/شجر) ← خارج، والقبض بنوعه (سبيكة/واير/لحام) ← داخل
+          الوارد (1.88): كل وارد ذهب من شاشة الوارد ← السبيكة داخل — بند «الوارد» نفسه في الخزينة (treasury_bucket):
+          حالاته المحسوبة، ولحساب الخزينة أو لمسترجع مرحلة، بلا القيد الافتتاحي؛ ووارد الفصوص والأحجار والماس لا يدخل"""
+        t, name = inv.get("النوع"), inv.get("الاسم")
+        if t == "وارد ذهب (عيار 18)":
+            opening = inv.get("trees_count") == 1.0 and inv.get("البيان") == "قيد افتتاحي"
+            return ("سبيكة", 1) if inv.get("settled_status") in COUNTED_STATUSES and not opening else None
         if inv.get("settled_status") != "ACTIVE":
             return None
-        t, name = inv.get("النوع"), inv.get("الاسم")
         if name in makers:
             if t == "المفنش ٤ بالالف":
                 return self.SADAYA, 1
@@ -16967,7 +16972,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         data = self.treasury_kind_breakdown(month)
         win = ctk.CTkToplevel(self)
         win.title("تفصيل رصيد الخزينة")
-        self.fit_dialog_to_screen(win, 900, 700)
+        self.fit_dialog_to_screen(win, 980, 700)
         win.transient(self)
         try:
             win.grab_set()
@@ -16984,7 +16989,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree = self.create_standard_treeview(top, cols, height=len(self.TREASURY_KINDS) + 1)
         tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
         tree.tag_configure("neg_tag", foreground="#e74c3c")
-        for c, wdt in zip(cols, (95, 305, 125, 100, 100, 100)):
+        for c, wdt in zip(cols, (90, 395, 125, 85, 85, 90)):
             tree.column(c, width=wdt, anchor="center")
         tot = {"opening": 0.0, "in": 0.0, "out": 0.0, "balance": 0.0}
         for kind, src in self.TREASURY_KINDS:
@@ -17023,10 +17028,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree.bind("<<TreeviewSelect>>", show_kind, add="+")
         ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين، وينقص منها «قبل البوليش» ويزيدها «بعده»، وينقص منها "
                                "صرف المركبين. الكسر من قبض/كسر وينقص بصرفه للكاستنج أو للأقسام. الشجر من قبض الكاستنج "
-                               "وينقص بصرفه للمصنّع أو للأقسام. السبيكة والواير "
-                               "واللحام من قبض الأقسام وتنقص بصرفها. «رصيد سابق» ما بقي من الفترات السابقة، والرصيد = "
-                               "سابق + داخل − خارج — ورصيد الخزينة نفسه كما هو",
-                     font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=840,
+                               "وينقص بصرفه للمصنّع أو للأقسام. السبيكة من وارد الذهب (شاشة الوارد) وقبض الأقسام، "
+                               "والواير واللحام من قبض الأقسام، وتنقص بصرفها. «رصيد سابق» ما بقي من الفترات السابقة، "
+                               "والرصيد = سابق + داخل − خارج — ورصيد الخزينة نفسه كما هو",
+                     font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=920,
                      justify="center").pack(pady=(0, 4))
         ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=36,
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(pady=(0, 12))
@@ -19907,6 +19912,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 confirm_msg = (f"سيُسجَّل هذا الوارد ({final_w:.2f} جم) في حساب «{supplier}».\n"
                                "يظهر في مسترجع المرحلة بشاشة الخسائر، ولا يُقفل أي فاقد.\n\n"
                                "هل تريد المتابعة؟")
+            # وارد الذهب سبيكةٌ في تفصيل الخزينة (1.88): رصيدها قبل الترحيل وبعده
+            ingot_lines = self.sub_balance_lines({"سبيكة": final_w}) if op_type == "وارد ذهب (عيار 18)" else []
+            if ingot_lines:
+                confirm_msg += "\n\n" + "\n".join(ingot_lines)
             if not messagebox.askyesno("تأكيد الترحيل", confirm_msg):
                 return
 

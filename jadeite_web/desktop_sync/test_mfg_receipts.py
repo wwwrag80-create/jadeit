@@ -73,6 +73,7 @@ class MB:
 
 ns = {"re": re, "datetime": datetime, "messagebox": MB, "log_cloud_error": lambda *a: None, "json": __import__("json"),
       "sqlite3": sqlite3}
+exec(module_src("COUNTED_STATUSES"), ns)
 exec("\n".join(module_src(n) for n in ("ALLOWANCE_8", "ALLOWANCE_4", "raji_ayar", "LEDGER_FIELD_BY_TYPE")), ns)
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 M = "2026-10"
@@ -374,7 +375,7 @@ assert br2["سدايا"]["balance"] == round(75.0 - 20 - 5 + 18, 2), br2["سدا
 assert sorted((i["الوزن"], sg) for i, sg in br2["سدايا"]["moves"] if i["النوع"].endswith("تلميع بف")) \
     == [(5.0, -1), (18.0, 1), (20.0, -1)]
 assert a.slot_kind_deltas("التلميع/البف", [("صرف تلميع بف", 20), ("قبض تلميع بف", 18)]) == {"سدايا": -2}
-assert a.TREASURY_KINDS[0] == ("سدايا", "شغل 4/8 − قبل البوليش + بعده − صرف المركبين")
+assert a.TREASURY_KINDS[0] == ("سدايا", "شغل 4/8 − قبل البوليش + بعده − المركبين")
 assert "كسر" in a.STAGE_SARF_KINDS and a.STAGE_SARF_KINDS[0] == "سبيكة"
 MB.log.clear()
 assert a.post_generic_stage("صب الداخلي", "8", 2.0, 0.0, sarf_kind="كسر") is True
@@ -383,6 +384,26 @@ assert "• الصرف — كسر: 2" in ask[2] and "• رصيد كسر في ا
 assert a.treasury_kind_breakdown(M)["كسر"]["balance"] == -3.0
 print("✔ السدايا: «قبل البوليش» (صرف بوليش 1 من مراحل التصنيع أو القالب) ينقص منها و«بعده» يزيدها — والليزر لا يدخل؛ "
       "وصرف صب الداخلي «كسر» ينقص من رصيد الكسر")
+
+# 1.88: كل وارد ذهب من شاشة الوارد سبيكة — بند «الوارد» نفسه في الخزينة (وارد الفصوص والأحجار والماس والقيد الافتتاحي لا)
+sb0 = a.treasury_kind_breakdown(M)["سبيكة"]
+a.add("المصنع", "وارد ذهب (عيار 18)", 25.0, set_no="V1")
+a.add("مورد", "وارد ذهب (عيار 18)", 4.0, set_no="V2")
+a.invoices[a.invoice_counter]["settled_status"] = "SETTLED_INOUT"                 # حالةٌ محسوبة في الخزينة
+a.add("مسترجع الكاستنج", "وارد ذهب (عيار 18)", 1.5, set_no="V3")                 # لحساب مسترجع مرحلة
+a.add("المصنع", "وارد ذهب (عيار 18)", 100.0, note="قيد افتتاحي")
+a.invoices[a.invoice_counter]["trees_count"] = 1.0                                  # القيد الافتتاحي لا
+a.add("المصنع", "وارد فصوص وأحجار", 7.0, set_no="V4")
+a.add("المصنع", "وارد الماس", 2.0, set_no="V5")
+a.add("المصنع", "وارد ذهب (عيار 18)", 9.0, set_no="V6")
+a.invoices[a.invoice_counter]["settled_status"] = "DELETED"
+a.mark_backup_dirty()
+sb1 = a.treasury_kind_breakdown(M)["سبيكة"]
+assert round(sb1["in"] - sb0["in"], 2) == 30.5 and sb1["out"] == sb0["out"], (sb0, sb1)
+assert sorted(i["الوزن"] for i, sg in sb1["moves"] if i["النوع"].startswith("وارد")) == [1.5, 4.0, 25.0]
+assert a.TREASURY_KINDS[3] == ("سبيكة", "الوارد + قبض الأقسام − صرف سبيكة")
+print("✔ السبيكة: كل وارد ذهب من شاشة الوارد (لحساب الخزينة أو لمسترجع مرحلة، بحالاته المحسوبة) يزيدها — والفصوص "
+      "والأحجار والماس والقيد الافتتاحي لا")
 
 # الشغل بلا رقم في صفٍّ له رقم: يُحسب لرقم الصف
 a.add("أحمد", "المفنش ٨ بالالف", 3.0, row="3")
@@ -518,6 +539,9 @@ ren = member("rename_op_ledger_set_number")
 assert "self.sb_follow_set_number(old, new_val)" in ren and "self.sb_ensure_born({new_val}, revive=True)" in ren
 assert "self.sb_ensure_born(month=self.current_display_month)" in member("refresh_set_builder")
 assert "self.sb_set_dismissed(self.sb_dismissed() | {key})" in member("sb_delete")
+inb = member("submit_inbound")
+assert 'ingot_lines = self.sub_balance_lines({"سبيكة": final_w}) if op_type == "وارد ذهب (عيار 18)" else []' in inb \
+    and 'confirm_msg += "\\n\\n" + "\\n".join(ingot_lines)' in inb, "تأكيد وارد الذهب برصيد السبيكة قبل وبعد"
 assert 'self._inv_edits = getattr(self, "_inv_edits", 0) + 1' in member("save_invoice_to_db")
 for fn in ("sb_mfg_receipts", "sb_moves_index", "sb_sale_index", "sb_is_sold", "assembler_set_index"):
     assert 'getattr(self, "_inv_edits", 0)' in member(fn), f"{fn}: تعديلٌ في مكانه (رقم تشغيل الصف) يحدّث الفهرس"

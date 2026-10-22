@@ -85,6 +85,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "SB_DISMISSED_KEY", "sb_dismissed", "sb_set_dismissed", "_sb_undo_setting")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
       "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"), "IS_ADMIN_BUILD": False,
+      "COUNTED_STATUSES": module_value("COUNTED_STATUSES"),
       "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH"), "KHAYAS_MARK_NET": module_value("KHAYAS_MARK_NET"),
       "KHAYAS_MARK_ASSEMBLER": module_value("KHAYAS_MARK_ASSEMBLER")}
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
