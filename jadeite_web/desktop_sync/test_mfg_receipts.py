@@ -11,7 +11,7 @@
   • القبض من القالب بقواعد قسم المصنعين: رقم التشغيل يعرّف الصف، وكل خانة مرة في الصف.
   • تفصيل الخزينة: قبض الفترة المعروضة من كل نوع.
 """
-import ast, io, os, re, sqlite3, sys, tempfile, textwrap, datetime
+import ast, io, json, os, re, sqlite3, sys, tempfile, textwrap, datetime
 
 TARGET = sys.argv[1] if len(sys.argv) > 1 else "rageh-1-34-14-cloud.py"
 src = io.open(TARGET, encoding="utf-8").read()
@@ -52,7 +52,9 @@ MEMBERS = ("_SET_DIGITS", "normalize_set_number", "inv_period", "inv_in_period",
            "_read_weight", "POLISH1_SADAYA",
            "SB_PREFIX", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS", "sb_num", "sb_new_record", "sb_load", "sb_save", "sb_all",
            "set_number_sort_key", "get_setting", "set_setting", "sb_mfg_receipts", "SB_DISMISSED_KEY", "sb_dismissed",
-           "sb_set_dismissed", "_sb_undo_setting", "sb_ensure_born", "sb_record_empty", "sb_follow_set_number")
+           "sb_set_dismissed", "_sb_undo_setting", "sb_ensure_born", "sb_record_empty", "sb_follow_set_number",
+           "check_name_exists", "SB_MFG_STAGE", "SB_STAGES_KEY", "sb_side_stage_options", "sb_stage_order",
+           "sb_side_stages", "sb_set_stage_order", "sb_move_stage")
 
 
 class MB:
@@ -90,9 +92,13 @@ class App(ns["Base"]):
         self.categories = {"المصنعين": ["أحمد", "خالد"], "المركبين": ["سالم"], "أقسام_خياس_إضافية": ["صب الداخلي"]}
         self.current_display_month = M
         self.undo, self.recalcs, self.view_only, self.posts = [], 0, False, []
+        self.saved_names, self.bars = [], 0
 
     def mark_backup_dirty(self): self._inv_version = getattr(self, "_inv_version", 0) + 1
     def view_only_blocked(self, silent=False): self.blocked = True
+    def get_display_label(self, cat): return cat
+    def save_name_to_db(self, name, cat): self.saved_names.append((name, cat))
+    def sb_build_stage_bar(self): self.bars += 1
     def recalculate_all(self): self.recalcs += 1
     def register_operation_period(self, d): pass
     def get_operation_datetime(self): return f"{M}-12 10:00:00"
@@ -211,7 +217,8 @@ assert a.post_manufacturer_receipt("أحمد", "5001", "", 0.0, 5.0, "شغل 8")
 assert MB.log[-1][1] == "مسجّل بالفعل"
 print("✔ القبض من القالب: كسر ← قبض/كسر، وشغل 4 ← قبض/٤ و«قبل» بوليش 1، والسلاسل ← قبض/سلاسل (مفنش ٨)، "
       "ورقم التشغيل المسجّل يُكمل صفّه، والخانة المسجّلة لا تُكرَّر")
-cases = ((("سالم", "5009", "1", 1.0, 0.0, "شغل 4"), "اسم المصنّع"),
+cases = ((("سالم", "5009", "1", 1.0, 0.0, "شغل 4"), "الاسم مستخدم"),          # اسم حسابٍ آخر (مركّب)
+         (("", "5009", "1", 1.0, 0.0, "شغل 4"), "اسم المصنّع"),
          (("أحمد", "5009", "1", None, 0.0, "شغل 4"), "قيمة غير صحيحة"),
          (("أحمد", "5009", "1", -1.0, 0.0, "شغل 4"), "قيمة غير صحيحة"),
          (("أحمد", "5009", "1", 0.0, 0.0, "شغل 4"), "لا قيمة"),
@@ -232,8 +239,19 @@ a.view_only = True
 assert a.post_manufacturer_receipt("أحمد", "5009", "9", 1.0, 0.0, "شغل 4") is False
 a.view_only = False
 assert len(a.invoices) == n0
-print("✔ يُرفض: غير المصنّع، والقيمة غير الرقمية أو السالبة أو الصفر، ونوعٌ غير الثلاثة، وبلا رقم تشغيل ولا صف، ورقمٌ "
-      "لمصنّع آخر أو لصف آخر، ورقمٌ جديد بلا صف، وصفٌّ برقم آخر — و«لا» في التأكيد، ووضع العرض")
+print("✔ يُرفض: اسم حسابٍ آخر أو بلا اسم، والقيمة غير الرقمية أو السالبة أو الصفر، ونوعٌ غير الثلاثة، وبلا رقم تشغيل ولا "
+      "صف، ورقمٌ لمصنّع آخر أو لصف آخر، ورقمٌ جديد بلا صف، وصفٌّ برقم آخر — و«لا» في التأكيد، ووضع العرض")
+# اسمٌ جديد (1.89): يُفتح له حسابٌ في المصنعين مع تأكيد الترحيل نفسه — و«لا» لا تفتحه
+MB.log.clear()
+MB.answers[:] = [False]
+assert a.post_manufacturer_receipt("ناصر", "", "1", 0.0, 0.0, "شغل 4", sarf=3.0, sarf_kind="ذهب") is False
+assert "🆕 مصنّعٌ جديد (ناصر) — يُفتح حسابه في المصنعين مع هذا الترحيل" in [x for x in MB.log if x[0] == "ask"][-1][2]
+assert "ناصر" not in a.categories["المصنعين"] and a.saved_names == [] and len(a.invoices) == n0
+assert a.post_manufacturer_receipt("ناصر", "", "1", 0.0, 0.0, "شغل 4", sarf=3.0, sarf_kind="ذهب") is True
+assert "ناصر" in a.categories["المصنعين"] and a.saved_names == [("ناصر", "المصنعين")]
+assert [(i["النوع"], i["الوزن"], i["row_number"]) for i in a.invoices.values() if i["الاسم"] == "ناصر"] == \
+    [("صرف ذهب", 3.0, "1")]
+print("✔ اسم مصنّعٍ جديد في لوحة القالب: يُفتح حسابه في المصنعين مع تأكيد الترحيل (و«لا» لا تفتحه)، واسم حسابٍ آخر يُرفض")
 # رقم التشغيل اختياري (1.86): الصف يعرّف الحركة، ورقم تشغيل الصف المسجّل يُعطى لها
 MB.log.clear()
 assert a.post_manufacturer_receipt("أحمد", "", "1", 1.5, 0.0, "شغل 4") is True
@@ -455,6 +473,23 @@ assert a.sb_follow_set_number("5300", "5150") is True and a.sb_load("5300") is N
 print("✔ رقم تشغيل الصف يتغيّر: قالب الرقم القديم ينتقل إلى الجديد بما كُتب فيه (ويبقى إن بقيت للقديم حركات)، والفارغ "
       "يُحذف إن كان للجديد قالبه")
 
+# ═══ ٦ج) 1.89: ترتيب أزرار المراحل في جانب القالب (يُحرَّك يميناً ويساراً، والمصنعين معها) ═══
+assert a.sb_stage_order() == ["المصنعين"]
+a.set_setting(a.SB_STAGES_KEY, json.dumps(["الكاستنج", "صب الداخلي"]))           # محفوظ 1.86 (بلا المصنعين)
+assert a.sb_stage_order() == ["المصنعين", "الكاستنج", "صب الداخلي"] and a.sb_side_stages() == ["الكاستنج", "صب الداخلي"]
+assert a.sb_move_stage("المصنعين", 1) and a.sb_stage_order() == ["الكاستنج", "المصنعين", "صب الداخلي"]
+assert a.sb_move_stage("صب الداخلي", -1) and a.sb_stage_order() == ["الكاستنج", "صب الداخلي", "المصنعين"]
+assert not a.sb_move_stage("الكاستنج", -1) and not a.sb_move_stage("المصنعين", 1), "لا تحريك بعد الطرف"
+assert a.bars == 2 and json.loads(a.get_setting(a.SB_STAGES_KEY)) == ["الكاستنج", "صب الداخلي", "المصنعين"]
+a.view_only = True
+assert not a.sb_move_stage("المصنعين", -1)
+a.view_only = False
+a.categories["أقسام_خياس_إضافية"] = []
+assert a.sb_stage_order() == ["الكاستنج", "المصنعين"], "قسمٌ حُذف يسقط من الترتيب"
+a.categories["أقسام_خياس_إضافية"] = ["صب الداخلي"]
+print("✔ ترتيب أزرار المراحل: يُحرَّك يميناً ويساراً (والمصنعين معها) ويُحفظ، ولا تحريك بعد الطرف ولا في وضع العرض، "
+      "وقسمٌ حُذف يسقط منه")
+
 # ═══ ٧) الواجهة والمصادر ═══
 ruf = member("render_unified_fields")
 assert '(self.MFG_CHAINS_SLOT, "قبض/سلاسل")' in ruf
@@ -487,13 +522,14 @@ assert 'self.lbl_live_treasury.bind("<Button-1>", lambda e: self.show_treasury_b
 assert "self.tabview.treasury_click_callback = self.show_treasury_breakdown" in src
 panel = member("sb_build_mfg_panel")
 assert 'chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,' in panel
-assert 'options(grid, self.MFG_SARF_KINDS, "sarf", 40)' in panel and 'placeholder_text="⊘"' in panel and 'options(krow, self.MFG_WORK_KINDS, "work", 48)' in panel
-for k in ('"<Return>"', "for seq, d in self.SB_NAV_KEYS.items():", 'frame.bind("<space>"'):
-    assert k in panel, k
-assert member("SB_NAV_KEYS").strip().endswith('{"<Down>": 1, "<Left>": 1, "<Up>": -1, "<Right>": -1}'), \
-    "1.87: الأسهم الأربعة بين الخانات (← التالية و→ السابقة)، والمسافة تغيّر الخيار"
-assert '"Right": -1, "Left": 1' not in panel and '"Right": -1, "Left": 1' not in member("sb_build_stage_form")
-assert "for seq, d in self.SB_NAV_KEYS.items():" in member("sb_build_stage_form")
+assert "grid, self.MFG_SARF_KINDS, 46," in panel and 'placeholder_text="⊘"' in panel and "krow, self.MFG_WORK_KINDS, 56," in panel
+assert "self.sb_bind_chain(chain, on_return, {kinds:" in panel and "self.sb_bind_chain(chain, on_return," in \
+    member("sb_build_stage_form")
+sbc = member("sb_bind_chain")
+assert "if wdg in option_steps and seq in self.SB_OPTION_KEYS:" in sbc and "for seq, d in self.SB_OPTION_KEYS.items():" in sbc
+assert member("SB_NAV_KEYS").strip().endswith('{"<Down>": 1, "<Left>": 1, "<Up>": -1, "<Right>": -1}')
+assert member("SB_OPTION_KEYS").strip().endswith('{"<Left>": 1, "<Right>": -1, "<space>": 1}'), \
+    "1.89: على الخيارات ← → والمسافة تنتقل بين الخيارات (كما كانت)، و↑ ↓ وEnter تخرج منها"
 assert "self.post_manufacturer_receipt(" in member("sb_mfg_submit")
 assert 'self.sb_mfg_fill_owner(st["key"] or "")' in member("sb_show")
 print("✔ الواجهة: «قبض/سلاسل» في المصنعين وتعديل الصف وجدوله، ونوع القبض في الأقسام المضافة (ويبقى بالتعديل)، "
@@ -547,7 +583,10 @@ for fn in ("sb_mfg_receipts", "sb_moves_index", "sb_sale_index", "sb_is_sold", "
     assert 'getattr(self, "_inv_edits", 0)' in member(fn), f"{fn}: تعديلٌ في مكانه (رقم تشغيل الصف) يحدّث الفهرس"
 assert "p04 = p1b\n" in member("sb_values") and 'cell_key == "p04" and v["mfg"]' not in member("sb_render")
 tb = member("show_treasury_breakdown")
-assert '("النوع", "المصدر", "رصيد سابق", "داخل", "خارج", "الرصيد")' in tb and '"داخل" if sign > 0 else "خارج"' in tb
+assert 'cols = ("النوع", "الرصيد")' in tb and '"داخل" if sign > 0 else "خارج"' in tb and "الإجمالي" not in tb, \
+    "1.89: تفصيل الخزينة النوع ورصيده فقط، وحركته تحته"
+assert 'lbl_total.bind("<Button-1>", lambda e: self.total_click_callback and self.total_click_callback())' in src
+assert "self.tabview.total_click_callback = self.show_gold_balance_breakdown" in src, "شارة الرصيد الحالي: تفصيله المعتاد"
 assert 'text=f"الطقم {key} — {status}' not in member("sb_render"), "معلومات الطقم سطران (يتّسع العمود للوحة)"
 assert 'specs += [(k, label, 0 if k in toggles else 1) for k, label in fields]' in member("build_stage_panel")
 bar = member("refresh_stage_buttons")
@@ -564,16 +603,21 @@ assert 'self.sb_select_stage(self.SB_MFG_STAGE, focus=False)' in sbt and 'self.s
 assert "ttk.Treeview" not in sbt and "sb_fill_log" not in src and "log_title" not in src, "لا سجل حركات في جانب القالب"
 assert "tip.text = (text + \"\\n\\n\" if text else \"\") + self.SB_HELP" in member("sb_set_info")
 bar186 = member("sb_build_stage_bar")
-assert 'items = [self.SB_MFG_STAGE] + self.sb_side_stages() + ["+"]' in bar186
+assert 'items = self.sb_stage_order() + ["+"]' in bar186 and 'text="📂"' in bar186 and \
+    "command=lambda k=key: self.sb_open_stage_screen(k)" in bar186
+ose = member("sb_open_stage_screen")
+assert 'self.navigate_to_screen("مراحل التصنيع")' in ose and "self.switch_op_stage(stage)" in ose
+ctx = member("sb_stage_context")
+assert "➡ تحريك يميناً" in ctx and "⬅ تحريك يساراً" in ctx and "self.sb_move_stage(stage, -1)" in ctx
 assert 'b.bind("<Button-3>", lambda e, k=key: self.sb_stage_context(e, k), add="+")' in bar186
-assert 'self.set_setting(self.SB_STAGES_KEY, json.dumps(list(stages), ensure_ascii=False))' in member("sb_set_side_stages")
+assert 'self.set_setting(self.SB_STAGES_KEY, json.dumps(list(order), ensure_ascii=False))' in member("sb_set_stage_order")
 assert 'return ["الكاستنج"] + [c for c in self.categories.get("أقسام_خياس_إضافية", []) if c != "الكاستنج"]' in \
     member("sb_side_stage_options")
 form186 = member("sb_build_stage_form")
-assert 'line(1, "صرف", one("sarf"))' in form186 and 'kinds(2, "sarf", self.CAST_SARF_KINDS, 50)' in form186
+assert 'line(1, "صرف", one("sarf"))' in form186 and 'kinds(2, "sarf", self.CAST_SARF_KINDS, 56)' in form186
 assert 'line(3, "قبض شجر", pair("qabd", "مسترجع", "recover"))' in form186
-assert 'kinds(2, "sarf", self.STAGE_SARF_KINDS, 50)' in form186
-assert 'kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 44)' in form186
+assert 'kinds(2, "sarf", self.STAGE_SARF_KINDS, 56)' in form186
+assert 'kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 50)' in form186
 sub186 = member("sb_stage_submit")
 assert "ok = self.post_casting_loss(row, rw(e[\"sarf\"]), rw(e[\"qabd\"]), rw(e[\"trees\"]), rw(e[\"recover\"])," in sub186
 assert "ok = self.post_generic_stage(stage, row, rw(e[\"sarf\"]), rw(e[\"qabd\"]), sarf_kind=g[\"sarf\"][\"sel\"]," in sub186

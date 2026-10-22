@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.88.0"
+APP_VERSION = "1.89.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4493,6 +4493,7 @@ class ScreenRouter(ctk.CTkFrame):
         self._title_labels = {}
         self.go_home_callback = go_home_callback
         self.treasury_click_callback = None      # النقر على شارة الخزينة: تفصيل رصيدها
+        self.total_click_callback = None         # والنقر على شارة الرصيد الحالي: تفصيله المعتاد
         self.meta = meta or {}
         self.current_screen = None
 
@@ -4597,6 +4598,8 @@ class ScreenRouter(ctk.CTkFrame):
         lbl_treasury.configure(cursor="hand2")
         lbl_treasury.bind("<Button-1>", lambda e: self.treasury_click_callback and self.treasury_click_callback())
         lbl_total = pill((UI["header_2"], UI["header_2"]), (UI["header_pill_text"], UI["header_pill_text"]))
+        lbl_total.configure(cursor="hand2")                       # الرصيد الحالي: تفصيله المعتاد (1.89)
+        lbl_total.bind("<Button-1>", lambda e: self.total_click_callback and self.total_click_callback())
 
         self._screen_info_labels[name] = {
             "period": lbl_period, "treasury": lbl_treasury, "total": lbl_total}
@@ -10721,6 +10724,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.tabview = ScreenRouter(self.main_shell, go_home_callback=self.show_home_screen,
                                     meta=self.screen_meta_map())
         self.tabview.treasury_click_callback = self.show_treasury_breakdown
+        self.tabview.total_click_callback = self.show_gold_balance_breakdown
 
         self.tabview.add("الحسابات")
         self.tabview.add("الرصيد الافتتاحي")
@@ -14556,14 +14560,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         «قبض/كسر»، والشغل حسب نوعه ← «قبض/٤» أو «قبض/٨» أو «قبض/سلاسل» (مثل شغل 8) في صف المصنّع.
         رقم التشغيل اختياري (1.86): المسجّل يُكمل صفّه، والجديد يلزمه رقم صف، وبلا رقمٍ يعرّف الصفُّ الحركة (وتأخذ رقم
         تشغيله المسجّل إن كان له). كل خانة مرة واحدة في الصف. تأكيدٌ بالملخص، وخطوة تراجع واحدة. يرجع True إن رُحِّل.
+        اسمٌ جديد (1.89) يُفتح له حسابٌ في المصنعين عند تأكيد الترحيل نفسه — واسم حسابٍ آخر (مركّب، مورد…) يُرفض.
         (لا يُرحَّل «قبل» بوليش 1 من شغل 4 منذ 1.86: جداول القالب تحت التصنيع تُكتب يدوياً)"""
         if getattr(self, "view_only", False):
             self.view_only_blocked()
             return False
         name, key, row = self.clean_name(name), self.normalize_set_number(set_number), str(row or "").strip()
-        if name not in self.categories.get("المصنعين", []):
-            messagebox.showwarning("اسم المصنّع", "اختر اسم المصنّع من قائمة المصنعين (أو أضفه بزر ➕ في مراحل "
-                                   "التصنيع — المصنعين).", parent=parent)
+        new_maker = name not in self.categories.get("المصنعين", [])
+        if new_maker and not name:
+            messagebox.showwarning("اسم المصنّع", "اكتب اسم المصنّع: من القائمة، أو اسماً جديداً يُفتح له حساب في "
+                                   "المصنعين.", parent=parent)
+            return False
+        if new_maker and self.check_name_exists(name):
+            owner = next((c for c, names in self.categories.items() if name in names), "")
+            messagebox.showwarning("الاسم مستخدم", f"الاسم ({name}) مسجّل لحسابٍ آخر ({self.get_display_label(owner)}).\n"
+                                   "اكتب اسم المصنّع كما في القائمة، أو اسماً جديداً.", parent=parent)
             return False
         if kasr is None or work is None or sarf is None:
             messagebox.showwarning("قيمة غير صحيحة", "الصرف وقبض الكسر والشغل أوزانٌ بالجرام.", parent=parent)
@@ -14623,8 +14634,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                    + "\n".join(f"• {labels[s]}" for s, _v in skipped)
                                    + "\n\nلتغيير قيمة موجودة عدّلها من مراحل التصنيع (✏️ تعديل).", parent=parent)
             return False
-        lines = [f"حساب المصنّع ({name}) — الصف ({row}) — "
-                 + (f"رقم التشغيل ({key}):" if key else "بلا رقم تشغيل ⊘:")]
+        lines = ([f"🆕 مصنّعٌ جديد ({name}) — يُفتح حسابه في المصنعين مع هذا الترحيل", ""] if new_maker else [])
+        lines += [f"حساب المصنّع ({name}) — الصف ({row}) — "
+                  + (f"رقم التشغيل ({key}):" if key else "بلا رقم تشغيل ⊘:")]
         lines += [f"• {labels[s]}: {v:g}" for s, v in plan]
         lines += self.sub_balance_lines(self.slot_kind_deltas("المصنعين", plan))
         if skipped:
@@ -14632,6 +14644,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         lines += ["", f"تُرحَّل بالفترة المعروضة ({month}).", "— Enter للتأكيد"]
         if not messagebox.askyesno("ترحيل لحساب المصنّع", "\n".join(lines), default=messagebox.YES, parent=parent):
             return False
+        if new_maker:
+            self.categories.setdefault("المصنعين", []).append(name)
+            self.save_name_to_db(name, "المصنعين")
         self.push_undo(f"المصنّع ({name}) — الصف ({row})" + (f" — {key}" if key else ""))
         dt = self.get_operation_datetime()
         saved = False
@@ -16965,14 +16980,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return lines
 
     def show_treasury_breakdown(self):
-        """النقر على رصيد الخزينة: أرصدة السدايا والسلاسل والسبيكة والواير واللحام (متراكمة حتى الفترة المعروضة:
-        ما قبلها + داخلها − خارجها)، واختيار نوعٍ يعرض حركاته في الفترة — والأرقام من الحركات نفسها التي في مراحل
-        التصنيع وقالب رقم التشغيل"""
+        """النقر على رصيد الخزينة: النوع ورصيده فقط (السدايا والسلاسل والكسر والسبيكة والشجر والواير واللحام — متراكمة
+        حتى الفترة المعروضة)، واختيار نوعٍ يعرض حركاته في الفترة تحته (1.89) — والأرقام من الحركات نفسها التي في مراحل
+        التصنيع وقالب رقم التشغيل والوارد"""
         month = self.current_display_month
         data = self.treasury_kind_breakdown(month)
         win = ctk.CTkToplevel(self)
         win.title("تفصيل رصيد الخزينة")
-        self.fit_dialog_to_screen(win, 980, 700)
+        self.fit_dialog_to_screen(win, 860, 640)
         win.transient(self)
         try:
             win.grab_set()
@@ -16980,35 +16995,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
         win.focus_force()
         ctk.CTkLabel(win, text=f"🏦 تفصيل رصيد الخزينة — حتى الفترة ({month})", font=(UI_FONT, 18, "bold"),
-                     text_color=UI_TITLE).pack(pady=(14, 2))
-        ctk.CTkLabel(win, text=f"رصيد الخزينة: {en(getattr(self, 'current_treasury_balance', 0.0))} جم",
-                     font=(UI_FONT, 15, "bold"), text_color=(UI["gold"], "#F0CF6A")).pack(pady=(0, 6))
+                     text_color=UI_TITLE).pack(pady=(14, 8))
         top = ttk.Frame(win)
-        top.pack(fill="x", padx=16, pady=4)
-        cols = ("النوع", "المصدر", "رصيد سابق", "داخل", "خارج", "الرصيد")
-        tree = self.create_standard_treeview(top, cols, height=len(self.TREASURY_KINDS) + 1)
-        tree.tag_configure("total_tag", foreground="#d4af37", font=(UI_FONT, 13, "bold"))
+        top.pack(pady=4)
+        cols = ("النوع", "الرصيد")
+        tree = self.create_standard_treeview(top, cols, height=len(self.TREASURY_KINDS))
         tree.tag_configure("neg_tag", foreground="#e74c3c")
-        for c, wdt in zip(cols, (90, 395, 125, 85, 85, 90)):
-            tree.column(c, width=wdt, anchor="center")
-        tot = {"opening": 0.0, "in": 0.0, "out": 0.0, "balance": 0.0}
-        for kind, src in self.TREASURY_KINDS:
-            d = data[kind]
-            for k in tot:
-                tot[k] += d[k]
-            tree.insert("", "end", iid=kind, values=(kind, src, f"{d['opening']:.2f}", f"{d['in']:.2f}",
-                                                     f"{d['out']:.2f}", f"{d['balance']:.2f}"),
-                        tags=("neg_tag",) if d["balance"] < -0.005 else ())
-        tree.insert("", "end", iid="__total", values=("الإجمالي", "-", f"{tot['opening']:.2f}", f"{tot['in']:.2f}",
-                                                       f"{tot['out']:.2f}", f"{tot['balance']:.2f}"),
-                    tags=("total_tag",))
-        lbl = ctk.CTkLabel(win, text="اختر نوعاً لعرض حركاته في الفترة", font=(UI_FONT, 13, "bold"), text_color=UI_TITLE)
-        lbl.pack(pady=(8, 2))
+        for c in cols:
+            tree.column(c, width=190, anchor="center")
+        for kind, _src in self.TREASURY_KINDS:
+            bal = data[kind]["balance"]
+            tree.insert("", "end", iid=kind, values=(kind, f"{bal:.2f}"),
+                        tags=("neg_tag",) if bal < -0.005 else ())
+        lbl = ctk.CTkLabel(win, text="اختر نوعاً لعرض حركته", font=(UI_FONT, 14, "bold"), text_color=UI_TITLE)
+        lbl.pack(pady=(12, 2))
         bottom = ttk.Frame(win)
         bottom.pack(fill="both", expand=True, padx=16, pady=(2, 6))
         mcols = ("التاريخ", "الاسم", "الحركة", "الصف", "رقم التشغيل", "الوزن", "البيان")
-        moves = self.create_standard_treeview(bottom, mcols, height=7)
-        for c, wdt in zip(mcols, (100, 140, 80, 70, 130, 90, 190)):
+        moves = self.create_standard_treeview(bottom, mcols, height=8)
+        for c, wdt in zip(mcols, (100, 140, 80, 70, 120, 90, 190)):
             moves.column(c, width=wdt, anchor="center")
 
         def show_kind(_e=None):
@@ -17016,9 +17021,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             kind = sel[0] if sel else None
             moves.delete(*moves.get_children())
             if kind not in data:
-                lbl.configure(text="اختر نوعاً لعرض حركاته في الفترة")
+                lbl.configure(text="اختر نوعاً لعرض حركته")
                 return
-            lbl.configure(text=f"حركات «{kind}» في الفترة ({month})")
+            lbl.configure(text=f"حركة «{kind}» في الفترة ({month})")
             for inv, sign in sorted(data[kind]["moves"],
                                     key=lambda x: (str(x[0].get("التاريخ", "")), x[0].get("رقم الفاتورة", 0))):
                 moves.insert("", "end", values=(str(inv.get("التاريخ", ""))[:10], inv.get("الاسم", ""),
@@ -17026,13 +17031,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                                 inv.get("row_number", "") or "-", inv.get("set_number", "") or "-",
                                                 f"{inv.get('الوزن', 0.0):.2f}", inv.get("البيان", "") or ""))
         tree.bind("<<TreeviewSelect>>", show_kind, add="+")
-        ctk.CTkLabel(win, text="السدايا = شغل 4 + شغل 8 من المصنعين، وينقص منها «قبل البوليش» ويزيدها «بعده»، وينقص منها "
-                               "صرف المركبين. الكسر من قبض/كسر وينقص بصرفه للكاستنج أو للأقسام. الشجر من قبض الكاستنج "
-                               "وينقص بصرفه للمصنّع أو للأقسام. السبيكة من وارد الذهب (شاشة الوارد) وقبض الأقسام، "
-                               "والواير واللحام من قبض الأقسام، وتنقص بصرفها. «رصيد سابق» ما بقي من الفترات السابقة، "
-                               "والرصيد = سابق + داخل − خارج — ورصيد الخزينة نفسه كما هو",
-                     font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"), wraplength=920,
-                     justify="center").pack(pady=(0, 4))
         ctk.CTkButton(win, text="إغلاق", font=(UI_FONT, 14, "bold"), width=140, height=36,
                       command=win.destroy, **BUTTON_STYLES["secondary"]).pack(pady=(0, 12))
         win.bind("<Escape>", lambda e: win.destroy())
@@ -24539,12 +24537,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # ── بجانب الورقة (يساراً) — بسيطٌ بلا نصوص (1.86): حال الطقم (وتفاصيله ومفتاح الألوان في تلميحه)، والبحث،
         #    والسهمان وطقم جديد، وتوليد الطقم وأزراره أيقونات، ثم بطاقة المرحلة وأزرار المراحل أسفلها ──
-        side = ctk.CTkFrame(body, width=300, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
+        side = ctk.CTkFrame(body, width=330, corner_radius=12, fg_color=(UI["surface"], "#171C23"),
                             border_width=1, border_color=(UI["line"], "#2A313B"))
         side.pack(side="left", fill="y", padx=(0, 6))
         side.pack_propagate(False)
         st["side"] = side
-        st["chip"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 14, "bold"), corner_radius=10, height=30,
+        st["chip"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 15, "bold"), corner_radius=10, height=32,
                                   fg_color=(UI["primary_soft"], "#22324A"), text_color=UI_TITLE)
         st["chip"].pack(fill="x", padx=10, pady=(8, 4))          # حال الطقم (والعنوان في رأس الشاشة)
         st["chip_tip"] = HoverTip(st["chip"], "")
@@ -24566,8 +24564,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                        command=lambda: self.sb_step(-1), **BUTTON_STYLES["secondary"])
         st["btn_prev"].grid(row=0, column=2, padx=2)
         HoverTip(st["btn_prev"], "الطقم السابق")
-        st["counter"] = ctk.CTkLabel(nav, text="-", font=(UI_FONT, 13, "bold"),
-                                     text_color=(UI["muted"], "#9AA4B2"))
+        st["counter"] = ctk.CTkLabel(nav, text="-", font=(UI_FONT, 14, "bold"),
+                                     text_color=(UI["ink"], "#E5E7EB"))
         st["counter"].grid(row=0, column=1, padx=2, sticky="ew")
         st["btn_next"] = ctk.CTkButton(nav, text="◀", font=(UI_FONT, 13, "bold"), height=30, width=40,
                                        command=lambda: self.sb_step(1), **BUTTON_STYLES["secondary"])
@@ -24603,7 +24601,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             for b in (btn_new, st["btn_edit"], st["btn_delete"]):
                 b.configure(state="disabled")
         # تنبيهات الطقم (الخياس السالب…) تظهر هنا حين توجد فقط
-        st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 12, "bold"), wraplength=270, justify="right",
+        st["warn"] = ctk.CTkLabel(side, text="", font=(UI_FONT, 13, "bold"), wraplength=300, justify="right",
                                   text_color=(UI["danger"], "#F08A8F"), anchor="e")
         st["warn_anchor"] = ctk.CTkFrame(side, height=1, fg_color=(UI["line"], "#2A313B"))
         st["warn_anchor"].pack(fill="x", padx=10, pady=(6, 4))
@@ -24668,119 +24666,148 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         card = ctk.CTkFrame(side, fg_color="transparent")
         m["card"] = card
         grid = ctk.CTkFrame(card, fg_color="transparent")
-        grid.pack(fill="x", padx=6, pady=(4, 2))
+        grid.pack(fill="x", padx=6, pady=(6, 2))
         grid.grid_columnconfigure(0, weight=1)
-        dark = ctk.get_appearance_mode() == "Dark"
-        ink = (UI["ink"], "#E5E7EB")
+        ink, H = self.SB_INK, self.SB_ROW_H
 
-        def label(text, r, parent=None, **grid_kw):
-            lbl = ctk.CTkLabel(parent or grid, text=text, font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e",
-                               height=26, **({} if parent else {"width": 70}))
-            if parent is None:
-                lbl.grid(row=r, column=1, sticky="e", padx=(4, 0), pady=0)
-            else:
-                lbl.grid(row=0, column=r, sticky="e", **grid_kw)
+        def label(text, r):
+            lbl = ctk.CTkLabel(grid, text=text, font=self.SB_LABEL_FONT, text_color=ink, anchor="e", height=H - 2,
+                               width=self.SB_LABEL_W)
+            lbl.grid(row=r, column=1, sticky="e", padx=(6, 0), pady=0)
             return lbl
 
-        def options(parent, values, group, width):
-            """أزرار الخيارات في إطارٍ يأخذ التركيز (المسافة تغيّر الاختيار، والأسهم تنتقل بين الخانات)"""
-            frame = tk.Frame(parent, takefocus=1, highlightthickness=2, bd=0,
-                             bg="#1D232B" if dark else UI["surface_alt"],
-                             highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
-            btns = {}
-            for kd in values:
-                b = ctk.CTkButton(frame, text=kd, width=width, height=25, font=(UI_FONT, 12, "bold"), corner_radius=6,
-                                  command=lambda k=kd: self.sb_mfg_set_kind(k, focus=True, group=group))
-                b.pack(side="right", padx=1)
-                btns[kd] = b
-            return frame, btns
+        def entry(parent, width=50, **kw):
+            return ctk.CTkEntry(parent, font=self.SB_ENTRY_FONT, justify="center", height=H, width=width, **kw)
 
         def makers():
             return [self.rtl(n) for n in self.categories.get("المصنعين", [])]
-        HoverTip(label("🏭 المصنّع", 0), "صرفٌ للمصنّع وقبضٌ منه لرقم التشغيل — في حسابه بقسم المصنعين (مراحل التصنيع)")
-        m["name"] = ctk.CTkComboBox(grid, values=makers(), font=(UI_FONT, 13), height=27, justify="right")
+        HoverTip(label("🏭 المصنّع", 0), "صرفٌ للمصنّع وقبضٌ منه لرقم التشغيل — في حسابه بقسم المصنعين (مراحل التصنيع). "
+                                       "اسمٌ جديد يُفتح له حسابٌ في المصنعين مع الترحيل")
+        m["name"] = ctk.CTkComboBox(grid, values=makers(), font=(UI_FONT, 15), height=H, justify="right")
         m["name"].set("")
-        m["name"].grid(row=0, column=0, sticky="ew", pady=1)
+        m["name"].grid(row=0, column=0, sticky="ew", pady=2)
         self.bind_name_autocomplete(m["name"], makers)
         # الصرف بنوعه: ذهب (من الذهب العام) أو لحام أو واير أو شجر (تنقص من رصيدها في تفصيل الخزينة) —
         # الخيارات الأربعة في صفٍّ تحت خانته فلا تضيّقها
         label("صرف", 1)
-        m["sarf"] = ctk.CTkEntry(grid, font=(UI_FONT, 13), justify="center", height=27, width=50)
-        m["sarf"].grid(row=1, column=0, sticky="ew", pady=1)
-        m["sarf_kinds"], m["sarf_btns"] = options(grid, self.MFG_SARF_KINDS, "sarf", 40)
-        m["sarf_kinds"].grid(row=2, column=0, columnspan=2, sticky="e", pady=(0, 2))
+        m["sarf"] = entry(grid)
+        m["sarf"].grid(row=1, column=0, sticky="ew", pady=2)
+        m["sarf_kinds"], m["sarf_btns"] = self.sb_option_group(
+            grid, self.MFG_SARF_KINDS, 46, lambda k: self.sb_mfg_set_kind(k, focus=True, group="sarf"))
+        m["sarf_kinds"].grid(row=2, column=0, columnspan=2, sticky="e", pady=(0, 3))
         HoverTip(m["sarf_kinds"], "نوع الصرف: ذهب (من الذهب العام)، أو لحام أو واير أو شجر (تنقص من رصيدها في تفصيل "
-                                  "الخزينة)")
+                                  "الخزينة) — ← → أو المسافة")
         # تحتها خانتا «قبض كسر» و«شغل» جنباً إلى جنب، وتحتهما خيارات الشغل الثلاثة
         label("قبض كسر", 3)
         wrow = ctk.CTkFrame(grid, fg_color="transparent")
-        wrow.grid(row=3, column=0, sticky="ew", pady=1)
+        wrow.grid(row=3, column=0, sticky="ew", pady=2)
         wrow.grid_columnconfigure((0, 2), weight=1, uniform="sb_mfg_w")
-        m["kasr"] = ctk.CTkEntry(wrow, font=(UI_FONT, 13), justify="center", height=27, width=50)
+        m["kasr"] = entry(wrow)
         m["kasr"].grid(row=0, column=2, sticky="ew")
-        ctk.CTkLabel(wrow, text="شغل", font=(UI_FONT, 12, "bold"), text_color=ink, height=26).grid(row=0, column=1,
-                                                                                                padx=4)
-        m["work"] = ctk.CTkEntry(wrow, font=(UI_FONT, 13), justify="center", height=27, width=50)
+        ctk.CTkLabel(wrow, text="شغل", font=self.SB_LABEL_FONT, text_color=ink, height=H - 2).grid(row=0, column=1,
+                                                                                                padx=5)
+        m["work"] = entry(wrow)
         m["work"].grid(row=0, column=0, sticky="ew")
         # نوع الشغل: صفٌّ بعرض اللوحة كلها (الأزرار الثلاثة بأسمائها كاملة)
         krow = ctk.CTkFrame(grid, fg_color="transparent")
-        krow.grid(row=4, column=0, columnspan=2, sticky="ew", pady=1)
-        ctk.CTkLabel(krow, text="النوع", font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e",
-                     height=26).pack(side="right")
-        kinds, m["kind_btns"] = options(krow, self.MFG_WORK_KINDS, "work", 48)
+        krow.grid(row=4, column=0, columnspan=2, sticky="ew", pady=2)
+        ctk.CTkLabel(krow, text="النوع", font=self.SB_LABEL_FONT, text_color=ink, anchor="e",
+                     height=H - 2).pack(side="right")
+        kinds, m["kind_btns"] = self.sb_option_group(
+            krow, self.MFG_WORK_KINDS, 56, lambda k: self.sb_mfg_set_kind(k, focus=True, group="work"))
         kinds.pack(side="right", padx=(0, 6))
         m["kinds"] = kinds
+        HoverTip(kinds, "نوع الشغل: شغل 4 أو شغل 8 أو سلاسل — ← → أو المسافة")
         label("رقم التشغيل", 5)
         srow = ctk.CTkFrame(grid, fg_color="transparent")
-        srow.grid(row=5, column=0, sticky="ew", pady=1)
-        m["row"] = ctk.CTkEntry(srow, font=(UI_FONT, 13), justify="center", height=27, width=44,
-                                placeholder_text="الصف")
+        srow.grid(row=5, column=0, sticky="ew", pady=2)
+        m["row"] = entry(srow, width=62, placeholder_text="الصف")
         m["row"].pack(side="left", padx=(0, 3))
         # رقم التشغيل اختياري (1.86): فارغاً تظهر فيه علامة ⊘ (لم يُسجَّل)، والترحيل يمضي بالصف وحده
-        m["set"] = ctk.CTkEntry(srow, font=(UI_FONT, 13, "bold"), justify="center", height=27, width=60,
-                                placeholder_text="⊘")
+        m["set"] = entry(srow, width=60, placeholder_text="⊘")
         m["set"].pack(side="right", fill="x", expand=True)
         HoverTip(m["set"], "رقم التشغيل اختياري — ⊘ يعني لم يُسجَّل: تُرحَّل الحركة لصفّها (وتأخذ رقم تشغيله المسجّل إن "
                            "كان له)")
         HoverTip(m["row"], "رقم الصف: يُملأ من صف رقم التشغيل المسجّل للمصنّع — ويُكتب لصفٍّ جديد أو بلا رقم تشغيل")
-        m["btn"] = ctk.CTkButton(card, text="💾 ترحيل لحساب المصنّع", height=27, font=(UI_FONT, 13, "bold"),
+        m["btn"] = ctk.CTkButton(card, text="💾 ترحيل لحساب المصنّع", height=H + 2, font=(UI_FONT, 14, "bold"),
                                  command=self.sb_mfg_submit, **BUTTON_STYLES["primary"])
-        m["btn"].pack(fill="x", padx=8, pady=(1, 5))
+        m["btn"].pack(fill="x", padx=8, pady=(3, 6))
         HoverTip(m["btn"], "الصرف ← صرف (ذهب) أو صرف/لحام أو صرف/واير أو صرف/شجر، وقبض الكسر ← قبض/كسر، وشغل 4 ← "
                            "قبض/٤، وشغل 8 ← قبض/٨، والسلاسل ← قبض/سلاسل (مثل شغل 8) — في صف المصنّع بقسم المصنعين")
         chain = [m["name"]._entry, m["sarf"]._entry, m["sarf_kinds"], m["kasr"]._entry, m["work"]._entry, kinds,
                  m["set"]._entry, m["row"]._entry]
         m["chain"] = chain
 
+        def on_return(widget):
+            if widget is m["set"]._entry:
+                self.sb_mfg_fill_owner()
+            if widget is chain[-1]:
+                self.sb_mfg_submit()
+                return None
+            return 1
+        self.sb_bind_chain(chain, on_return, {kinds: lambda d: self.sb_mfg_step_kind(d, group="work"),
+                                              m["sarf_kinds"]: lambda d: self.sb_mfg_step_kind(d, group="sarf")})
+        m["set"]._entry.bind("<FocusOut>", lambda e: self.sb_mfg_fill_owner(), add="+")
+        if getattr(self, "view_only", False):
+            m["btn"].configure(state="disabled")
+        self.sb_mfg_set_kind(m["kind"])
+        self.sb_mfg_set_kind(m["sarf_kind"], group="sarf")
+
+    # جانب القالب (1.89): خطٌّ أكبر وأوضح — العناوين ١٤ عريضة بلونٍ داكن، والخانات ١٥ عريضة، والخيارات ١٣ (المختار
+    # بالأزرق وغيره أبيض بحافة واضحة) — مريحٌ للمحاسب والإدارة
+    SB_INK = ("#0F172A", "#F3F4F6")
+    SB_LABEL_FONT = (UI_FONT, 14, "bold")
+    SB_ENTRY_FONT = (UI_FONT, 15, "bold")
+    SB_OPT_FONT = (UI_FONT, 13, "bold")
+    SB_ROW_H = 32
+    SB_LABEL_W = 88
+    SB_OPT_OFF = dict(fg_color=("#FFFFFF", "#2A323D"), hover_color=(UI["secondary_hover"], "#353F4C"),
+                      text_color=("#0F172A", "#F3F4F6"), border_width=1, border_color=(UI["line_strong"], "#5A6573"))
+    # المفاتيح في خانات الجانب: Enter و↓ للتالية و↑ للسابقة، و← للتالية و→ للسابقة في خانات الكتابة؛ أما على الخيارات
+    # فـ ← و→ (والمسافة) تنتقل بين الخيارات نفسها (1.89 — كما كانت قبل 1.87)، و↑ ↓ وEnter تخرج منها للخانة المجاورة
+    SB_NAV_KEYS = {"<Down>": 1, "<Left>": 1, "<Up>": -1, "<Right>": -1}
+    SB_OPTION_KEYS = {"<Left>": 1, "<Right>": -1, "<space>": 1}
+
+    def sb_option_group(self, parent, values, width, on_pick):
+        """أزرار خياراتٍ في إطارٍ يأخذ التركيز (← → والمسافة تنتقل بين الخيارات) — يرجع (الإطار، {الخيار: زرّه})"""
+        dark = ctk.get_appearance_mode() == "Dark"
+        frame = tk.Frame(parent, takefocus=1, highlightthickness=2, bd=0,
+                         bg="#1D232B" if dark else UI["surface_alt"],
+                         highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
+        btns = {}
+        for kd in values:
+            b = ctk.CTkButton(frame, text=kd, width=width, height=self.SB_ROW_H - 4, font=self.SB_OPT_FONT,
+                              corner_radius=7, command=lambda k=kd: on_pick(k), **self.SB_OPT_OFF)
+            b.pack(side="right", padx=1)
+            btns[kd] = b
+        return frame, btns
+
+    def sb_style_options(self, btns, selected):
+        for kd, b in btns.items():
+            b.configure(**(BUTTON_STYLES["primary"] if kd == selected else self.SB_OPT_OFF))
+
+    def sb_bind_chain(self, chain, on_return, option_steps):
+        """مفاتيح خانات بطاقةٍ في الجانب بترتيب chain: on_return(الخانة) ← 1 للتالية أو None (رُحِّل)، و option_steps:
+        {إطار خيارات: دالة الخطوة} — ← → والمسافة عليه تغيّر الخيار، و↑ ↓ وEnter تخرج منه"""
         def go(widget, step):
             i = chain.index(widget) + step
             if 0 <= i < len(chain):
                 chain[i].focus_set()
             return "break"
 
-        def on_return(widget):
-            if widget is m["set"]._entry:
-                self.sb_mfg_fill_owner()
-            if widget is chain[-1]:
-                self.sb_mfg_submit()
-                return "break"
-            return go(widget, 1)
-        # Enter و↓ و← للخانة التالية، و↑ و→ للسابقة (1.87 — الواجهة من اليمين)؛ والمسافة على الخيارات تغيّرها
+        def ret(widget):
+            step = on_return(widget)
+            return go(widget, step) if step else "break"
         for wdg in chain:
-            wdg.bind("<Return>", lambda e, w=wdg: on_return(w), add="+")
-            wdg.bind("<KP_Enter>", lambda e, w=wdg: on_return(w), add="+")
+            wdg.bind("<Return>", lambda e, w=wdg: ret(w), add="+")
+            wdg.bind("<KP_Enter>", lambda e, w=wdg: ret(w), add="+")
             for seq, d in self.SB_NAV_KEYS.items():
+                if wdg in option_steps and seq in self.SB_OPTION_KEYS:
+                    continue                      # على الخيارات: ← → تنتقل بين الخيارات نفسها
                 wdg.bind(seq, lambda e, w=wdg, d=d: go(w, d), add="+")
-        m["set"]._entry.bind("<FocusOut>", lambda e: self.sb_mfg_fill_owner(), add="+")
-        for group, frame in (("work", kinds), ("sarf", m["sarf_kinds"])):
-            frame.bind("<space>", lambda e, g=group: (self.sb_mfg_step_kind(1, group=g), "break")[1])
-        if getattr(self, "view_only", False):
-            m["btn"].configure(state="disabled")
-        self.sb_mfg_set_kind(m["kind"])
-        self.sb_mfg_set_kind(m["sarf_kind"], group="sarf")
-
-    # التنقّل بين خانات جانب القالب: ↓ و← للتالية، و↑ و→ للسابقة (الواجهة من اليمين) — وEnter للتالية أيضاً
-    SB_NAV_KEYS = {"<Down>": 1, "<Left>": 1, "<Up>": -1, "<Right>": -1}
+        for frame, stepper in option_steps.items():
+            for seq, d in self.SB_OPTION_KEYS.items():
+                frame.bind(seq, lambda e, d=d, f=stepper: (f(d), "break")[1])
 
     # مجموعتا الخيارات في لوحة المصنّع: نوع الشغل ونوع الصرف ← (القيم، مفتاح المختار، مفتاح الأزرار، مفتاح الإطار)
     SB_MFG_GROUPS = {"work": (MFG_WORK_KINDS, "kind", "kind_btns", "kinds"),
@@ -24793,8 +24820,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not m or kind not in values:
             return
         m[sel_key] = kind
-        for kd, b in m[btns_key].items():
-            b.configure(**(BUTTON_STYLES["primary"] if kd == kind else BUTTON_STYLES["secondary"]))
+        self.sb_style_options(m[btns_key], kind)
         if focus:
             m[frame_key].focus_set()
 
@@ -24813,53 +24839,103 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """المراحل التي تُضاف لجانب القالب: الكاستنج، والأقسام المضافة"""
         return ["الكاستنج"] + [c for c in self.categories.get("أقسام_خياس_إضافية", []) if c != "الكاستنج"]
 
-    def sb_side_stages(self):
-        """المراحل المضافة لجانب القالب بترتيب إضافتها (محفوظة؛ وقسمٌ حُذف أو أُعيدت تسميته يسقط منها)"""
+    def sb_stage_order(self):
+        """ترتيب أزرار المراحل في الجانب (محفوظ، ويُحرَّك يميناً ويساراً — 1.89): المصنعين والمضافة؛ وقسمٌ حُذف أو أُعيدت
+        تسميته يسقط منه، والمصنعين أولها ما لم يُحرَّك"""
         try:
             saved = json.loads(self.get_setting(self.SB_STAGES_KEY, "[]") or "[]")
         except (TypeError, ValueError):
             saved = []
-        avail = self.sb_side_stage_options()
+        valid = [self.SB_MFG_STAGE] + self.sb_side_stage_options()
         out = []
         for x in saved if isinstance(saved, list) else []:
-            if x in avail and x not in out:
+            if x in valid and x not in out:
                 out.append(x)
+        if self.SB_MFG_STAGE not in out:
+            out.insert(0, self.SB_MFG_STAGE)
         return out
 
-    def sb_set_side_stages(self, stages):
-        self.set_setting(self.SB_STAGES_KEY, json.dumps(list(stages), ensure_ascii=False))
+    def sb_side_stages(self):
+        """المراحل المضافة لجانب القالب بترتيبها"""
+        return [x for x in self.sb_stage_order() if x != self.SB_MFG_STAGE]
+
+    def sb_set_stage_order(self, order):
+        self.set_setting(self.SB_STAGES_KEY, json.dumps(list(order), ensure_ascii=False))
+
+    def sb_move_stage(self, stage, step):
+        """تحريك زر مرحلةٍ في الجانب: step ‎-1 يميناً (قبلها) و1 يساراً (بعدها) — الترتيب محفوظ"""
+        if getattr(self, "view_only", False):
+            return False
+        order = self.sb_stage_order()
+        if stage not in order:
+            return False
+        i = order.index(stage)
+        j = i + step
+        if not 0 <= j < len(order):
+            return False
+        order[i], order[j] = order[j], order[i]
+        self.sb_set_stage_order(order)
+        self.sb_build_stage_bar()
+        return True
+
+    def sb_open_stage_screen(self, stage):
+        """أيقونة 📂 على زر المرحلة: مراحل التصنيع على قسمها — وللمصنعين يُختار المصنّع المكتوب في البطاقة بكشفه"""
+        self.navigate_to_screen("مراحل التصنيع")
+        self.switch_op_stage(stage)
+        if stage != self.SB_MFG_STAGE:
+            return
+        m = self._sb_state.get("mfgp") or {}
+        name = self.clean_name(m["name"].get()) if m.get("name") is not None else ""
+        if name in self.categories.get("المصنعين", []) and hasattr(self, "combo_op_name"):
+            self.combo_op_name.set(self.rtl(name))
+            self.render_unified_fields(name)
+            self.refresh_op_ledger_table()
 
     def sb_stage_label(self, stage):
         return "المصنعين" if stage == self.SB_MFG_STAGE else self.get_display_label(stage)
 
     def sb_build_stage_bar(self):
-        """أزرار المراحل تحت البطاقة: المصنعين، ثم المضافة، ثم ＋ — اثنان في كل صف فتظهر أسماؤها كاملة (والزر الأيمن
-        على مرحلةٍ يزيلها)"""
+        """أزرار المراحل تحت البطاقة بترتيبها المحفوظ، ثم ＋ — اثنان في كل صف. على كل زرٍّ أيقونة 📂 تفتح قسمه في
+        مراحل التصنيع، والزر الأيمن عليه يحرّكه يميناً أو يساراً (أو يزيله)"""
         st = self._sb_state
         bar = st["stage_bar"]
         for w in bar.winfo_children():
             w.destroy()
-        st["stage_btns"] = {}
-        items = [self.SB_MFG_STAGE] + self.sb_side_stages() + ["+"]
+        st["stage_btns"], st["stage_open_btns"] = {}, {}
+        items = self.sb_stage_order() + ["+"]
         cols = 2
         for c in range(cols):
             bar.grid_columnconfigure(c, weight=1, uniform="sb_stages")
+        fonts = {sz: tkfont.Font(root=self, family=UI_FONT, size=sz, weight="bold") for sz in (14, 13, 12)}
         for i, key in enumerate(items):
             r, c = divmod(i, cols)
+            cell = ctk.CTkFrame(bar, fg_color="transparent")
+            cell.grid(row=r, column=cols - 1 - c, padx=2, pady=2, sticky="ew")
             if key == "+":
-                b = ctk.CTkButton(bar, text="＋", height=30, font=(UI_FONT, 15, "bold"),
+                b = ctk.CTkButton(cell, text="＋", height=34, font=(UI_FONT, 16, "bold"),
                                   command=self.sb_add_stage_menu, **BUTTON_STYLES["secondary"])
-                HoverTip(b, "إضافة مرحلة: الكاستنج أو قسمٌ مضاف (مثل صب الداخلي) — والزر الأيمن على مرحلةٍ يزيلها")
+                b.pack(fill="x")
+                HoverTip(b, "إضافة مرحلة: الكاستنج أو قسمٌ مضاف (مثل صب الداخلي) — والزر الأيمن على مرحلةٍ يحرّكها "
+                            "يميناً أو يساراً أو يزيلها")
                 if getattr(self, "view_only", False):
                     b.configure(state="disabled")
                 st["stage_add_btn"] = b
-            else:
-                b = ctk.CTkButton(bar, text=self.sb_stage_label(key), height=30, font=(UI_FONT, 12, "bold"),
-                                  command=lambda k=key: self.sb_select_stage(k), **BUTTON_STYLES["secondary"])
-                if key != self.SB_MFG_STAGE:
-                    b.bind("<Button-3>", lambda e, k=key: self.sb_stage_context(e, k), add="+")
-                st["stage_btns"][key] = b
-            b.grid(row=r, column=cols - 1 - c, padx=2, pady=2, sticky="ew")
+                continue
+            text = self.sb_stage_label(key)
+            size = next((sz for sz in (14, 13) if fonts[sz].measure(text) <= 104), 12)   # الاسم كاملاً في زرّه
+            cell.grid_columnconfigure(1, weight=1)
+            b = ctk.CTkButton(cell, text=text, height=34, font=(UI_FONT, size, "bold"),
+                              command=lambda k=key: self.sb_select_stage(k), **BUTTON_STYLES["secondary"])
+            b.grid(row=0, column=1, sticky="ew")
+            op = ctk.CTkButton(cell, text="📂", width=30, height=34, font=(UI_FONT, 13),
+                               command=lambda k=key: self.sb_open_stage_screen(k), **BUTTON_STYLES["secondary"])
+            op.grid(row=0, column=0, padx=(0, 2))
+            HoverTip(op, f"فتح «{text}» في مراحل التصنيع")
+            HoverTip(b, f"«{text}»: خاناته هنا — والزر الأيمن: تحريكه يميناً أو يساراً"
+                        + ("" if key == self.SB_MFG_STAGE else " أو إزالته"))
+            b.bind("<Button-3>", lambda e, k=key: self.sb_stage_context(e, k), add="+")
+            st["stage_btns"][key] = b
+            st["stage_open_btns"][key] = op
         self.style_segment_buttons(st["stage_btns"], st.get("stage_sel"))
 
     def sb_select_stage(self, stage, focus=True):
@@ -24897,9 +24973,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def sb_add_stage(self, stage):
         if getattr(self, "view_only", False) or stage not in self.sb_side_stage_options():
             return False
-        stages = self.sb_side_stages()
-        if stage not in stages:
-            self.sb_set_side_stages(stages + [stage])
+        order = self.sb_stage_order()
+        if stage not in order:
+            self.sb_set_stage_order(order + [stage])
         self.sb_build_stage_bar()
         self.sb_select_stage(stage)
         return True
@@ -24908,7 +24984,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if getattr(self, "view_only", False):
             return False
         st = self._sb_state
-        self.sb_set_side_stages([x for x in self.sb_side_stages() if x != stage])
+        if stage == self.SB_MFG_STAGE:
+            return False                          # المصنعين ثابتة في الجانب (تُحرَّك ولا تُزال)
+        self.sb_set_stage_order([x for x in self.sb_stage_order() if x != stage])
         form = st["stage_forms"].pop(stage, None)
         if form is not None:
             form["frame"].destroy()
@@ -24918,56 +24996,58 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return True
 
     def sb_stage_context(self, event, stage):
-        if getattr(self, "view_only", False):
-            return
+        """الزر الأيمن على زر مرحلة: تحريكه يميناً أو يساراً، وفتحه في مراحل التصنيع، وإزالته (عدا المصنعين)"""
         menu = tk.Menu(self, tearoff=0, font=(UI_FONT, 13))
-        menu.add_command(label=f"✖ إزالة «{self.sb_stage_label(stage)}» من القالب",
-                         command=lambda: self.sb_remove_stage(stage))
+        if not getattr(self, "view_only", False):
+            order = self.sb_stage_order()
+            i = order.index(stage) if stage in order else 0
+            menu.add_command(label="➡ تحريك يميناً", state="normal" if i > 0 else "disabled",
+                             command=lambda: self.sb_move_stage(stage, -1))
+            menu.add_command(label="⬅ تحريك يساراً", state="normal" if i < len(order) - 1 else "disabled",
+                             command=lambda: self.sb_move_stage(stage, 1))
+            menu.add_separator()
+        menu.add_command(label=f"📂 فتح «{self.sb_stage_label(stage)}» في مراحل التصنيع",
+                         command=lambda: self.sb_open_stage_screen(stage))
+        if stage != self.SB_MFG_STAGE and not getattr(self, "view_only", False):
+            menu.add_command(label=f"✖ إزالة «{self.sb_stage_label(stage)}» من القالب",
+                             command=lambda: self.sb_remove_stage(stage))
         menu.post(event.x_root, event.y_root)
 
     def sb_build_stage_form(self, stage):
         """خانات مرحلةٍ في بطاقة الجانب، بسيطةً كمرحلتها في مراحل التصنيع:
           الكاستنج: الصف، والصرف بنوعه (كسر / سبيكة)، وقبض الشجر ومسترجع الأشجار، وعدد الأشجار
           قسمٌ مضاف: الصف، والصرف بنوعه (سبيكة / شجر / كسر)، والقبض بنوعه (عام / سبيكة / واير / لحام)
-        Enter للتالية وفي آخرها يرحّل، والأسهم الأربعة بين الخانات (SB_NAV_KEYS)، والمسافة على الخيارات تغيّرها"""
+        Enter للتالية وفي آخرها يرحّل، والأسهم بين الخانات و← → والمسافة على الخيارات بينها (sb_bind_chain)"""
         st = self._sb_state
         frame = ctk.CTkFrame(st["stage_card"], fg_color="transparent")
         grid = ctk.CTkFrame(frame, fg_color="transparent")
-        grid.pack(fill="x", padx=6, pady=(4, 2))
+        grid.pack(fill="x", padx=6, pady=(6, 2))
         grid.grid_columnconfigure(0, weight=1)
-        dark = ctk.get_appearance_mode() == "Dark"
-        ink = (UI["ink"], "#E5E7EB")
+        ink, H = self.SB_INK, self.SB_ROW_H
         sf = {"stage": stage, "frame": frame, "entries": {}, "groups": {}}
 
         def label(parent, text, **gkw):
-            return ctk.CTkLabel(parent, text=text, font=(UI_FONT, 12, "bold"), text_color=ink, anchor="e", height=26,
+            return ctk.CTkLabel(parent, text=text, font=self.SB_LABEL_FONT, text_color=ink, anchor="e", height=H - 2,
                                 **gkw)
 
         def entry(parent, **kw):
-            return ctk.CTkEntry(parent, font=(UI_FONT, 13), justify="center", height=27, width=50, **kw)
+            return ctk.CTkEntry(parent, font=self.SB_ENTRY_FONT, justify="center", height=H, width=50, **kw)
 
         def options(parent, group, values, width):
-            box = tk.Frame(parent, takefocus=1, highlightthickness=2, bd=0,
-                           bg="#1D232B" if dark else UI["surface_alt"],
-                           highlightbackground="#1D232B" if dark else UI["surface_alt"], highlightcolor=UI["primary"])
-            btns = {}
-            for kd in values:
-                b = ctk.CTkButton(box, text=kd, width=width, height=25, font=(UI_FONT, 12, "bold"), corner_radius=6,
-                                  command=lambda k=kd: self.sb_stage_set_option(sf, group, k, focus=True))
-                b.pack(side="right", padx=1)
-                btns[kd] = b
+            box, btns = self.sb_option_group(parent, values, width,
+                                             lambda k: self.sb_stage_set_option(sf, group, k, focus=True))
             sf["groups"][group] = {"values": tuple(values), "sel": values[0], "btns": btns, "frame": box}
             return box
 
         def line(r, text, widget_builder):
-            label(grid, text, width=70).grid(row=r, column=1, sticky="e", padx=(4, 0))
+            label(grid, text, width=self.SB_LABEL_W).grid(row=r, column=1, sticky="e", padx=(6, 0))
             holder = ctk.CTkFrame(grid, fg_color="transparent")
-            holder.grid(row=r, column=0, sticky="ew", pady=1)
+            holder.grid(row=r, column=0, sticky="ew", pady=2)
             widget_builder(holder)
 
         def kinds(r, group, values, width):
             """خيارات الصرف أو القبض في صفٍّ تحت خانته (كلوحة المصنّع) فلا تضيّقها"""
-            options(grid, group, values, width).grid(row=r, column=0, columnspan=2, sticky="e", pady=(0, 2))
+            options(grid, group, values, width).grid(row=r, column=0, columnspan=2, sticky="e", pady=(0, 3))
 
         def one(key):
             def build(holder):
@@ -24980,7 +25060,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 holder.grid_columnconfigure((0, 2), weight=1, uniform=f"sb_pair_{key_a}")
                 sf["entries"][key_a] = entry(holder)
                 sf["entries"][key_a].grid(row=0, column=2, sticky="ew")
-                label(holder, text_b).grid(row=0, column=1, padx=4)
+                label(holder, text_b).grid(row=0, column=1, padx=5)
                 sf["entries"][key_b] = entry(holder)
                 sf["entries"][key_b].grid(row=0, column=0, sticky="ew")
             return build
@@ -24989,7 +25069,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if stage == "الكاستنج":
             line(0, "الصف", one("row"))
             line(1, "صرف", one("sarf"))
-            kinds(2, "sarf", self.CAST_SARF_KINDS, 50)
+            kinds(2, "sarf", self.CAST_SARF_KINDS, 56)
             line(3, "قبض شجر", pair("qabd", "مسترجع", "recover"))
             line(4, "عدد الأشجار", one("trees"))
             chain = [e["row"], e["sarf"], sf["groups"]["sarf"]["frame"], e["qabd"], e["recover"], e["trees"]]
@@ -24998,39 +25078,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         else:
             line(0, "الصف", one("row"))
             line(1, "صرف", one("sarf"))
-            kinds(2, "sarf", self.STAGE_SARF_KINDS, 50)
+            kinds(2, "sarf", self.STAGE_SARF_KINDS, 56)
             line(3, "قبض", one("qabd"))
-            kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 44)
+            kinds(4, "qabd", ("عام",) + self.RECEIPT_KINDS, 50)
             chain = [e["row"], e["sarf"], sf["groups"]["sarf"]["frame"], e["qabd"], sf["groups"]["qabd"]["frame"]]
             HoverTip(sf["groups"]["sarf"]["frame"], "نوع الصرف: سبيكة أو شجر أو كسر — ينقص من رصيده في تفصيل الخزينة")
             HoverTip(sf["groups"]["qabd"]["frame"], "نوع القبض: سبيكة أو واير أو لحام — يزيد رصيده في تفصيل الخزينة")
         chain = [getattr(w, "_entry", w) for w in chain]
         sf["chain"], sf["first"] = chain, chain[0]
-        sf["btn"] = ctk.CTkButton(frame, text=f"💾 ترحيل لـ{self.sb_stage_label(stage)}", height=27,
-                                  font=(UI_FONT, 13, "bold"), command=lambda: self.sb_stage_submit(stage),
+        sf["btn"] = ctk.CTkButton(frame, text=f"💾 ترحيل لـ{self.sb_stage_label(stage)}", height=H + 2,
+                                  font=(UI_FONT, 14, "bold"), command=lambda: self.sb_stage_submit(stage),
                                   **BUTTON_STYLES["primary"])
-        sf["btn"].pack(fill="x", padx=8, pady=(1, 5))
+        sf["btn"].pack(fill="x", padx=8, pady=(3, 6))
         if getattr(self, "view_only", False):
             sf["btn"].configure(state="disabled")
-
-        def go(widget, step):
-            i = chain.index(widget) + step
-            if 0 <= i < len(chain):
-                chain[i].focus_set()
-            return "break"
 
         def on_return(widget):
             if widget is chain[-1]:
                 self.sb_stage_submit(stage)
-                return "break"
-            return go(widget, 1)
-        for wdg in chain:
-            wdg.bind("<Return>", lambda ev, w=wdg: on_return(w), add="+")
-            wdg.bind("<KP_Enter>", lambda ev, w=wdg: on_return(w), add="+")
-            for seq, d in self.SB_NAV_KEYS.items():
-                wdg.bind(seq, lambda ev, w=wdg, d=d: go(w, d), add="+")
+                return None
+            return 1
+        self.sb_bind_chain(chain, on_return,
+                           {g["frame"]: (lambda d, gr=group: self.sb_stage_step_option(sf, gr, d))
+                            for group, g in sf["groups"].items()})
         for group, g in sf["groups"].items():
-            g["frame"].bind("<space>", lambda ev, gr=group: (self.sb_stage_step_option(sf, gr, 1), "break")[1])
             self.sb_stage_set_option(sf, group, g["values"][0])
         return sf
 
@@ -25039,8 +25110,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not g or value not in g["values"]:
             return
         g["sel"] = value
-        for kd, b in g["btns"].items():
-            b.configure(**(BUTTON_STYLES["primary"] if kd == value else BUTTON_STYLES["secondary"]))
+        self.sb_style_options(g["btns"], value)
         if focus:
             g["frame"].focus_set()
 
