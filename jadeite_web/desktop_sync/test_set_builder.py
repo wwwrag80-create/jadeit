@@ -80,8 +80,10 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "SALE_KIND_DIAMOND", "SALE_KINDS", "sb_p2_incomplete", "sb_sale_index", "sb_apply_sale",
            "sb_sync_from_sale", "sb_mfg_receipts", "movement_slot", "note_head", "CHAINS_HEAD", "MFG_CHAINS_SLOT",
            "RECEIPT_KINDS", "TREE_HEAD", "ISSUE_HEADS", "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SADAYA", "CAST_NAME",
-           "TREASURY_KINDS", "invoices_by_period",
+           "ASSEMBLED", "PARTS", "READY_SETS", "SB_PART_FIELDS", "SB_KIND_FIELDS", "TREASURY_KINDS", "invoices_by_period",
            "treasury_kind_of", "treasury_kind_breakdown", "sub_balance_lines", "POLISH1_SADAYA",
+           "treasury_set_context", "sb_kind_mark", "sb_split_exit", "treasury_kind_moves", "sb_set_kind_mark",
+           "get_operation_datetime",
            "SB_DISMISSED_KEY", "sb_dismissed", "sb_set_dismissed", "_sb_undo_setting")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
       "SALE_READ_STATUSES": ("ACTIVE", "SETTLED_INOUT", "MEMO"), "IS_ADMIN_BUILD": False,
@@ -177,10 +179,22 @@ assert inv["البيان"] == "قبل البوليش — رقم التشغيل 9
 assert inv["period"] == "2026-10" and a.undo[-1]["label"] == "قبل البوليش (9001) — قالب رقم التشغيل"
 assert a.recalcs == 1
 v = a.sb_values(S)
-assert v["p1_before"] == v["p04"] == 50.0, "٠٫٠٤٪ في التصنيع هو «قبل» البوليش نفسه"
-assert v["mfg_khayas"] == 0.4, "خياس التصنيع = ٠٫٠٨٪ − ٠٫٠٤٪ ما لم يُكتب"
+assert v["p1_before"] == 50.0 and v["p04"] is None and v["mfg_khayas"] is None, \
+    "1.90: ٠٫٠٤٪ = قبض شغل 4 من المصنّع وحده (لا «قبل» البوليش) — وبلا شغل 4 فارغة"
+# 1.90: ٠٫٠٨٪ = شغل 8 وحده و٠٫٠٤٪ = شغل 4 وحده من قبض المصنّع — والسلاسل (قبض/سلاسل، مفنش ٨) لا تدخلهما
+w4 = a.add("أحمد", "المفنش ٤ بالالف", 50.0, row="1", set_no=S)
+ch = a.add("أحمد", "المفنش ٨ بالالف", 4.0, row="1", set_no=S, **{"البيان": "سلاسل"})
+v = a.sb_values(S)
+assert (v["p04"], v["p08"], v["mfg_w8"], v["mfg_khayas"]) == (50.0, 50.4, None, 0.4), \
+    "شغل 4 ← ٠٫٠٤٪، والسلاسل وحدها ليست شغل 8 (٠٫٠٨٪ المكتوب)، وخياس التصنيع = ٠٫٠٨٪ − ٠٫٠٤٪"
+w8 = a.add("أحمد", "المفنش ٨ بالالف", 51.0, row="1", set_no=S)
+v = a.sb_values(S)
+assert (v["p08"], v["mfg_w8"], v["mfg_khayas"]) == (51.0, 51.0, 1.0), "شغل 8 بلا السلاسل (55 − 4)"
+assert v["mfg"]["w8"] == 55.0 and v["mfg"]["chains"] == 4.0, "في حساب المصنّع (مفنش ٨) كما هي"
+for i in (w4, ch, w8):
+    a.delete_invoice_from_db(i)
 print("✔ «قبل البوليش» = صرف تلميع بف باسم القالب وبرقم التشغيل، بتأكيد افتراضه «نعم» وفي الفترة المعروضة")
-print("✔ و٠٫٠٤٪ في التصنيع هو «قبل» نفسه، وخياس التصنيع = ٠٫٠٨٪ − ٠٫٠٤٪ (ما لم يُكتب)")
+print("✔ ٠٫٠٨٪ = قبض شغل 8 وحده و٠٫٠٤٪ = قبض شغل 4 وحده (السلاسل لا تدخلهما)، وخياس التصنيع = ٠٫٠٨٪ − ٠٫٠٤٪")
 
 mb.answer = False
 n = len(a.invoices)
@@ -243,6 +257,7 @@ assert (rec["assembler"], rec["asm_row"]) == ("سالم", "3"), "المركّب 
 # رقم التشغيل لصفٍّ واحد ولمركّب واحد: مركّب آخر للرقم نفسه يُرفض
 assert a.sb_check_assembler(S, "خالد", "6") is None and mb.last()[1] == "رقم تشغيل مستخدم"
 assert a.sb_post(S, "asm_after", 49.0, assembler="سالم", row="3") is True
+assert "• رصيد أطقم مركبة في الخزينة: 0.00 ← 49.00" in mb.last()[2], "1.90: قبض المركّب ← أطقم مركبة (في التأكيد)"
 (qabd,) = a.moves(النوع="قبض ذهب", الاسم="سالم")
 assert qabd["row_number"] == "3" and qabd["set_number"] == S
 v = a.sb_values(S)
@@ -271,8 +286,18 @@ assert v["stones_disc"] == 1.2 and v["final"] is None and v["net"] is None
 print("✔ الوزن بعد = بعد التركيب + فصوص + أحجار + الماس (53.10)، والإجمالي = + السلسال (56.10)")
 
 # ═══ ٥) بوليش 2: «قبل» صرفٌ لصندوقه و«بعد» قبضٌ منه — والوزن النهائي آخر «بعد» ═══
+br = a.treasury_kind_breakdown()
+assert (br["فصوص وأحجار والماس"]["balance"], br["سلاسل"]["balance"]) == (4.0, -3.0), \
+    "1.90: الفصوص والأحجار والماس في القالب ← نوعها، والسلسال ← خارجٌ من السلاسل"
 assert a.sb_post(S, "p2_before", 56.1) is True and mb.last()[1] == "ترحيل «قبل بوليش 2»"
+assert "• رصيد أطقم مركبة في الخزينة: 49.10 ← 0.00" in mb.last()[2] and \
+    "• رصيد فصوص وأحجار والماس في الخزينة: 4.00 ← 0.00" in mb.last()[2], mb.last()[2]
+assert "سلاسل" not in mb.last()[2], "الباقي (السلسال) لا يُخصم ولا يزيد"
 assert a.sb_post(S, "p2_after", 55.8) is True
+assert "• رصيد أطقم جاهزة للبيع في الخزينة: 0.00 ← 55.80" in mb.last()[2]
+br = a.treasury_kind_breakdown()
+assert [br[k]["balance"] for k in ("أطقم مركبة", "فصوص وأحجار والماس", "سلاسل", "أطقم جاهزة للبيع")] == \
+    [0.0, 0.0, -3.0, 55.8]
 (p2i,) = a.moves(النوع="قبل بوليش 2")
 (p2o,) = a.moves(النوع="بعد بوليش 2")
 assert p2i["الاسم"] == p2o["الاسم"] == "قالب رقم التشغيل" and p2i["set_number"] == S
@@ -309,8 +334,9 @@ assert a.sb_pieces_totals(a.sb_load(S)["pieces"]) == (1.2, 0.8, 0.5, 5.5)
 print("✔ جدول القطع يُحفظ في القالب بلا صفوفه الفارغة، ومجموع أوزانه حسب النوع (فص/حجر/الماس)")
 
 # ═══ ٨) سند رقم التشغيل من القالب كله ═══
+a.add("أحمد", "المفنش ٤ بالالف", 50.0, row="1", set_no=S)
 sec = a.set_voucher_sections({"set_number": S, "invoice_no": None})
-assert sec["mfg"] == (50.4, 50.2, 0.2) and sec["polish"] == (50.2, 49.6, 0.6)
+assert sec["mfg"] == (50.4, 50.0, 0.4) and sec["polish"] == (50.2, 49.6, 0.6)
 assert sec["assembly"] == (49.6, 49.1, 0.5) and sec["polish2"] == (56.1, 55.8, 0.3)
 assert (sec["weight_after"], sec["chain"], sec["total"], sec["net"], sec["bound"]) == (53.1, 3.0, 56.1, 51.8, 55.5)
 assert sec["assemblers"] == "سالم" and sec["name"] == "عميل الطقم" and len(sec["pieces"]) == 4
@@ -387,6 +413,7 @@ print("✔ وفاتورة المبيعات وتفصيل خياس الطقم يع
 # ═══ ١١) المباع: لا يُلغى توليده ولا يُحذف قالبه ═══
 a.add("عميل الطقم", "مبيعات ذهب", 51.8, set_no=S)
 assert a.sb_status(S) == "مباع"
+assert a.treasury_kind_breakdown()["أطقم جاهزة للبيع"]["balance"] == 4.0, "1.90: البيع يخرج من الجاهزة (55.8 − 51.8)"
 assert a.sb_unproduce(S) is False and mb.last()[1] == "طقم مباع"
 assert a.sb_delete(S) is False and mb.last()[1] == "طقم مباع" and a.sb_load(S) is not None
 print("✔ الطقم المباع: حاله «مباع»، ولا يُلغى توليده، ولا يُحذف قالبه")
@@ -452,6 +479,15 @@ assert (v["p2_before"], v["p2_after"], v["p2_khayas"], v["final"], v["net"], v["
 assert v["ext"] == {"p2_before", "p2_after"} and a.sb_status("9400") == "مباع"
 assert a.sb_polish2_khayas("9400") is None, "بوليش 2 لطقم المبيعات مُرحَّل من المبيعات وحدها — لا ازدواج"
 assert a.sb_values(S)["ext"] == set(), "طقم القالب: مراحله من حركات القالب"
+# 1.90: طقمٌ بيع من المبيعات ولم يمرّ ببوليش 2 في القالب ← فصوصه (التي كتبها البيع في قالبه) تدخل نوعها وتخرج ببيعه في
+# فترة البيع، وذهبه يخرج من المركبة — والجاهزة لا تمسّ
+assert rec["kind_marks"]["gems"] == {"at": "2026-10-15 11:00:00", "period": "2026-10"}
+br = a.treasury_kind_breakdown()
+mv = sorted((n, w, sg) for k in ("أطقم مركبة", "فصوص وأحجار والماس", "أطقم جاهزة للبيع")
+            for i, sg, w, n in br[k]["moves"] if i.get("set_number") == "9400")
+assert mv == [("أحجار — من القالب", 3.0, 1), ("الماس — من القالب", 0.5, 1),
+              ("بيع بلا بوليش 2 — الفصوص", 5.5, -1), ("بيع بلا بوليش 2 — المركّب", 30.4, -1),
+              ("فصوص — من القالب", 2.0, 1)], mv
 print("✔ بيع رقمٍ من المبيعات ← قالبه يُحفظ مولَّداً بقيم الفاتورة (الفصوص والأحجار ونسبة خصمها والماس والعميل والتاريخ)")
 print("✔ وقالبه يعرض بوليش 2 من الفاتورة (بعد = الذهب + الفصوص + الأحجار + الماس، قبل = بعد + خياسه) والصافي = الذهب — للعرض")
 # تحديث قالبٍ موجود من فاتورة بيعه: القيم المباعة فعلاً
@@ -462,7 +498,7 @@ r9300 = a.sb_load("9300")
 assert (r9300["gems"], r9300["stones"], r9300["stones_pct"], r9300["diamond"], r9300["status"]) == (3.0, 1.5, 70.0, None, "ready")
 assert r9300.get("source", "") != "sale"
 post = member("post_sale_rows")
-assert "self.sb_sync_from_sale(row, name, full_dt, kind)" in post
+assert "self.sb_sync_from_sale(row, name, full_dt, kind, period=period)" in post
 search = member("sb_open_search")
 assert "sale = self.sb_sale_index().get(key)" in search and "self.sb_apply_sale(rec" in search
 render = member("sb_render")

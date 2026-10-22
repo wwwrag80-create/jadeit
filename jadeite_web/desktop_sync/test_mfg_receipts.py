@@ -48,6 +48,9 @@ MEMBERS = ("_SET_DIGITS", "normalize_set_number", "inv_period", "inv_in_period",
            "post_manufacturer_receipt", "find_row_by_set_number", "row_set_numbers", "plan_unified_values",
            "calculate_single_ledger", "worker_rows_raji", "invoices_by_name", "invoices_by_name_period",
            "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SLOT_TYPES", "SLOT_HEADS", "SADAYA", "CAST_NAME", "invoices_by_period",
+           "ASSEMBLED", "PARTS", "READY_SETS", "SB_PART_FIELDS", "SB_KIND_FIELDS", "ASSEMBLER_KHAYAS_STATUSES",
+           "SALE_TYPES", "SB_P2_IN", "SB_P2_OUT", "treasury_set_context", "sb_kind_mark", "sb_split_exit",
+           "treasury_kind_moves", "sb_set_kind_mark", "sb_set_field",
            "TREASURY_KINDS", "treasury_kind_of", "treasury_kind_breakdown", "slot_kind_deltas", "sub_balance_lines",
            "_read_weight", "POLISH1_SADAYA",
            "SB_PREFIX", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS", "sb_num", "sb_new_record", "sb_load", "sb_save", "sb_all",
@@ -76,6 +79,8 @@ class MB:
 ns = {"re": re, "datetime": datetime, "messagebox": MB, "log_cloud_error": lambda *a: None, "json": __import__("json"),
       "sqlite3": sqlite3}
 exec(module_src("COUNTED_STATUSES"), ns)
+exec("\n".join(module_src(n) for n in ("KHAYAS_MARK_FINAL", "KHAYAS_MARK_POLISH", "KHAYAS_MARK_NET",
+                                         "KHAYAS_MARK_ASSEMBLER")), ns)
 exec("\n".join(module_src(n) for n in ("ALLOWANCE_8", "ALLOWANCE_4", "raji_ayar", "LEDGER_FIELD_BY_TYPE")), ns)
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 M = "2026-10"
@@ -351,7 +356,7 @@ a.add("صب الداخلي", "قبض صب الداخلي", 2.0, row="2", note="�
 a.add("صب الداخلي", "قبض صب الداخلي", 9.0, row="3", note="سبيكة")
 a.add("صب الداخلي", "قبض صب الداخلي", 4.0, row="4")                        # بلا نوع: لا يُعدّ
 a.add("سالم", "صرف ذهب", 15.0, row="1", set_no="5001")                      # صرفٌ للمركّب ← ينقص من السدايا
-a.add("سالم", "قبض ذهب", 14.0, row="1", set_no="5001")                      # القبض منه لا يمسّها
+a.add("سالم", "قبض ذهب", 14.0, row="1", set_no="5001")                      # القبض منه ← أطقم مركبة (1.90)
 # الفترة السابقة: تدخل في «ما قبل الفترة»
 a.add("أحمد", "المفنش ٤ بالالف", 7.0, row="1", set_no="4001", period="2026-09")
 a.add("سالم", "صرف ذهب", 4.0, row="1", set_no="4001", period="2026-09")
@@ -361,18 +366,23 @@ a.add("أحمد", "المفنش ٨ بالالف", 100.0, row="1", set_no="6001",
 br = a.treasury_kind_breakdown(M)
 got = {k: (v["opening"], v["in"], v["out"], v["balance"]) for k, v in br.items()}
 assert got == {"سدايا": (3.0, 87.0, 15.0, 75.0), "سلاسل": (0.0, 32.0, 0.0, 32.0), "كسر": (0.0, 9.0, 10.0, -1.0),
+               "أطقم مركبة": (0.0, 14.0, 0.0, 14.0), "فصوص وأحجار والماس": (0.0, 0.0, 0.0, 0.0),
+               "أطقم جاهزة للبيع": (0.0, 0.0, 0.0, 0.0),
                "سبيكة": (0.0, 9.0, 6.0, 3.0), "شجر": (0.0, 9.0, 7.0, 2.0), "واير": (1.5, 6.0, 2.0, 5.5),
                "لحام": (0.0, 3.0, 3.0, 0.0)}, got
-assert [k for k, _s in a.TREASURY_KINDS] == ["سدايا", "سلاسل", "كسر", "سبيكة", "شجر", "واير", "لحام"]
-assert sorted((i["الوزن"], sg) for i, sg in br["سدايا"]["moves"]) == [(6.0, 1), (15.0, -1), (40.0, 1), (41.0, 1)]
-assert sorted((i["الوزن"], sg) for i, sg in br["شجر"]["moves"]) == [(3.0, -1), (4.0, -1), (9.0, 1)], "مسترجع الأشجار لا يدخل"
+assert [k for k, _s in a.TREASURY_KINDS] == ["سدايا", "سلاسل", "أطقم مركبة", "فصوص وأحجار والماس", "أطقم جاهزة للبيع",
+                                             "كسر", "سبيكة", "شجر", "واير", "لحام"]
+assert sorted((i["الوزن"], sg) for i, sg, _w, _n in br["سدايا"]["moves"]) == [(6.0, 1), (15.0, -1), (40.0, 1), (41.0, 1)]
+assert sorted((i["الوزن"], sg) for i, sg, _w, _n in br["شجر"]["moves"]) == [(3.0, -1), (4.0, -1), (9.0, 1)], \
+    "مسترجع الأشجار لا يدخل"
+assert all(w == i["الوزن"] and n == "" for k in br for i, _sg, w, n in br[k]["moves"]), "حركةٌ كاملة بوزنها وبيانها"
 prev = a.treasury_kind_breakdown("2026-09")
 assert (prev["سدايا"]["balance"], prev["واير"]["balance"]) == (3.0, 1.5) and prev["سدايا"]["opening"] == 0.0
 assert a.treasury_kind_breakdown("2026-11")["سدايا"]["opening"] == 75.0
 assert a.slot_kind_deltas("المصنعين", [("صرف لحام", 3), ("المفنش ٤ بالالف", 41), ("قبض سلاسل", 12), ("صرف واير", 2),
                                         ("المفنش ٨ بالالف", 5), ("قبض ذهب", 1), ("صرف ذهب", 9)]) \
     == {"لحام": -3, "سدايا": 46, "سلاسل": 12, "واير": -2, "كسر": 1}
-assert a.slot_kind_deltas("المركبين", [("صرف ذهب", 10), ("قبض ذهب", 9)]) == {"سدايا": -10}
+assert a.slot_kind_deltas("المركبين", [("صرف ذهب", 10), ("قبض ذهب", 9)]) == {"سدايا": -10, "أطقم مركبة": 9}
 assert a.sub_balance_lines({"سدايا": -10}) == ["• رصيد سدايا في الخزينة: 75.00 ← 65.00"]
 assert a.sub_balance_lines({}) == [] and a.sub_balance_lines({"سدايا": 0.0}) == []
 print(f"✔ تفصيل الخزينة (متراكم): {got} — السدايا = شغل 4 + شغل 8 − صرف المركبين، والكسر = قبض/كسر − صرف الكاستنج "
@@ -390,7 +400,7 @@ a.add("ليزر البوليش", "صرف تلميع بف", 1.0, row="2")        
 a.add("مسترجع بوليش 1", "قبض تلميع بف", 2.0)                                # حسابٌ آخر لا يدخل
 br2 = a.treasury_kind_breakdown(M)
 assert br2["سدايا"]["balance"] == round(75.0 - 20 - 5 + 18, 2), br2["سدايا"]
-assert sorted((i["الوزن"], sg) for i, sg in br2["سدايا"]["moves"] if i["النوع"].endswith("تلميع بف")) \
+assert sorted((i["الوزن"], sg) for i, sg, _w, _n in br2["سدايا"]["moves"] if i["النوع"].endswith("تلميع بف")) \
     == [(5.0, -1), (18.0, 1), (20.0, -1)]
 assert a.slot_kind_deltas("التلميع/البف", [("صرف تلميع بف", 20), ("قبض تلميع بف", 18)]) == {"سدايا": -2}
 assert a.TREASURY_KINDS[0] == ("سدايا", "شغل 4/8 − قبل البوليش + بعده − المركبين")
@@ -418,8 +428,8 @@ a.invoices[a.invoice_counter]["settled_status"] = "DELETED"
 a.mark_backup_dirty()
 sb1 = a.treasury_kind_breakdown(M)["سبيكة"]
 assert round(sb1["in"] - sb0["in"], 2) == 30.5 and sb1["out"] == sb0["out"], (sb0, sb1)
-assert sorted(i["الوزن"] for i, sg in sb1["moves"] if i["النوع"].startswith("وارد")) == [1.5, 4.0, 25.0]
-assert a.TREASURY_KINDS[3] == ("سبيكة", "الوارد + قبض الأقسام − صرف سبيكة")
+assert sorted(i["الوزن"] for i, sg, _w, _n in sb1["moves"] if i["النوع"].startswith("وارد")) == [1.5, 4.0, 25.0]
+assert dict(a.TREASURY_KINDS)["سبيكة"] == "الوارد + قبض الأقسام − صرف سبيكة"
 print("✔ السبيكة: كل وارد ذهب من شاشة الوارد (لحساب الخزينة أو لمسترجع مرحلة، بحالاته المحسوبة) يزيدها — والفصوص "
       "والأحجار والماس والقيد الافتتاحي لا")
 
@@ -489,6 +499,119 @@ assert a.sb_stage_order() == ["الكاستنج", "المصنعين"], "قسمٌ
 a.categories["أقسام_خياس_إضافية"] = ["صب الداخلي"]
 print("✔ ترتيب أزرار المراحل: يُحرَّك يميناً ويساراً (والمصنعين معها) ويُحفظ، ولا تحريك بعد الطرف ولا في وضع العرض، "
       "وقسمٌ حُذف يسقط منه")
+
+# ═══ ٦د) 1.90: مسار الطقم في تفصيل الخزينة — المركبة ← بوليش 2 ← الجاهزة ← البيع، والفصوص معلوماتية، والسلسال ═══
+b = App()
+
+
+def bal(kind, month=M):
+    return b.treasury_kind_breakdown(month)[kind]["balance"]
+
+
+def sale(set_no, t, w, raw=0.0, status="ACTIVE", mark=0.0, name="عميل"):
+    i = b.add(name, t, w, set_no=set_no)
+    b.invoices[i].update({"trees_count": 3.0 if raw else mark, "قبل": raw, "settled_status": status})
+    b.mark_backup_dirty()
+    return i
+
+
+A, P, R, C = "أطقم مركبة", "فصوص وأحجار والماس", "أطقم جاهزة للبيع", "سلاسل"
+assert (b.ASSEMBLED, b.PARTS, b.READY_SETS) == (A, P, R)
+mk, asm, qt, st_ = {"أحمد", "خالد"}, {"سالم"}, set(), set()
+assert b.treasury_kind_of({"الاسم": "سالم", "النوع": "قبض ذهب", "settled_status": "ACTIVE"}, mk, asm, qt, st_) == (A, 1)
+assert b.treasury_kind_of({"الاسم": "سالم", "النوع": "صرف ذهب", "settled_status": "ACTIVE"}, mk, asm, qt, st_) == ("سدايا", -1)
+assert b.treasury_kind_of({"الاسم": "سالم", "النوع": "قبض ذهب", "settled_status": "SETTLED"}, mk, asm, qt, st_) is None
+assert b.treasury_kind_of({"الاسم": b.SB_NAME, "النوع": "بعد بوليش 2", "settled_status": "ACTIVE"}, mk, asm, qt, st_) == (R, 1)
+assert b.treasury_kind_of({"الاسم": b.SB_NAME, "النوع": "قبل بوليش 2", "settled_status": "ACTIVE"}, mk, asm, qt, st_) is None
+# الطقم ٩٠٠١ في القالب كله: شغل 8 وسلاسل من المصنّع، والتركيب، والفصوص والأحجار والماس والسلسال، وبوليش 2، والبيع
+b.add("أحمد", "المفنش ٨ بالالف", 50.0, row="1", set_no="9001")
+b.add("أحمد", "المفنش ٨ بالالف", 8.0, row="1", set_no="9001", note="سلاسل")
+b.add("سالم", "صرف ذهب", 40.0, row="1", set_no="9001")
+b.add("سالم", "قبض ذهب", 39.0, row="1")                                   # بلا رقمٍ في صفٍّ له رقم ← للطقم ٩٠٠١
+assert (bal(A), bal(C), bal("سدايا")) == (39.0, 8.0, 10.0), "قبض المركّب ← أطقم مركبة (كل قبضٍ من المركبين)"
+assert b.treasury_set_context()["9001"]["asm"] == 39.0
+for field, val in (("gems", "3"), ("stones", "2"), ("diamond", "0.5"), ("chain", "8")):
+    assert b.sb_set_field("9001", field, val)
+rec = b.sb_load("9001")
+assert rec["kind_marks"]["chain"] == {"at": f"{M}-12 10:00:00", "period": M}
+assert (bal(P), bal(C)) == (5.5, 0.0), "الفصوص والأحجار والماس في القالب ← نوعها، والسلسال ← خارجٌ من السلاسل"
+pm = b.treasury_kind_breakdown(M)[P]["moves"]
+assert sorted((w, n, i["الاسم"], i["set_number"]) for i, sg, w, n in pm) == [
+    (0.5, "الماس — من القالب", b.SB_NAME, "9001"), (2.0, "أحجار — من القالب", b.SB_NAME, "9001"),
+    (3.0, "فصوص — من القالب", b.SB_NAME, "9001")]
+b.add(b.SB_NAME, "قبل بوليش 2", 52.5, set_no="9001")                     # = 39 + 5.5 + 8
+assert (bal(A), bal(P), bal(C), bal(R)) == (0.0, 0.0, 0.0, 0.0), \
+    "قبل بوليش 2 ← يخرج من المركبة ومن الفصوص، والباقي (8) السلسال لا يُخصم ولا يزيد"
+notes = sorted((n, w) for k in (A, P) for _i, sg, w, n in b.treasury_kind_breakdown(M)[k]["moves"] if sg < 0)
+assert notes == [("قبل بوليش 2 — الفصوص", 5.5), ("قبل بوليش 2 — المركّب", 39.0)], notes
+b.add(b.SB_NAME, "بعد بوليش 2", 51.9, set_no="9001")
+assert bal(R) == 51.9, "بعد بوليش 2 ← أطقم جاهزة للبيع"
+sale("9001", "مبيعات ذهب", 46.4)
+sale("9001", "مبيعات فصوص وأحجار", 3.0)
+sale("9001", "مبيعات فصوص وأحجار", 1.6, raw=2.0)                         # الأحجار: «قبل» الخصم (2) لا بعده
+sale("9001", "مبيعات الماس", 0.5)
+sale("9001", "مبيعات ذهب", 9.0, status="SETTLED")                      # حالةٌ غير محسوبة لا تدخل
+assert bal(R) == 0.0, b.treasury_kind_breakdown(M)[R]
+assert sorted(w for _i, sg, w, _n in b.treasury_kind_breakdown(M)[R]["moves"] if sg < 0) == [0.5, 2.0, 3.0, 46.4]
+print("✔ مسار الطقم: قبض المركّب ← أطقم مركبة، والفصوص والأحجار والماس في القالب ← نوعها، والسلسال ← خارجٌ من السلاسل، "
+      "و«قبل بوليش 2» ← من المركبة والفصوص والباقي السلسال، و«بعد» ← الجاهزة، والبيع (الذهب والفصوص والأحجار قبل الخصم "
+      "والماس) ← منها: كلها صفر في آخر المسار")
+
+# طقمٌ بيع ولم يمرّ ببوليش 2 في القالب: يخرج ببيعه من المركبة (وفصوصه المكتوبة من نوعها) — لا تُخصم من الجاهزة
+b.add("سالم", "صرف ذهب", 20.0, row="2", set_no="9002")
+b.add("سالم", "قبض ذهب", 19.5, row="2", set_no="9002")
+r2 = b.sb_load("9002") or b.sb_new_record("9002")
+r2["gems"] = 1.0
+b.sb_set_kind_mark(r2, "gems", at="2026-10-20", period=M)                   # كما يكتبه البيع (sb_apply_sale)
+b.sb_save(r2)
+assert (bal(A), bal(P)) == (19.5, 1.0)
+sale("9002", "مبيعات ذهب", 21.0)                                           # الذهب مع السلسال
+sale("9002", "مبيعات فصوص وأحجار", 1.0)
+sale("9002", "خياس طقوم", 0.3)                                              # خياس بوليش 2 من المبيعات
+sale("9002", "خياس طقوم", 0.4, status="MEMO", mark=ns["KHAYAS_MARK_POLISH"])  # خياس البوليش المعلوماتي لا
+assert (bal(A), bal(P), bal(R)) == (0.0, 0.0, 0.0), b.treasury_kind_breakdown(M)
+# في صندوق بوليش 2 («قبل» بلا «بعد»): بيعه لا يمسّ الأنواع
+b.add("سالم", "قبض ذهب", 30.0, row="3", set_no="9003")
+b.add(b.SB_NAME, "قبل بوليش 2", 30.0, set_no="9003")
+sale("9003", "مبيعات ذهب", 29.5)
+assert (bal(A), bal(R)) == (0.0, 0.0)
+# بلا رقم تشغيل: الذهب من المركبة، والفصوص لم تدخل نوعها فلا تخرج منه
+b.add("سالم", "قبض ذهب", 6.0, row="4")
+sale("", "مبيعات ذهب", 5.0)
+sale("", "مبيعات فصوص وأحجار", 0.7)
+assert (bal(A), bal(P), bal(R)) == (1.0, 0.0, 0.0)
+# المعلّقة (MEMO) والمحذوفة لا تدخل
+sale("", "مبيعات ذهب", 50.0, status="MEMO")
+sale("9001", "مبيعات ذهب", 50.0, status="DELETED")
+assert (bal(A), bal(R)) == (1.0, 0.0)
+print("✔ بيعٌ بلا بوليش 2 في القالب (والمبيعات القديمة وبلا رقم تشغيل): يخرج من المركبة وفصوصه المكتوبة لا من الجاهزة — "
+      "فلا تصير بالسالب؛ والطقم في صندوق بوليش 2 بيعه لا يمسّها؛ والمعلّقة والمحذوفة لا تدخل")
+
+# التقسيم: الفصوص أولاً (حتى الوزن) ثم قبض المركّب، والباقي السلسال — وبلا صفٍّ عند المركبين: الباقي بعد الفصوص والسلسال
+sx = b.sb_split_exit
+assert sx(52.5, {"parts": 5.5, "chain": 8.0, "asm": 39.0}) == (5.5, 39.0)
+assert sx(52.5, {"parts": 5.5, "chain": 8.0, "asm": None}) == (5.5, 39.0)
+assert sx(4.0, {"parts": 5.5, "chain": 0.0, "asm": 39.0}) == (4.0, 0.0), "لا يخرج أكثر من الوزن"
+assert sx(60.0, {"parts": 5.5, "chain": 8.0, "asm": 39.0}) == (5.5, 39.0), "الزائد يبقى (لا يُخصم من نوعٍ أكثر مما دخله)"
+c2 = {"parts": 5.5, "chain": 0.0, "asm": 39.0}
+assert sx(30.0, c2) == (5.5, 24.5) and sx(30.0, c2) == (0.0, 14.5) and c2 == {"parts": 0.0, "chain": 0.0, "asm": 0.0}
+assert sx(22.3, {"parts": 0.0, "chain": 0.0, "asm": None}, sold_parts=1.0) == (0.0, 21.3), "فصوص البيع ليست من ذهب المركّب"
+# فترة الكتابة: تُختم بالفترة المعروضة أول مرة وتبقى بالتعديل وتُمسح بالتفريغ — وقالبٌ قبل 1.90 بتاريخه
+b.current_display_month = "2026-11"
+assert b.sb_set_field("9004", "diamond", "2")
+assert b.sb_load("9004")["kind_marks"]["diamond"]["period"] == "2026-11"
+assert bal(P) == 0.0 and bal(P, "2026-11") == 2.0, "الفترة التالية لا تدخل في الفترة المعروضة"
+b.current_display_month = "2026-12"
+assert b.sb_set_field("9004", "diamond", "2.5") and b.sb_load("9004")["kind_marks"]["diamond"]["period"] == "2026-11"
+assert b.sb_set_field("9004", "diamond", "") and "kind_marks" not in b.sb_load("9004")
+b.current_display_month = M
+old = b.sb_new_record("8001")
+old.update({"gems": 4.0, "date": "2026-09-03"})
+b.sb_save(old)
+assert b.sb_kind_mark(b.sb_load("8001"), "gems") == ("2026-09-03", "2026-09")
+assert b.treasury_kind_breakdown(M)[P]["opening"] == 4.0 and bal(P, "2026-09") == 4.0
+print("✔ التقسيم بحدوده (الفصوص ثم المركّب والباقي السلسال)، وخانات القالب بفترة كتابتها (تبقى بالتعديل وتُمسح بالتفريغ)، "
+      "والقالب القديم بتاريخه")
 
 # ═══ ٧) الواجهة والمصادر ═══
 ruf = member("render_unified_fields")
@@ -560,8 +683,11 @@ assert '("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/وا
 assert "head = (self.SLOT_HEADS.get(slot)" in row_edit
 sbp = member("sb_post")
 assert 'if field in ("asm_before", "p1_before", "p1_after"):' in sbp and \
-    "self.sub_balance_lines({self.SADAYA: sign * round((value or 0.0) - (old or 0.0), 2)})" in sbp, \
+    'self.sub_balance_lines({self.SADAYA: delta if field == "p1_after" else -delta})' in sbp, \
     "صرف المركّب و«قبل البوليش» ينقصان من السدايا و«بعده» يزيدها — في التأكيد"
+assert "self.sub_balance_lines({self.ASSEMBLED: delta})" in sbp and "self.sub_balance_lines({self.READY_SETS: delta})" in sbp
+assert "new_p, new_a = self.sb_split_exit(value or 0.0, dict(base))" in sbp and \
+    "self.PARTS: -round(new_p - old_p, 2)})" in sbp, "1.90: التركيب وبوليش 2 في التأكيد بأرصدة أنواعها"
 assert "self.slot_kind_deltas(\"التلميع/البف\", [(\"صرف تلميع بف\", sarf_v), (\"قبض تلميع بف\", qabd_v)])" in \
     member("submit_polish_buff_op")
 # 1.87: ولادة الطقم من كل طريق، ورقم التشغيل يتبعه قالبه، و٠٫٠٤٪ = «قبل البوليش»
@@ -581,7 +707,9 @@ assert 'ingot_lines = self.sub_balance_lines({"سبيكة": final_w}) if op_type
 assert 'self._inv_edits = getattr(self, "_inv_edits", 0) + 1' in member("save_invoice_to_db")
 for fn in ("sb_mfg_receipts", "sb_moves_index", "sb_sale_index", "sb_is_sold", "assembler_set_index"):
     assert 'getattr(self, "_inv_edits", 0)' in member(fn), f"{fn}: تعديلٌ في مكانه (رقم تشغيل الصف) يحدّث الفهرس"
-assert "p04 = p1b\n" in member("sb_values") and 'cell_key == "p04" and v["mfg"]' not in member("sb_render")
+assert 'p04 = mfg.get("w4")' in member("sb_values") and "p04 = p1b\n" not in member("sb_values")
+assert 'self.sb_put(cell_key, f(v["p04"]), "mfg")' in member("sb_render") and \
+    'if k == "p08" and v["mfg_w8"] is not None:' in member("sb_render"), "1.90: ٠٫٠٨٪ و٠٫٠٤٪ من قبض المصنّع للعرض"
 tb = member("show_treasury_breakdown")
 assert 'cols = ("النوع", "الرصيد")' in tb and '"داخل" if sign > 0 else "خارج"' in tb and "الإجمالي" not in tb, \
     "1.89: تفصيل الخزينة النوع ورصيده فقط، وحركته تحته"
