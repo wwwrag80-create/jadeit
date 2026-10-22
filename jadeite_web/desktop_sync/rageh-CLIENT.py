@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.90.0"
+APP_VERSION = "1.91.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -7040,6 +7040,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self._deleted_accounts = None          # قائمة الحسابات المحذوفة من القاعدة المحمّلة
         self._polish_before_cache = None       # «قبل البوليش» في تتبع رقم التشغيل
         self._locked_periods_cache = None      # الفترات المقفلة (إعداد في القاعدة المحمّلة)
+        self._sb_all_cache = None              # قوالب أرقام التشغيل (إعدادات في القاعدة المحمّلة — 1.91)
         self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
         self.invoices = {}
         self.opening_balance = 0.0
@@ -11731,33 +11732,94 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not second_confirm: return
             
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM invoices")
-                cursor.execute("DELETE FROM names")
-                cursor.execute("DELETE FROM monthly_archive")
-                # الفواتير المعلّقة من البيانات أيضاً
-                cursor.execute(self.SUSPENDED_TABLE_SQL)
-                cursor.execute("DELETE FROM suspended_sales")
-                conn.commit()
-            if hasattr(self, "sales_subtab_buttons"):
-                self.set_current_suspended(None)
-                self.update_suspended_count()
-
-            self.categories = {"المصنعين": [], "المركبين": [], "الآلة/المكائن": [], "الكاستنج": [], "التلميع": [], "التلميع/البف": [], "الموردين": [], "حسابات إضافية": [], "أقسام_خياس_إضافية": [], "نسب_خصم_احجار": []}
-            self.invoices = {}
-            self.opening_balance = 0.0
-            self.invoice_counter = 1000
-            self.current_display_month = datetime.datetime.now().strftime("%Y-%m")
-            
-            self.update_period_selector()
-            self.recalculate_all()
-            if hasattr(self, 'entry_opening') and self.entry_opening:
-                self.entry_opening.delete(0, 'end')
-                
-            messagebox.showinfo("تصفير ناجح", "تم تصفير النظام بنجاح وحذف كافة المدخلات السابقة، وأصبحت قاعدة البيانات جاهزة للتأسيس من جديد.")
+            self.wipe_system_data()
+            messagebox.showinfo("تصفير ناجح", "تم تصفير النظام بنجاح وحذف كافة المدخلات السابقة (الحركات والحسابات "
+                                "والأرشيف والمعلّقات وقوالب أرقام التشغيل وسجل التعديلات)، وأصبحت قاعدة البيانات جاهزة "
+                                "للتأسيس من جديد.")
         except Exception as e:
             messagebox.showerror("خطأ في النظام", f"فشل إجراء مسح البيانات بسبب خطأ التقني: {e}")
+
+    def sb_clear_side_forms(self):
+        """يفرّغ بطاقات جانب القالب (المصنّع وأقسام المراحل) — بعد التصفير لا يبقى فيها اسمٌ أو رقمٌ مما مُسح"""
+        st = getattr(self, "_sb_state", None) or {}
+        m = st.get("mfgp") or {}
+        boxes = [m.get(k) for k in ("sarf", "kasr", "work", "set", "row")]
+        for form in (st.get("stage_forms") or {}).values():
+            boxes += list((form.get("entries") or {}).values())
+        for box in boxes:
+            try:
+                box.delete(0, "end")
+            except Exception:
+                pass
+        if m.get("name") is not None:
+            try:
+                m["name"].set("")
+                m["name"].configure(values=[self.rtl(n) for n in self.categories.get("المصنعين", [])])
+            except Exception:
+                pass
+
+    def wipe_data_settings(self):
+        """إعدادات البيانات التي يمسحها التصفير (1.91): ([بادئات]، [مفاتيح]) — قوالب أرقام التشغيل و«قبل البوليش» المكتوب
+        في التتبع، والقوالب المحذوفة، والفترات المقفلة، والحسابات المحذوفة من الشجرة. إعدادات البرنامج (الألوان وأسماء
+        الأعمدة والترتيب والترقيم وفترة الاشتراك…) تبقى"""
+        return ((self.SB_PREFIX, self.POLISH_BEFORE_PREFIX),
+                (self.SB_DISMISSED_KEY, self.LOCKED_PERIODS_KEY, self.DELETED_ACCOUNTS_KEY))
+
+    def wipe_system_data(self):
+        """تصفير البيانات كلها (1.91): الحركات والأسماء والأرشيف والمعلّقات وسجل التعديلات وبيانات الشاشات في الإعدادات
+        (wipe_data_settings) في معاملة واحدة — ثم تُعاد البيانات من القاعدة الفارغة (load_data_from_db: الذاكرة وخطوات
+        التراجع)، وتُثبَّت الصناديق الثابتة، وتُرسم الشاشات المبنية من جديد (القالب بلا طقم)"""
+        prefixes, keys = self.wipe_data_settings()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM invoices")
+            cursor.execute("DELETE FROM names")
+            cursor.execute("DELETE FROM monthly_archive")
+            # الفواتير المعلّقة من البيانات أيضاً، وسجل التعديلات
+            cursor.execute(self.SUSPENDED_TABLE_SQL)
+            cursor.execute("DELETE FROM suspended_sales")
+            cursor.execute(self.CHANGE_LOG_SQL)
+            cursor.execute("DELETE FROM change_log")
+            for prefix in prefixes:
+                cursor.execute("DELETE FROM settings WHERE substr(key, 1, ?) = ?", (len(prefix), prefix))
+            for key in keys:
+                cursor.execute("DELETE FROM settings WHERE key = ?", (key,))
+            conn.commit()
+        self.load_data_from_db()
+        self.ensure_default_khayas_boxes()
+        self.mark_backup_dirty()
+        if hasattr(self, "sales_subtab_buttons"):
+            self.set_current_suspended(None)
+            self.update_suspended_count()
+        st = getattr(self, "_sb_state", None)
+        if st:
+            st["key"] = None
+            st.get("pending", {}).clear()
+            self.sb_set_editing(False, render=False)
+            self.sb_clear_side_forms()
+        # الشاشات المبنية بأقسامها من جديد (قسمٌ مضاف حُذف يختفي، والثابت باقٍ) — وغير المبنية تُبنى بالبيانات الجديدة
+        for fn, needs in (("update_undo_buttons", None), ("refresh_stage_buttons", "stage_buttons"),
+                          ("refresh_khayas_category_buttons", "khayas_category_buttons"),
+                          ("refresh_losses_cards", "losses_cards_frame"), ("refresh_chart_of_accounts", None),
+                          ("sb_build_stage_bar", "_sb_state")):
+            if needs and not getattr(self, needs, None):
+                continue
+            try:
+                getattr(self, fn)()
+            except Exception as e:
+                log_cloud_error(f"تعذّر تحديث {fn} بعد تصفير البيانات", e)
+        stages = ["المصنعين", "المركبين", self.SET_TRACK_KEY] + self.get_all_stage_categories()
+        if getattr(self, "current_op_stage", None) not in stages and getattr(self, "stage_buttons", None):
+            try:
+                self.switch_op_stage("المصنعين")
+            except Exception as e:
+                log_cloud_error("تعذّر فتح المصنعين بعد تصفير البيانات", e)
+        self.update_period_selector()
+        if hasattr(self, "mark_all_screens_dirty"):
+            self.mark_all_screens_dirty()
+        self.recalculate_all()
+        if hasattr(self, 'entry_opening') and self.entry_opening:
+            self.entry_opening.delete(0, 'end')
 
     def update_period_selector(self):
         months = set()
@@ -16415,17 +16477,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return {"current": round(current, 2) + 0.0, "loss": round(loss, 2) + 0.0,
                 "recovered": round(recovered, 2) + 0.0, "net": round(loss - recovered, 2) + 0.0}
 
-    def ensure_default_khayas_boxes(self):
-        """لا صناديق تُنشأ تلقائياً بعد الآن (أُلغي إنشاء قسم الصب).
+    # صناديق الخياس الثابتة بين الأقسام المضافة (1.91): «صب داخلي» موجودٌ دائماً — يُنشأ إن لم يكن، ويعود فارغاً بعد
+    # تصفير البيانات أو حذفه. واسمٌ قريبٌ مسجّل («صب الداخلي»، «الصب الداخلي») هو نفسه فلا يُكرَّر
+    FIXED_KHAYAS_BOXES = ("صب داخلي",)
 
-        تُركت الدالة لأن نقاط استدعائها قائمة، وإفراغ قائمتها أوضح وأأمن من
-        حذف الاستدعاءات المتفرقة.
-        """
-        DEFAULTS = []
+    @staticmethod
+    def box_name_key(name):
+        """مفتاح مقارنة اسم القسم بلا «ال» ولا مسافات: «صب داخلي» = «صب الداخلي» = «الصب الداخلي»"""
+        return "".join(w[2:] if w.startswith("ال") and len(w) > 3 else w for w in str(name or "").split())
+
+    def ensure_default_khayas_boxes(self):
+        """يثبّت صناديق الخياس الثابتة (FIXED_KHAYAS_BOXES) بين الأقسام المضافة — بمحرّك القسم المضاف نفسه (صرفه وقبضه
+        ومسترجعه وشاشته في مراحل التصنيع وصناديق الخياس والخسائر). لا يُنشأ إن كان له اسمٌ قريب أو كان الاسم لحسابٍ آخر،
+        ولا في نسخة المدير (مرآة العميل للعرض). يرجع True إن أُنشئ شيء"""
+        if getattr(self, "view_only", False):
+            return False
         added = False
-        for box in DEFAULTS:
+        for box in self.FIXED_KHAYAS_BOXES:
             existing = self.categories.get("أقسام_خياس_إضافية", [])
-            if box in existing:
+            if any(self.box_name_key(c) == self.box_name_key(box) for c in existing):
                 continue
             # لا نُنشئه لو كان الاسم مستخدماً لحساب آخر (تفادياً لالتباس محاسبي)
             if box in self.get_account_statement_options():
@@ -16863,9 +16933,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     SADAYA = "سدايا"
     CAST_NAME = "كاستنج"                  # اسم حركات «فاقد» الكاستنج (صرفه وقبضه — والقبض هو الشجر)
     POLISH1_SADAYA = {"صرف تلميع بف": -1, "قبض تلميع بف": 1}     # بوليش 1: قبل ← السدايا خارج، وبعد ← داخل
-    # مسار الطقم (1.90): قبض المركّب ← «أطقم مركبة»، والفصوص والأحجار والماس المكتوبة في القالب ← نوعها (معلوماتي —
-    # ليس ذهباً)، والسلسال في القالب ← خارجٌ من السلاسل؛ و«قبل بوليش 2» ← يخرج من المركبة ومن الفصوص (والباقي السلسال)،
-    # و«بعد بوليش 2» ← «أطقم جاهزة للبيع»، والمبيعات ← تخرج منها
+    # مسار الطقم (1.90، 1.91): قبض المركّب ← «أطقم مركبة»، والسلسال في القالب ← من السلاسل إلى المركبة، والفصوص والأحجار
+    # والماس المكتوبة في القالب ← نوعها (معلوماتي — ليس ذهباً)؛ و«قبل بوليش 2» ← يخرج من الفصوص ومن المركبة، و«بعد بوليش 2»
+    # ← ترجع الفصوص بوزنها والباقي (الصافي — الخياس من المركبة) ← «أطقم جاهزة للبيع»، وذهب المبيعات وحده ← يخرج منها
     ASSEMBLED = "أطقم مركبة"
     PARTS = "فصوص وأحجار والماس"
     READY_SETS = "أطقم جاهزة للبيع"
@@ -16873,9 +16943,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     SB_KIND_FIELDS = ("gems", "stones", "diamond", "chain")        # خانات القالب التي تمسّ تفصيل الخزينة (بفترة كتابتها)
     TREASURY_KINDS = (("سدايا", "شغل 4/8 − قبل البوليش + بعده − المركبين"),
                       ("سلاسل", "قبض/سلاسل − السلسال في القالب"),
-                      (ASSEMBLED, "قبض المركبين − قبل بوليش 2"),
-                      (PARTS, "القالب − قبل بوليش 2 (معلوماتي)"),
-                      (READY_SETS, "بعد بوليش 2 − المبيعات"),
+                      (ASSEMBLED, "قبض المركبين + السلسال − قبل بوليش 2"),
+                      (PARTS, "القالب − قبل بوليش 2 + بعده (معلوماتي)"),
+                      (READY_SETS, "صافي بعد بوليش 2 − ذهب المبيعات"),
                       ("كسر", "قبض/كسر − صرف كسر"),
                       ("سبيكة", "الوارد + قبض الأقسام − صرف سبيكة"),
                       ("شجر", "قبض الكاستنج − صرف شجر"),
@@ -16887,7 +16957,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
           المصنّع: شغل 4/8 ← السدايا، والسلاسل، وقبض/كسر ← الكسر داخل؛ وصرف لحام/واير/شجر ← خارج من رصيدها
           المركّب: كل صرفٍ له ← السدايا خارج، وكل قبضٍ منه ← «أطقم مركبة» داخل (1.90 — من مراحل التصنيع أو القالب)
           بوليش 1 (من مراحل التصنيع أو القالب، بلا الليزر): «قبل البوليش» (صرفه) ← السدايا خارج، و«بعده» (قبضه) ← داخل
-          بوليش 2: «بعد» ← «أطقم جاهزة للبيع» داخل (1.90) — و«قبل» والمبيعات بمسار الطقم في treasury_kind_moves
+          بوليش 2 والمبيعات: بمسار الطقم في treasury_kind_moves (1.90، 1.91)
           الكاستنج (فاقد): القبض ← الشجر داخل، والصرف بنوعه (كسر/سبيكة) ← خارج
           الأقسام: الصرف بنوعه (كسر/سبيكة/شجر) ← خارج، والقبض بنوعه (سبيكة/واير/لحام) ← داخل
           الوارد (1.88): كل وارد ذهب من شاشة الوارد ← السبيكة داخل — بند «الوارد» نفسه في الخزينة (treasury_bucket):
@@ -16910,10 +16980,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return None
         if name in assemblers:
             return {"صرف ذهب": (self.SADAYA, -1), "قبض ذهب": (self.ASSEMBLED, 1)}.get(t)
-        if t == self.SB_P2_OUT:
-            return self.READY_SETS, 1
-        if t == self.SB_P2_IN:
-            return None                  # يُقسَّم على المركبة والفصوص بمسار الطقم (treasury_kind_moves)
+        if t in (self.SB_P2_IN, self.SB_P2_OUT):
+            return None                  # يُقسَّمان بين الفصوص والمركبة والجاهزة بمسار الطقم (treasury_kind_moves)
         if t in self.POLISH1_SADAYA and name in ("التلميع/البف", self.SB_NAME):      # فاقد بوليش 1 (بلا الليزر)
             return self.SADAYA, self.POLISH1_SADAYA[t]
         if name == self.CAST_NAME and t == "قبض كاستنج":
@@ -16964,32 +17032,47 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return dt, dt[:7]
 
     @staticmethod
-    def sb_split_exit(w, ctx, sold_parts=None):
-        """خروج الطقم إلى بوليش 2 (أو ببيعه) بوزن w ← (من الفصوص، من المركبة): الفصوص والأحجار والماس الباقية له
-        (حتى w)، ثم قبض المركّب الباقي له (حتى باقي w) — وبلا صفٍّ عند المركبين: الباقي بعد الفصوص والسلسال؛ والباقي
-        بعدهما السلسال (لا يُخصم ولا يزيد). sold_parts: فصوص فاتورة البيع وأحجارها وماسها (خروجٌ ببيع) — لا يُخصم من
-        الفصوص أكثر منها، وليست من ذهب المركّب. ctx يُنقص منه ما خرج (رقمٌ في أكثر من حركة)"""
-        parts = min(ctx["parts"], w if sold_parts is None else min(w, sold_parts))
-        rest = w - (parts if sold_parts is None else sold_parts)
+    def sb_split_exit(w, ctx, with_parts=True):
+        """خروج الطقم إلى بوليش 2 (أو ببيعه) بوزن w ← (من الفصوص، من المركبة) — 1.91: الفصوص والأحجار والماس الباقية له
+        (حتى w)، والباقي من «أطقم مركبة» حتى ما دخلها للطقم (قبض مركّبه + سلساله) — وبلا صفٍّ عند المركبين: الباقي كله.
+        with_parts=False: خروجٌ ببيعٍ بلا بوليش 2 في القالب (w ذهب البيع وخياسه) — من المركبة وحدها (الفصوص لا تُخصم بالبيع).
+        ctx يُنقص منه ما خرج (رقمٌ في أكثر من حركة)، و p2_parts ما خرج من الفصوص (يرجع ببعد بوليش 2)"""
+        parts = min(ctx["parts"], w) if with_parts else 0.0
+        rest = max(w - parts, 0.0)
         if ctx["asm"] is not None:
-            asm = min(ctx["asm"], rest)
-            ctx["asm"] = round(ctx["asm"] - asm, 2)
+            asm = min(ctx["asm"] + ctx["chain"], rest)
+            from_asm = min(ctx["asm"], asm)
+            ctx["asm"] = round(ctx["asm"] - from_asm, 2)
+            ctx["chain"] = round(max(ctx["chain"] - (asm - from_asm), 0.0), 2)
         else:
-            asm = max(rest - ctx["chain"], 0.0)
-            ctx["chain"] = round(max(ctx["chain"] - (rest - asm), 0.0), 2)
+            asm = rest
+            ctx["chain"] = round(max(ctx["chain"] - asm, 0.0), 2)
         ctx["parts"] = round(ctx["parts"] - parts, 2)
+        ctx["p2_parts"] = round(ctx.get("p2_parts", 0.0) + parts, 2)
         return round(max(parts, 0.0), 2), round(max(asm, 0.0), 2)
+
+    @staticmethod
+    def sb_p2_after_split(w, ctx, had_before):
+        """«بعد بوليش 2» بوزن w ← (فصوصٌ ترجع لنوعها، صافٍ إلى الجاهزة) — 1.91: الفصوص والأحجار والماس ترجع بوزنها (ما خرج
+        منها بـ«قبل»، حتى w)، والباقي = الوزن الصافي (الخياس كله من المركبة) ← «أطقم جاهزة للبيع». وبلا «قبل» من القالب: لا
+        يرجع شيء، والصافي = w − فصوص القالب"""
+        if had_before:
+            back = min(ctx.get("p2_parts", 0.0), w)
+            ctx["p2_parts"] = round(ctx.get("p2_parts", 0.0) - back, 2)
+            return round(back, 2), round(max(w - back, 0.0), 2)
+        return 0.0, round(max(w - min(ctx["parts"], w), 0.0), 2)
 
     def treasury_kind_moves(self):
         """كل حركات تفصيل الخزينة في كل الفترات ← [(الفترة، النوع، 1 أو ‎-1، الوزن، الحركة، ملاحظة)]: الحركات بأنواعها
-        (treasury_kind_of)، ومعها مسار الطقم (1.90):
-          • الفصوص والأحجار والماس المكتوبة في القالب ← «فصوص وأحجار والماس» داخل، والسلسال ← السلاسل خارج (بفترة
-            كتابتها)
-          • «قبل بوليش 2» ← يخرج منه وزن فصوص الطقم وأحجاره وماسه من «فصوص وأحجار والماس»، وقبض مركّبه من «أطقم
-            مركبة»، والباقي السلسال (لا يُخصم ولا يزيد — خُصم بخانته)
-          • المبيعات (الذهب والفصوص والأحجار قبل الخصم والماس) ← من «أطقم جاهزة للبيع» لطقمٍ رُحِّل له «بعد بوليش 2» من
-            القالب؛ وطقمٌ بيع ولم يمرّ ببوليش 2 في القالب (أو بلا رقم تشغيل) يخرج ببيعه من المركبة والفصوص كما في «قبل
-            بوليش 2»، وما زال في صندوق بوليش 2 («قبل» بلا «بعد») لا يمسّ الأنواع ببيعه"""
+        (treasury_kind_of)، ومعها مسار الطقم (1.90، 1.91):
+          • الفصوص والأحجار والماس المكتوبة في القالب ← «فصوص وأحجار والماس» داخل، والسلسال ← من السلاسل إلى «أطقم مركبة»
+            (بفترة كتابتها)
+          • «قبل بوليش 2» = الفصوص والأحجار والماس + الطقم المركّب ← يخرج كلٌّ من نوعه (sb_split_exit)
+          • «بعد بوليش 2» ← ترجع الفصوص والأحجار والماس بوزنها لنوعها، والباقي (الوزن الصافي: الخياس من المركبة) ← «أطقم
+            جاهزة للبيع» (sb_p2_after_split)
+          • المبيعات ← ذهبها وحده من «أطقم جاهزة للبيع» لطقمٍ رُحِّل له «بعد بوليش 2» من القالب (الفصوص والأحجار والماس لا
+            تُخصم بالبيع)؛ وطقمٌ بيع ولم يمرّ ببوليش 2 في القالب (أو بلا رقم تشغيل) يخرج ذهبه وخياسه ببيعه من المركبة، وما
+            زال في صندوق بوليش 2 («قبل» بلا «بعد») لا يمسّ الأنواع ببيعه"""
         makers = set(self.categories.get("المصنعين", []))
         assemblers = set(self.categories.get("المركبين", []))
         qabd_types, sarf_types = set(), set()
@@ -17001,16 +17084,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             sarf_types.add(madin)
             qabd_types.add(qabd)
         sets = self.treasury_set_context()
-        out, p2_in, p2_out, sales = [], {}, set(), {}
+        out, p2_in, p2_out, sales = [], {}, {}, {}
         for inv in self.invoices.values():
             t, status = inv.get("النوع"), inv.get("settled_status")
             key = self.normalize_set_number(inv.get("set_number"))
-            if t == self.SB_P2_IN:
+            if t in (self.SB_P2_IN, self.SB_P2_OUT):
                 if status == "ACTIVE":
-                    p2_in.setdefault(key, []).append(inv)
+                    (p2_in if t == self.SB_P2_IN else p2_out).setdefault(key, []).append(inv)
                 continue
-            if t == self.SB_P2_OUT and status == "ACTIVE" and key:
-                p2_out.add(key)
             if (t in self.SALE_TYPES and status in COUNTED_STATUSES) or (
                     t == "خياس طقوم" and status in COUNTED_STATUSES
                     and (inv.get("trees_count") or 0.0) not in (KHAYAS_MARK_POLISH, KHAYAS_MARK_ASSEMBLER, KHAYAS_MARK_NET)):
@@ -17019,7 +17100,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             hit = self.treasury_kind_of(inv, makers, assemblers, qabd_types, sarf_types)
             if hit:
                 out.append((self.inv_period(inv), hit[0], hit[1], inv.get("الوزن", 0.0) or 0.0, inv, ""))
-        # ما كُتب في القالب: الفصوص والأحجار والماس داخل، والسلسال خارجٌ من السلاسل
+        # ما كُتب في القالب: الفصوص والأحجار والماس داخل، والسلسال من السلاسل إلى المركبة
         for key, ctx in sets.items():
             rec = ctx["rec"]
             if rec is None:
@@ -17031,52 +17112,57 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 at, period = self.sb_kind_mark(rec, field)
                 pseudo = {"التاريخ": at, "الاسم": self.SB_NAME, "set_number": key, "row_number": "", "الوزن": w,
                           "البيان": f"{label} — من القالب"}
-                kind, sign = (self.CHAINS_HEAD, -1) if field == "chain" else (self.PARTS, 1)
-                out.append((period, kind, sign, w, pseudo, pseudo["البيان"]))
+                hits = ((self.CHAINS_HEAD, -1), (self.ASSEMBLED, 1)) if field == "chain" else ((self.PARTS, 1),)
+                for kind, sign in hits:
+                    out.append((period, kind, sign, w, pseudo, pseudo["البيان"]))
 
         def order(inv):
             return str(inv.get("التاريخ", "")), inv.get("رقم الفاتورة", 0) or 0
+
+        def blank():
+            return {"rec": None, "parts": 0.0, "chain": 0.0, "asm": None}
         ctxs = {k: dict(v) for k, v in sets.items()}
-        # «قبل بوليش 2»: من الفصوص والمركبة، والباقي السلسال
-        for key, invs in p2_in.items():
-            ctx = ctxs.setdefault(key, {"rec": None, "parts": 0.0, "chain": 0.0, "asm": None})
-            for inv in sorted(invs, key=order):
+        # «قبل بوليش 2»: من الفصوص ومن المركبة — ثم «بعد بوليش 2»: الفصوص ترجع، والصافي إلى الجاهزة
+        for key in set(p2_in) | set(p2_out):
+            ctx = ctxs.setdefault(key, blank())
+            for inv in sorted(p2_in.get(key, ()), key=order):
                 parts, asm = self.sb_split_exit(inv.get("الوزن", 0.0) or 0.0, ctx)
                 for kind, w, note in ((self.PARTS, parts, "قبل بوليش 2 — الفصوص"),
                                       (self.ASSEMBLED, asm, "قبل بوليش 2 — المركّب")):
                     if w >= 0.005:
                         out.append((self.inv_period(inv), kind, -1, w, inv, note))
-        # المبيعات: من الجاهزة، أو خروج الطقم ببيعه إن لم يمرّ ببوليش 2 في القالب
+            for inv in sorted(p2_out.get(key, ()), key=order):
+                back, net = self.sb_p2_after_split(inv.get("الوزن", 0.0) or 0.0, ctx, key in p2_in)
+                for kind, w, note in ((self.PARTS, back, "بعد بوليش 2 — الفصوص ترجع"),
+                                      (self.READY_SETS, net, "بعد بوليش 2 — الصافي")):
+                    if w >= 0.005:
+                        out.append((self.inv_period(inv), kind, 1, w, inv, note))
+        # المبيعات: ذهبها وحده من الجاهزة، أو خروج الطقم ببيعه من المركبة إن لم يمرّ ببوليش 2 في القالب
+        gold_types = ("مبيعات ذهب", "مبيعات ذهب مع الماس")
         for key, invs in sales.items():
             if key and key in p2_in and key not in p2_out:
                 continue                         # في صندوق بوليش 2: بيعه يتمّ بوليشه ولا يمسّ الأنواع
-            lines = [i for i in invs if i.get("النوع") in self.SALE_TYPES]
             if key and key in p2_out:
-                for inv in lines:
-                    w = (inv.get("قبل", 0.0) or 0.0) if inv.get("trees_count") == 3.0 else (inv.get("الوزن", 0.0) or 0.0)
-                    if w >= 0.005:
+                for inv in invs:
+                    w = inv.get("الوزن", 0.0) or 0.0
+                    if inv.get("النوع") in gold_types and w >= 0.005:
                         out.append((self.inv_period(inv), self.READY_SETS, -1, round(w, 2), inv, ""))
                 continue
-            ctx = ctxs.setdefault(key, {"rec": None, "parts": 0.0, "chain": 0.0, "asm": None}) if key else \
-                {"rec": None, "parts": 0.0, "chain": 0.0, "asm": None}
+            ctx = ctxs.setdefault(key, blank()) if key else blank()
             groups = {}
             for inv in invs:
                 groups.setdefault((str(inv.get("التاريخ", "")), inv.get("الاسم"), inv.get("row_number", "") if not key
                                    else ""), []).append(inv)
             for _g, ginvs in sorted(groups.items(), key=lambda kv: kv[0][:2]):
-                gold = sum(i.get("الوزن", 0.0) or 0.0 for i in ginvs if i.get("النوع") in ("مبيعات ذهب",
-                                                                                          "مبيعات ذهب مع الماس"))
-                pieces = sum(((i.get("قبل", 0.0) or 0.0) if i.get("trees_count") == 3.0 else (i.get("الوزن", 0.0) or 0.0))
-                             for i in ginvs if i.get("النوع") in ("مبيعات فصوص وأحجار", "مبيعات الماس"))
-                khayas = sum(i.get("الوزن", 0.0) or 0.0 for i in ginvs if i.get("النوع") == "خياس طقوم")
-                if not any(i.get("النوع") in self.SALE_TYPES for i in ginvs):
+                lines = sorted((i for i in ginvs if i.get("النوع") in self.SALE_TYPES), key=order)
+                if not lines:
                     continue
-                first = sorted((i for i in ginvs if i.get("النوع") in self.SALE_TYPES), key=order)[0]
-                parts, asm = self.sb_split_exit(round(gold + pieces + khayas, 2), ctx, sold_parts=round(pieces, 2))
-                for kind, w, note in ((self.PARTS, parts, "بيع بلا بوليش 2 — الفصوص"),
-                                      (self.ASSEMBLED, asm, "بيع بلا بوليش 2 — المركّب")):
-                    if w >= 0.005:
-                        out.append((self.inv_period(first), kind, -1, w, first, note))
+                gold = sum(i.get("الوزن", 0.0) or 0.0 for i in lines if i.get("النوع") in gold_types)
+                khayas = sum(i.get("الوزن", 0.0) or 0.0 for i in ginvs if i.get("النوع") == "خياس طقوم")
+                _p, asm = self.sb_split_exit(round(gold + khayas, 2), ctx, with_parts=False)
+                if asm >= 0.005:
+                    out.append((self.inv_period(lines[0]), self.ASSEMBLED, -1, asm, lines[0],
+                                "بيع بلا بوليش 2 — المركّب"))
         return out
 
     def treasury_kind_breakdown(self, month=None):
@@ -24285,15 +24371,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             lines += self.sub_balance_lines({self.SADAYA: delta if field == "p1_after" else -delta})
         elif field == "asm_after":
             lines += self.sub_balance_lines({self.ASSEMBLED: delta})          # قبض المركّب ← أطقم مركبة (1.90)
-        elif field == "p2_after":
-            lines += self.sub_balance_lines({self.READY_SETS: delta})         # بعد بوليش 2 ← أطقم جاهزة للبيع
-        elif field == "p2_before":
-            # قبل بوليش 2 ← من الفصوص والأحجار والماس ومن الأطقم المركبة، والباقي السلسال (لا يُخصم ولا يزيد)
+        elif field in ("p2_before", "p2_after"):
+            # قبل بوليش 2 ← من الفصوص والأحجار والماس ومن الأطقم المركبة؛ وبعده ← ترجع الفصوص بوزنها والصافي (الخياس من
+            # المركبة) ← أطقم جاهزة للبيع (1.91)
             base = self.treasury_set_context().get(key) or {"rec": None, "parts": 0.0, "chain": 0.0, "asm": None}
-            new_p, new_a = self.sb_split_exit(value or 0.0, dict(base))
-            old_p, old_a = self.sb_split_exit(old or 0.0, dict(base))
-            lines += self.sub_balance_lines({self.ASSEMBLED: -round(new_a - old_a, 2),
-                                             self.PARTS: -round(new_p - old_p, 2)})
+            before = [i.get("الوزن", 0.0) or 0.0 for i in self.sb_field_moves(key, "p2_before")]
+
+            def split(w):
+                ctx = dict(base)
+                if field == "p2_before":
+                    return self.sb_split_exit(w or 0.0, ctx)
+                for bw in before:
+                    self.sb_split_exit(bw, ctx)
+                return self.sb_p2_after_split(w or 0.0, ctx, bool(before))
+            (new_p, new_x), (old_p, old_x) = split(value), split(old)
+            sign = -1 if field == "p2_before" else 1
+            lines += self.sub_balance_lines({self.PARTS: sign * round(new_p - old_p, 2),
+                                             self.ASSEMBLED if field == "p2_before" else self.READY_SETS:
+                                             sign * round(new_x - old_x, 2)})
         lines += ["", "— Enter للتأكيد"]
         if confirm and not messagebox.askyesno(title, "\n".join(lines), default=messagebox.YES, parent=parent):
             return False
@@ -29450,6 +29545,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
 
+        # صندوقٌ ثابت (صب داخلي — 1.91) يعود فارغاً كما تبقى الصناديق الأساسية بعد حذف حركاتها
+        fixed_back = self.ensure_default_khayas_boxes()
+
         # ٥) إعادة بناء كل الشاشات المرتبطة
         for fn in ("refresh_stage_buttons", "refresh_khayas_category_buttons",
                    "refresh_losses_cards", "refresh_chart_of_accounts"):
@@ -29463,6 +29561,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.recalculate_all()
 
         msg = f"تم حذف صندوق ({stage_name}) وكل ما يخصه."
+        if fixed_back:
+            msg += f"\n\n({stage_name}) صندوقٌ ثابت في النظام — أُعيد فارغاً."
         if blocked:
             msg += f"\n\nتنبيه: تعذّر حذف {blocked} حركة (التعديل مقفول من المدير)."
         messagebox.showinfo("تم الحذف", msg)

@@ -370,7 +370,8 @@ print("✔ قاعدة بلا جدول المعلقات: القائمة فارغ�
 
 init = seg("init_database")
 assert "cursor.execute(self.SUSPENDED_TABLE_SQL)" in init
-assert 'cursor.execute("DELETE FROM suspended_sales")' in seg("reset_system_data_action")
+assert 'cursor.execute("DELETE FROM suspended_sales")' in seg("wipe_system_data") and \
+    "self.wipe_system_data()" in seg("reset_system_data_action"), "التصفير (1.91: wipe_system_data) يمسح المعلقات"
 assert "self.refresh_suspended_sales_table()" in seg("_apply_admin_mirror")
 print("✔ الجدول يُنشأ مع القاعدة، ويُصفَّر مع تصفير البيانات، ومرآة المدير تعرض معلقات العميل")
 

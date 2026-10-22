@@ -83,6 +83,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "ASSEMBLED", "PARTS", "READY_SETS", "SB_PART_FIELDS", "SB_KIND_FIELDS", "TREASURY_KINDS", "invoices_by_period",
            "treasury_kind_of", "treasury_kind_breakdown", "sub_balance_lines", "POLISH1_SADAYA",
            "treasury_set_context", "sb_kind_mark", "sb_split_exit", "treasury_kind_moves", "sb_set_kind_mark",
+           "sb_p2_after_split",
            "get_operation_datetime",
            "SB_DISMISSED_KEY", "sb_dismissed", "sb_set_dismissed", "_sb_undo_setting")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
@@ -287,17 +288,19 @@ print("✔ الوزن بعد = بعد التركيب + فصوص + أحجار + �
 
 # ═══ ٥) بوليش 2: «قبل» صرفٌ لصندوقه و«بعد» قبضٌ منه — والوزن النهائي آخر «بعد» ═══
 br = a.treasury_kind_breakdown()
-assert (br["فصوص وأحجار والماس"]["balance"], br["سلاسل"]["balance"]) == (4.0, -3.0), \
-    "1.90: الفصوص والأحجار والماس في القالب ← نوعها، والسلسال ← خارجٌ من السلاسل"
+assert (br["فصوص وأحجار والماس"]["balance"], br["سلاسل"]["balance"], br["أطقم مركبة"]["balance"]) == (4.0, -3.0, 52.1), \
+    "1.90/1.91: الفصوص والأحجار والماس في القالب ← نوعها، والسلسال ← من السلاسل إلى أطقم مركبة (49.1 + 3)"
 assert a.sb_post(S, "p2_before", 56.1) is True and mb.last()[1] == "ترحيل «قبل بوليش 2»"
-assert "• رصيد أطقم مركبة في الخزينة: 49.10 ← 0.00" in mb.last()[2] and \
+assert "• رصيد أطقم مركبة في الخزينة: 52.10 ← 0.00" in mb.last()[2] and \
     "• رصيد فصوص وأحجار والماس في الخزينة: 4.00 ← 0.00" in mb.last()[2], mb.last()[2]
-assert "سلاسل" not in mb.last()[2], "الباقي (السلسال) لا يُخصم ولا يزيد"
+assert "سلاسل" not in mb.last()[2], "قبل بوليش 2 = الفصوص + المركّب (بسلساله)"
 assert a.sb_post(S, "p2_after", 55.8) is True
-assert "• رصيد أطقم جاهزة للبيع في الخزينة: 0.00 ← 55.80" in mb.last()[2]
+assert "• رصيد فصوص وأحجار والماس في الخزينة: 0.00 ← 4.00" in mb.last()[2] and \
+    "• رصيد أطقم جاهزة للبيع في الخزينة: 0.00 ← 51.80" in mb.last()[2], mb.last()[2]
 br = a.treasury_kind_breakdown()
 assert [br[k]["balance"] for k in ("أطقم مركبة", "فصوص وأحجار والماس", "سلاسل", "أطقم جاهزة للبيع")] == \
-    [0.0, 0.0, -3.0, 55.8]
+    [0.0, 4.0, -3.0, 51.8], "1.91: بعد بوليش 2 ← الفصوص ترجع بوزنها والصافي (الخياس من المركبة) ← الجاهزة"
+assert a.sb_values(S)["net"] == br["أطقم جاهزة للبيع"]["balance"], "«الوزن الصافي» في القالب = ما دخل الجاهزة"
 (p2i,) = a.moves(النوع="قبل بوليش 2")
 (p2o,) = a.moves(النوع="بعد بوليش 2")
 assert p2i["الاسم"] == p2o["الاسم"] == "قالب رقم التشغيل" and p2i["set_number"] == S
@@ -413,7 +416,9 @@ print("✔ وفاتورة المبيعات وتفصيل خياس الطقم يع
 # ═══ ١١) المباع: لا يُلغى توليده ولا يُحذف قالبه ═══
 a.add("عميل الطقم", "مبيعات ذهب", 51.8, set_no=S)
 assert a.sb_status(S) == "مباع"
-assert a.treasury_kind_breakdown()["أطقم جاهزة للبيع"]["balance"] == 4.0, "1.90: البيع يخرج من الجاهزة (55.8 − 51.8)"
+br = a.treasury_kind_breakdown()
+assert (br["أطقم جاهزة للبيع"]["balance"], br["فصوص وأحجار والماس"]["balance"]) == (0.0, 4.0), \
+    "1.91: البيع يخرج ذهبه (51.8) وحده من الجاهزة — والفصوص لا تُخصم بالبيع"
 assert a.sb_unproduce(S) is False and mb.last()[1] == "طقم مباع"
 assert a.sb_delete(S) is False and mb.last()[1] == "طقم مباع" and a.sb_load(S) is not None
 print("✔ الطقم المباع: حاله «مباع»، ولا يُلغى توليده، ولا يُحذف قالبه")
@@ -479,15 +484,14 @@ assert (v["p2_before"], v["p2_after"], v["p2_khayas"], v["final"], v["net"], v["
 assert v["ext"] == {"p2_before", "p2_after"} and a.sb_status("9400") == "مباع"
 assert a.sb_polish2_khayas("9400") is None, "بوليش 2 لطقم المبيعات مُرحَّل من المبيعات وحدها — لا ازدواج"
 assert a.sb_values(S)["ext"] == set(), "طقم القالب: مراحله من حركات القالب"
-# 1.90: طقمٌ بيع من المبيعات ولم يمرّ ببوليش 2 في القالب ← فصوصه (التي كتبها البيع في قالبه) تدخل نوعها وتخرج ببيعه في
-# فترة البيع، وذهبه يخرج من المركبة — والجاهزة لا تمسّ
+# 1.90/1.91: طقمٌ بيع من المبيعات ولم يمرّ ببوليش 2 في القالب ← فصوصه (التي كتبها البيع في قالبه) تدخل نوعها في فترة
+# البيع (والبيع لا يخصمها)، وذهبه وخياسه يخرجان من المركبة — والجاهزة لا تمسّ
 assert rec["kind_marks"]["gems"] == {"at": "2026-10-15 11:00:00", "period": "2026-10"}
 br = a.treasury_kind_breakdown()
 mv = sorted((n, w, sg) for k in ("أطقم مركبة", "فصوص وأحجار والماس", "أطقم جاهزة للبيع")
             for i, sg, w, n in br[k]["moves"] if i.get("set_number") == "9400")
 assert mv == [("أحجار — من القالب", 3.0, 1), ("الماس — من القالب", 0.5, 1),
-              ("بيع بلا بوليش 2 — الفصوص", 5.5, -1), ("بيع بلا بوليش 2 — المركّب", 30.4, -1),
-              ("فصوص — من القالب", 2.0, 1)], mv
+              ("بيع بلا بوليش 2 — المركّب", 30.4, -1), ("فصوص — من القالب", 2.0, 1)], mv
 print("✔ بيع رقمٍ من المبيعات ← قالبه يُحفظ مولَّداً بقيم الفاتورة (الفصوص والأحجار ونسبة خصمها والماس والعميل والتاريخ)")
 print("✔ وقالبه يعرض بوليش 2 من الفاتورة (بعد = الذهب + الفصوص + الأحجار + الماس، قبل = بعد + خياسه) والصافي = الذهب — للعرض")
 # تحديث قالبٍ موجود من فاتورة بيعه: القيم المباعة فعلاً
