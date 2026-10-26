@@ -71,7 +71,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "row_set_numbers", "find_row_by_set_number", "set_tracking_values", "set_voucher_sections",
            "stage_types", "SB_SALE_FIELDS", "autofill_sale_from_build",
            "SB_PREFIX", "SB_NAME", "SB_P2_IN", "SB_P2_OUT", "SB_READY", "SB_PIECE_ROWS", "SB_PIECE_COLS",
-           "SB_POSTED", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS", "sb_new_record", "sb_load", "sb_save", "sb_all",
+           "SB_POSTED", "SB_LOCAL_ASM", "sb_post_local_asm", "next_row_number", "period_invoices", "SB_NUMBER_FIELDS", "SB_TEXT_FIELDS", "sb_new_record", "sb_load", "sb_save", "sb_all",
            "sb_moves_index", "sb_assembler_groups", "sb_assembler_target_group", "sb_field_moves", "sb_num",
            "sb_values", "sb_polish2_khayas", "sb_polish1_posted", "sb_is_sold", "sb_status",
            "sb_check_assembler", "sb_ensure_assembler", "check_name_exists", "sb_post", "sb_set_field", "sb_set_pieces", "sb_pieces_totals", "sb_produce",
@@ -228,8 +228,8 @@ assert a.sb_post(S, "p1_before", 51.0) is False and mb.last()[0] == "warn" and "
 a.delete_invoice_from_db(extra)
 print("✔ خانة لها أكثر من حركة لا تُعدَّل من القالب — تنبيه بمكانها")
 
-# ═══ ٣) التركيب: صرف/قبض ذهب للمركّب في صفّه — الاسم يُكتب (وحسابه يُفتح إن لم يوجد) ورقم الصف إلزامي ═══
-assert a.sb_post(S, "asm_before", 49.6) is False and mb.last()[1] == "اسم المركّب"
+# ═══ ٣) التركيب: صرف/قبض ذهب للمركّب في صفّه — الاسم يُكتب (وحسابه يُفتح إن لم يوجد)، والصف يُعطى وحده (1.92) ═══
+assert a.sb_check_assembler(S, "", "") is None and mb.last()[1] == "اسم المركّب"
 # 1.81: اسم مركّبٍ جديد ← يُفتح له حساب في المركبين مباشرة (فيظهر في قسم المركبين وصناديق خياسهم)
 assert a.sb_ensure_assembler("‏زيد") is True and "زيد" in a.categories["المركبين"]
 assert a.saved_names == [("زيد", "المركبين")] and "زيد" in a.toasts[-1]
@@ -241,7 +241,6 @@ assert a.sb_ensure_assembler("جديد") is False and "جديد" not in a.catego
 a.view_only = False
 a.categories["المركبين"].remove("زيد")
 print("✔ اسم مركّب جديد في القالب: يُفتح له حساب في المركبين مباشرة؛ والموجود لا يتكرر؛ واسم حسابٍ آخر يُرفض")
-assert a.sb_post(S, "asm_before", 49.6, assembler="سالم", row="") is False and mb.last()[1] == "رقم الصف مطلوب"
 a.add("خالد", "صرف ذهب", 30.0, row="5", set_no="8888")
 assert a.sb_post(S, "asm_before", 49.6, assembler="خالد", row="5") is False and mb.last()[1] == "الصف مستخدم"
 assert a.moves(النوع="صرف ذهب", set_number=S) == []
@@ -269,7 +268,7 @@ assert (idx[S]["sarf"], idx[S]["qabd"]) == (49.6, 49.0), "التركيب في ك
 # تعديله من القالب يعدّل حركة المركّب نفسها في صفّه (لا يسأل عن الاسم ثانية)
 assert a.sb_post(S, "asm_after", 49.1) is True and len(a.moves(النوع="قبض ذهب", الاسم="سالم")) == 1
 assert a.sb_values(S)["asm_khayas"] == 0.5
-print("✔ التركيب: المركّب من القائمة والصف إلزامي، والصف المستخدم برقمٍ آخر يُرفض، والرقم لمركّب واحد")
+print("✔ التركيب: المركّب من القائمة، والصف المستخدم برقمٍ آخر يُرفض، والرقم لمركّب واحد")
 print("✔ «قبل» صرف ذهب و«بعد» قبض ذهب في صف المركّب نفسه — فيظهر في كشفه ويحسب خياس المركب منه")
 
 t = a.set_tracking_values(S)
@@ -532,7 +531,7 @@ assert '"7": 6' in src and '"٧": 6' in src and '"Ctrl + 1 … 7"' in src
 print("✔ الشاشة في الشريط الجانبي (السابعة، Ctrl+7) وتُبنى عند أول فتح وتُحدَّث بالحساب الشامل")
 
 flow = list(a.SB_FLOW)
-assert flow == ["customer", "model", "label", "date", "assembler", "asm_row", "kind", "p08", "p04", "mfg_khayas",
+assert flow == ["customer", "model", "label", "date", "assembler", "kind", "p08", "p04", "mfg_khayas",
                 "p1_before", "p1_after", "asm_before", "asm_after", "gems", "stones", "stones_pct", "diamond",
                 "chain", "p2_before", "p2_after", "gems_ct", "stones_ct"], flow
 assert a.sb_flow_next("stones_ct") == "piece:0:0" and a.sb_flow_next("p1_after") == "asm_before", \
@@ -619,7 +618,7 @@ assert nb("gems_ct", "left") == "stones_ct" and nb("gems_ct", "up") in ("piece:1
 print("✔ الأسهم على الورقة: ← → في السطر نفسه، و↑ ↓ في العمود نفسه (لا قفز للعمود الآخر)، وجدول القطع خانةً خانة")
 
 flow = list(a.SB_FLOW)
-assert flow[:7] == ["customer", "model", "label", "date", "assembler", "asm_row", "kind"] \
+assert flow[:6] == ["customer", "model", "label", "date", "assembler", "kind"] and "asm_row" not in paper.SB_CELL_KINDS \
     and set(flow) <= set(paper.SB_CELL_KINDS)
 arrow = member("sb_arrow")
 assert 'cell["kind"] != "post" or key in st["pending"]' in arrow, "المقترح (بالأصفر) لا يُرحَّل بالمرور عليه"
@@ -687,5 +686,64 @@ assert a.sb_post(S3, "p1_after", 29.6) is True
 t = a.set_tracking_values(S3)
 assert (t["polish_before"], t["polish_after"], t["polish_khayas"]) == (30.0, 29.6, 0.4), t
 print("✔ التتبع: «قبل» من القالب و«بعد» ما لم يُرحَّل من القالب = صرف المركّب (ثم المرحَّل منه)")
+
+# ═══ ١٦) 1.92: التركيب بلا اسم مركّب — في القالب وحده (لا يُرحَّل لحساب)، يحسب خاناته وتفصيل الخزينة؛ وباسمٍ يصير حركة ═══
+L = "9700"
+
+
+def kinds_():
+    br_ = a.treasury_kind_breakdown()
+    return br_["سدايا"]["balance"], br_["أطقم مركبة"]["balance"]
+
+
+sad0, asm0 = kinds_()
+n_inv = len(a.invoices)
+assert a.sb_post(L, "asm_before", 30.0) is True
+_k, title_, msg_, _kw = mb.last()
+assert title_ == "«قبل التركيب» في القالب" and "في القالب وحده (بلا اسم مركّب — لا يُرحَّل لحساب)" in msg_, msg_
+assert f"• رصيد سدايا في الخزينة: {sad0:.2f} ← {sad0 - 30:.2f}" in msg_, msg_
+assert len(a.invoices) == n_inv and a.sb_load(L)["asm_before"] == 30.0, "لا حركة — في القالب وحده"
+assert a.undo[-1]["label"] == "قبل التركيب (9700) — قالب رقم التشغيل" and "set_build:9700" in a.undo[-1]["settings"]
+assert a.sb_post(L, "asm_after", 29.5) is True and "خياس التركيب: 30.00 − 29.50 = 0.50" in mb.last()[2]
+assert "• رصيد أطقم مركبة في الخزينة:" in mb.last()[2]
+assert a.sb_set_field(L, "gems", "1") and a.sb_set_field(L, "chain", "2")
+v = a.sb_values(L)
+assert (v["asm_before"], v["asm_after"], v["asm_khayas"], v["asm_local"]) == (30.0, 29.5, 0.5, {"asm_before", "asm_after"})
+assert (v["weight_after"], v["total"]) == (30.5, 32.5), "الخانات الباقية تتأثر: الوزن بعد والإجمالي (ومقترح بوليش 2)"
+sad1, asm1 = kinds_()
+assert (round(sad1 - sad0, 2), round(asm1 - asm0, 2)) == (-30.0, 31.5), \
+    "تفصيل الخزينة: «قبل» من السدايا، و«بعد» (29.5) والسلسال (2) إلى أطقم مركبة"
+ctx = a.treasury_set_context()[L]
+assert (ctx["asm"], ctx["local_before"], ctx["local_after"]) == (29.5, 30.0, 29.5), "قيد قبل بوليش 2: ما دخل المركبة للطقم"
+assert a.sb_post(L, "asm_after", 29.0) is True and a.sb_load(L)["asm_after"] == 29.0, "التعديل في القالب"
+assert a.sb_post(L, "asm_after", 29.0) is True and mb.last()[2] != "", "القيمة نفسها لا تسأل"
+mb.answer = False
+assert a.sb_post(L, "asm_after", 28.0) is False and a.sb_load(L)["asm_after"] == 29.0, "«لا» لا تغيّر"
+mb.answer = True
+# باسم مركّب: الخانة تصير حركةً في حسابه بصفٍّ تلقائي — تحلّ محلّ ما في القالب فلا تُعدّ مرتين
+row_next = a.next_row_number(lambda i: i.get("الاسم") == "سالم")
+assert a.sb_post(L, "asm_before", 30.0, assembler="سالم") is True
+assert f"صرف ذهب للمركّب (سالم) — الصف ({row_next})" in mb.last()[2] and "كان في القالب وحده: 30.00" in mb.last()[2]
+assert "رصيد سدايا" not in mb.last()[2], "التأكيد بلا ازدواج: السدايا لا تتغيّر (الحركة تحلّ محلّ ما في القالب)"
+(mv,) = a.moves(set_number=L, النوع="صرف ذهب")
+assert (mv["الاسم"], mv["row_number"], mv["الوزن"]) == ("سالم", row_next, 30.0)
+rec = a.sb_load(L)
+assert rec["asm_before"] is None and rec["asm_after"] == 29.0 and (rec["assembler"], rec["asm_row"]) == ("سالم", row_next)
+assert a.sb_values(L)["asm_local"] == {"asm_after"} and kinds_()[0] == sad1, "السدايا كما هي (حلّت الحركة محلّه)"
+assert a.sb_post(L, "asm_after", 29.0, assembler="سالم") is True, "«بعد» للمركّب نفسه (صفّ الطقم)"
+(mq,) = a.moves(set_number=L, النوع="قبض ذهب")
+assert mq["row_number"] == row_next and a.sb_load(L)["asm_after"] is None and a.sb_values(L)["asm_local"] == set()
+assert kinds_() == (sad1, round(asm1 - 0.5, 2)), "المركبة: 29 (بدل 29.5) + السلسال 2"
+# تفريغ ما في القالب وحده، ووضع العرض
+L2 = "9701"
+assert a.sb_post(L2, "asm_before", 5.0) is True and a.sb_post(L2, "asm_before", None) is True
+assert a.sb_load(L2)["asm_before"] is None and mb.last()[1] == "مسح «قبل التركيب»"
+a.view_only = True
+assert a.sb_post(L2, "asm_before", 5.0) is False and a.sb_load(L2)["asm_before"] is None
+a.view_only = False
+assert 'cell("assembler", right - half, b0, right - 24 * MM, b1, 11)' in member("sb_paper_spec") and \
+    '"الصف:"' not in member("sb_paper_spec"), "1.92: بلا خانة صف المركّب في رأس القالب"
+print("✔ 1.92: التركيب بلا اسم مركّب يُحفظ في القالب وحده (تأكيد وتراجع) ويحسب الخياس والوزن والإجمالي وتفصيل الخزينة؛ "
+      "وباسمٍ يصير حركةً في حساب المركّب بصفٍّ تلقائي بلا ازدواج؛ والتفريغ يمسحه؛ ووضع العرض لا يكتب")
 
 print("\n✅ قالب رقم التشغيل: كل خانة تُرحَّل لمكانها، والأوزان محسوبة، والتوليد يملأ المبيعات بلا ازدواج")
