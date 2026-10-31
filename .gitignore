@@ -1,0 +1,10 @@
+# بيانات التشغيل الحقيقية والنسخ الاحتياطية لا تُرفع للمستودع
+data/
+*.db
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
