@@ -38,6 +38,8 @@ MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LE
            "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
            "sales_summary_layout", "draw_sales_summary_pages")
 ns = dict(marks, REPORTLAB_AVAILABLE=False, SALE_READ_STATUSES=("ACTIVE", "SETTLED_INOUT", "MEMO"))
+for _fn in ("sale_standing_weight", "sale_bound_weight"):     # الوزنان بلا الماس (1.93)
+    exec(module_src(_fn), ns)
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 App = ns["App"]
 App.sb_polish2_khayas = lambda self, k: None      # لا قوالب في هذا الاختبار
@@ -76,7 +78,7 @@ assert cols == ("#", "رقم التشغيل", "الذهب", "الفصوص", "ا�
 assert "خياس" not in cols
 rows, totals = app.sales_summary_rows([d1, d2])
 assert rows[0] == {"set_number": "88001", "الذهب": 30.5, "الفصوص": 1.25, "الأحجار": 2.0, "الأحجار بعد الخصم": 1.4,
-                   "الماس": 0.4, "خياس بوليش 2": 0.3, "الخياس": 0.47, "الوزن القائم": 34.15, "الوزن المقيد": 33.55,
+                   "الماس": 0.4, "خياس بوليش 2": 0.3, "الخياس": 0.47, "الوزن القائم": 33.75, "الوزن المقيد": 33.15,
                    "البيان": app.sale_note_of(d1.get("voucher"))}, rows[0]
 assert rows[1]["الخياس"] == 0.35 and rows[1]["الوزن القائم"] == 31.5
 assert "البيان" not in totals
@@ -133,7 +135,8 @@ if HAVE_RL:
         g["ARABIC_SHAPING_AVAILABLE"] = False
     for name in ("resource_path", "_ARABIC_FONT_NAME", "_ARABIC_FONT_BOLD_NAME", "_ARABIC_FONT_PATH_USED",
                  "_register_arabic_font", "_PDF_SYMBOL_RANGES", "_PDF_SYMBOL_SWAP", "_PDF_GLYPHS", "_pdf_font_has",
-                 "pdf_text", "ar", "fit_font_size", "vcenter_baseline", "APP_LOGO_B64"):
+                 "pdf_text", "ar", "fit_font_size", "vcenter_baseline", "APP_LOGO_B64",
+                 "sale_standing_weight", "sale_bound_weight"):
         exec(module_src(name), g)
     g["__file__"] = os.path.abspath(TARGET)
     g["_register_arabic_font"]()

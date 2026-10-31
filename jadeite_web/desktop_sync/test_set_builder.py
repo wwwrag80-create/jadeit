@@ -77,7 +77,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "sb_check_assembler", "sb_ensure_assembler", "check_name_exists", "sb_post", "sb_set_field", "sb_set_pieces", "sb_pieces_totals", "sb_produce",
            "sb_unproduce", "sb_delete", "sb_next_set_number", "sb_sale_fill", "sb_stage_rows", "sb_ids",
            "sb_voucher_sections", "SB_FLOW", "SB_POST_CELLS", "SB_PAIR_BEFORE", "sb_flow_next", "CARAT_PER_GRAM", "SALE_KIND_GOLD",
-           "SALE_KIND_DIAMOND", "SALE_KINDS", "sb_p2_incomplete", "sb_sale_index", "sb_apply_sale",
+           "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "sale_hidden_keys", "sb_p2_incomplete", "sb_sale_index", "sb_apply_sale",
            "sb_sync_from_sale", "sb_mfg_receipts", "movement_slot", "note_head", "CHAINS_HEAD", "MFG_CHAINS_SLOT",
            "RECEIPT_KINDS", "TREE_HEAD", "ISSUE_HEADS", "MFG_SARF_KINDS", "MFG_SARF_SLOTS", "SADAYA", "CAST_NAME",
            "ASSEMBLED", "PARTS", "READY_SETS", "SB_PART_FIELDS", "SB_KIND_FIELDS", "TREASURY_KINDS", "invoices_by_period",
@@ -93,6 +93,8 @@ ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, 
       "KHAYAS_MARK_ASSEMBLER": module_value("KHAYAS_MARK_ASSEMBLER")}
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
 exec(module_src("sale_net_weight"), ns)
+exec(module_src("sale_standing_weight"), ns)
+exec(module_src("sale_bound_weight"), ns)
 sale_net_weight = ns["sale_net_weight"]
 
 
@@ -306,7 +308,7 @@ assert p2i["الاسم"] == p2o["الاسم"] == "قالب رقم التشغيل
 v = a.sb_values(S)
 assert (v["p2_before"], v["p2_after"], v["p2_khayas"], v["final"]) == (56.1, 55.8, 0.3, 55.8)
 assert v["net"] == 51.8, "الصافي = النهائي − فصوص − أحجار − الماس"
-assert v["bound"] == 55.5, "المقيد = الصافي + الفصوص + الأحجار بعد الخصم + الماس"
+assert v["bound"] == 55.0, "المقيد = الصافي + الفصوص + الأحجار بعد الخصم — بلا الماس (1.93: الماس للعرض)"
 assert a.sb_polish2_khayas(S) == 0.3 and a.sb_polish2_khayas("8888") is None
 madin, qabd_t = a.stage_types("خياس الطقوم")
 assert madin == {"خياس طقوم", "قبل بوليش 2"} and qabd_t == {"قبض خياس طقوم", "بعد بوليش 2"}
@@ -340,7 +342,7 @@ a.add("أحمد", "المفنش ٤ بالالف", 50.0, row="1", set_no=S)
 sec = a.set_voucher_sections({"set_number": S, "invoice_no": None})
 assert sec["mfg"] == (50.4, 50.0, 0.4) and sec["polish"] == (50.2, 49.6, 0.6)
 assert sec["assembly"] == (49.6, 49.1, 0.5) and sec["polish2"] == (56.1, 55.8, 0.3)
-assert (sec["weight_after"], sec["chain"], sec["total"], sec["net"], sec["bound"]) == (53.1, 3.0, 56.1, 51.8, 55.5)
+assert (sec["weight_after"], sec["chain"], sec["total"], sec["net"], sec["bound"]) == (53.1, 3.0, 56.1, 51.8, 55.0)
 assert sec["assemblers"] == "سالم" and sec["name"] == "عميل الطقم" and len(sec["pieces"]) == 4
 assert sec["final_values"] == [("الوزن النهائي", 55.8), ("ناقص فصوص", 2.0), ("ناقص احجار", 1.5),
                                ("ناقص الماس", 0.5), ("الوزن الصافي", 51.8)]
@@ -561,7 +563,7 @@ print("✔ المقترح: «قبل» التركيب = «بعد» البوليش
 pns = {}
 exec("class Paper:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
     "VOUCHER_MARGIN_MM", "set_voucher_layout", "SB_CELL_KINDS", "SB_PIECE_ROWS", "SB_PIECE_COLS",
-    "sb_paper_spec", "sb_neighbor")), pns)
+    "SB_KHAYAS_KEYS", "sb_paper_spec", "sb_neighbor")), pns)
 paper = pns["Paper"]()
 spec = paper.sb_paper_spec()
 L = paper.set_voucher_layout(compact=True)

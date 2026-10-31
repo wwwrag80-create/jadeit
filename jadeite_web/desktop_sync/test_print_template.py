@@ -101,11 +101,16 @@ if "reportlab.lib.colors" not in sys.modules:
                             "reportlab.lib.colors": mod})
 draw_fn = method("draw_set_voucher_page")
 ns.update(re=re, ar=lambda t: t, fit_font_size=lambda *a, **k: a[2], _ARABIC_FONT_NAME="f", _ARABIC_FONT_BOLD_NAME="b")
+for _fn in ("sale_standing_weight", "sale_bound_weight"):     # الوزنان بلا الماس (1.93)
+    exec(ast.get_source_segment(src, next(n for n in ast.parse(src).body
+                                          if isinstance(n, ast.FunctionDef) and n.name == _fn)), ns)
 exec(compile(ast.Module(body=[draw_fn, method("set_voucher_sections")], type_ignores=[]), "voucher", "exec"), ns)
 fake.set_voucher_layout = lambda: ns["set_voucher_layout"](fake)
 fake.set_voucher_values = lambda d: ns["set_voucher_values"](fake, d)
 fake.set_voucher_sections = lambda d: ns["set_voucher_sections"](fake, d)
 fake.CARAT_PER_GRAM = 5
+fake.SET_PAPER_COLORS = ast.literal_eval(next(
+    n.value for n in cls.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "SET_PAPER_COLORS"))
 fake.sb_load = lambda k: None          # رقمٌ لم يُبنَ في «قالب رقم التشغيل»: السند من التتبع وسطر البيع
 fake.set_tracking_values = lambda k: {"polish_before": 33.6, "polish_after": 33.0, "polish_khayas": 0.6,
                                       "asm_before": 33.0, "asm_after": 32.5, "asm_khayas": 0.5, "names": ["سالم"]}
@@ -115,11 +120,11 @@ ns["draw_set_voucher_page"](fake, Canvas(), {"set_number": "88001", "gold": 35.2
                                              "stones_discount": "0.90", "diamond": 0.4, "khayas": 0.6,
                                              "invoice_no": 7, "name": "المصنع", "date": "2026-10-05 10:00:00",
                                              "kind": "الماس"})
-for value in ("33.60", "33.00", "0.60", "32.50", "0.50", "38.40", "3.35", "41.75", "41.15", "39.05", "30%",
+for value in ("33.60", "33.00", "0.60", "32.50", "0.50", "38.40", "3.35", "41.75", "41.15", "38.65", "30%",
               "سالم", "المصنع", "2026-10-05", "الماس", "88001"):
     assert value in drawn, (value, drawn)
 print("✔ الرسم الفعلي يكتب القيم في خاناتها: البوليش 33.60/33.00/0.60، التركيب 33.00/32.50/0.50، الوزن بعد 38.40، "
-      "السلسال 3.35، الإجمالي 41.75، بوليش 2 41.75/41.15/0.60، المقيد 39.05، ونسبة الأحجار 30%")
+      "السلسال 3.35، الإجمالي 41.75، بوليش 2 41.75/41.15/0.60، المقيد 38.65 (بلا الماس — 1.93)، ونسبة الأحجار 30%")
 xs = [v for r_ in rects for v in (r_[0], r_[2])]
 ys = [v for r_ in rects for v in (r_[1], r_[3])]
 assert close(min(xs), M) and close(max(xs), PW - M) and close(max(ys), PH - M), (min(xs), max(xs), max(ys))

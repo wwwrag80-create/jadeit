@@ -53,6 +53,9 @@ ns = {"sqlite3": sqlite3, "json": __import__("json"), "datetime": __import__("da
       "IS_ADMIN_BUILD": False,
       "KHAYAS_MARK_POLISH": module_value("KHAYAS_MARK_POLISH")}
 exec("class Base:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
+for _fn in ("sale_standing_weight", "sale_bound_weight"):     # الوزنان بلا الماس (1.93)
+    _n = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == _fn)
+    exec(ast.get_source_segment(src, _n), ns)
 
 
 class App(ns["Base"]):
@@ -259,7 +262,7 @@ assert sec["weight_after"] == 44.4, "الوزن بعد = المركب بعد 38.
 assert sec["total"] == 41.75, "الوزن الإجمالي = قبل بوليش 2 = 0.6 + 35.25 + 2.5 + 3 + 0.4"
 assert sec["chain"] == -2.65, "السلسال = الإجمالي − الوزن بعد"
 assert sec["polish2"] == (41.75, 41.15, 0.6), "بوليش 2 = نافذة «قبل/بعد» نفسها"
-assert (sec["net"], sec["stones_discount"], sec["bound"]) == (35.25, 0.9, 39.05)
+assert (sec["net"], sec["stones_discount"], sec["bound"]) == (35.25, 0.9, 38.65), "المقيد بلا الماس (1.93)"
 assert (sec["assemblers"], sec["kind"], sec["name"], sec["date"]) == ("سالم", "الماس", "المصنع", "2026-09-10")
 blank = a.set_voucher_sections({"set_number": "7003", "invoice_no": None})
 assert blank["polish"] == (15.3, 15.0, 0.3) and blank["assembly"] == (15.0, 4.5, 10.5)

@@ -41,6 +41,9 @@ MEMBERS = ["_SET_DIGITS", "_SCANNED_WEIGHT", "normalize_set_number", "scanned_se
            "sale_tickets_with_invoice", "sale_ticket_data", "sale_ticket_qr", "SALE_BARCODE_MODES",
            "DEFAULT_SALE_BARCODE_MODE", "sale_barcode_mode", "sale_ticket_barcode", "set_sale_move",
            "sale_invoice_groups"]
+_mod = ast.parse(src)
+for _fn in ("sale_standing_weight", "sale_bound_weight"):     # الوزنان بلا الماس (1.93)
+    exec(ast.get_source_segment(src, next(n for n in _mod.body if isinstance(n, ast.FunctionDef) and n.name == _fn)), ns)
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
 
 DATE, CUST = "2026-09-20 10:00:00", "زبون"
@@ -78,24 +81,24 @@ assert set(a) == {"set_number", "invoice", "date", "gold", "gems", "stones", "st
                   "standing", "bound", "qr", "barcode"}, "محتوى التذكرة كما طلبه المستخدم فقط"
 assert a["invoice"] == "S-7001" and a["date"] == "2026-09-20"
 assert (a["gold"], a["gems"], a["stones"], a["stones_after"], a["diamond"]) == (35.25, 2.5, 3.0, 2.1, 0.4)
-assert a["standing"] == round(35.25 + 2.5 + 3.0 + 0.4, 2) == 41.15
-assert a["bound"] == round(35.25 + 2.5 + 2.1 + 0.4, 2) == 40.25
+assert a["standing"] == round(35.25 + 2.5 + 3.0, 2) == 40.75, "الماس للعرض فقط (1.93): خارج القائم"
+assert a["bound"] == round(35.25 + 2.5 + 2.1, 2) == 39.85, "والمقيد"
 assert b["stones_after"] == 0.0 and b["bound"] == b["standing"] == 20.0
 print("✔ تذكرة لكل رقم تشغيل بترتيب السطور (والسطر بلا رقم لا تذكرة له)، بالمحتوى المطلوب فقط: الفاتورة والتاريخ "
-      "والذهب والفصوص والأحجار وبعد الخصم والماس، والقائم 41.15 والمقيد 40.25")
+      "والذهب والفصوص والأحجار وبعد الخصم والماس، والقائم 40.75 والمقيد 39.85 (بلا الماس — 1.93)")
 
-assert a["qr"] == "رقم التشغيل: 88001 | الوزن المقيد: 40.25 جم" and b["qr"].endswith("| الوزن المقيد: 20.00 جم")
+assert a["qr"] == "رقم التشغيل: 88001 | الوزن المقيد: 39.85 جم" and b["qr"].endswith("| الوزن المقيد: 20.00 جم")
 # الباركود الخطي: الرقم والوزن المقيد (خانة واحدة افتراضياً)، أو خانتان بـ Tab، أو الرقم وحده
-assert a["barcode"] == "88001 40.25" and b["barcode"] == "88002 20.00", "افتراضياً: خانة واحدة"
+assert a["barcode"] == "88001 39.85" and b["barcode"] == "88002 20.00", "افتراضياً: خانة واحدة"
 PREFS["sale_barcode_mode"] = "tab"
-assert app.sale_ticket_data(groups)[0]["barcode"] == "88001\t40.25"
+assert app.sale_ticket_data(groups)[0]["barcode"] == "88001\t39.85"
 PREFS["sale_barcode_mode"] = "number"
 assert app.sale_ticket_data(groups)[0]["barcode"] == "88001"
 PREFS["sale_barcode_mode"] = "عبث"
-assert app.sale_barcode_mode() == "one" and app.sale_ticket_data(groups)[0]["barcode"] == "88001 40.25"
+assert app.sale_barcode_mode() == "one" and app.sale_ticket_data(groups)[0]["barcode"] == "88001 39.85"
 PREFS.clear()
 assert app.sale_ticket_barcode("A-7", 0.5, "one") == "A-7 0.50"
-print("✔ الباركود الخطي يحمل رقم التشغيل ووزنه المقيد: «88001 40.25» في خانة واحدة، أو «88001⇥40.25» "
+print("✔ الباركود الخطي يحمل رقم التشغيل ووزنه المقيد: «88001 39.85» في خانة واحدة، أو «88001⇥39.85» "
       "(Tab ينقل القارئ للخانة التالية)، أو الرقم وحده — يُختار ويُحفظ لهذا الجهاز")
 
 S = ns["Base"].scanned_set_number
@@ -105,7 +108,7 @@ assert S(a["qr"]) == "88001" and S("٨٨٠٠١") == "88001" and S(" 88001 ") == 
 assert S(": 88001 | : 40.25 ") == "88001", "قارئ بلوحة إنجليزية أسقط الحروف العربية"
 assert S("vrl hgja.dg 88001 | hg,.k 40.25") == "88001", "قارئ حوّل الحروف العربية لاتينية بلا نقطتين"
 assert S("رقم التشغيل: A 12 | الوزن المقيد: 1.00 جم") == "A 12" and S("") == "" and S(None) == ""
-print("✔ رمز QR = «رقم التشغيل: 88001 | الوزن المقيد: 40.25 جم» يعرضه أي تطبيق مسح بلا إنترنت، "
+print("✔ رمز QR = «رقم التشغيل: 88001 | الوزن المقيد: 39.85 جم» يعرضه أي تطبيق مسح بلا إنترنت، "
       "والبرنامج يأخذ منه رقم التشغيل وحده (ولو أسقط القارئ الحروف العربية)")
 
 assert app.sale_tickets_with_invoice() is True

@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.92.0"
+APP_VERSION = "1.93.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -345,6 +345,18 @@ def sale_net_weight(row):
 
     return round(val("فصوص") + val("أحجار بعد الخصم")
                  - val("خياس") - val("خياس البوليش") - val("خياس المركب"), 2)
+
+
+def sale_standing_weight(gold, gems, stones):
+    """الوزن القائم في المبيعات = الذهب + الفصوص + الأحجار (الخام).
+    الماس (1.93) للعرض والمعرفة فقط: يُسجَّل ويظهر في خانته وعموده، ولا يدخل القائم ولا المقيد."""
+    return round((gold or 0.0) + (gems or 0.0) + (stones or 0.0), 2)
+
+
+def sale_bound_weight(gold, gems, stones_disc):
+    """الوزن المقيد في المبيعات = الذهب + الفصوص + الأحجار بعد الخصم — بلا الماس (1.93، انظر sale_standing_weight).
+    مصدر واحد: خانات البيع، جدول السطور، نافذة التعديل، الفاتورة، التذاكر والباركود، وقالب رقم التشغيل وسنده."""
+    return round((gold or 0.0) + (gems or 0.0) + (stones_disc or 0.0), 2)
 
 
 def raji_ayar(wire_back, karat):
@@ -2932,6 +2944,45 @@ def table_font_family():
 # تفضيلات الواجهة على هذا الجهاز وحده (المظهر…) — ملف محلي لا يُرفع للسحابة، فلا
 # يتبع جهازُ المدير اختيارَ العميل ولا العكس
 UI_PREFS_FILE = "ui_prefs.json"
+
+
+# ═══ المعاينة (1.93): نافذة مستقلة بمحرّك Edge الذي يأتي مع ويندوز 10 و11 — بلا شريط عنوان ولا تبويبات (وضع التطبيق
+#     «--app») — لا المتصفح الافتراضي (Firefox مثلاً). وبلا Edge (أو على غير ويندوز): البرنامج الافتراضي كما كان ═══
+EDGE_EXE_CANDIDATES = (r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+                       r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+                       r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe")
+EDGE_PREVIEW_TYPES = (".pdf", ".html", ".htm", ".png", ".jpg", ".jpeg", ".svg", ".txt")
+
+
+def find_edge_exe():
+    """مسار msedge.exe: من سجلّ ويندوز (App Paths) ثم مساراته المعتادة — أو None"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe") as key:
+                    path = winreg.QueryValue(key, None)
+                if path and os.path.isfile(path.strip('"')):
+                    return path.strip('"')
+            except OSError:
+                continue
+    except ImportError:
+        pass
+    for cand in EDGE_EXE_CANDIDATES:
+        path = os.path.expandvars(cand)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def edge_preview_command(edge, path, width=1200, height=900, x=60, y=30):
+    """أمر نافذة المعاينة: Edge بوضع التطبيق (--app) على الملف — نافذةٌ واحدة بلا شريط عنوان ولا تبويبات"""
+    import pathlib
+    uri = pathlib.Path(os.path.abspath(path)).as_uri()
+    return [edge, f"--app={uri}", f"--window-size={int(width)},{int(height)}", f"--window-position={int(x)},{int(y)}",
+            "--no-first-run", "--no-default-browser-check"]
 
 
 def load_ui_prefs():
@@ -6066,6 +6117,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             _remove_db_files(tmp_path)
 
     def on_app_closing(self):
+        try:
+            self.flush_all_drafts()        # ما ينتظر الحفظ التلقائي يُحفظ قبل الإغلاق (1.93)
+        except Exception:
+            pass
         try:
             if getattr(self, 'gold_watcher', None):
                 self.gold_watcher.stop()
@@ -10788,6 +10843,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.update_edit_status_ui()
         self.update_access_ui()
         self.after(6000, self.warn_access_expiry)
+        self.after(2500, self.notify_saved_drafts)     # ما حُفظ تلقائياً ولم يُرحَّل (1.93)
         self.update_period_warning()
         self.watch_system_month()
         self.refresh_live_date_fields()
@@ -11573,6 +11629,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         hook = self.SCREEN_ON_SHOW.get(name)
         if hook and hasattr(self, hook):
             self.after_idle(getattr(self, hook))         # ما تفعله الشاشة عند فتحها (مثل التركيز في خاناتها)
+        if name in (self.__dict__.get("_draft_notices") or {}):
+            self.after_idle(lambda: self.show_draft_notice(name))    # مسودة استُعيدت لهذه الشاشة (1.93)
         # ظهرت بمقاسها الحقيقي: لا حاجة لرسمها مسبقاً ما دام المقاس نفسه
         size = self.screen_area_size()
         if size is not None:
@@ -11788,6 +11846,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.load_data_from_db()
         self.ensure_default_khayas_boxes()
         self.mark_backup_dirty()
+        self.wipe_drafts_and_forms()                   # المسودات التلقائية وما في خانات الإدخال (1.93)
         if hasattr(self, "sales_subtab_buttons"):
             self.set_current_suspended(None)
             self.update_suspended_count()
@@ -15818,6 +15877,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       command=lambda: self.view_treeview_fullscreen(
                           getattr(self, "tree", None),
                           f"عرض كامل — {self.get_display_label(self.current_view_cat)}")).pack(side="left", padx=5)
+        # طباعة القسم المختار (1.93): PDF بترويسة المصنع وتصميم واضح، يُعاين قبل الطباعة
+        btn_print_section = ctk.CTkButton(header_bar, text="🖨️ طباعة القسم",
+                                          font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
+                                          fg_color="#144d75", hover_color="#0d3350", width=120, height=36,
+                                          command=self.print_khayas_section)
+        btn_print_section.pack(side="left", padx=5)
+        HoverTip(btn_print_section, "يطبع جدول القسم المعروض كما هو (أسماؤه وأرصدته وإجماليه) بترويسة المصنع")
 
         ctk.CTkButton(header_bar, text="↩️ تراجع عن الإقفال",
                       font=ctk.CTkFont(family=UI_FONT, size=13, weight="bold"),
@@ -15860,6 +15926,217 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.table_frame = ttk.Frame(tab)
         self.table_frame.pack(side="top", fill="both", expand=True, padx=10, pady=5)
         self.tree = None
+
+    # ═══ طباعة قسم من «صناديق الخياس» (1.93) ═══
+    KHAYAS_PRINT_LANDSCAPE_COLS = 7          # أكثر من هذا من الأعمدة ← الصفحة عرضية
+
+    def khayas_section_print_data(self):
+        """القسم المعروض كما هو في الجدول: عناوينه وصفوفه، وصفوف الإجمالي منفصلة، وسطر ملخّصه والفترة"""
+        cat = getattr(self, "current_view_cat", None) or "المصنعين"
+        tree = getattr(self, "tree", None)
+        heads, rows, totals = [], [], []
+        if tree is not None:
+            try:
+                cols, heads = self.table_headers(tree)
+                for iid in tree.get_children(""):
+                    vals = [str(tree.set(iid, c)) for c in cols]
+                    (totals if "total_tag" in (tree.item(iid, "tags") or ()) else rows).append(vals)
+            except tk.TclError:
+                heads, rows, totals = [], [], []
+        summary = ""
+        lbl = getattr(self, "lbl_section_summary", None)
+        if lbl is not None:
+            try:
+                summary = str(lbl.cget("text") or "")
+            except Exception:
+                summary = ""
+        return {"cat": cat, "label": self.get_display_label(cat), "heads": heads, "rows": rows, "totals": totals,
+                "summary": summary, "period": getattr(self, "current_display_month", "")}
+
+    def print_khayas_section(self):
+        """زر «🖨️ طباعة القسم»: القسم المختار في صناديق الخياس ملفَّ PDF مرتباً — يُفتح للمعاينة والطباعة"""
+        data = self.khayas_section_print_data()
+        if not data["heads"] or not (data["rows"] or data["totals"]):
+            messagebox.showinfo("طباعة القسم", f"لا بيانات في قسم «{data['label']}» للفترة {data['period']} لطباعتها.")
+            return None
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror("غير متاح", "ميزة الطباعة تحتاج تثبيت مكتبة reportlab أولاً:\n"
+                                 "pip install reportlab arabic-reshaper python-bidi")
+            return None
+        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", str(data["label"])).strip("_") or "section"
+        path = os.path.join(INVOICES_DIR, f"khayas_{safe}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        try:
+            self.draw_khayas_section_pdf(path, data)
+        except Exception as e:
+            log_cloud_error("تعذّرت طباعة قسم صناديق الخياس", e)
+            messagebox.showerror("تعذّرت الطباعة", f"لم يُنشأ ملف الطباعة:\n{e}")
+            return None
+        self._open_file(path)
+        return path
+
+    @staticmethod
+    def khayas_print_pages(n_items, cap_first, cap_next):
+        """توزيع الصفوف على الصفحات: [(من، إلى)] — صفحة واحدة على الأقل"""
+        pages, i, cap = [], 0, max(1, cap_first)
+        while i < n_items or not pages:
+            pages.append((i, min(n_items, i + cap)))
+            i += cap
+            cap = max(1, cap_next)
+        return pages
+
+    def draw_khayas_section_pdf(self, path, data):
+        """طباعة القسم: ترويسة المصنع، شريط عنوان كحلي (القسم والفترة وتاريخ الطباعة)، بطاقة الملخّص، ثم الجدول
+        بعناوين كحلية وصفوف متناوبة الظل والسالب بالأحمر وصفّ الإجمالي بارزاً — والعناوين تتكرر في كل صفحة، وفي
+        أسفلها «صفحة س من ص»، والتوقيعات في آخرها. أكثر من سبعة أعمدة ← صفحة عرضية"""
+        from reportlab.lib.colors import Color
+        heads = list(data["heads"])
+        n = len(heads)
+        pagesize = (A4[1], A4[0]) if n > self.KHAYAS_PRINT_LANDSCAPE_COLS else A4
+        PW, PH = pagesize
+        M = 12 * mm
+        navy, gold = Color(0.12, 0.23, 0.45), Color(0.80, 0.64, 0.22)
+        white, ink = Color(1, 1, 1), Color(0.07, 0.09, 0.15)
+        zebra, total_fill = Color(0.95, 0.96, 0.99), Color(0.99, 0.94, 0.78)
+        grid, red, muted = Color(0.74, 0.77, 0.84), Color(0.70, 0.0, 0.13), Color(0.36, 0.40, 0.48)
+        row_h, head_h, title_h, card_h, gap = 7.6 * mm, 9.5 * mm, 12 * mm, 11 * mm, 4 * mm
+        foot_h, sig_h = 10 * mm, 24 * mm
+        ratios = [1.9 if i == 0 else 1.0 for i in range(n)]
+        table_w = PW - 2 * M
+        widths = [table_w * r / sum(ratios) for r in ratios]
+        edges = [PW - M]                                   # من اليمين: العمود الأول يميناً
+        for w in widths:
+            edges.append(edges[-1] - w)
+
+        class _Dry:                                        # موضع أسفل الترويسة بلا رسم (لتوزيع الصفحات)
+            def __getattr__(self, _name):
+                return lambda *a, **k: None
+        letter_bottom = self.draw_standard_letterhead(_Dry(), M, pagesize)
+        first_top = letter_bottom - title_h - gap - card_h - gap
+        next_top = letter_bottom - title_h - gap
+        bottom = M + foot_h
+        items = [(r, False) for r in data["rows"]] + [(r, True) for r in data["totals"]]
+        pages = self.khayas_print_pages(len(items), int((first_top - head_h - bottom) // row_h),
+                                        int((next_top - head_h - bottom) // row_h))
+        last_top = first_top if len(pages) == 1 else next_top
+        last_rows = pages[-1][1] - pages[-1][0]
+        sig_page = (last_top - head_h - last_rows * row_h - bottom) < sig_h + 6 * mm
+        n_pages = len(pages) + (1 if sig_page else 0)
+        printed = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        c = pdf_canvas.Canvas(path, pagesize=pagesize)
+        c.setTitle(f"صندوق خياس — {data['label']}")
+
+        def txt(x, y, s, size=10, bold=False, align="center", color=None, max_w=None):
+            s = str(s)
+            if max_w:
+                size = fit_font_size(s, max_w, size, bold=bold, min_size=6)
+            c.setFont(_ARABIC_FONT_BOLD_NAME if bold else _ARABIC_FONT_NAME, size)
+            c.setFillColor(color or ink)
+            s = ar(s) if re.search("[\u0600-\u06FF]", s) else s
+            {"center": c.drawCentredString, "right": c.drawRightString, "left": c.drawString}[align](x, y, s)
+
+        def header(page_no):
+            y = self.draw_standard_letterhead(c, M, pagesize)
+            c.setFillColor(navy)
+            c.roundRect(M, y - title_h, table_w, title_h, 2.5 * mm, fill=1, stroke=0)
+            mid = y - title_h / 2
+            txt(PW / 2, mid - 2, f"صندوق خياس — {data['label']}", 15, True, color=white, max_w=table_w * 0.5)
+            # التاريخ وحده (لاتيني) ثم عنوانه — فلا يقلب اتجاهُ العربية ترتيبَ أرقامه
+            label_w = c.stringWidth(ar("الفترة:"), _ARABIC_FONT_BOLD_NAME, 10)
+            txt(PW - M - 4 * mm, mid - 1.5, "الفترة:", 10, True, "right", white)
+            txt(PW - M - 6 * mm - label_w, mid - 1.5, str(data["period"]), 10, True, "right", white)
+            date_w = c.stringWidth(printed, _ARABIC_FONT_NAME, 9)
+            txt(M + 4 * mm, mid - 1.5, printed, 9, False, "left", white)
+            txt(M + 6 * mm + date_w, mid - 1.5, "طُبع:", 9, False, "left", white)
+            y -= title_h + gap
+            if page_no == 1:
+                c.setFillColor(total_fill)
+                c.setStrokeColor(gold)
+                c.setLineWidth(1)
+                c.roundRect(M, y - card_h, table_w, card_h, 2 * mm, fill=1, stroke=1)
+                line = "   ·   ".join(p for p in (data.get("summary") or "", f"عدد الصفوف: {len(data['rows'])}") if p)
+                txt(PW / 2, y - card_h / 2 - 2, line, 12, True, max_w=table_w - 8 * mm)
+                y -= card_h + gap
+            return y
+
+        def table_head(y):
+            c.setFillColor(navy)
+            c.rect(M, y - head_h, table_w, head_h, fill=1, stroke=0)
+            for i, h in enumerate(heads):
+                txt((edges[i] + edges[i + 1]) / 2, vcenter_baseline(y, head_h, 10), h, 10, True, color=white,
+                    max_w=widths[i] - 2 * mm)
+                if i:
+                    c.setStrokeColor(white)
+                    c.setLineWidth(0.6)
+                    c.line(edges[i], y - head_h, edges[i], y)
+            return y - head_h
+
+        def table_row(y, vals, k, is_total):
+            fill = total_fill if is_total else (zebra if k % 2 else None)
+            if fill is not None:
+                c.setFillColor(fill)
+                c.rect(M, y - row_h, table_w, row_h, fill=1, stroke=0)
+            c.setStrokeColor(gold if is_total else grid)
+            c.setLineWidth(1.1 if is_total else 0.4)
+            c.line(M, y - row_h, PW - M, y - row_h)
+            if is_total:
+                c.line(M, y, PW - M, y)
+            for i, val in enumerate(vals[:n]):
+                val = str(val)
+                try:
+                    negative = float(val.replace(",", "")) < 0
+                except ValueError:
+                    negative = False
+                if i == 0:
+                    txt(edges[0] - 2.5 * mm, vcenter_baseline(y, row_h, 9.5), val, 9.5, True, "right",
+                        max_w=widths[0] - 4 * mm)
+                else:
+                    txt((edges[i] + edges[i + 1]) / 2, vcenter_baseline(y, row_h, 9.5), val, 9.5, is_total,
+                        color=red if negative else None, max_w=widths[i] - 2 * mm)
+            return y - row_h
+
+        def frame(top, y):
+            c.setStrokeColor(navy)
+            c.setLineWidth(0.9)
+            c.rect(M, y, table_w, top - y, fill=0, stroke=1)
+            c.setStrokeColor(grid)
+            c.setLineWidth(0.4)
+            for x in edges[1:-1]:
+                c.line(x, y, x, top - head_h)
+
+        def signatures(y):
+            third = table_w / 3
+            for i, who in enumerate(("المحاسب", "مدير الإنتاج", "المدير")):
+                cx = PW - M - (i + 0.5) * third
+                c.setStrokeColor(muted)
+                c.setLineWidth(0.8)
+                c.line(cx - 26 * mm, y - 14 * mm, cx + 26 * mm, y - 14 * mm)
+                txt(cx, y - 19 * mm, who, 10.5, True, color=muted)
+
+        def footer(page_no):
+            c.setStrokeColor(gold)
+            c.setLineWidth(0.7)
+            c.line(M, M + 6 * mm, PW - M, M + 6 * mm)
+            txt(PW / 2, M + 1.5 * mm, f"صفحة {page_no} من {n_pages}", 9, color=muted)
+            txt(PW - M, M + 1.5 * mm, f"صندوق خياس — {data['label']}", 8.5, False, "right", muted, max_w=table_w * 0.38)
+
+        for page_no, (a, b) in enumerate(pages, 1):
+            top = header(page_no)
+            y = table_head(top)
+            for k in range(a, b):
+                vals, is_total = items[k]
+                y = table_row(y, vals, k, is_total)
+            frame(top, y)
+            if page_no == len(pages) and not sig_page:
+                signatures(y - 4 * mm)
+            footer(page_no)
+            c.showPage()
+        if sig_page:
+            signatures(header(n_pages) - 6 * mm)
+            footer(n_pages)
+            c.showPage()
+        c.save()
+        return {"pages": n_pages, "landscape": pagesize[0] > pagesize[1]}
 
     def show_losses_details(self):
         win = ctk.CTkToplevel(self)
@@ -20016,6 +20293,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def toggle_in_carat_field(self, choice):
         """يظهر حقل العيار فقط عند اختيار (ذهب)، لأن باقي الأنواع لا تُحسب بعيار"""
+        self.schedule_draft_save("inbound")
         if choice == "ذهب":
             # مكانه قبل نوع الوارد (لا في آخر الصف بعد «إلى حساب»)
             self.lbl_in_carat.pack(side="right", padx=3, before=self.lbl_in_type)
@@ -20128,6 +20406,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_print_in = ctk.CTkButton(main_frame, text="🖨️ طباعة كشف الوارد", font=(UI_FONT, 14, "bold"), fg_color="#144d75", hover_color="#0d3350", height=40, command=self.print_inout_screen)
         btn_print_in.pack(pady=(0, 10))
+        # الحفظ التلقائي (1.93): حركة وارد كُتبت ولم تُرحَّل تعود بعد انقطاع أو إغلاق
+        self.watch_draft_widgets("inbound", [getattr(self, a, None) for a, _u in self.FORM_DRAFT_FIELDS["inbound"]])
+        self.restore_form_draft("inbound")
 
     def submit_inbound(self):
         try:
@@ -20212,6 +20493,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             }
             self.invoices[self.invoice_counter] = inv_data
             self.save_invoice_to_db(self.invoice_counter, inv_data)
+            self.discard_draft("inbound")      # رُحِّلت: لا تعود مسودتها (1.93)
 
             self.in_weight.delete(0, 'end')
             self.in_carat.delete(0, 'end')
@@ -20526,7 +20808,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sale_kind_buttons = {}
         for kind, text in ((self.SALE_KIND_GOLD, "🟡 ذهب"), (self.SALE_KIND_DIAMOND, "💎 الماس")):
             b = ctk.CTkButton(kind_box, text=text, font=(UI_FONT, 13, "bold"), width=66, height=34,
-                              command=lambda k=kind: self.set_sale_kind(k))
+                              command=lambda k=kind: self.request_sale_kind(k))
             b.pack(side="right", padx=1)
             self.sale_kind_buttons[kind] = b
         last_kind = load_ui_prefs().get("sale_kind")
@@ -20607,13 +20889,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             """العمود i من اليمين ← رقم عمود الشبكة (الشبكة تبدأ من اليسار)"""
             return n_cols - 1 - i
 
+        # خلايا الخانات (المفتاح، العنوان، الخانة) بترتيبها — يرصّها apply_sale_kind_fields حسب نوع العملية
+        self._sale_field_cells = []
+        self._sale_fields_row, self._sale_fields_ncols = fields_row, n_cols
+
         def add_field(i, label_text):
             # يلتفّ العنوان الطويل على سطرين قبل أن يتجاوز عموده (اللابتوب الصغير)
-            ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=95,
-                         text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=grid_col(i), padx=4,
-                                                                  pady=(0, 3), sticky="s")
+            lbl = ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=95,
+                               text_color=(UI["ink"], "#E5E7EB"))
+            lbl.grid(row=0, column=grid_col(i), padx=4, pady=(0, 3), sticky="s")
             ent = ctk.CTkEntry(fields_row, justify="center", font=(UI_FONT, 14), width=60, height=34)
             ent.grid(row=1, column=grid_col(i), padx=4, sticky="ew")
+            self._sale_field_cells.append((self.SALE_EDIT_FIELDS[i][1], lbl, ent))
             return ent
 
         # رقم الصف يُرقَّم تلقائياً حسب ترتيب السطر في الفاتورة، فلا حاجة
@@ -20644,11 +20931,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         # ====== نسبة الخصم القابلة للاختيار والإضافة (تُضرب في الأحجار تلقائياً) ======
         pct_i = len(labels)
-        ctk.CTkLabel(fields_row, text="نسبة الخصم", font=(UI_FONT, 13, "bold"),
-                     text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=grid_col(pct_i), padx=4,
-                                                              pady=(0, 3), sticky="s")
+        pct_lbl = ctk.CTkLabel(fields_row, text="نسبة الخصم", font=(UI_FONT, 13, "bold"),
+                               text_color=(UI["ink"], "#E5E7EB"))
+        pct_lbl.grid(row=0, column=grid_col(pct_i), padx=4, pady=(0, 3), sticky="s")
         pct_row = ctk.CTkFrame(fields_row, fg_color="transparent")
         pct_row.grid(row=1, column=grid_col(pct_i), padx=4, sticky="ew")
+        self._sale_pct_cells = (pct_lbl, pct_row)
         self.sale_discount_pct = ctk.CTkComboBox(pct_row, values=[f"{p}%" for p in self.get_discount_percentages()],
                                                    font=(UI_FONT, 13), width=70, height=34, justify="center",
                                                    command=lambda choice: self.on_discount_pct_change())
@@ -20669,6 +20957,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                     fg_color=UI["success"], hover_color=UI["success_hover"],
                                     command=self.stage_sale_row)
         btn_add_row.grid(row=1, column=grid_col(pct_i + 1), padx=(4, 2), sticky="ew")
+        self._sale_add_btn = btn_add_row
 
         def safe_read(entry):
             try:
@@ -20677,13 +20966,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return 0.0
 
         def recompute_sale_totals(event=None):
-            gold_v = safe_read(self.sale_gold)
-            gems_v = safe_read(self.sale_gems)
-            stones_v = safe_read(self.sale_stones)
-            stones_disc_v = safe_read(self.sale_stones_discount)
-            diamond_v = safe_read(self.sale_diamond)
-            weight_standing = round(gold_v + gems_v + stones_v + diamond_v, 2)
-            weight_bound = round(gold_v + gems_v + stones_disc_v + diamond_v, 2)
+            hidden = self.sale_hidden_keys()        # خانة مخفية في نوع العملية = صفر (1.93)
+
+            def rd(entry, key):
+                return 0.0 if key in hidden else safe_read(entry)
+            gold_v = rd(self.sale_gold, "ذهب")
+            gems_v = rd(self.sale_gems, "فصوص")
+            stones_v = rd(self.sale_stones, "أحجار")
+            stones_disc_v = rd(self.sale_stones_discount, "أحجار بعد الخصم")
+            diamond_v = rd(self.sale_diamond, "الماس")
+            # الماس للعرض فقط (1.93): خارج القائم والمقيد
+            weight_standing = sale_standing_weight(gold_v, gems_v, stones_v)
+            weight_bound = sale_bound_weight(gold_v, gems_v, stones_disc_v)
             self.sale_weight_standing.delete(0, 'end')
             self.sale_weight_bound.delete(0, 'end')
             if gold_v or gems_v or stones_v or diamond_v:
@@ -20727,12 +21021,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       self.sale_stones, self.sale_diamond, self.sale_stones_discount, self.sale_khayas,
                       self.sale_khayas_polish, self.sale_khayas_assembler, self.sale_row_note]
         self.sale_nav_fields = nav_fields
-        self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row)
+        # الخانات المخفية في نوع العملية الحالي (1.93) تُتخطّى: Enter بعد آخر خانة ظاهرة يضيف السطر
+        self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row, skip=self.sale_field_hidden)
 
         # التنقل بالأسهم يمين/يسار بين الخانات.
         # الترتيب معكوس عمداً: الخانات مرصوفة من اليمين لليسار،
         # فالسهم الأيسر ينتقل للخانة التالية بصرياً، والأيمن للسابقة.
-        self.bind_arrow_navigation(nav_fields)
+        self.bind_arrow_navigation(nav_fields, skip=self.sale_field_hidden)
+        # خانات نوع العملية المحفوظ (ذهب: بلا الماس، الماس: رقم التشغيل والذهب والماس)
+        self.apply_sale_kind_fields()
 
         # ====== شريط أدوات الجدول ======
         pending_top = ctk.CTkFrame(tab, fg_color="transparent")
@@ -20790,6 +21087,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.refresh_pending_sales_table()
         self.refresh_sales_table()
         self.update_suspended_count()
+        # الحفظ التلقائي (1.93): كل كتابة في رأس الفاتورة أو خانات السطر ← مسودة بعد لحظة؛ وفاتورةٌ لم تُرحَّل
+        # حُفظت قبل انقطاع أو إغلاق تعود الآن كما كانت
+        self.watch_draft_widgets("sales", [self.sale_date, self.sale_invoice_num, self.sale_name, self.sale_note,
+                                           self.sale_discount_pct] + [ent for _k, _l, ent in self._sale_field_cells])
+        self.restore_sales_draft()
 
     def attach_before_after_hint(self, entry, host, compute, triggers=(), keys=("قبل", "بعد")):
         """نافذة صغيرة تحت خانة ما دامت الخانة نشطة: خانات keys («قبل» و«بعد»، وقد تُضاف «خياس»)،
@@ -20966,6 +21268,99 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         kind = getattr(self, "_sale_kind", None)
         return kind if kind in self.SALE_KINDS else self.SALE_KIND_GOLD
 
+    # خانات سطر البيع المخفية لكل نوع عملية (1.93) — بمفاتيح السطر نفسه (SALE_EDIT_FIELDS):
+    #   ذهب   : كل الخانات ما عدا الماس (الماس ضمن عملية الماس)
+    #   الماس : رقم التشغيل والذهب والماس فقط
+    # الخانة المخفية لا تُقرأ عند «إضافة» (صفر)، ولا يُتنقّل إليها، وعمودها خارج جدول السطور ما لم يحمل قيمة
+    SALE_KIND_HIDDEN_KEYS = {
+        SALE_KIND_GOLD: ("الماس",),
+        SALE_KIND_DIAMOND: ("فصوص", "أحجار", "أحجار بعد الخصم", "خياس", "خياس البوليش", "خياس المركب", "البيان"),
+    }
+
+    def sale_hidden_keys(self, kind=None):
+        """مفاتيح خانات السطر المخفية في نوع العملية kind (الحالي افتراضياً)"""
+        return set(self.SALE_KIND_HIDDEN_KEYS.get(kind or self.current_sale_kind(), ()))
+
+    @staticmethod
+    def sale_value_present(key, value):
+        """هل في خانة السطر قيمة؟ النص (رقم التشغيل/البيان) غير فارغ، والرقم غير صفري"""
+        if key in ("set_number", "البيان"):
+            return bool(str(value or "").strip())
+        try:
+            return abs(float(value or 0.0)) > 0.0001
+        except (TypeError, ValueError):
+            return bool(str(value or "").strip())
+
+    def sale_rows_hidden_values(self, rows, kind):
+        """سطور فيها قيمة في خانة لا تظهر في النوع kind: [(رقم الصف، [عناوين الخانات])]"""
+        hidden = self.sale_hidden_keys(kind)
+        out = []
+        for i, row in enumerate(rows or []):
+            names = [label for label, key in self.SALE_EDIT_FIELDS
+                     if key in hidden and self.sale_value_present(key, row.get(key))]
+            if names:
+                out.append((row.get("row_number") or i + 1, names))
+        return out
+
+    def sale_field_hidden(self, widget):
+        """خانة من خانات سطر البيع مخفية في نوع العملية الحالي (يتخطاها Enter والأسهم)"""
+        return widget in getattr(self, "_sale_hidden_widgets", ())
+
+    def apply_sale_kind_fields(self):
+        """يرصّ خانات سطر البيع لنوع العملية الحالي من اليمين بلا فراغات بينها: الظاهرة متتالية، ثم نسبة
+        الخصم (ما دامت الأحجار ظاهرة)، ثم زر «إضافة» بعد آخر خانة. وفي الذهب (خانات كثيرة) تملأ الصف كله،
+        وفي الماس (ثلاث خانات) تبقى بعرضها المعتاد يميناً"""
+        cells = getattr(self, "_sale_field_cells", None)
+        if not cells:
+            return
+        hidden = self.sale_hidden_keys()
+        row_w, n_cols = self._sale_fields_row, self._sale_fields_ncols
+        items = [(lbl, ent) for key, lbl, ent in cells if key not in hidden]
+        if "أحجار" not in hidden:
+            items.append(self._sale_pct_cells)
+        items.append((None, self._sale_add_btn))
+        for _key, lbl, ent in cells:
+            lbl.grid_remove()
+            ent.grid_remove()
+        for w in self._sale_pct_cells:
+            w.grid_remove()
+        for i, (lbl, w) in enumerate(items):
+            col = n_cols - 1 - i
+            if lbl is not None:
+                lbl.grid(row=0, column=col)
+            w.grid(row=1, column=col)
+        collapse = len(items) >= n_cols - 2
+        for c in range(n_cols):
+            if c >= n_cols - len(items) or not collapse:
+                row_w.grid_columnconfigure(c, weight=1, uniform="sale_fields")
+            else:
+                row_w.grid_columnconfigure(c, weight=0, uniform="")
+        self._sale_hidden_widgets = {ent for key, _lbl, ent in cells if key in hidden}
+        try:
+            if self.focus_get() in self._sale_hidden_widgets or any(
+                    getattr(w, "_entry", None) is self.focus_get() for w in self._sale_hidden_widgets):
+                self.sale_set_number.focus_set()
+        except Exception:
+            pass
+        if hasattr(self, "_recompute_sale_totals"):
+            self._recompute_sale_totals()
+        self.refresh_pending_sales_table()
+
+    def request_sale_kind(self, kind):
+        """زرّا نوع العملية: لا يتحوّل النوع وفي سطور الفاتورة الحالية قيمٌ في خانات لا تظهر في النوع الجديد
+        (ماسٌ في فاتورة ذهب، أو فصوص/أحجار/خياس/بيان في فاتورة الماس) — فلا تُرحَّل قيمة لا تُرى"""
+        if kind != self.current_sale_kind():
+            bad = self.sale_rows_hidden_values(getattr(self, "pending_sale_rows", None), kind)
+            if bad:
+                lines = "\n".join(f"• السطر {rn}: {'، '.join(names)}" for rn, names in bad[:8])
+                more = f"\n… و{len(bad) - 8} سطر غيرها" if len(bad) > 8 else ""
+                messagebox.showwarning(
+                    "نوع العملية", f"لا يمكن تحويل الفاتورة إلى عملية «{kind}»: في سطورها قيمٌ في خانات لا تظهر "
+                    f"في عملية {kind}:\n{lines}{more}\n\nعدّل هذه السطور أو احذفها، أو رحّل الفاتورة أو علّقها أولاً.")
+                return False
+        self.set_sale_kind(kind)
+        return True
+
     def set_sale_kind(self, kind, initial=False):
         """يختار نوع العملية في «إصدار مبيعات»: يميّز زرّه، ويضع رقم الفاتورة التالي من ترقيم هذا
         النوع — ما لم يكن الرقم الظاهر مكتوباً يدوياً أو لفاتورة معلّقة مفتوحة فيبقى كما هو"""
@@ -20976,9 +21371,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         buttons = getattr(self, "sale_kind_buttons", None)
         if buttons:
             self.style_segment_buttons(buttons, kind)
+        if prev != kind or initial:
+            self.apply_sale_kind_fields()
         if initial or prev == kind:
             return
         save_ui_pref("sale_kind", kind)
+        self.schedule_draft_save("sales")
         entry = getattr(self, "sale_invoice_num", None)
         if entry is None:
             return
@@ -22596,17 +22994,21 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         win.bind("<KP_Enter>", lambda e: go(1, wrap_to_save=True), add="+")
 
 
-    def bind_enter_navigation(self, fields, on_last=None):
+    def bind_enter_navigation(self, fields, on_last=None, skip=None):
         """Enter (ومفتاح Enter في لوحة الأرقام) ينقل للخانة التالية ويحدّد نصها فيُكتب
         فوقه مباشرة، وعند آخر خانة يستدعي on_last (إضافة السطر أو حفظه).
 
         الربط على كل خانة: CTkEntry وCTkComboBox يمرّران الربط لخانتهما الداخلية.
+        skip(خانة) → True: خانة مخفية الآن (خانات نوع العملية في المبيعات) تُتخطّى — يُسأل عند كل ضغطة.
         """
         widgets = [f for f in fields if f is not None]
 
         def go(i):
-            if i + 1 < len(widgets):
-                target = widgets[i + 1]
+            j = i + 1
+            while j < len(widgets) and skip is not None and skip(widgets[j]):
+                j += 1
+            if j < len(widgets):
+                target = widgets[j]
                 try:
                     target.focus_set()
                     getattr(target, "_entry", target).select_range(0, "end")
@@ -22623,7 +23025,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 except Exception:
                     pass
 
-    def bind_arrow_navigation(self, fields):
+    def bind_arrow_navigation(self, fields, skip=None):
         """تنقّل بالأسهم يمين/يسار بين خانات الإدخال المرصوفة من اليمين لليسار.
 
         لا يتدخّل عندما يكون المؤشر داخل النص: السهم الأيسر ينتقل للخانة
@@ -22632,7 +23034,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         """
         widgets = [f for f in fields if f is not None]
 
-        def go(idx, event):
+        def go(idx, event, step=1):
+            # skip: الخانة المخفية الآن تُتخطّى في اتجاه الحركة نفسه
+            while 0 <= idx < len(widgets) and skip is not None and skip(widgets[idx]):
+                idx += step
             if 0 <= idx < len(widgets):
                 widgets[idx].focus_set()
                 return "break"
@@ -22644,10 +23049,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # لتحريك المؤشر داخل النص: Home و End.
         for i, field in enumerate(widgets):
             def on_left(e, i=i):
-                return go(i + 1, e)
+                return go(i + 1, e, 1)
 
             def on_right(e, i=i):
-                return go(i - 1, e)
+                return go(i - 1, e, -1)
 
             try:
                 field.bind("<Left>", on_left)
@@ -22663,20 +23068,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("تنبيه", "لا يمكن إضافة سطر إلا بعد اختيار اسم من الموردين المسجلين.")
             return
 
-        def safe_val(entry):
+        # خانة مخفية في نوع العملية الحالي (1.93) لا تُقرأ: صفر — ولو مُلئت تلقائياً من القالب أو التتبع
+        hidden = self.sale_hidden_keys()
+
+        def safe_val(entry, key):
+            if key in hidden:
+                return 0.0
             try:
                 return round(float(entry.get().strip()), 2) if entry.get().strip() else 0.0
             except ValueError:
                 return 0.0
 
-        gold_v = safe_val(self.sale_gold)
-        gems_v = safe_val(self.sale_gems)
-        stones_v = safe_val(self.sale_stones)
-        stones_discount_v = safe_val(self.sale_stones_discount)
-        diamond_v = safe_val(self.sale_diamond)
-        khayas_v = safe_val(self.sale_khayas)
-        khayas_polish_v = safe_val(self.sale_khayas_polish)
-        khayas_assembler_v = safe_val(self.sale_khayas_assembler)
+        gold_v = safe_val(self.sale_gold, "ذهب")
+        gems_v = safe_val(self.sale_gems, "فصوص")
+        stones_v = safe_val(self.sale_stones, "أحجار")
+        stones_discount_v = safe_val(self.sale_stones_discount, "أحجار بعد الخصم")
+        diamond_v = safe_val(self.sale_diamond, "الماس")
+        khayas_v = safe_val(self.sale_khayas, "خياس")
+        khayas_polish_v = safe_val(self.sale_khayas_polish, "خياس البوليش")
+        khayas_assembler_v = safe_val(self.sale_khayas_assembler, "خياس المركب")
         set_num = self.sale_set_number.get().strip()
         # الترقيم التلقائي: أكبر رقم موجود + ١، فلا يتكرر رقم حتى لو حُذف
         # سطر من وسط الفاتورة (الترقيم يُعاد ضبطه بعد الحذف على كل حال)
@@ -22709,7 +23119,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "row_number": row_num, "set_number": set_num, "ذهب": gold_v, "فصوص": gems_v, "أحجار": stones_v,
             "أحجار بعد الخصم": stones_discount_v, "الماس": diamond_v, "خياس": khayas_v,
             "خياس البوليش": khayas_polish_v, "خياس المركب": khayas_assembler_v,
-            "البيان": self.sale_row_note.get().strip()
+            "البيان": "" if "البيان" in hidden else self.sale_row_note.get().strip()
         })
         self.sale_row_note.delete(0, 'end')
 
@@ -22745,6 +23155,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 text="⬆️ تصاعدي" if self.pending_sales_desc else "⬇️ تنازلي")
         self.refresh_pending_sales_table()
 
+    # عمود جدول السطور ← مفتاح خانة السطر (لإخفاء أعمدة نوع العملية)
+    SALE_TABLE_COL_KEYS = (("الفصوص", "فصوص"), ("الأحجار", "أحجار"), ("الماس", "الماس"),
+                           ("الأحجار بعد الخصم", "أحجار بعد الخصم"), ("خياس بوليش 2", "خياس"),
+                           ("بوليش", "خياس البوليش"), ("مركب", "خياس المركب"), ("البيان", "البيان"))
+
     # عمود الإجراءات: أول عمود بلا عنوان، نصفه الأيسر ✏️ (تعديل) والأيمن 🗑️ (حذف)
     SALE_ACTION_COL = "_act"
     SALE_ACTION_TEXT = "✏️        🗑️"
@@ -22764,6 +23179,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         tree.tag_configure("total_tag", foreground="#e67e22", font=(UI_FONT, 13, "bold"))
         for c in cols:
             tree.column(c, width=70, anchor="center", stretch=False)
+        # أعمدة نوع العملية (1.93): عمود خانةٍ مخفية في النوع الحالي لا يظهر — إلا وفي سطرٍ قيمةٌ له
+        # (سطور فاتورة معلّقة أو مسودة سُجّلت قبل ذلك) فلا تختفي قيمة تُرحَّل
+        hidden = self.sale_hidden_keys()
+        col_keys = dict(self.SALE_TABLE_COL_KEYS)
+        shown = [c for c in cols if col_keys.get(c) not in hidden or any(
+            self.sale_value_present(col_keys[c], r.get(col_keys[c])) for r in self.pending_sale_rows)]
+        try:
+            tree.configure(displaycolumns=shown)
+        except Exception:
+            pass
 
         tot = dict.fromkeys(["ذهب", "فصوص", "أحجار", "أحجار بعد الخصم", "الماس",
                              "خياس", "خياس البوليش", "خياس المركب", "القائم", "المقيد"], 0.0)
@@ -22784,9 +23209,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             order.reverse()
 
         for idx, row in order:
-            # الوزن القائم يحسب الأحجار الخام، والمقيد يحسبها بعد الخصم
-            standing = round(num(row, "ذهب") + num(row, "فصوص") + num(row, "أحجار") + num(row, "الماس"), 2)
-            bound = round(num(row, "ذهب") + num(row, "فصوص") + num(row, "أحجار بعد الخصم") + num(row, "الماس"), 2)
+            # الوزن القائم يحسب الأحجار الخام، والمقيد يحسبها بعد الخصم — والماس خارجهما (للعرض، 1.93)
+            standing = sale_standing_weight(num(row, "ذهب"), num(row, "فصوص"), num(row, "أحجار"))
+            bound = sale_bound_weight(num(row, "ذهب"), num(row, "فصوص"), num(row, "أحجار بعد الخصم"))
             for k in ("ذهب", "فصوص", "أحجار", "أحجار بعد الخصم", "الماس", "خياس",
                       "خياس البوليش", "خياس المركب"):
                 tot[k] = round(tot[k] + num(row, k), 2)
@@ -22825,6 +23250,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tree.bind("<Delete>", lambda e: self.delete_pending_sale_row(), add="+")
             tree.bind("<Motion>", self._on_pending_sales_motion, add="+")
             tree._sale_actions_bound = True
+        # كل تغيير في سطور الفاتورة (إضافة/تعديل/حذف/نوع/فتح) يمرّ من هنا ← مسودة بعد لحظة (1.93)
+        self.schedule_draft_save("sales")
 
     def _pending_row_index(self, iid):
         """موضع السطر في self.pending_sale_rows من معرّف صفه في الجدول (None لصف الإجمالي)"""
@@ -22937,14 +23364,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                             border_width=1, border_color=(UI["line"], "#2A313B"))
         card.pack(fill="x", padx=18, pady=6)
         fields = self.SALE_EDIT_FIELDS
-        n = len(fields)
+        # خانات نوع العملية (1.93): المخفية في النوع الحالي لا تظهر — إلا وفي السطر قيمة لها فتُرى وتُعدَّل؛
+        # والمخفية تُحفظ صفراً (ولو ملأها جلب خياس المركب لرقم تشغيل جديد)
+        hidden_keys = {k for k in self.sale_hidden_keys() if not self.sale_value_present(k, row.get(k))}
+        shown_fields = [(label, key) for label, key in fields if key not in hidden_keys]
+        n = len(shown_fields)
         for c in range(n):
             card.grid_columnconfigure(c, weight=1, uniform="edit_fields")
         entries = {}
-        for i, (label, key) in enumerate(fields):
-            col = n - 1 - i                    # من اليمين لليسار
-            ctk.CTkLabel(card, text=label, font=(UI_FONT, 13, "bold"), wraplength=120,
-                         text_color=(UI["ink"], "#E5E7EB")).grid(row=0, column=col, padx=5, pady=(10, 3), sticky="s")
+        for label, key in fields:
+            col = n - 1 - shown_fields.index((label, key)) if key not in hidden_keys else None   # من اليمين لليسار
+            lbl_w = ctk.CTkLabel(card, text=label, font=(UI_FONT, 13, "bold"), wraplength=120,
+                                 text_color=(UI["ink"], "#E5E7EB"))
+            if col is not None:
+                lbl_w.grid(row=0, column=col, padx=5, pady=(10, 3), sticky="s")
             ent = ctk.CTkEntry(card, justify="right" if key == "البيان" else "center", font=(UI_FONT, 15),
                                width=88, height=38)
             val = row.get(key, "")
@@ -22957,7 +23390,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     v = 0.0
                 if v:
                     ent.insert(0, f"{v:g}")
-            ent.grid(row=1, column=col, padx=5, pady=(0, 12), sticky="ew")
+            if col is not None:
+                ent.grid(row=1, column=col, padx=5, pady=(0, 12), sticky="ew")
             entries[key] = ent
 
         # نسبة خصم هذا السطر كما سُجّل (الأحجار بعد الخصم ÷ الأحجار)، وإلا النسبة الحالية
@@ -22975,8 +23409,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 pct = 0.30
 
         def update_live(event=None):
-            standing = read("ذهب") + read("فصوص") + read("أحجار") + read("الماس")
-            bound = read("ذهب") + read("فصوص") + read("أحجار بعد الخصم") + read("الماس")
+            standing = sale_standing_weight(read("ذهب"), read("فصوص"), read("أحجار"))
+            bound = sale_bound_weight(read("ذهب"), read("فصوص"), read("أحجار بعد الخصم"))
             lbl_live.configure(text=f"الوزن القائم: {standing:.2f}   ·   الوزن المقيد: {bound:.2f}")
 
         def on_stones(event=None):
@@ -23006,9 +23440,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def save_row(event=None):
             new_row = dict(row)
             new_row["set_number"] = entries["set_number"].get().strip()
-            new_row["البيان"] = entries["البيان"].get().strip()
+            new_row["البيان"] = "" if "البيان" in hidden_keys else entries["البيان"].get().strip()
             for _label, key in fields:
                 if key in self.SALE_EDIT_TEXT_KEYS:
+                    continue
+                if key in hidden_keys:
+                    new_row[key] = 0.0
                     continue
                 try:
                     v = round(float(entries[key].get().strip() or 0), 2)
@@ -23051,7 +23488,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkLabel(btns, text="Enter: التالي ثم الحفظ   ·   Esc: إلغاء", font=(UI_FONT, 12),
                      text_color=(UI["muted"], "#9AA3AF")).pack(side="left")
 
-        order = [entries[key] for _l, key in fields]
+        order = [entries[key] for _l, key in shown_fields]
         self.bind_arrow_navigation(order)
         for i, ent in enumerate(order[:-1]):
             ent.bind("<Return>", lambda e, nxt=order[i + 1]: nxt.focus_set() or "break")
@@ -23110,6 +23547,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # الترحيل يمر عبر الدالة الموحّدة نفسها المستخدمة في تعديل الفاتورة، لضمان تطابق المعالجة المحاسبية
         self.push_undo(f"ترحيل فاتورة مبيعات {kind} رقم ({manual_no})")
         committed_groups = self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note, kind=kind)
+        # رُحِّلت: مسودتها التلقائية تُمسح فوراً — لا تعود بعد انقطاع فتُرحَّل مرتين (1.93)
+        self.discard_draft("sales")
         self.sales_ops_kind = kind            # «المبيعات الصادرة» تُفتح على شريط نوعها
 
         # فاتورة كانت معلّقة ثم رُحّلت: أُثبتت في «المبيعات الصادرة» فتختفي من «المعلقات»
@@ -23262,6 +23701,312 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 except (TypeError, ValueError):
                     pass
         return tot
+
+    # ═══ الحفظ التلقائي لما لم يُرحَّل بعد (1.93) ═══
+    #  فاتورة المبيعات قيد الإدخال (رأسها وسطورها وما كُتب في خانات السطر)، ونموذجا «الوارد» و«القيود اليومية»:
+    #  تُحفظ تلقائياً بعد كل تغيير بلحظة في ملف محلي بجوار قاعدة البيانات (<قاعدة البيانات>.drafts.json) — كتابةٌ
+    #  ذرّية (ملف مؤقت ← fsync ← استبدال)، فلو انقطعت الكهرباء أثناء الحفظ بقيت النسخة السابقة سليمة. لا تمسّ
+    #  قاعدة البيانات ولا النسخة السحابية ولا أي رصيد؛ وتُمسح لحظة الترحيل أو التعليق أو تفريغ الشاشة. وعند فتح
+    #  الشاشة بعد انقطاع أو إغلاق تعود كما كانت مع تنبيه. وضع العرض لا يحفظ مسودة ولا يستعيدها.
+    DRAFT_SAVE_DELAY_MS = 700
+    DRAFTS_SUFFIX = ".drafts.json"
+    DRAFT_COLLECTORS = {"sales": "collect_sales_draft", "inbound": "collect_inbound_draft",
+                        "journal": "collect_journal_draft"}
+    # نموذجا الوارد والقيود: (الخانة، هل قيمتها عمل المستخدم؟) — الخانات الافتراضية وحدها لا تصنع مسودة
+    FORM_DRAFT_FIELDS = {
+        "inbound": (("in_date", False), ("in_supplier", False), ("in_invoice_num", False), ("in_type", False),
+                    ("in_to_account", False), ("in_weight", True), ("in_carat", True), ("in_note", True)),
+        "journal": (("je_date", False), ("je_from_name", True), ("je_to_name", True), ("je_amount", True),
+                    ("je_note", True)),
+    }
+    DRAFT_TITLES = {"sales": "فاتورة مبيعات", "inbound": "حركة وارد", "journal": "قيد يومي"}
+    DRAFT_SCREENS = {"sales": "المبيعات", "inbound": "الوارد", "journal": "القيود اليومية"}
+
+    def drafts_path(self):
+        base = getattr(self, "db_path", None)
+        return f"{base}{self.DRAFTS_SUFFIX}" if base else None
+
+    def drafts_enabled(self):
+        return not getattr(self, "view_only", False) and bool(self.drafts_path())
+
+    def load_drafts(self):
+        """المسودات المحفوظة {النموذج: بياناته} — ملفٌ مفقود أو تالف = لا مسودات"""
+        path = self.drafts_path()
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError) as e:
+            log_cloud_error("تعذّرت قراءة المسودات المحفوظة تلقائياً", e)
+            return {}
+
+    def write_drafts(self, drafts):
+        """يكتب المسودات كلها كتابةً ذرّية (أو يحذف الملف إن لم يبقَ شيء)"""
+        path = self.drafts_path()
+        if not path:
+            return False
+        try:
+            if not drafts:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(drafts, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            replace_db_file(tmp, path, attempts=2)     # استبدال ذرّي (وإعادة محاولة قصيرة إن قفله ويندوز لحظةً)
+            return True
+        except OSError as e:
+            log_cloud_error("تعذّر الحفظ التلقائي للمسودة", e)
+            return False
+
+    def save_draft(self, form, data):
+        """يحفظ مسودة النموذج (data فارغة ← تُحذف مسودته)"""
+        if not self.drafts_enabled():
+            return False
+        drafts = self.load_drafts()
+        if data:
+            drafts[form] = dict(data, _saved_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        elif form in drafts:
+            drafts.pop(form)
+        else:
+            return True
+        return self.write_drafts(drafts)
+
+    def get_draft(self, form):
+        if not self.drafts_enabled():
+            return None
+        data = self.load_drafts().get(form)
+        return data if isinstance(data, dict) else None
+
+    def discard_draft(self, form):
+        """يمسح مسودة النموذج فوراً ويلغي حفظاً مؤجلاً له — بعد الترحيل أو التعليق مباشرة"""
+        timer = (self.__dict__.get("_draft_timers") or {}).pop(form, None)
+        if timer:
+            try:
+                self.after_cancel(timer)
+            except Exception:
+                pass
+        return self.save_draft(form, None)
+
+    def schedule_draft_save(self, form, *_args):
+        """حفظ مؤجل لحظة بعد آخر تغيير (لا كتابة مع كل حرف) — بعد استعادة مسودة الشاشة أو التأكد من عدمها"""
+        if form not in self.__dict__.get("_draft_ready", ()) or not self.drafts_enabled():
+            return
+        timers = self.__dict__.setdefault("_draft_timers", {})
+        if timers.get(form):
+            try:
+                self.after_cancel(timers[form])
+            except Exception:
+                pass
+        timers[form] = self.after(self.DRAFT_SAVE_DELAY_MS, lambda: self.flush_draft(form))
+
+    def flush_draft(self, form):
+        (self.__dict__.get("_draft_timers") or {}).pop(form, None)
+        if form not in self.__dict__.get("_draft_ready", ()):
+            return False
+        try:
+            data = getattr(self, self.DRAFT_COLLECTORS[form])()
+        except Exception as e:
+            log_cloud_error("تعذّر جمع بيانات المسودة", e)
+            return False
+        return self.save_draft(form, data)
+
+    def flush_all_drafts(self):
+        """عند إغلاق البرنامج: ما ينتظر الحفظ المؤجل يُحفظ الآن"""
+        for form in list((self.__dict__.get("_draft_timers") or {}).keys()):
+            self.flush_draft(form)
+
+    def watch_draft_widgets(self, form, widgets):
+        """كل كتابة أو اختيار في هذه الخانات ← حفظ مؤجل لمسودة النموذج"""
+        for w in widgets:
+            if w is None:
+                continue
+            try:
+                w.bind("<KeyRelease>", lambda e, f=form: self.schedule_draft_save(f), add="+")
+            except Exception:
+                pass
+
+    def mark_draft_ready(self, form):
+        self.__dict__.setdefault("_draft_ready", set()).add(form)
+
+    # ── فاتورة المبيعات ──
+    def collect_sales_draft(self):
+        """الفاتورة الحالية إن كان فيها عمل لم يُرحَّل (سطر، أو خانة سطر، أو بيان) — وإلا None"""
+        if not hasattr(self, "sale_set_number"):
+            return None
+        data = self.collect_sale_form()
+        if not data["rows"] and not data["draft"] and not data["note"]:
+            return None
+        data["suspended_id"] = getattr(self, "current_suspended_id", None)
+        return data
+
+    def sales_draft_posted(self, data):
+        """هل رُحِّلت هذه المسودة فعلاً (انقطاعٌ بين الترحيل ومسحها)؟ فاتورة بالرقم والنوع والاسم والتاريخ نفسها
+        وفيها كل أرقام تشغيل المسودة"""
+        manual = str(data.get("manual_no") or "").strip()
+        if not manual or not data.get("rows"):
+            return False
+        kind, name, day = data.get("kind") or self.SALE_KIND_GOLD, data.get("name") or "", str(data.get("date") or "")[:10]
+        posted = set()
+        found = False
+        for inv in self.invoices.values():
+            if (inv.get("النوع") in self.SALE_TYPES and str(inv.get("رقم الفاتورة اليدوي") or "").strip() == manual
+                    and inv.get("الاسم") == name and (inv.get("sale_kind") or self.SALE_KIND_GOLD) == kind
+                    and str(inv.get("التاريخ") or "")[:10] == day):
+                found = True
+                posted.add(self.normalize_set_number(inv.get("set_number")))
+        sets = {self.normalize_set_number(r.get("set_number")) for r in data["rows"]} - {""}
+        return found and sets <= posted
+
+    def restore_sales_draft(self):
+        """بعد بناء شاشة المبيعات: فاتورة لم تُرحَّل حُفظت تلقائياً تعود كما كانت (بسطورها ونوعها ورقمها)"""
+        try:
+            data = self.get_draft("sales")
+            if not data:
+                return False
+            if self.sales_draft_posted(data) and not messagebox.askyesno(
+                    "مسودة مرحّلة", f"المسودة المحفوظة تلقائياً لفاتورة المبيعات ({data.get('manual_no')}) يبدو أنها "
+                    "رُحِّلت فعلاً (فاتورة بالرقم والاسم والتاريخ وأرقام التشغيل نفسها).\n\nهل تريد استعادتها رغم ذلك؟"):
+                self.discard_draft("sales")
+                return False
+            self.fill_sale_form(data)
+            sid = data.get("suspended_id")
+            rec = self.get_suspended_sale(sid) if sid else None
+            self.set_current_suspended(sid if rec is not None else None, rec)
+            self.refresh_pending_sales_table()
+            n = len(data.get("rows") or [])
+            self.queue_draft_notice("sales", f"♻️ استُعيدت فاتورة لم تُرحَّل ({n} سطر) كما كانت — حُفظت تلقائياً "
+                                             f"{str(data.get('_saved_at') or '')[:16]}")
+            return True
+        except Exception as e:
+            log_cloud_error("تعذّرت استعادة مسودة المبيعات", e)
+            return False
+        finally:
+            self.mark_draft_ready("sales")
+
+    # ── نموذجا الوارد والقيود اليومية ──
+    def collect_form_draft(self, form):
+        values, meaningful = {}, False
+        for attr, user_value in self.FORM_DRAFT_FIELDS[form]:
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            try:
+                v = str(w.get()).strip()
+            except Exception:
+                continue
+            values[attr] = v
+            meaningful = meaningful or (user_value and bool(v))
+        return {"fields": values} if meaningful else None
+
+    def collect_inbound_draft(self):
+        return self.collect_form_draft("inbound")
+
+    def collect_journal_draft(self):
+        return self.collect_form_draft("journal")
+
+    def restore_form_draft(self, form):
+        """بعد بناء الشاشة: ما كُتب في نموذجها ولم يُرحَّل يعود إلى خاناته"""
+        try:
+            data = self.get_draft(form)
+            fields = (data or {}).get("fields") or {}
+            if not fields:
+                return False
+            for attr, _user in self.FORM_DRAFT_FIELDS[form]:
+                w = getattr(self, attr, None)
+                if w is None or attr not in fields:
+                    continue
+                v = fields[attr]
+                if isinstance(w, (ctk.CTkComboBox, ctk.CTkOptionMenu)):
+                    if v:
+                        w.set(v)
+                else:
+                    w.delete(0, "end")
+                    if v:
+                        w.insert(0, v)
+            if form == "inbound" and hasattr(self, "toggle_in_carat_field"):
+                try:
+                    self.toggle_in_carat_field(self.in_type.get())
+                except Exception:
+                    pass
+            self.queue_draft_notice(form, f"♻️ استُعيدت {self.DRAFT_TITLES[form]} لم تُرحَّل — حُفظت تلقائياً "
+                                          f"{str(data.get('_saved_at') or '')[:16]}")
+            return True
+        except Exception as e:
+            log_cloud_error("تعذّرت استعادة المسودة", e)
+            return False
+        finally:
+            self.mark_draft_ready(form)
+
+    def wipe_drafts_and_forms(self):
+        """تصفير البيانات: لا مسودة تلقائية تبقى، وخانات الإدخال (فاتورة المبيعات وسطورها، الوارد، القيود) فارغة"""
+        for form in list((self.__dict__.get("_draft_timers") or {}).keys()):
+            timer = self._draft_timers.pop(form, None)
+            try:
+                self.after_cancel(timer)
+            except Exception:
+                pass
+        self.write_drafts({})
+        if hasattr(self, "sale_set_number"):
+            try:
+                self.pending_sale_rows = []
+                self.clear_sale_form()
+                self.refresh_pending_sales_table()
+            except Exception as e:
+                log_cloud_error("تعذّر تفريغ فاتورة المبيعات بعد تصفير البيانات", e)
+        for form in ("inbound", "journal"):
+            for attr, user_value in self.FORM_DRAFT_FIELDS[form]:
+                w = getattr(self, attr, None)
+                if w is None or not user_value:
+                    continue
+                try:
+                    if isinstance(w, (ctk.CTkComboBox, ctk.CTkOptionMenu)):
+                        w.set("")
+                    else:
+                        w.delete(0, "end")
+                except Exception:
+                    pass
+        self.write_drafts({})         # تفريغ الخانات أعلاه لا يترك مسودة
+
+    def queue_draft_notice(self, form, msg):
+        """رسالة الاستعادة تظهر حين يرى المستخدم الشاشة: فوراً إن كانت معروضة، وإلا عند فتحها — الشاشات تُبنى في
+        الخلفية بعد الدخول، فلا تظهر رسالة «استُعيدت» فوق شاشة أخرى"""
+        screen = self.DRAFT_SCREENS[form]
+        self.__dict__.setdefault("_draft_notices", {})[screen] = (form, msg)
+        if getattr(getattr(self, "tabview", None), "current_screen", None) == screen:
+            self.after_idle(lambda: self.show_draft_notice(screen))
+
+    def show_draft_notice(self, screen):
+        """عند فتح الشاشة: رسالة استعادة مسودتها (مرة واحدة)"""
+        form, msg = (self.__dict__.get("_draft_notices") or {}).pop(screen, (None, None))
+        if not msg:
+            return None
+        if form == "sales" and getattr(self, "lbl_sales_status", None) is not None:
+            self.lbl_sales_status.configure(text=msg)
+            self.after(9000, lambda: self.lbl_sales_status.configure(text=""))
+        self.toast(msg, kind="success", ms=6000)
+        return msg
+
+    def notify_saved_drafts(self):
+        """عند التشغيل: تنبيهٌ بما حُفظ تلقائياً ولم يُرحَّل (يعود عند فتح شاشته)"""
+        try:
+            drafts = self.load_drafts() if self.drafts_enabled() else {}
+            parts = []
+            for form, data in drafts.items():
+                if form in self.DRAFT_TITLES and isinstance(data, dict):
+                    extra = f" ({len(data.get('rows') or [])} سطر)" if form == "sales" else ""
+                    parts.append(f"{self.DRAFT_TITLES[form]}{extra} في «{self.DRAFT_SCREENS[form]}»")
+            if parts:
+                self.toast("♻️ محفوظ تلقائياً ولم يُرحَّل: " + "، ".join(parts) + " — يعود عند فتح الشاشة",
+                           kind="info", ms=8000)
+            return parts
+        except Exception as e:
+            log_cloud_error("تعذّر التنبيه بالمسودات", e)
+            return []
 
     def collect_sale_form(self):
         """الفاتورة الحالية كما هي في الشاشة: رأسها، وسطورها، وما كُتب في خانات السطر ولم يُضف"""
@@ -23503,6 +24248,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             log_cloud_error("تعذّر تعليق الفاتورة", e)
             messagebox.showerror("تعذّر التعليق", f"لم تُحفظ الفاتورة المعلّقة:\n{e}")
             return None
+        self.discard_draft("sales")           # محفوظة في «المعلقات» — لا مسودة مكررة لها (1.93)
         self.set_current_suspended(None)
         self.clear_sale_form()
         self.refresh_pending_sales_table()
@@ -23939,7 +24685,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
           weight_after = بعد التركيب + فصوص + أحجار + الماس ، total = الوزن بعد + السلسال
           بوليش 2: p2_before و p2_after و p2_khayas = قبل − بعد ، final = بعد بوليش 2 (الوزن النهائي)
           net = الوزن النهائي − الفصوص − الأحجار − الماس ، stones_disc = الأحجار × نسبة الخصم
-          bound = الصافي + الفصوص + الأحجار بعد الخصم + الماس (الوزن المقيد)"""
+          bound = الصافي + الفصوص + الأحجار بعد الخصم (الوزن المقيد — بلا الماس منذ 1.93: الماس للعرض)"""
         key = self.normalize_set_number(set_number)
         rec = rec if rec is not None else (self.sb_load(key) or self.sb_new_record(key))
         moves = self.sb_moves_index().get(key, {})
@@ -23958,7 +24704,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         p1_khayas_sale = None
         if sale is not None:
             if p2b is None and p2a is None:
-                pieces_w = round(sale["gold"] + sale["gems"] + sale["stones"] + sale["diamond"], 2)
+                # جزءٌ لا يظهر في نوع البيع (1.93: ماس الطقم في عملية الذهب، وفصوصه وأحجاره في عملية الماس) من القالب —
+                # فالوزن بعد بوليش 2 وزن الطقم كله، والصافي = الذهب المبيع
+                hidden = self.sale_hidden_keys(sale.get("kind")) if sale.get("kind") in self.SALE_KINDS else set()
+                rest = sum(self.sb_num(rec.get(f)) or 0.0 for f, k in (("gems", "فصوص"), ("stones", "أحجار"),
+                                                                     ("diamond", "الماس")) if k in hidden and not sale[f])
+                pieces_w = round(sale["gold"] + sale["gems"] + sale["stones"] + sale["diamond"] + rest, 2)
                 if pieces_w > 0:
                     p2a, p2b = pieces_w, round(pieces_w + sale["khayas"], 2)
                     ext |= {"p2_before", "p2_after"}
@@ -23983,7 +24734,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         net = round(p2a - parts, 2) if p2a is not None else None
         pct = num["stones_pct"]
         stones_disc = round(stones * pct / 100.0, 2) if (stones and pct is not None) else None
-        bound = round(net + (gems or 0.0) + (stones_disc or 0.0) + (diamond or 0.0), 2) if net is not None else None
+        # الوزن المقيد بلا الماس (1.93) — كالمبيعات تماماً، والماس يبقى في الأجزاء (الصافي = النهائي − الأجزاء)
+        bound = sale_bound_weight(net, gems, stones_disc) if net is not None else None
         # التصنيع (1.90): ٠٫٠٨٪ = قبض شغل 8 وحده و٠٫٠٤٪ = قبض شغل 4 وحده من حساب المصنّع لرقم التشغيل — والسلاسل لا
         # تدخلهما (رصيدها في الخزينة، وفي مراحل التصنيع مع مفنش ٨ كما هي)؛ وبلا قبض شغل 8 ← ما كُتب في ٠٫٠٨٪
         mfg = self.sb_mfg_receipts().get(key) or {}
@@ -24237,8 +24989,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def sb_apply_sale(self, rec, gems, stones, disc, diamond, name, date, kind, period=None):
         """قيم فاتورة البيع في سجل القالب: الفصوص والأحجار ونسبة خصمها والماس (ما بيع فعلاً)، والنوع، والعميل والتاريخ
         إن لم يُكتبا — ويصير الطقم مولَّداً. period: فترة فاتورة البيع — خانةٌ لم تُكتب في القالب تُختم بها في تفصيل
-        الخزينة (sb_set_kind_mark)"""
-        for field, val in (("gems", gems), ("stones", stones), ("diamond", diamond)):
+        الخزينة (sb_set_kind_mark).
+        خانةٌ لا تظهر في نوع البيع (1.93: الماس في عملية الذهب، والفصوص والأحجار في عملية الماس) وليس لها قيمة في
+        الفاتورة لا تُكتب: قيمة القالب فيها تبقى كما هي — فبيع طقمٍ بالذهب لا يمسح ماسه من القالب (ولا يتغيّر صافيه).
+        وفاتورةٌ أقدم فيها قيمة لتلك الخانة (قبل 1.93) تُكتب كما كانت"""
+        hidden = self.sale_hidden_keys(kind) if kind in self.SALE_KINDS else set()
+        for field, sale_key, val in (("gems", "فصوص", gems), ("stones", "أحجار", stones), ("diamond", "الماس", diamond)):
+            if sale_key in hidden and not val:
+                continue
             rec[field] = round(val, 2) if val else None
             self.sb_set_kind_mark(rec, field, at=date, period=period)
         if stones and disc:
@@ -24754,8 +25512,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       "gems": "فصوص", "stones": "احجار", "stones_pct": "خصم الأحجار %", "diamond": "الماس",
                       "chain": "السلسال", "p2_before": "قبل بوليش 2", "p2_after": "بعد بوليش 2",
                       "gems_ct": "فصوص (قيراط)", "stones_ct": "احجار (قيراط)"}
+    # ألوان القالب الورقي نفسه (1.93) — الشاشة والسند المطبوع منها معاً:
+    #   green    الرأس وعناوين الأقسام (التصنيع، البوليش، التركيب، بوليش 2، الوزن النهائي، الاجمالي، الأجمالي)
+    #            وعناوين «الوزن بعد / السلسال / الوزن الإجمالي»
+    #   lavender عناوين الأعمدة (0.08% / 0.04% / خياس، قبل / بعد / خياس)، وفصوص / احجار / الماس، وعناوين جدول الوزن
+    #            النهائي وجدول القطع والإجماليات
+    #   cream    عناوين بيانات الطقم (اسم العميل، رقم الموديل، NAME، DATE، اسم المركب، النوع)
+    #   khayas   خانات الخياس (بيج وردي)؛ وخانات الإدخال بيضاء
+    SET_PAPER_COLORS = {"green": "#B5DBA5", "lavender": "#CDD1F4", "cream": "#FFF0C2", "khayas": "#F6DCCC"}
+    SB_KHAYAS_KEYS = ("mfg_khayas", "p1_khayas", "asm_khayas", "p2_khayas")
     # ألوان الورقة: بيضاء كالقالب المطبوع في المظهرين؛ المُرحَّل بخلفية زرقاء خفيفة، وما لم يُرحَّل بالأصفر
-    SB_PAPER = {"page": "#FFFFFF", "line": "#3F4650", "head": "#CCCCCC", "label": "#DBDBDB", "calc": "#F1F3F5",
+    SB_PAPER = {"page": "#FFFFFF", "line": "#3F4650", "head": SET_PAPER_COLORS["green"],
+                "label": SET_PAPER_COLORS["lavender"], "calc": "#F1F3F5",
+                "green": SET_PAPER_COLORS["green"], "lavender": SET_PAPER_COLORS["lavender"],
+                "cream": SET_PAPER_COLORS["cream"], "khayas": SET_PAPER_COLORS["khayas"],
                 "ink": "#111827", "muted": "#8A94A3", "posted": "#E3ECF9", "pending": "#FFF1CC", "ext": "#E3F2E6",
                 "focus": UI["primary"], "shadow": "#C9D0DA"}
 
@@ -24776,27 +25546,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def box(x0, t0, x1, t1, fill=None):
             out.append(("box", x0, t0, x1, t1, fill))
 
-        def label(x0, t0, x1, t1, text, fill="label", size=11.5):
+        # ألوان القالب الورقي (SET_PAPER_COLORS): العناوين بنفسجية فاتحة، وعناوين الأقسام خضراء
+        def label(x0, t0, x1, t1, text, fill="lavender", size=11.5):
             box(x0, t0, x1, t1, fill)
             out.append(("text", (x0 + x1) / 2, (t0 + t1) / 2, text, size, (x1 - x0) - 2 * MM, t1 - t0))
 
-        def cell(key, x0, t0, x1, t1, size=12.5):
-            box(x0, t0, x1, t1)
+        def cell(key, x0, t0, x1, t1, size=12.5, fill=None):
+            box(x0, t0, x1, t1, fill)
             out.append(("cell", key, x0, t0, x1, t1, size))
 
         def calc(key, x0, t0, x1, t1, size=12.5, fill="calc"):
             box(x0, t0, x1, t1, fill)
             out.append(("calc", key, x0, t0, x1, t1, size))
 
-        def pair(x0, x1, t0, t1, text, key, computed, size=11.5):
+        def pair(x0, x1, t0, t1, text, key, computed, size=11.5, label_fill="lavender"):
             mid = (x0 + x1) / 2
-            label(mid, t0, x1, t1, text, size=size)
+            label(mid, t0, x1, t1, text, label_fill, size=size)
             (calc if computed else cell)(key, x0, t0, mid, t1, size + 1)
 
         # الرأس: «مصنع جاديت» في الوسط، والشعار يميناً، ورقم التشغيل (NO) يساراً
         t0, t1 = L["head"]
         hh = t1 - t0
-        box(left, t0, right, t1, "head")
+        box(left, t0, right, t1, "green")
         centre = (left + right) / 2
         out.append(("text", centre, (t0 + t1) / 2, "مصنع جاديت", 24, 2 * (centre - left - 69 * MM), hh))  # بين NO والشعار
         out.append(("logo", right - 3 * MM, t0 + 0.1 * hh, t1 - 0.1 * hh))
@@ -24808,13 +25579,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for i, (text, key) in enumerate((("اسم العميل:", "customer"), ("رقم الموديل:", "model"),
                                          (":NAME", "label"), (":DATE", "date"))):
             x1 = right - i * quarter
-            label(x1 - 24 * MM, a0, x1, a1, text, size=10.5)
+            label(x1 - 24 * MM, a0, x1, a1, text, "cream", size=10.5)
             cell(key, x1 - quarter, a0, x1 - 24 * MM, a1, 11)
         half = (right - left) / 2
-        label(right - 24 * MM, b0, right, b1, "اسم المركب:", size=10.5)
+        label(right - 24 * MM, b0, right, b1, "اسم المركب:", "cream", size=10.5)
         # اسم المركب بلا خانة صف (1.92): الصف يُعطى وحده عند الترحيل لحسابه، وبلا اسمٍ يبقى التركيب في القالب
         cell("assembler", right - half, b0, right - 24 * MM, b1, 11)
-        label(right - half - 24 * MM, b0, right - half, b1, "النوع:", size=10.5)
+        label(right - half - 24 * MM, b0, right - half, b1, "النوع:", "cream", size=10.5)
         cell("kind", left, b0, right - half - 24 * MM, b1, 11)
 
         # العمود الأيسر: المراحل
@@ -24823,13 +25594,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         three = tuple((lx1 - (i + 1) * third, lx1 - i * third) for i in range(3))     # من اليمين
 
         def stage(top, title, heads, keys):
-            label(lx0, top, lx1, top + r, title, "head", 13)
+            label(lx0, top, lx1, top + r, title, "green", 13)
             for (x0, x1), h, key in zip(three, heads, keys):
                 label(x0, top + r, x1, top + 2 * r, h)
+                fill = "khayas" if key in self.SB_KHAYAS_KEYS else None          # خانة الخياس بيج وردي كالورقة
                 if self.SB_CELL_KINDS.get(key):
-                    cell(key, x0, top + 2 * r, x1, top + 2 * r + v, 13)
+                    cell(key, x0, top + 2 * r, x1, top + 2 * r + v, 13, fill=fill)
                 else:
-                    calc(key, x0, top + 2 * r, x1, top + 2 * r + v, 13)
+                    calc(key, x0, top + 2 * r, x1, top + 2 * r + v, 13, fill=fill or "calc")
             return top + 2 * r + v
 
         t = stage(L["body_top"], "التصنيع", ("0.08%", "0.04%", "خياس"), ("p08", "p04", "mfg_khayas")) + g
@@ -24849,11 +25621,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             t += r
         for text, key, computed in (("الوزن بعد", "weight_after", True), ("السلسال", "chain", False),
                                     ("الوزن الأجمالي:", "total", True)):
-            pair(lx0, lx1, t, t + r, text, key, computed)
+            pair(lx0, lx1, t, t + r, text, key, computed, label_fill="green")
             t += r
         out.append(("line", lx0, t - 3 * r, lx1, 1.8))               # فاصل بين الأحجار والأوزان
         t = stage(t + g, "بوليش 2", ("قبل", "بعد", "خياس"), ("p2_before", "p2_after", "p2_khayas")) + g
-        label(lx0, t, lx1, t + r, "الوزن النهائي", "head", 13)
+        label(lx0, t, lx1, t + r, "الوزن النهائي", "green", 13)
         t += r
         for text, key in (("الوزن النهائي", "final"), ("ناقص فصوص", "minus_gems"), ("ناقص احجار", "minus_stones"),
                           ("ناقص الماس", "minus_diamond"), ("الوزن الصافي", "net")):
@@ -24876,7 +25648,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 cell(f"piece:{row}:{c}", edges[c + 2], t, edges[c + 1], t + p, 10.5)
             t += p
         t += g
-        label(rx0, t, rx1, t + r, "الاجمالي", "head", 13)
+        label(rx0, t, rx1, t + r, "الاجمالي", "green", 13)
         t += r
         rhalf = (rx1 - rx0) / 2
         # الفصوص والأحجار بالقيراط (= جرامها × ٥) — وما يُكتب هنا يُقسم على ٥ في خانتيهما بالجرام يساراً
@@ -24885,14 +25657,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             label(x1 - 20 * MM, t, x1, t + r, text)
             cell(key, x1 - rhalf, t, x1 - 20 * MM, t + r, 12)
         t += r + g
-        label(rx0, t, rx1, t + r, "الأجمالي", "head", 13)
+        label(rx0, t, rx1, t + r, "الأجمالي", "green", 13)
         t += r
         for text, key in (("الوزن الصافي", "net2"), ("فصوص", "gems2"), ("الاحجار %", "stones_disc"),
                           ("الوزن المقيد", "bound")):
             if key == "stones_disc":
                 m = rx1 - rhalf
                 label(m + rhalf * 0.4, t, rx1, t + r, text)
-                calc("pct2", m, t, m + rhalf * 0.4, t + r, 11.5, fill="label")
+                calc("pct2", m, t, m + rhalf * 0.4, t + r, 11.5, fill="lavender")
                 calc(key, rx0, t, m, t + r, 12.5)
             else:
                 pair(rx0, rx1, t, t + r, text, key, True, 11.5)
@@ -25673,7 +26445,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         canvas.create_rectangle(X(0) + 4, Y(0) + 4, X(PW) + 4, Y(PH) + 4, fill=P["shadow"], outline="", tags="paper")
         canvas.create_rectangle(X(0), Y(0), X(PW), Y(PH), fill=P["page"], outline=P["line"], tags="paper")
         lw = max(1, int(round(0.9 * sy * 0.9)))
-        fills = {"head": P["head"], "label": P["label"], "calc": P["calc"], None: P["page"]}
+        fills = {"head": P["head"], "label": P["label"], "calc": P["calc"], None: P["page"],
+                 "green": P["green"], "lavender": P["lavender"], "cream": P["cream"], "khayas": P["khayas"]}
         st["calc_items"], st["rects"] = {}, {}
         for el in self.sb_paper_spec():
             kind = el[0]
@@ -26059,7 +26832,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if cell is None:
             return
         P = self.SB_PAPER
-        bg = {"posted": P["posted"], "pending": P["pending"], "ext": P["ext"], "mfg": P["posted"]}.get(state, P["page"])
+        # خانة الخياس بلا حال: بيج وردي كالقالب الورقي (1.93)، وغيرها بيضاء
+        base = P["khayas"] if key in self.SB_KHAYAS_KEYS else P["page"]
+        bg = {"posted": P["posted"], "pending": P["pending"], "ext": P["ext"], "mfg": P["posted"]}.get(state, base)
         fg = P["muted"] if state == "auto" else P["ink"]
         cell["widget"].configure(bg=bg, disabledbackground=bg, readonlybackground=bg, highlightbackground=bg,
                                  fg=fg, disabledforeground=fg)
@@ -26715,7 +27490,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             "weight_after": weight_after, "chain": chain, "total": total,
             "polish2": (total, pieces, sale(polish2)),
             "net": sale(gold), "stones_discount": sale(disc),
-            "bound": round(gold + gems + disc + diamond, 2) if sold else None,
+            "bound": sale_bound_weight(gold, gems, disc) if sold else None,
             "carats": (round(gems * self.CARAT_PER_GRAM, 2) if sold and gems else None,
                        round(stones * self.CARAT_PER_GRAM, 2) if sold and stones else None),
             "assemblers": "، ".join(track.get("names", [])),
@@ -26791,7 +27566,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         from reportlab.lib.colors import Color
         L = self.set_voucher_layout()
         PH, MM, r, v, p, g = L["PH"], L["MM"], L["r"], L["v"], L["p"], L["g"]
-        HEAD, LABEL, WHITE = Color(0.80, 0.80, 0.80), Color(0.86, 0.86, 0.86), Color(1, 1, 1)
+        # ألوان القالب الورقي نفسه (1.93): الرأس وعناوين الأقسام خضراء، والعناوين بنفسجية فاتحة، وبيانات الطقم
+        # كريمية، وخانات الخياس بيج وردي — كالشاشة (SET_PAPER_COLORS)
+        def paper(name):
+            h = self.SET_PAPER_COLORS[name]
+            return Color(*(int(h[i:i + 2], 16) / 255.0 for i in (1, 3, 5)))
+        HEAD, LABEL, WHITE = paper("green"), paper("lavender"), Color(1, 1, 1)
+        CREAM, KHAYAS = paper("cream"), paper("khayas")
 
         def box(x0, t0, x1, t1, fill=None, lw=0.9):
             c.setLineWidth(lw)
@@ -26814,10 +27595,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 fit = fit_font_size(label, (x1 - x0) - 3 * MM, size, bold=bold, min_size=7)   # النص داخل خانته دائماً
                 text(x, (t0 + t1) / 2, label, fit, bold, align)
 
-        def pair(x0, x1, t0, t1, label, rows_fill=None, value="", split=0.5, size=11.5):
-            """صف «عنوان | قيمة»: العنوان في النصف الأيمن (رمادي) والقيمة في الأيسر"""
+        def pair(x0, x1, t0, t1, label, rows_fill=None, value="", split=0.5, size=11.5, label_fill=None):
+            """صف «عنوان | قيمة»: العنوان في النصف الأيمن (بنفسجي فاتح، أو label_fill) والقيمة في الأيسر"""
             mid = x1 - (x1 - x0) * split
-            cell(mid, t0, x1, t1, label, LABEL, size=size)
+            cell(mid, t0, x1, t1, label, label_fill or LABEL, size=size)
             cell(x0, t0, mid, t1, value, rows_fill, size=size + 1)
 
         left, right = L["left"], L["right"]
@@ -26842,12 +27623,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for i, (label, value) in enumerate((("اسم العميل:", sec["name"]), ("رقم الموديل:", sec.get("model", "")),
                                             (":NAME", sec.get("label", "")), (":DATE", sec["date"] or "/      /"))):
             x1 = right - i * quarter
-            cell(x1 - 24 * MM, a0, x1, a1, label, LABEL, size=10.5)
+            cell(x1 - 24 * MM, a0, x1, a1, label, CREAM, size=10.5)
             cell(x1 - quarter, a0, x1 - 24 * MM, a1, value, None, size=10.5)
         half = (right - left) / 2
         for i, (label, value) in enumerate((("اسم المركب:", sec["assemblers"]), ("النوع:", sec["kind"]))):
             x1 = right - i * half
-            cell(x1 - 24 * MM, b0, x1, b1, label, LABEL, size=10.5)
+            cell(x1 - 24 * MM, b0, x1, b1, label, CREAM, size=10.5)
             cell(x1 - half, b0, x1 - 24 * MM, b1, value, None, size=10.5)
 
         # ── العمود الأيسر: أقسام المراحل ──
@@ -26859,7 +27640,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cell(lx0, top, lx1, top + r, title, HEAD, size=13)
             for (x0, x1), h, val in zip(three, heads, values):
                 cell(x0, top + r, x1, top + 2 * r, h, LABEL, size=11.5)
-                cell(x0, top + 2 * r, x1, top + 2 * r + v, fmt(val), size=13)
+                # الخياس (العمود الثالث) في خانة بيج وردية كالقالب الورقي
+                cell(x0, top + 2 * r, x1, top + 2 * r + v, fmt(val), KHAYAS if h == "خياس" else None, size=13)
             return top + 2 * r + v
 
         # التصنيع: ٠٫٠٤٪ = قبل البوليش — والبوليش والتركيب من «تتبع رقم التشغيل»
@@ -26874,9 +27656,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 pct = sec["stones_pct"]
                 text(mid - 2.5 * MM, t + r / 2, f"{pct:g}%" if pct else "%", 10, align="right")
             t += r
-        for label, value_fill, val in (("الوزن بعد", LABEL, sec["weight_after"]), ("السلسال", None, sec["chain"]),
+        for label, value_fill, val in (("الوزن بعد", None, sec["weight_after"]), ("السلسال", None, sec["chain"]),
                                        ("الوزن الأجمالي:", None, sec["total"])):
-            pair(lx0, lx1, t, t + r, label, value_fill, value=fmt(val))
+            pair(lx0, lx1, t, t + r, label, value_fill, value=fmt(val), label_fill=HEAD)
             t += r
         c.setLineWidth(1.8)
         c.line(lx0, PH - (t - 3 * r), lx1, PH - (t - 3 * r))         # فاصل بين الأحجار والأوزان
@@ -26969,11 +27751,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ارتفاع الترويسة (حتى الخط الذهبي) — يُحسب منه مكان الجدول
     LETTERHEAD_H = 30.2 * mm if REPORTLAB_AVAILABLE else 0
 
-    def draw_pdf_letterhead(self, c, top, margin, navy, gold):
+    def draw_pdf_letterhead(self, c, top, margin, navy, gold, page_w=None):
         """ترويسة الصفحة في أعلاها: بيانات المصنع بالعربية يميناً وبالإنجليزية يساراً — كل سطر في مكانه بلا
-        تداخل — والشعار كبيراً واضحاً في الوسط (٢٧ مم)، ثم خطّان (كحلي وذهبي). يرجع أسفل الترويسة"""
+        تداخل — والشعار كبيراً واضحاً في الوسط (٢٧ مم)، ثم خطّان (كحلي وذهبي). يرجع أسفل الترويسة.
+        page_w: عرض الصفحة (الصفحة العرضية في طباعة صناديق الخياس) — A4 الطولية افتراضياً"""
         from reportlab.lib.colors import Color
-        PW = A4[0]
+        PW = page_w or A4[0]
         gray = Color(0.26, 0.28, 0.34)
         for side, lines in ((PW - margin, self.LETTERHEAD_AR), (margin, self.LETTERHEAD_EN)):
             right = side > PW / 2
@@ -27009,12 +27792,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         c.restoreState()
         return rule - 1.2 * mm
 
-    def draw_standard_letterhead(self, c, margin):
+    def draw_standard_letterhead(self, c, margin, pagesize=None):
         """ترويسة كل القوالب المطبوعة (كشف الحساب، الخسائر، صناديق المصنع، الجداول…) — الترويسة نفسها في
-        فاتورة المبيعات: بيانات المصنع والشعار في أعلى الورقة. يرجع موضع أول سطر تحتها"""
+        فاتورة المبيعات: بيانات المصنع والشعار في أعلى الورقة. يرجع موضع أول سطر تحتها (pagesize: A4 افتراضياً)"""
         from reportlab.lib.colors import Color
         navy, gold = Color(0.15, 0.15, 0.55), Color(0.80, 0.64, 0.22)
-        return self.draw_pdf_letterhead(c, A4[1] - 7 * mm, margin, navy, gold) - 7 * mm
+        pw, ph = pagesize or A4
+        return self.draw_pdf_letterhead(c, ph - 7 * mm, margin, navy, gold, page_w=pw) - 7 * mm
 
     # أعمدة فاتورة المبيعات من اليمين؛ «الخياس» = بوليش 1 + بوليش 2 + المركب لرقم التشغيل
     SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
@@ -27036,8 +27820,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          "الأحجار بعد الخصم": round(stones_disc, 2), "الماس": round(diamond, 2),
                          "خياس بوليش 2": round(float(data.get("khayas") or 0.0), 2),
                          "الخياس": self.sale_khayas_total(data),
-                         "الوزن القائم": round(gold + gems + stones + diamond, 2),
-                         "الوزن المقيد": round(gold + gems + stones_disc + diamond, 2),
+                         "الوزن القائم": sale_standing_weight(gold, gems, stones),
+                         "الوزن المقيد": sale_bound_weight(gold, gems, stones_disc),
                          # بيان الطقم كما في «العمليات» (لكل رقم تشغيل بيانه)
                          "البيان": self.sale_note_of(data.get("voucher"))})
         totals = {k: round(sum(r[k] for r in rows), 2) for k in self.SALES_SUMMARY_COLS[2:]
@@ -27294,12 +28078,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             except (TypeError, ValueError):
                 stones_after = 0.0
             gold, gems, stones, diamond = d["gold"], d["gems"], d["stones"], d["diamond"]
-            bound = round(gold + gems + stones_after + diamond, 2)
+            bound = sale_bound_weight(gold, gems, stones_after)
             out.append({
                 "set_number": sn, "invoice": manual or "", "date": str(date_str)[:10],
                 "gold": round(gold, 2), "gems": round(gems, 2), "stones": round(stones, 2),
                 "stones_after": round(stones_after, 2), "diamond": round(diamond, 2),
-                "standing": round(gold + gems + stones + diamond, 2), "bound": bound,
+                "standing": sale_standing_weight(gold, gems, stones), "bound": bound,
                 "qr": self.sale_ticket_qr(sn, bound), "barcode": self.sale_ticket_barcode(sn, bound),
             })
         return out
@@ -27476,8 +28260,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showerror("خطأ", f"تعذّر طباعة الفاتورة:\n{e}")
 
     def _open_file(self, path):
-        """يفتح ملفاً بالبرنامج الافتراضي لنظام التشغيل (لمعاينة PDF مثلاً)"""
+        """معاينة ملف (PDF مثلاً): على ويندوز في نافذةٍ مستقلة بمحرّك Edge — بلا شريط عنوان ولا تبويبات (1.93) — وإلا
+        بالبرنامج الافتراضي لنظام التشغيل"""
         try:
+            if sys.platform.startswith("win") and self.open_in_edge_window(path):
+                return
             if sys.platform.startswith("win"):
                 os.startfile(path)
             elif sys.platform == "darwin":
@@ -27486,6 +28273,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 subprocess.Popen(["xdg-open", path])
         except Exception as e:
             messagebox.showerror("خطأ", f"تعذّر فتح الملف تلقائياً، يمكنك فتحه يدوياً من:\n{path}\n\n{e}")
+
+    def open_in_edge_window(self, path):
+        """يفتح الملف في نافذة Edge مستقلة (وضع التطبيق) بحجمٍ يناسب الشاشة. يرجع True إن فُتحت"""
+        if os.path.splitext(str(path))[1].lower() not in EDGE_PREVIEW_TYPES:
+            return False
+        edge = find_edge_exe()
+        if not edge:
+            return False
+        try:
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        except Exception:
+            sw, sh = 1366, 768
+        width, height = min(1280, max(800, sw - 120)), max(600, sh - 90)
+        try:
+            subprocess.Popen(edge_preview_command(edge, path, width, height, max(0, (sw - width) // 2), 10))
+            return True
+        except OSError as e:
+            log_cloud_error("تعذّر فتح المعاينة في Edge", e)
+            return False
 
     def _print_file(self, path):
         """يرسل ملفاً للطباعة على الطابعة الافتراضية لنظام التشغيل"""
@@ -28678,6 +29484,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         btn_print_je.pack(pady=(0, 15))
 
         self.refresh_journal_entries_table()
+        # الحفظ التلقائي (1.93): قيدٌ كُتب ولم يُرحَّل يعود بعد انقطاع أو إغلاق
+        self.watch_draft_widgets("journal", [getattr(self, a, None) for a, _u in self.FORM_DRAFT_FIELDS["journal"]])
+        self.restore_form_draft("journal")
 
     def print_journal_entries_screen(self):
         cols = ("التاريخ", "من حساب (مدين)", "إلى حساب (دائن)", "القيمة", "البيان")
@@ -28754,6 +29563,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                   "trees_count": 0.0, "قبل": 0.0, "بعد": 0.0, "set_number": entry_ref}
         self.invoices[self.invoice_counter] = inv_to
         self.save_invoice_to_db(self.invoice_counter, inv_to)
+        self.discard_draft("journal")          # رُحِّل: لا تعود مسودته (1.93)
         # قيد جديد على حساب محذوف من الشجرة (اختير تأكيده): الحساب يعود ظاهراً بحركاته
         self.revive_deleted_accounts((from_name, to_name))
 

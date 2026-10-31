@@ -97,6 +97,7 @@ METHODS.append("slot_kind_deltas")        # 1.87: تأكيد بوليش 1 برص
 
 EXTRA = '''
 def sub_balance_lines(self, deltas): return []
+def discard_draft(self, form): return True            # الحفظ التلقائي (1.93) خارج هذا الفحص
 def check_edit_permission(self): return True
 def get_setting(self, key, default=None): return default
 def deleted_account_names(self): return frozenset()

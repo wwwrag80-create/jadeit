@@ -68,16 +68,21 @@ METHODS = [
     "fill_next_sale_invoice_number", "set_sale_invoice_start",
     # نوع العملية (ذهب/الماس): ترقيم لكل نوع، ومفتاح الفاتورة بنوعها، والمعلّقة بنوعها
     "sale_kind_inferred", "sale_key_of", "current_sale_kind", "set_sale_kind", "safe_float",
+    # خانات كل نوع عملية (1.93)
+    "sale_hidden_keys", "sale_value_present", "sale_rows_hidden_values", "sale_field_hidden", "apply_sale_kind_fields",
+    "request_sale_kind",
     "sale_invoice_start_saved", "posted_sale_invoice_numbers",
     # كل ترحيل وتعديل خطوة تراجع (1.71)
     "push_undo", "_close_undo_step", "update_undo_buttons", "can_undo", "undo_step_label",
 ]
-ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "UNDO_LIMIT", "INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
+ATTRS = ["LOCKED_PERIODS_KEY", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "UNDO_LIMIT", "INVOICE_COLUMNS", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "SALE_DIAMOND_TYPES", "SUSPENDED_KIND_KEY",
          "SALE_NO_START_KEYS", "SALE_NO_DEFAULT_START", "SALE_TYPES", "SALE_NOTE_SEP", "POLISH2_SALE_BAYAN", "SALE_NO_START_KEY", "SUSPENDED_TABLE_SQL", "SALE_DRAFT_FIELDS", "COMPACT_HEADERS",
          "SHRINKABLE_COLUMNS", "_SET_DIGITS", "_DATE_DIGITS"]
 
 EXTRA = '''
 def check_edit_permission(self): return True
+def discard_draft(self, form): self.discarded = getattr(self, "discarded", []) + [form]; return True
+def schedule_draft_save(self, form, *a): pass         # الحفظ التلقائي (1.93): له فحصه test_auto_drafts
 def sb_polish2_khayas(self, k): return None
 def sb_sync_from_sale(self, *a, **k): return False
 def recalculate_all(self): self.recalcs += 1
@@ -414,9 +419,21 @@ fields[2].press("<Right>")
 assert W.focused is fields[1]
 print("✔ Enter ينقل للخانة التالية (ويحدّد نصها)، وفي آخر خانة يضيف السطر؛ ← التالية و→ السابقة")
 
+# 1.93: خانة مخفية (خانات نوع العملية) يتخطاها Enter والأسهم، وبعد آخر خانة ظاهرة يُضاف السطر
+hid = {fields[1], fields[3], fields[4]}
+added.clear()
+d.bind_enter_navigation(fields, on_last=lambda: added.append(1), skip=hid.__contains__)
+d.bind_arrow_navigation(fields, skip=hid.__contains__)
+assert fields[0].press("<Return>") == "break" and W.focused is fields[2]
+assert fields[2].press("<Return>") == "break" and added[-1:] == [1]
+fields[2].press("<Right>")
+assert W.focused is fields[0]
+fields[0].press("<Left>")
+assert W.focused is fields[2]
+print("✔ الخانة المخفية في نوع العملية يتخطاها Enter والأسهم، وEnter في آخر خانة ظاهرة يضيف السطر")
 assert ("nav_fields = [self.sale_date, self.sale_invoice_num, self.sale_name, self.sale_note,"
-        in build) and "self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row)" in build
-assert "self.bind_arrow_navigation(nav_fields)" in build
+        in build) and "self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row, skip=self.sale_field_hidden)" in build
+assert "self.bind_arrow_navigation(nav_fields, skip=self.sale_field_hidden)" in build
 assert "nav = [ent_manual, ent_date, cmb_name, ent_note] + [entries[k] for _l, k in field_defs]" in editor
 assert "self.bind_enter_navigation(nav, on_last=save_row_and_continue)" in editor
 assert "self.bind_arrow_navigation(nav)" in editor

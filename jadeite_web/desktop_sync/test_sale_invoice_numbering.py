@@ -20,7 +20,8 @@ def member(name):
     return textwrap.dedent("\n".join(lines[start - 1:node.end_lineno]))
 
 
-MEMBERS = ("SALE_TYPES", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_DIAMOND_TYPES",
+MEMBERS = ("SALE_TYPES", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "sale_hidden_keys",
+           "apply_sale_kind_fields", "SALE_DIAMOND_TYPES",
            "SALE_NO_START_KEY", "SALE_NO_START_KEYS", "SALE_NO_DEFAULT_START", "sale_kind_inferred", "sale_key_of",
            "current_sale_kind", "set_sale_kind", "split_invoice_number", "sale_invoice_start_saved",
            "sale_invoice_start", "posted_sale_invoice_numbers", "used_sale_invoice_numbers",
@@ -42,6 +43,9 @@ class App(ns["App"]):
     def __init__(self):
         self.settings, self.invoices, self.suspended = {}, {}, []
         self.sale_invoice_num = Entry()
+
+    def schedule_draft_save(self, form, *a):        # الحفظ التلقائي (1.93): له فحصه test_auto_drafts
+        pass
 
     def get_setting(self, key, default=None): return self.settings.get(key, default)
     def set_setting(self, key, value): self.settings[key] = str(value)
@@ -165,7 +169,7 @@ print("✔ تبديل «نوع العملية» يضع رقم فاتورة ال�
 # ═══ ٧) في الشاشة: خانة النوع قبل رقم الفاتورة، والترحيل بنوعه ═══
 build = src[src.index("    def build_sales_tab(self):"):src.index("    def switch_sales_subtab(self, key):")]
 assert build.index('head_label("التاريخ:")') < build.index('head_label("نوع العملية:")') < build.index('head_label("رقم الفاتورة:")')
-assert "command=lambda k=kind: self.set_sale_kind(k)" in build
+assert "command=lambda k=kind: self.request_sale_kind(k)" in build      # 1.93: يمرّ بفحص خانات النوع ثم set_sale_kind
 commit = member("commit_sale_invoice")
 assert "kind = self.current_sale_kind()" in commit and "self.posted_sale_invoice_numbers(kind)" in commit
 assert "self.post_sale_rows(self.pending_sale_rows, name, full_dt, manual_no, note, kind=kind)" in commit
