@@ -163,7 +163,7 @@ def account_summary(db, account_id: int) -> dict:
         "sections": sections,
         "status": _account_status([sections[m]["balance"]["e4"] for m in MATERIALS]),
         "doc_counts": {r["doc_type"]: r["n"] for r in docs},
-        "recent": [dict(r) | {"type_label": DOC_TYPES[r["doc_type"]]} for r in recent],
+        "recent": [dict(dict(r), type_label=DOC_TYPES[r["doc_type"]]) for r in recent],
         "last_movement": last,
         "opening": dict(opening) if opening else None,
     }

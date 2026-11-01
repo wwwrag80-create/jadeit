@@ -112,7 +112,7 @@ export const KaratDialog = {
           <td class="num">{{ h.previous_karat ? h.previous_karat + ' ← ' : '' }}{{ h.karat }}</td><td>{{ h.reason }}</td><td class="muted">{{ h.user_name }}</td></tr></tbody></table></div>
     </div>
     <template #foot v-if="can('settings.manage')">
-      <button class="btn btn-primary" @click="save" :disabled="busy || f.karat === store.settings.working_karat || f.reason.trim().length < 3">حفظ العيار</button>
+      <button class="btn btn-primary" @click="save" :disabled="busy || f.karat === store.settings.working_karat || f.reason.trim().length < 3" data-enter-stop>حفظ العيار</button>
       <button class="btn" @click="store.karatDialog = false">إغلاق</button>
     </template>
   </Modal>`,
@@ -240,7 +240,7 @@ export const SettingsDialog = {
       <div class="info-strip"><div><div class="k">عيار العمل المعتمد</div><div class="v num">{{ store.settings.working_karat }}</div></div>
         <div><div class="k">دقة الأوزان</div><div class="v small">ذهب 4 منازل — ألماس 3 منازل — أجور منزلتان — سعر الأجر حتى 3 منازل</div></div>
         <div><button class="btn btn-sm" @click="store.karatDialog = true">إدارة عيار العمل</button></div></div>
-      <div v-if="can('settings.manage')"><button class="btn btn-primary" @click="saveGeneral" :disabled="busy">حفظ الإعدادات</button></div>
+      <div v-if="can('settings.manage')"><button class="btn btn-primary" @click="saveGeneral" :disabled="busy" data-enter-stop>حفظ الإعدادات</button></div>
     </div>
 
     <div v-if="tab === 'users'" class="split" style="grid-template-columns:minmax(0,1fr) 400px">
@@ -258,7 +258,7 @@ export const SettingsDialog = {
           <label class="check"><input type="checkbox" v-model="uf.is_active"/> المستخدم نشط</label>
           <div v-if="!uf.is_admin" class="stack" style="gap:6px"><b class="small">الصلاحيات</b>
             <label v-for="(label, key) in permLabels" :key="key" class="check small"><input type="checkbox" :value="key" v-model="uf.permissions"/> {{ label }}</label></div>
-          <button class="btn btn-primary" @click="saveUser" :disabled="busy">حفظ المستخدم</button>
+          <button class="btn btn-primary" @click="saveUser" :disabled="busy" data-enter-stop>حفظ المستخدم</button>
         </div></div>
     </div>
 
@@ -275,7 +275,7 @@ export const SettingsDialog = {
 
     <div v-if="tab === 'integrity'" class="stack">
       <p class="muted" style="margin:0">يعيد الفحص بناء القيود المتوقعة لكل مستند من أسطره ويقارنها بالدفتر، ويتحقق من الأجور والأوزان المكافئة والإلغاءات والمرتجعات وتطابق الأرصدة المحفوظة مع الحركات.</p>
-      <div><button class="btn btn-primary" @click="runCheck" :disabled="busy"><Icon name="shield-check"/> تشغيل الفحص</button></div>
+      <div><button class="btn btn-primary" @click="runCheck" :disabled="busy" data-enter-stop><Icon name="shield-check"/> تشغيل الفحص</button></div>
       <div v-if="check" class="alert" :class="check.ok ? 'ok' : 'danger'"><Icon :name="check.ok ? 'circle-check' : 'circle-alert'"/>
         <div><b>{{ check.ok ? 'البيانات سليمة ومتطابقة' : ('تم العثور على ' + check.issue_count + ' اختلاف') }}</b> — فُحص {{ check.documents_checked }} مستند و{{ check.entries_checked }} قيد.
           <ul v-if="!check.ok"><li v-for="(i, k) in check.issues" :key="k"><span class="num">{{ i.ref }}</span>: {{ i.message }}</li></ul></div></div>
@@ -295,7 +295,7 @@ export const SettingsDialog = {
       <div class="field"><label>كلمة المرور الحالية</label><input type="password" class="input" v-model="pw.current" autocomplete="current-password" /></div>
       <div class="field"><label>كلمة المرور الجديدة</label><input type="password" class="input" v-model="pw.new" autocomplete="new-password" /></div>
       <div class="field"><label>تأكيد كلمة المرور</label><input type="password" class="input" v-model="pw.confirm" autocomplete="new-password" /></div>
-      <div><button class="btn btn-primary" @click="changePw" :disabled="busy || !pw.new">تغيير كلمة المرور</button></div>
+      <div><button class="btn btn-primary" @click="changePw" :disabled="busy || !pw.new" data-enter-stop>تغيير كلمة المرور</button></div>
     </div>
   </Modal>`,
 };
@@ -343,7 +343,7 @@ export const LoginView = {
           <div class="field"><label>وحدة الأجور (العملة)</label><input class="input" v-model="f.wage_unit" /></div>
         </template>
         <div v-if="error" class="alert danger"><Icon name="circle-alert"/><div>{{ error }}</div></div>
-        <button class="btn btn-primary btn-lg" type="submit" :disabled="busy"><span v-if="busy" class="spinner"></span>{{ store.needsSetup ? 'إنشاء وبدء الاستخدام' : 'دخول' }}</button>
+        <button class="btn btn-primary btn-lg" type="submit" :disabled="busy" data-enter-stop><span v-if="busy" class="spinner"></span>{{ store.needsSetup ? 'إنشاء وبدء الاستخدام' : 'دخول' }}</button>
       </div>
     </form></div>`,
 };

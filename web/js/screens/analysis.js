@@ -45,7 +45,7 @@ export const AnalysisScreen = {
         <div class="field"><label>من تاريخ</label><input type="date" class="input" v-model="f.date_from" /></div>
         <div class="field"><label>إلى تاريخ</label><input type="date" class="input" v-model="f.date_to" /></div>
         <div class="field"><label>الفترة</label><div class="row" style="gap:4px"><button class="btn btn-sm" @click="period('month')">الشهر</button><button class="btn btn-sm" @click="period('year')">السنة</button><button class="btn btn-sm" @click="period('all')">الكل</button></div></div>
-        <div class="row"><button class="btn btn-primary" @click="load" :disabled="loading"><span v-if="loading" class="spinner"></span><Icon v-else name="chart-column"/> عرض</button>
+        <div class="row"><button class="btn btn-primary" @click="load" :disabled="loading" data-enter-stop><span v-if="loading" class="spinner"></span><Icon v-else name="chart-column"/> عرض</button>
           <button class="btn" @click="print" :disabled="!an"><Icon name="printer"/> طباعة التقرير</button></div>
       </div>
     </div></div>

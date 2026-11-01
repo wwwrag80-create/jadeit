@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 SCHEMA_VERSION = 1
-SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
+_BASE = getattr(sys, "_MEIPASS", None)
+SCHEMA_PATH = os.path.join(_BASE, "server", "schema.sql") if _BASE else os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
 
 DEFAULT_SETTINGS = {
     "system_name": "جاديت — نظام حسابات العملاء",

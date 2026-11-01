@@ -138,6 +138,7 @@ export const OpeningScreen = {
       if (preview.value || store.docViewId || store.print) return;
       if (e.key === "F9" || ((e.ctrlKey || e.metaKey) && e.key === "Enter")) { e.preventDefault(); startPost(); }
       else if (e.key === "F3") { e.preventDefault(); showSearch.value = true; }
+      else if (e.altKey && e.code === "KeyN") { e.preventDefault(); addLine(lines.value.length ? lines.value[lines.value.length - 1].material : "gold"); }
     }
     onMounted(async () => {
       document.addEventListener("keydown", onKey);
@@ -186,11 +187,12 @@ export const OpeningScreen = {
         </div>
       </div>
       <div class="card-head" style="border-top:1px solid var(--border)"><h3>أسطر الرصيد الافتتاحي</h3>
-        <div class="tools"><button class="btn btn-sm" @click="addLine('gold')"><Icon name="plus" size="sm"/> ذهب</button>
+        <div class="tools"><span class="muted small"><span class="kbd" style="color:var(--text)">Alt+N</span> سطر جديد</span>
+          <button class="btn btn-sm" @click="addLine('gold')"><Icon name="plus" size="sm"/> ذهب</button>
           <button class="btn btn-sm" @click="addLine('diamond')"><Icon name="plus" size="sm"/> ألماس</button>
           <button class="btn btn-sm" @click="addLine('wage')"><Icon name="plus" size="sm"/> أجور</button></div></div>
       <div class="tbl-wrap auto">
-        <table class="tbl entry-tbl">
+        <table class="tbl entry-tbl" data-nav-grid>
           <thead><tr><th class="c">#</th><th>نوع الرصيد</th><th>اتجاه الرصيد</th><th class="num">الوزن / المبلغ</th><th>عيار الذهب</th><th class="num">الوزن المكافئ / المعتمد</th><th>البيان</th><th>ملاحظات</th><th></th></tr></thead>
           <tbody>
             <tr v-for="(l, i) in lines" :key="l.key" :class="{ 'row-error': calc[i].err && (l.actual || l.direction) }">
@@ -215,7 +217,7 @@ export const OpeningScreen = {
       </div>
     </div>
     <div class="row mt">
-      <button class="btn btn-primary btn-lg" @click="startPost" :disabled="busy || checking || !canManage"><span v-if="checking" class="spinner"></span><Icon v-else name="check"/> {{ editDoc ? 'حفظ التعديل' : 'ترحيل الرصيد الافتتاحي' }} <span class="kbd">F9</span></button>
+      <button class="btn btn-primary btn-lg" @click="startPost" :disabled="busy || checking || !canManage" data-enter-stop><span v-if="checking" class="spinner"></span><Icon v-else name="check"/> {{ editDoc ? 'حفظ التعديل' : 'ترحيل الرصيد الافتتاحي' }} <span class="kbd">F9</span></button>
       <button class="btn btn-lg" @click="reset"><Icon name="eraser"/> مسح</button>
     </div>
 

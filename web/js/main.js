@@ -13,6 +13,7 @@ import { StatementScreen } from "./screens/statement.js";
 import { AnalysisScreen } from "./screens/analysis.js";
 import { OpeningScreen } from "./screens/opening.js";
 import { today } from "./util.js";
+import { installKeyNav } from "./keynav.js";
 
 const { createApp, ref, computed, onMounted, onBeforeUnmount, watch, shallowRef } = Vue;
 
@@ -144,6 +145,7 @@ const App = {
   <Toasts /><ConfirmHost />`,
 };
 
+installKeyNav();
 const app = createApp(App);
 registerUi(app);
 app.config.errorHandler = (err) => {

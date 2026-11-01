@@ -63,7 +63,7 @@ def list_backups(db, actor: Actor):
     return {"directory": d, "files": out}
 
 
-def make_download(db, actor: Actor) -> tuple[str, bytes]:
+def make_download(db, actor: Actor):
     actor.require("system.backup")
     fd, tmp = tempfile.mkstemp(suffix=".db")
     os.close(fd)

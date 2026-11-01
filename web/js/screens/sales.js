@@ -6,6 +6,7 @@ import { today, newToken, parseHashQuery, go, local, debounce, DOC_LABEL } from 
 import { DocSearch } from "../components/docs.js";
 import { PostSummary, LastPosted } from "../components/post.js";
 import { openPreview, docSpec } from "../components/print.js";
+import { move } from "../keynav.js";
 
 const { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } = Vue;
 let keySeq = 0;
@@ -40,6 +41,7 @@ export const SalesScreen = {
     const activeRow = ref(0);
     const grid = ref(null);
     const picker = ref(null);
+    const postBtn = ref(null);
     const u = computed(units);
 
     const canOverride = computed(() => can("docs.rate_override"));
@@ -174,24 +176,60 @@ export const SalesScreen = {
       if (!lines.value.length && !linked.value) lines.value.push(newLine());
       focusCell(Math.min(i, lines.value.length - 1), cols.value[0]);
     }
+    // هل المؤشر عند طرف النص في اتجاه السهم؟ (في الجدول: ← العمود التالي، → العمود السابق)
+    function atEdge(el, forward) {
+      let s, en;
+      try { s = el.selectionStart; en = el.selectionEnd; } catch (err) { return true; }
+      if (s === null || s === undefined) return true;
+      const len = el.value.length;
+      if (len === 0 || (s === 0 && en === len)) return true;
+      if (s !== en) return false;
+      const rtl = getComputedStyle(el).direction === "rtl";
+      return forward ? s === (rtl ? len : 0) : s === (rtl ? 0 : len);
+    }
+    function focusPost() { nextTick(() => postBtn.value && postBtn.value.focus()); }
+    function leaveGridUp(el) {
+      const first = grid.value && grid.value.querySelector(`[data-row="0"][data-col="${cols.value[0]}"]`);
+      move(first || el, -1);
+    }
     function onGridKey(e) {
       const t = e.target;
       const row = Number(t.dataset.row), col = t.dataset.col;
-      if (Number.isNaN(row) || !col) return;
+      if (Number.isNaN(row) || !col || e.altKey || e.metaKey) return;
       const ci = cols.value.indexOf(col);
-      if (e.key === "Enter" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const last = row === lines.value.length - 1;
+      const hasLines = calc.value.some((c) => !c.empty);
+      if (e.key === "Enter" && !e.ctrlKey) {
         e.preventDefault();
+        if (e.shiftKey) {
+          if (ci > 0) return focusCell(row, cols.value[ci - 1]);
+          if (row > 0) return focusCell(row - 1, cols.value[cols.value.length - 1]);
+          return leaveGridUp(t);
+        }
+        // سطر فارغ في نهاية الجدول + Enter ← الانتقال لزر الترحيل (ثم Enter للترحيل)
+        if (last && calc.value[row].empty && hasLines) return focusPost();
         if (ci < cols.value.length - 1) return focusCell(row, cols.value[ci + 1]);
-        if (row < lines.value.length - 1) return focusCell(row + 1, cols.value[0]);
-        if (linked.value) return;
+        if (!last) return focusCell(row + 1, cols.value[0]);
+        if (linked.value) return focusPost();
         if (!calc.value[row].empty) addLine();
-      } else if (e.key === "ArrowDown") {
+      } else if (e.key === "ArrowDown" && !e.ctrlKey) {
         e.preventDefault();
-        if (row < lines.value.length - 1) focusCell(row + 1, col);
+        if (!last) focusCell(row + 1, col);
         else if (!linked.value && !calc.value[row].empty) { lines.value.push(newLine()); focusCell(row + 1, col); }
-      } else if (e.key === "ArrowUp") {
+        else focusPost();
+      } else if (e.key === "ArrowUp" && !e.ctrlKey) {
         e.preventDefault();
         if (row > 0) focusCell(row - 1, col);
+        else leaveGridUp(t);
+      } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.ctrlKey && !e.shiftKey) {
+        const forward = e.key === "ArrowLeft"; // الجدول من اليمين لليسار
+        if (!atEdge(t, forward)) return;
+        e.preventDefault();
+        if (forward) {
+          if (ci < cols.value.length - 1) focusCell(row, cols.value[ci + 1]);
+          else if (!last) focusCell(row + 1, cols.value[0]);
+        } else if (ci > 0) focusCell(row, cols.value[ci - 1]);
+        else if (row > 0) focusCell(row - 1, cols.value[cols.value.length - 1]);
       } else if (e.key === "Delete" && e.ctrlKey) {
         e.preventDefault();
         removeLine(row);
@@ -362,7 +400,7 @@ export const SalesScreen = {
 
     const g = group;
     return { store, mode, accountId, account, date, notes, description, lines, nextNo, linkMode, originalId, exceptionReason, invoices, invoiceFilter,
-      invoiceOptions, returnable, editDoc, showOriginalSnapshot, preview, busy, checking, lastPosted, showSearch, activeRow, grid, picker, u,
+      invoiceOptions, returnable, editDoc, showOriginalSnapshot, preview, busy, checking, lastPosted, showSearch, activeRow, grid, picker, postBtn, u,
       canOverride, canUnlinked, canPost, isReturn, linked, defaultRate, workingKarat, calc, totals, errorCount, cols, origById,
       addLine, removeLine, onGridKey, startPost, confirmPost, clearAll, previewLast, cancelEdit, addOriginal, addAllRemaining, fmt, fmtRate, g, DOC_LABEL };
   },
@@ -441,7 +479,9 @@ export const SalesScreen = {
         <h3>{{ isReturn ? 'أسطر المرتجع' : 'أسطر الفاتورة' }}</h3>
         <span class="badge" :class="isReturn ? 'debit' : 'posted'">{{ isReturn ? 'يُخفض مستحقات العميل (دائن)' : 'يزيد مستحقات العميل (مدين)' }}</span>
         <div class="tools muted small">
-          <span><span class="kbd" style="color:var(--text)">Enter</span> الحقل التالي</span>
+          <span><span class="kbd" style="color:var(--text)">Enter</span> / <span class="kbd" style="color:var(--text)">←</span> الخانة التالية</span>
+          <span><span class="kbd" style="color:var(--text)">↑↓</span> السطر السابق/التالي</span>
+          <span><span class="kbd" style="color:var(--text)">Enter</span> على سطر فارغ ← زر الترحيل</span>
           <span><span class="kbd" style="color:var(--text)">Alt+N</span> سطر جديد</span>
           <span><span class="kbd" style="color:var(--text)">Ctrl+Del</span> حذف السطر</span>
           <span><span class="kbd" style="color:var(--text)">F9</span> ترحيل</span>
@@ -490,7 +530,7 @@ export const SalesScreen = {
     </div>
 
     <div class="row mt">
-      <button class="btn btn-primary btn-lg" @click="startPost" :disabled="busy || checking || !canPost">
+      <button ref="postBtn" class="btn btn-primary btn-lg" @click="startPost" :disabled="busy || checking || !canPost" data-enter-stop>
         <span v-if="checking" class="spinner"></span><Icon v-else name="check"/> {{ editDoc ? 'حفظ التعديل' : 'ترحيل' }} <span class="kbd">F9</span></button>
       <button class="btn btn-lg" @click="clearAll" :disabled="busy"><Icon name="eraser"/> مسح</button>
       <span v-if="!canPost" class="badge warn">لا تملك صلاحية {{ editDoc ? 'التعديل' : 'الترحيل' }}</span>

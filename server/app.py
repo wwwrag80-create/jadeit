@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import sys
 import traceback
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,14 +27,30 @@ from .services import reports as rep_svc
 from .services import settings as set_svc
 from .services.common import DOC_TYPES, MATERIALS, PERMISSIONS
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+def _resource_root():
+    """جذر ملفات البرنامج: مجلد المشروع، أو مجلد الاستخراج المؤقت في الملف التنفيذي المستقل (PyInstaller)."""
+    base = getattr(sys, "_MEIPASS", None)
+    return base if base else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+WEB_DIR = os.path.join(_resource_root(), "web")
 MAX_JSON = 5 * 1024 * 1024
 MAX_UPLOAD = 500 * 1024 * 1024
 COOKIE = "jadeit_sid"
 
-mimetypes.add_type("application/javascript", ".js")
-mimetypes.add_type("font/woff2", ".woff2")
-mimetypes.add_type("text/css", ".css")
+# أنواع المحتوى ثابتة هنا ولا تُقرأ من سجل ويندوز: على بعض أجهزة ويندوز 7/10 يربط السجل
+# امتداد .js بالنوع text/plain فيرفض المتصفح تحميل وحدات الواجهة.
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+}
 
 
 class Request:
@@ -96,13 +113,8 @@ class App:
         r = self.route
 
         def session_cookie(token, max_age):
-            c = cookies.SimpleCookie()
-            c[COOKIE] = token
-            c[COOKIE]["httponly"] = True
-            c[COOKIE]["samesite"] = "Strict"
-            c[COOKIE]["path"] = "/"
-            c[COOKIE]["max-age"] = max_age
-            return {"Set-Cookie": c[COOKIE].OutputString()}
+            # يُبنى يدوياً لأن سمة SameSite غير مدعومة في http.cookies قبل بايثون 3.8 (ويندوز 7)
+            return {"Set-Cookie": f"{COOKIE}={token}; Path=/; Max-Age={int(max_age)}; HttpOnly; SameSite=Strict"}
 
         def boot(actor):
             return {
@@ -347,9 +359,13 @@ def make_handler(app: App):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt, *args):
-            if os.environ.get("JADEIT_QUIET"):
+            # في التطبيق المكتبي (pythonw) لا توجد نافذة أوامر: sys.stderr قد يكون None
+            if os.environ.get("JADEIT_QUIET") or sys.stderr is None:
                 return
-            super().log_message(fmt, *args)
+            try:
+                super().log_message(fmt, *args)
+            except Exception:
+                pass
 
         def _send(self, status, body: bytes, content_type, extra=None):
             self.send_response(status)
@@ -400,9 +416,8 @@ def make_handler(app: App):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
-            if ctype.startswith("text/") or ctype == "application/javascript":
-                ctype += "; charset=utf-8"
+            ext = os.path.splitext(full)[1].lower()
+            ctype = CONTENT_TYPES.get(ext) or mimetypes.guess_type(full)[0] or "application/octet-stream"
             with open(full, "rb") as f:
                 data = f.read()
             self._send(200, data, ctype, {"ETag": etag, "Cache-Control": "no-cache"})

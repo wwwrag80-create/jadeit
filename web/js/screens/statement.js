@@ -62,7 +62,7 @@ export const StatementScreen = {
               <button class="m-diamond" :class="{ on: f.material === 'diamond' }" @click="f.material = 'diamond'"><Icon name="gem"/> كشف الألماس</button>
               <button class="m-wage" :class="{ on: f.material === 'wage' }" @click="f.material = 'wage'"><Icon name="wallet"/> كشف الأجور</button></div></div>
           <div class="row span2" style="grid-column: span 4; justify-content:flex-end">
-            <button class="btn btn-primary" @click="load" :disabled="loading"><span v-if="loading" class="spinner"></span><Icon v-else name="file-text"/> عرض الكشف</button>
+            <button class="btn btn-primary" @click="load" :disabled="loading" data-enter-stop><span v-if="loading" class="spinner"></span><Icon v-else name="file-text"/> عرض الكشف</button>
             <button class="btn" @click="preview" :disabled="!f.account_id"><Icon name="eye"/> معاينة</button>
             <button class="btn" @click="print" :disabled="!f.account_id"><Icon name="printer"/> طباعة</button>
           </div>

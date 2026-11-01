@@ -21,7 +21,7 @@ def main():
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     ok = result.wasSuccessful()
     if "--ui" in sys.argv:
-        for script in ("ui_flow.js", "ui_admin.js"):
+        for script in ("ui_flow.js", "ui_admin.js", "ui_keyboard.js"):
             print(f"\n=== اختبار الواجهة: {script} ===")
             code = subprocess.call(["node", os.path.join(ROOT, "tests", "e2e", script)])
             ok = ok and code == 0

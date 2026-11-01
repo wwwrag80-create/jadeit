@@ -62,7 +62,7 @@ export const PostSummary = {
         <span class="hint">يُحفظ مع القيم قبل التعديل وبعده واسمك والتاريخ في سجل المستند.</span></div>
     </div>
     <template #foot>
-      <button class="btn btn-primary btn-lg" @click="confirm" :disabled="busy || (editing && reason.trim().length < 3)" :autofocus="!editing">
+      <button class="btn btn-primary btn-lg" @click="confirm" :disabled="busy || (editing && reason.trim().length < 3)" :autofocus="!editing" data-enter-stop>
         <span v-if="busy" class="spinner"></span><Icon v-else name="check"/> {{ editing ? 'تأكيد حفظ التعديل' : 'تأكيد الترحيل' }} <span class="kbd">Enter</span></button>
       <button class="btn btn-lg" @click="$emit('cancel')" :disabled="busy">رجوع للتعديل</button>
     </template>

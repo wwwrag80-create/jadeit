@@ -121,11 +121,8 @@ export const NumInput = {
       emit("update:modelValue", clean);
     }
     function onKey(e) {
-      if (e.key === "Enter" && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        emit("enter", e);
-        if (props.enterNext && !e.defaultHandled) focusNext(e.target, e.shiftKey);
-      }
+      // التنقل بـ Enter والأسهم يتولاه المحرك العام (keynav.js)؛ هنا نبلّغ فقط من يستمع
+      if (e.key === "Enter" && !e.ctrlKey && !e.altKey) emit("enter", e);
     }
     return { err, onInput, onKey };
   },
@@ -182,13 +179,18 @@ export const AccountPicker = {
     function onFocus(e) { hl.value = 0; e.target.select(); }
     function onMouseDown() { open.value = true; }
     function onBlur() { setTimeout(() => { open.value = false; text.value = label(selected.value); }, 150); }
+    // القائمة مفتوحة: ↑↓ لاختيار العميل و Enter لاعتماده. القائمة مغلقة والعميل محدد: Enter والأسهم تنتقل بين الخانات.
     function onKey(e) {
-      if (e.key === "ArrowDown") { e.preventDefault(); open.value = true; hl.value = Math.min(hl.value + 1, matches.value.length - 1); scroll(); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); hl.value = Math.max(hl.value - 1, 0); scroll(); }
-      else if (e.key === "Enter") {
-        e.preventDefault();
-        if (open.value && matches.value[hl.value]) choose(matches.value[hl.value]);
-        else if (selected.value) focusNext(e.target);
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === "ArrowDown") {
+        if (open.value) { e.preventDefault(); hl.value = Math.min(hl.value + 1, matches.value.length - 1); scroll(); }
+        else if (!selected.value || text.value !== label(selected.value)) { e.preventDefault(); open.value = true; hl.value = 0; scroll(); }
+      } else if (e.key === "ArrowUp") {
+        if (open.value) { e.preventDefault(); hl.value = Math.max(hl.value - 1, 0); scroll(); }
+      } else if (e.key === "Enter") {
+        if (open.value && matches.value[hl.value]) { e.preventDefault(); choose(matches.value[hl.value]); }
+        else if (!selected.value || text.value !== label(selected.value)) { e.preventDefault(); open.value = true; hl.value = 0; }
+        // وإلا: العميل محدد والقائمة مغلقة ← المحرك العام ينقل للخانة التالية
       } else if (e.key === "Escape") { if (open.value) { e.stopPropagation(); open.value = false; } }
     }
     function scroll() {
@@ -271,7 +273,7 @@ export const ConfirmHost = {
         </div>
       </div>
       <template #foot>
-        <button class="btn" :class="s.opts.danger ? 'btn-danger-solid' : 'btn-primary'" @click="done(true)"
+        <button class="btn" :class="s.opts.danger ? 'btn-danger-solid' : 'btn-primary'" @click="done(true)" data-enter-stop
           :disabled="s.opts.reasonLabel && s.reason.trim().length < (s.opts.minReason ?? 3)">{{ s.opts.okText || 'تأكيد' }}</button>
         <button class="btn" @click="done(false)">تراجع</button>
       </template>

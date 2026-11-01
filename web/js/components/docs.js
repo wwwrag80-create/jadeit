@@ -228,14 +228,14 @@ export const DocSearch = {
       <div class="field"><label>إلى تاريخ</label><input type="date" class="input" v-model="f.date_to" /></div>
       <div class="field"><label>الحالة</label><select class="select" v-model="f.status"><option value="">الكل</option><option value="posted">مرحّل</option><option value="cancelled">ملغى</option></select></div>
       <div class="field span2"><label>العميل</label><AccountPicker v-model="f.account_id" include-inactive placeholder="كل العملاء" /></div>
-      <div class="row"><button class="btn btn-primary" @click="search" :disabled="loading"><Icon name="search"/> بحث</button>
+      <div class="row"><button class="btn btn-primary" @click="search" :disabled="loading" data-enter-stop><Icon name="search"/> بحث</button>
         <button class="btn btn-ghost" @click="Object.assign(f, { q: '', type: '', account_id: null, date_from: '', date_to: '', status: '' }); search()">مسح</button></div>
     </div>
     <div class="tbl-wrap mt" style="max-height:55vh">
       <table class="tbl">
         <thead><tr><th>التاريخ</th><th>رقم المستند</th><th>النوع</th><th>العميل</th><th>أرقام التشغيل</th><th class="num">ذهب</th><th class="num">ألماس</th><th class="num">أجور</th><th>الحالة</th></tr></thead>
         <tbody>
-          <tr v-for="r in rows" :key="r.id" class="clickable" @click="open(r)" tabindex="0" @keydown.enter="open(r)">
+          <tr v-for="r in rows" :key="r.id" class="clickable" @click="open(r)" tabindex="0" data-enter-stop @keydown.enter.prevent="open(r)">
             <td class="num">{{ r.doc_date }}</td><td><span class="link num">{{ r.doc_no }}</span></td><td>{{ r.type_label }}</td>
             <td>{{ r.account.name }} <span class="muted small num">{{ r.account.account_no }}</span></td>
             <td class="small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.run_numbers || '—' }}</td>

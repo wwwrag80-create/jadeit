@@ -226,7 +226,7 @@ export const VouchersScreen = {
           <div v-if="parsed.error" class="field-error mt">{{ parsed.error }}</div>
         </div>
         <div class="card-foot row">
-          <button class="btn btn-primary btn-lg" @click="startPost" :disabled="busy || checking || !canPost"><span v-if="checking" class="spinner"></span><Icon v-else name="check"/> {{ editDoc ? 'حفظ التعديل' : 'ترحيل' }} <span class="kbd">F9</span></button>
+          <button class="btn btn-primary btn-lg" @click="startPost" :disabled="busy || checking || !canPost" data-enter-stop><span v-if="checking" class="spinner"></span><Icon v-else name="check"/> {{ editDoc ? 'حفظ التعديل' : 'ترحيل' }} <span class="kbd">F9</span></button>
           <button class="btn btn-lg" @click="reset()"><Icon name="eraser"/> مسح</button>
           <span v-if="!canPost" class="badge warn">لا تملك صلاحية الترحيل</span>
         </div>

@@ -6,7 +6,7 @@
     python run.py --host 0.0.0.0       ← إتاحته لأجهزة الشبكة المحلية
     python run.py --db data/other.db   ← قاعدة بيانات أخرى
 
-لا يحتاج أي مكتبات خارجية: بايثون 3.10 أو أحدث فقط.
+لا يحتاج أي مكتبات خارجية: بايثون 3.7 أو أحدث فقط (يعمل على ويندوز 7 و 10 و 11).
 """
 from __future__ import annotations
 
@@ -24,8 +24,13 @@ from server.services.backup import auto_backup  # noqa: E402
 
 
 def main():
-    if sys.version_info < (3, 10):
-        sys.exit("يتطلب النظام بايثون 3.10 أو أحدث")
+    if sys.version_info < (3, 7):
+        sys.exit("Python 3.7+ is required / يتطلب النظام بايثون 3.7 أو أحدث")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # نافذة أوامر ويندوز قد لا تدعم الحروف العربية
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(description="جاديت — نظام حسابات العملاء")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)

@@ -23,8 +23,15 @@ _SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
 
 
 # ------------------------------------------------------------------ كلمات المرور
+_PBKDF2_ITER = 260000
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
+    if not hasattr(hashlib, "scrypt"):
+        # بديل آمن إن كانت نسخة OpenSSL على الجهاز لا تدعم scrypt
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITER)
+        return "pbkdf2$%d$%s$%s" % (_PBKDF2_ITER, base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
     dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, **_SCRYPT)
     return "scrypt$%d$%d$%d$%s$%s" % (
         _SCRYPT["n"], _SCRYPT["r"], _SCRYPT["p"],
@@ -34,6 +41,10 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored: str) -> bool:
     try:
+        if stored.startswith("pbkdf2$"):
+            _, iters, salt_b64, dk_b64 = stored.split("$")
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), base64.b64decode(salt_b64), int(iters))
+            return hmac.compare_digest(dk, base64.b64decode(dk_b64))
         algo, n, r, p, salt_b64, dk_b64 = stored.split("$")
         if algo != "scrypt":
             return False

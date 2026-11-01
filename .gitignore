@@ -8,3 +8,8 @@ __pycache__/
 *.pyc
 node_modules/
 .DS_Store
+
+# مخرجات بناء حزمة ويندوز
+windows/.cache/
+dist/
+build/

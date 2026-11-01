@@ -1,4 +1,5 @@
 // أدوات عامة: التواريخ، المفاتيح الفريدة، تسميات الأنواع.
+import { move } from "./keynav.js";
 
 export function today() {
   const d = new Date();
@@ -82,17 +83,7 @@ export function go(route, params = {}) {
   location.hash = "#/" + route + (q ? "?" + q : "");
 }
 
-/** نقل التركيز بين حقول الإدخال بزر Enter (ويُتجاهل في المناطق النصية والأزرار). */
+/** نقل التركيز للخانة التالية/السابقة بنفس قواعد محرك التنقل الموحّد (keynav.js). */
 export function focusNext(el, backwards = false) {
-  const scope = el.closest("[data-focus-scope]") || document;
-  const items = Array.from(scope.querySelectorAll("input:not([disabled]):not([readonly]):not([type=checkbox]), select:not([disabled]), textarea:not([disabled]), [data-focusable]"))
-    .filter((x) => x.offsetParent !== null && x.tabIndex !== -1);
-  const i = items.indexOf(el);
-  const next = items[i + (backwards ? -1 : 1)];
-  if (next) {
-    next.focus();
-    if (next.select && next.tagName === "INPUT") next.select();
-    return true;
-  }
-  return false;
+  return move(el, backwards ? -1 : 1);
 }

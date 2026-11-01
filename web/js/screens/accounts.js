@@ -153,7 +153,7 @@ export const AccountsScreen = {
             <div class="grid g3">
               <div class="field span2"><label class="req" for="acc-name">اسم العميل / الحساب</label>
                 <input id="acc-name" ref="nameInput" class="input" :class="{ 'is-invalid': errors.name || (nameCheck && !nameCheck.available) }" v-model="f.name"
-                  maxlength="100" autocomplete="off" :readonly="!canManage" @keydown.enter.prevent="$event.target.closest('[data-focus-scope]').querySelector('#acc-phone').focus()" />
+                  maxlength="100" autocomplete="off" :readonly="!canManage" />
                 <span v-if="nameCheck && !nameCheck.available" class="field-error"><Icon name="circle-alert" size="sm"/> يوجد حساب بالاسم نفسه: {{ nameCheck.name }} (رقم {{ nameCheck.account_no }})
                   <button class="btn btn-sm btn-ghost" @click="store.accountPanelId = nameCheck.id">فتحه</button></span>
                 <span v-else-if="errors.name" class="field-error">{{ errors.name }}</span>
@@ -164,17 +164,16 @@ export const AccountsScreen = {
                 <span class="hint">{{ editing ? 'رقم ثابت لا يتغير' : 'تلقائي — يُثبَّت عند الإنشاء' }}</span></div>
               <div class="field"><label for="acc-phone">رقم الجوال <span class="muted">(اختياري)</span></label>
                 <input id="acc-phone" class="input ltr" style="text-align:left" :class="{ 'is-invalid': errors.phone }" v-model="f.phone" inputmode="tel" maxlength="30" :readonly="!canManage"
-                  @keydown.enter.prevent="$event.target.closest('[data-focus-scope]').querySelector('#acc-rate').focus()" />
+                  />
                 <span v-if="errors.phone" class="field-error">{{ errors.phone }}</span></div>
               <div class="field"><label class="req" for="acc-rate">الأجر المعتمد لكل جرام ذهب</label>
-                <NumInput id="acc-rate" v-model="f.wage_rate" :dp="3" :invalid="!!errors.wage_rate" :readonly="!canManage || !canWage" placeholder="مثال: 5.50" label="الأجر المعتمد"
-                  @enter="$event.target.closest('[data-focus-scope]').querySelector('#acc-notes').focus(); $event.defaultHandled = true" />
+                <NumInput id="acc-rate" v-model="f.wage_rate" :dp="3" :invalid="!!errors.wage_rate" :readonly="!canManage || !canWage" placeholder="مثال: 5.50" label="الأجر المعتمد" />
                 <span v-if="errors.wage_rate || rateErr" class="field-error">{{ errors.wage_rate || rateErr }}</span>
                 <span v-else-if="editing && !canWage" class="hint">تعديل الأجر يحتاج صلاحية خاصة</span>
                 <span v-else class="hint">يُجلب تلقائياً في المبيعات ({{ store.settings.wage_unit }} / جم)</span></div>
               <div class="field" v-if="editing"><label>حالة الحساب</label>
                 <label class="check" style="height:40px"><input type="checkbox" v-model="f.is_active" :disabled="!canManage"/> الحساب نشط (يقبل حركات جديدة)</label></div>
-              <div class="field" :class="editing ? 'span3' : 'span3'"><label for="acc-notes">ملاحظات <span class="muted">(اختياري)</span></label>
+              <div class="field" :class="editing ? 'span3' : 'span3'"><label for="acc-notes">ملاحظات <span class="muted">(اختياري — Shift+Enter لسطر جديد)</span></label>
                 <textarea id="acc-notes" class="textarea" v-model="f.notes" maxlength="1000" :readonly="!canManage"></textarea></div>
               <div class="field span3" v-if="editing && original && original.wage_rate !== f.wage_rate">
                 <label class="req" for="acc-reason">سبب تعديل الأجر الافتراضي</label><input id="acc-reason" class="input" :class="{ 'is-invalid': errors.reason }" v-model="f.reason" />
@@ -183,7 +182,7 @@ export const AccountsScreen = {
             </div>
           </div>
           <div class="card-foot row">
-            <button class="btn btn-primary" @click="save" :disabled="busy || !canManage" data-focusable>
+            <button class="btn btn-primary" @click="save" :disabled="busy || !canManage" data-enter-stop>
               <span v-if="busy" class="spinner"></span><Icon v-else :name="editing ? 'save' : 'user-plus'"/> {{ editing ? 'حفظ التعديلات' : 'إنشاء حساب' }}</button>
             <button class="btn" @click="clear" :disabled="busy"><Icon name="eraser"/> {{ editing ? 'إلغاء التعديل' : 'مسح الحقول' }}</button>
             <button v-if="editing" class="btn btn-ghost" @click="store.accountPanelId = f.id"><Icon name="external-link"/> فتح الحساب</button>

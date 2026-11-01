@@ -80,7 +80,7 @@ export const BalancesScreen = {
               <td class="num"><Bal :b="r.wage" /></td>
               <td class="num"><Bal :b="r.diamond" /></td>
               <td><span class="badge" :class="r.status">{{ STATUS_LABEL[r.status] }}</span></td>
-              <td><button class="btn btn-sm" @click="open(r)"><Icon name="external-link" size="sm"/> فتح الحساب</button></td>
+              <td><button class="btn btn-sm" @click="open(r)" data-enter-stop><Icon name="external-link" size="sm"/> فتح الحساب</button></td>
             </tr>
           </tbody>
         </table>

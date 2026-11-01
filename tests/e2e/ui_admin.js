@@ -11,7 +11,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "jadeit-e2e2-"));
 const OUT = process.env.E2E_OUT || path.join(TMP, "out");
 fs.mkdirSync(OUT, { recursive: true });
 const PORT = 8900 + Math.floor(Math.random() * 90);
-const BASE = `http://127.0.0.1:${PORT}`;
+const BASE = process.env.E2E_BASE || `http://127.0.0.1:${PORT}`; // E2E_BASE: اختبار خادم يعمل مسبقاً (مثل نسخة ويندوز)
 const results = [];
 const check = (name, ok, info = "") => { results.push({ name, ok, info }); console.log(`${ok ? "✔" : "✘"} ${name}${info ? " — " + info : ""}`); };
 
@@ -23,7 +23,7 @@ async function api(page, method, p, body) {
 }
 
 (async () => {
-  const server = spawn("python3", [path.join(ROOT, "run.py"), "--port", String(PORT), "--db", path.join(TMP, "e2e.db"), "--no-backup"],
+  const server = process.env.E2E_BASE ? { kill() {} } : spawn("python3", [path.join(ROOT, "run.py"), "--port", String(PORT), "--db", path.join(TMP, "e2e.db"), "--no-backup"],
     { env: { ...process.env, JADEIT_QUIET: "1" }, stdio: "ignore" });
   let browser;
   try {
