@@ -7,7 +7,9 @@
   • بصمة المحتوى: لا تتغيّر بوقت اللقطة ولا بحالة المزامنة المحلية ولا بتعديل لا يغيّر قيمة،
     وتتغيّر بأي حركة — فالنسخة المطابقة لا تُرفع مرة أخرى، والرفع اليدوي يُرفع دائماً.
   • الجدولة: رفع عند أول تشغيل، ثم عند التغيير فقط وبحد أدنى ٣٠ ثانية بين رفعين،
-    ونسخة يومية احتياطية، وإعادة محاولة بعد الفشل، و«آخر ظهور» مرة في الدقيقة.
+    ونسخة يومية احتياطية، وإعادة محاولة بعد الفشل، و«آخر ظهور» مرة كل ٥ دقائق.
+  • 1.95: السحابة للحسابات وحدها (CLOUD_DATA_SYNC = False): لا رفع ولا نسخة يومية أبداً — «آخر ظهور» وحده.
+    والآلية أعلاه باقية كما هي (تُختبر بتفعيلها هنا) لو أُعيد تشغيلها يوماً.
 """
 import ast, base64, datetime, hashlib, io, lzma, os, shutil, sqlite3, sys, tempfile, textwrap, threading, time, zlib
 
@@ -142,7 +144,7 @@ class FakeDT(datetime.datetime):
 
 
 fake_datetime = type("M", (), {"datetime": FakeDT, "timezone": datetime.timezone})
-sns = {"datetime": fake_datetime, "BACKUP_UNCHANGED": "unchanged"}
+sns = {"datetime": fake_datetime, "BACKUP_UNCHANGED": "unchanged", "CLOUD_DATA_SYNC": True}
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in (
     "CLOUD_CHECK_MS", "CLOUD_UPLOAD_MIN_GAP", "CLOUD_FORCED_EVERY", "CLOUD_TOUCH_EVERY",
     "auto_cloud_backup_trigger", "update_cloud_sync_ui")), sns)
@@ -176,9 +178,9 @@ assert tick(a) == (True, False, False), "تغيير بعد ٣٠ ثانية من 
 a._backup_dirty = True
 assert tick(a) is None and a._backup_dirty, "تغيير جديد بعد ١٠ ثوانٍ: ينتظر"
 assert tick(a) is None
-assert tick(a) == (True, False, True), "بعد ٣٠ ثانية يُرفع (ومعه الظهور كل دقيقة)"
-seen = [tick(a) for _ in range(12)]
-assert [s for s in seen if s] == [(False, False, True), (False, False, True)], "بلا تغيير: ظهور كل دقيقة فقط"
+assert tick(a) == (True, False, False), "بعد ٣٠ ثانية يُرفع"
+seen = [tick(a) for _ in range(30)]
+assert [s for s in seen if s] == [(False, False, True)], "بلا تغيير: ظهور كل ٥ دقائق فقط"
 a._last_forced_cloud_upload -= datetime.timedelta(hours=24)
 assert tick(a)[:2] == (True, True), "نسخة يومية احتياطية ولو بلا تغيير"
 assert a.scheduled >= 16
@@ -187,8 +189,21 @@ assert a._backup_dirty, "فشل الرفع: يُعاد في الدورة الت�
 a._backup_dirty = False
 a.update_cloud_sync_ui("unchanged", True)
 assert not a._backup_dirty and not hasattr(a, "_last_cloud_sync_ok"), "«لم يتغيّر» ليس رفعاً جديداً في المؤشر"
-print("✔ الجدولة: رفع عند التشغيل، ثم عند التغيير فقط (٣٠ ثانية على الأقل بين رفعين)، ونسخة يومية، "
-      "وإعادة بعد الفشل، و«آخر ظهور» مرة في الدقيقة بدل كل ١٠ ثوانٍ")
+print("✔ الجدولة (إن فُعّلت): رفع عند التشغيل، ثم عند التغيير فقط (٣٠ ثانية على الأقل بين رفعين)، ونسخة يومية، "
+      "وإعادة بعد الفشل، و«آخر ظهور» مرة كل ٥ دقائق")
+
+# 1.95: السحابة للحسابات وحدها — لا رفع ولا نسخة يومية، و«آخر ظهور» وحده كل ٥ دقائق
+assert "CLOUD_DATA_SYNC = False" in src
+sns["CLOUD_DATA_SYNC"] = False
+b = App()
+b._backup_dirty = True
+b.auto_cloud_backup_trigger()
+assert b.cycles.pop() == (False, False, True), "أول تشغيل: ظهورٌ فقط، بلا رفع"
+seen = [tick(b) for _ in range(30)]
+assert [s for s in seen if s] == [(False, False, True)] and b._backup_dirty, "تغييرات: لا رفع أبداً — ظهورٌ كل ٥ دقائق"
+clock["now"] += datetime.timedelta(hours=25)
+assert tick(b) == (False, False, True), "ولا نسخة يومية"
+print("✔ 1.95: السحابة للحسابات وحدها — لا رفع للنسخ ولا نسخة يومية مهما تغيّرت البيانات، و«آخر ظهور» وحده كل ٥ دقائق")
 
 # ═══ ٥) الربط ═══
 assert "self.run_cloud_sync_cycle(upload=need_upload, force=force_due, touch=touch_due)" in member_src(

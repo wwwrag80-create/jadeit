@@ -705,7 +705,8 @@ print("✔ «صب داخلي» صندوقٌ ثابت: يُنشأ مرة (ولا 
 
 # ═══ ٧) الواجهة والمصادر ═══
 ruf = member("render_unified_fields")
-assert '(self.MFG_CHAINS_SLOT, "قبض/سلاسل")' in ruf
+assert "self.unified_op_fields(" in ruf, "خانات الشاشة من مصدرها الواحد (والرابط المباشر منه أيضاً — 1.95)"
+assert '(self.MFG_CHAINS_SLOT, "قبض/سلاسل")' in member("unified_op_fields")
 sub = member("submit_unified_op")
 assert "op_type = self.slot_op_type(slot)" in sub and "بوليش" not in sub
 assert '("قبض سلاسل", "قبض/سلاسل")' in member("ROW_EDIT_FIELDS")

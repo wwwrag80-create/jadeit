@@ -220,7 +220,7 @@ assert a.polish_hint_values("7001", "0.75") == (42.75, 42.0, "")
 assert "يختلف" in a.polish_hint_values("7001", "0.5")[2]
 assert a.polish_hint_values("9999")[2].startswith("رقم التشغيل 9999 غير موجود")
 a.add("سالم", "صرف ذهب", 12.0, row="5", set_no="7005")
-assert a.polish_hint_values("7005") == (None, 12.0, "لا «قبل البوليش» لهذا الرقم — سجّله في «تتبع رقم التشغيل»")
+assert a.polish_hint_values("7005") == (None, 12.0, "لا «قبل البوليش» لهذا الرقم — سجّله في «قبل وبعد البوليش» (مراحل التصنيع)")
 print("✔ النافذة تحت «خياس البوليش»: قبل 42.75 وبعد 42.00، وتنبيه إن نقص «قبل» أو خالف المكتوبُ التتبعَ")
 
 # 1.76: تحت «خياس المركب»: قبل = صرف المركّب، وبعد = القبض منه، وخياس = الفرق — من صفوف الرقم في المركبين
@@ -359,7 +359,9 @@ print("✔ الترحيل: زر صرف/قبض ثم الوزن ثم العيار 
       "ثم «طباعة السند» لها وحدها؛ وزر «🖨️ معاينة السند» للحركة المحددة؛ والتعديل بالوزن والعيار")
 
 # ═══ ٧) الواجهة: اللوحة في شريط الأقسام، والكتابة في الجدول، والربط بالمبيعات وبالقالب ═══
-assert 'stage_defs.append((self.SET_TRACK_KEY, f"🔎 {self.SET_TRACK_KEY}"))' in member("refresh_stage_buttons")
+assert 'stage_defs.append((self.SET_TRACK_KEY, f"🔎 {self.SET_TRACK_LABEL}"))' in member("refresh_stage_buttons")
+assert 'SET_TRACK_LABEL = "قبل وبعد البوليش"' in member("SET_TRACK_LABEL"), \
+    "اسم اللوحة في مراحل التصنيع (1.95): «قبل وبعد البوليش» — والمفتاح الداخلي كما هو"
 assert "elif stage == self.SET_TRACK_KEY:" in member("switch_op_stage")
 assert "self.refresh_set_track_table()" in member("refresh_current_stage")
 ui = member("build_set_track_ui")
