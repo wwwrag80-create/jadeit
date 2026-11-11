@@ -33,8 +33,8 @@ def body(name):
 
 MEMBERS = ["UNDO_LIMIT", "INVOICE_COLUMNS", "invoice_from_row", "push_undo", "_close_undo_step",
            "_undo_note_row", "_undo_note_name", "undo_step_label", "can_undo", "apply_undo_step",
-           "save_invoice_to_db", "LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "period_lock_blocked", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "delete_invoice_from_db", "delete_worker_from_db"]
-ns = {"sqlite3": sqlite3, "log_cloud_error": lambda *a: (_ for _ in ()).throw(AssertionError(a)),
+           "save_invoice_to_db", "LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "period_lock_blocked", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "BIN_TABLE_SQL", "BIN_CONTEXT_SQL", "BIN_TRIGGER_SQL", "DELETE_REASONS", "ensure_recycle_bin", "_bin_reason", "delete_reason_hint", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "delete_invoice_from_db", "delete_worker_from_db"]
+ns = {"sys": sys, "sqlite3": sqlite3, "log_cloud_error": lambda *a: (_ for _ in ()).throw(AssertionError(a)),
       "IS_ADMIN_BUILD": False}
 exec("class Base:\n" + "\n".join(textwrap.indent(member_src(m), "    ") for m in MEMBERS), ns)
 

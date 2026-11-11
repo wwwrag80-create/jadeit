@@ -125,7 +125,7 @@ class App(ns["Base"]):
         self.mark_backup_dirty()
         return True
 
-    def delete_invoice_from_db(self, inv_id):
+    def delete_invoice_from_db(self, inv_id, reason=None):
         self.invoices.pop(inv_id, None)
         self.mark_backup_dirty()
         return True

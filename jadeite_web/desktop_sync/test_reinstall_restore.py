@@ -188,7 +188,8 @@ assert "if not IS_ADMIN_BUILD:" in mgr[i_upload_btn - 200:i_upload_btn]
 print("✔ شاشة النسخ: زر (استرجاع من السحابة) مخفي في نسخة العميل، وزر الرفع مخفي في نسخة المدير")
 
 closing = method("GoldSystemApp", "on_app_closing")
-assert "if not IS_ADMIN_BUILD:" in closing
+assert "if not IS_ADMIN_BUILD and CLOUD_DATA_SYNC:" in closing, "الرفع عند الإغلاق للعميل وحده — ومنذ 1.95 فقط إن كانت السحابة تحفظ البيانات"
+assert "self.perform_backup()" in closing, "1.96: نسخة محلية أخيرة عند الإغلاق"
 assert "if not IS_ADMIN_BUILD:" in init[init.index("self.schedule_backup()"):]
 print("✔ الرفع الدوري وعند الإغلاق لنسخة العميل وحدها")
 

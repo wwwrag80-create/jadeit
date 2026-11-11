@@ -55,7 +55,7 @@ class App(ns["Base"]):
     def get_sale_invoice_records(self, key):
         return [i for i in self.invoices.values() if self.sale_key_of(i)[:len(key)] == tuple(key)]
 
-    def open_set_number_screen(self, x=None): self.calls.append(("screen", x))
+    def open_set_number_template(self, x=None): self.calls.append(("template", x))
     def preview_invoice_groups(self, groups): self.calls.append(("preview", groups))
     def open_edit_invoice_ui(self, i): self.calls.append(("edit", i))
     def open_global_search(self): self.calls.append(("search",))
@@ -79,7 +79,7 @@ kinds = [(k, v) for k, v, _d, _a in r]
 assert kinds == [("رقم تشغيل", "88001"), ("رقم تشغيل", "188001")], kinds
 assert r[0][2] == "سالم — 2026-09", "تفاصيل أول ظهور للرقم"
 r[0][3]()
-assert a.calls[-1] == ("screen", "88001"), "النتيجة تفتح شاشة الرقم (1.95)"
+assert a.calls[-1] == ("template", "88001"), "النتيجة تفتح قالب الرقم ومراحله بتعديلها (1.96)"
 assert [v for k, v, _d, _x in a.global_search("٨٨٠٠١") if k == "رقم تشغيل"] == ["88001", "188001"]
 assert not any(v == "88009" for _k, v, _d, _x in a.global_search("8800")), "المحذوف لا يظهر"
 assert a.global_search("رقم التشغيل: 88001 | الوزن المقيد: 40.25 جم")[0][:2] == ("رقم تشغيل", "88001"), "مسح QR التذكرة"
@@ -87,7 +87,7 @@ assert a.global_search("88001 40.25")[0][:2] == ("رقم تشغيل", "88001"), 
 assert [v for k, v, _d, _x in a.global_search("سالم الصغير")][:1] == ["سالم الصغير"], "الأسماء بمسافة لا تُقصّ"
 assert not any(v == "88077" for _k, v, _d, _x in a.global_search("880")), "رقم القيد لا يظهر"
 print("✔ رقم التشغيل يُبحث بأي صيغة أرقام (أو بمسح باركوده)، نتيجة واحدة لكل رقم والمطابق تماماً أولاً، "
-      "والقيود والمحذوف لا تظهر — والنتيجة تفتح شاشة الرقم بمراحله وتعديلها")
+      "والقيود والمحذوف لا تظهر — والنتيجة تفتح قالب الرقم ومراحله بتعديلها")
 
 r = a.global_search("7001")
 sales = [(v, d) for k, v, d, _x in r if k == "فاتورة مبيعات"]

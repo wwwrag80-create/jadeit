@@ -10,7 +10,7 @@
     الشاشات على الجهاز، ونوافذ الجهاز تجيب نفسها وتُجمع رسائلها، والطباعة لا تُفتح.
   • البرنامج: الشاشات الست وأدوات الإضافة والبحث والتحكم، وتحكم المدير (قفل التعديل وإيقاف البرنامج وتثبيت الرابط)
     في قاعدة بيانات الجهاز، ولا شيء في السحابة."""
-import ast, base64, io, json, os, re, shutil, stat, subprocess, sys, tempfile, textwrap, threading, time
+import ast, base64, hashlib, io, json, os, re, shutil, stat, subprocess, sys, tempfile, textwrap, threading, time
 
 TARGET = sys.argv[1] if len(sys.argv) > 1 else "rageh-1-34-14-cloud.py"
 src = io.open(TARGET, encoding="utf-8").read()
@@ -38,11 +38,12 @@ import customtkinter as ctk
 
 logged = []
 ns = {"__name__": "app", "os": os, "sys": sys, "re": re, "time": time, "threading": threading, "base64": base64,
+      "hashlib": hashlib,
       "json": json, "shutil": shutil, "subprocess": subprocess, "tk": tk, "ttk": ttk, "ctk": ctk,
       "messagebox": messagebox, "log_cloud_error": lambda *a: logged.append(a), "find_edge_exe": lambda: None}
 for name in ("LIVE_PORT", "LIVE_PROVIDERS", "CLOUDFLARED_CANDIDATES", "TAILSCALE_CANDIDATES", "_WINGET_FLAGS",
              "LIVE_WINGET", "LIVE_LINK_RE", "LIVE_HOST_RE", "_TS_ACTION_RE", "_find_tool", "find_cloudflared",
-             "find_tailscale", "live_run_capture", "live_link", "LiveViewServer", "LiveRelay", "LiveTailscale",
+             "find_tailscale", "live_run_capture", "live_link", "live_key_hash", "LiveViewServer", "LiveRelay", "LiveTailscale",
              "LiveCloudflare", "live_same", "new_live_token", "live_escape", "_live_noop", "_LiveSink", "_LiveShadow",
              "_LiveEntry", "_LiveDialogs", "_LiveWriter", "live_tree_tables", "live_shadow_labels"):
     exec(module_src(name), ns)
@@ -173,6 +174,14 @@ try:
 except OSError:
     stopped = True
 assert stopped, "الإيقاف يغلق المنفذ"
+# 1.96: حساب عميل — الخادم لا يعرف المفتاح: بصمته وحدها (مفتاح المدير على جهاز المدير)
+admin_key = ns["new_live_token"]()
+v = S(None, collections.deque(), verifier=ns["live_key_hash"](admin_key))
+assert v.token is None and v.key_ok(admin_key) and not v.key_ok(tok) and not v.key_ok(""), "البصمة تكفي للتحقق"
+assert ns["live_key_hash"](admin_key) == hashlib.sha256(admin_key.encode()).hexdigest()
+v.verifier = ns["live_key_hash"](tok)
+assert v.key_ok(tok) and not v.key_ok(admin_key), "مفتاحٌ جديد من المدير يسري وهو يعمل"
+assert not S(None, collections.deque()).key_ok(tok), "بلا مفتاح ولا بصمة: لا شيء يفتح"
 print("✔ الخادم: 127.0.0.1 وحده، والمفتاح الخاطئ أو المسار الآخر 404 بعد تأخير؛ النموذج يُدمج ويُحوَّل بعده (303)، "
       "والنموذج من موقعٍ آخر 403 والكبير 413 وغير النموذج 415 ولا يصل شيءٌ منها للبرنامج؛ والتنزيل ملفٌّ لا صفحة")
 
@@ -395,7 +404,8 @@ with ns["_LiveDialogs"]() as dlg:
 assert dlg.blocked
 writer_src = module_src("_LiveWriter")
 for w in ('"is_edit_locked": lambda: False', '"check_edit_permission": lambda silent=False: True', '"discard_draft"',
-          '"remember_discount_pct"', '"print_"', '"refresh_"', '"recalculate"', 'WRITE = frozenset({"update_set_move"})'):
+          '"remember_discount_pct"', '"print_"', '"refresh_"', '"recalculate"',
+          'WRITE = frozenset({"update_set_move", "update_inbound_move", "update_journal_entry"})'):
     assert w in writer_src, w
 print("✔ الكاتب: دالة الترحيل الحقيقية بقيم النموذج وفترة الصفحة، والحركة في البرنامج نفسه، وشاشة الجهاز تُحدَّث وخاناته "
       "كما هي؛ «تأكيد…» نعم وغيره لا (إلا مع «متابعة»)، والطباعة ومسودة الجهاز لا تُمسّان، والنوافذ تعود كما كانت")
@@ -406,7 +416,7 @@ page = member("live_page")
 assert "self.ensure_screen_built(screen, background=True)" in page and "p if p in periods else self.current_display_month" in page
 assert set(re.findall(r'\("(\w+)", "[^"]+", "[^"]+"\)', member("LIVE_SCREENS"))) == {
     "stages", "khayas", "sales", "inbound", "factory", "losses"}
-assert set(re.findall(r'\("(\w+)", "[^"]+", "[^"]+"\)', member("LIVE_TOOLS"))) == {"add", "set", "control"}
+assert set(re.findall(r'\("(\w+)", "[^"]+", "[^"]+"\)', member("LIVE_TOOLS"))) == {"add", "recent", "set", "bin", "control"}
 respond = member("live_respond")
 assert 'if method == "POST":' in respond and "self.live_post(params)" in respond and "self.live_backup()" in respond
 post = member("live_post")
@@ -436,7 +446,7 @@ relay = member("live_start_relay")
 assert "LiveTailscale(" in relay and "LiveCloudflare(" in relay and "LIVE_CF_TOKEN_PREF" in relay
 stop = member("stop_live_view")
 assert "if user and self.live_pinned():" in stop and "save_ui_pref(LIVE_ENABLED_PREF, False)" in stop
-assert "if self.live_pinned():" in member("renew_live_token")
+assert "if self.live_pinned() or self.live_admin_mode():" in member("renew_live_token")
 assert "self.stop_live_view(user=False)" in member("on_app_closing")
 assert "self.after(3000, self.start_live_view)" in src and "if self.live_enabled_pref()" in src
 assert "or self.live_pinned()" in member("live_enabled_pref"), "المثبّت يعود مع البرنامج"
@@ -457,14 +467,34 @@ for gone in ("cloud_publish_live_link", "cloud_get_live_link", 'table("live_link
     assert gone not in src, gone
 if "class AdminPanel" in src:
     admin = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AdminPanel")
-    open_live = next(m for m in admin.body if isinstance(m, ast.FunctionDef) and m.name == "open_client_live_view")
+    open_live = next(m for m in admin.body if isinstance(m, ast.FunctionDef) and m.name == "open_client_live_dialog")
     body = ast.get_source_segment(src, open_live)
-    assert "self.client_live_link(client_id)" in body and "open_url_window(url)" in body
-    assert 'text="🌐 العرض المباشر"' in src and "LIVE_LINK_RE.match(url)" in src
+    assert "self.client_live_key(client_id, renew=renew)" in body and 'live_link(row["live_url"], key)' in body
+    assert "cloud_admin_set_live_key(client_id, live_key_hash(key))" in body and "tk_background(win, work, done)" in body
+    assert 'text="🌐 العرض المباشر"' in src
+# 1.96: رابط المدير في برنامج المدير وحده — الجهاز يأخذ البصمة ويرسل عنوانه، ولا يعرض رابطاً
+assert "server = LiveViewServer(None, pending, verifier=self.live_stored_hash() or None)" in start
+assert 'save_ui_pref(LIVE_TOKEN_PREF, None)' in start, "مفتاح 1.95 على جهاز العميل يُمسح"
+sync = member("live_sync_async")
+assert "tk_background(self, lambda: cloud_live_sync(client_id, url or \"\"), done)" in sync
+assert "self.live_sync_async(state[\"url\"])" in member("_live_tick")
+dlg = member("open_live_view_dialog")
+assert "if admin_mode:" in dlg and "admin_note.pack(" in dlg and "if not admin_mode:" in dlg
+assert '"p_url": url or ""' in module_src("cloud_live_sync") and '"client_live_sync"' in module_src("cloud_live_sync")
+assert "connect-src 'self'" in module_src("LiveViewServer"), "الملء التلقائي يسأل الجهاز نفسه فقط"
+fill = member("live_fill")
+assert "self.find_row_by_set_number(cat, set_no, month=month)" in fill and "self.sb_sale_fill(set_no)" in fill
+assert "self.row_set_numbers(name, row, month=month)" in fill and "get_assembler_khayas_details" in fill
+assert "data-fill" in member("live_form_html") and "fetch(" in member("LIVE_FILL_JS")
+assert '"any_del": self.live_do_any_delete' in post and '"bin_restore": self.live_do_bin_restore' in post
+anyd = member("live_delete_any")
+assert "get_sale_invoice_records(self.sale_key_of(inv))" in anyd and "self.journal_legs(inv)" in anyd
 for mod_name in ("http.server", "socketserver", "secrets", "hmac", "queue"):
     assert not re.search(rf"^\s*import {re.escape(mod_name)}\b", src, re.M), f"{mod_name}: قد لا يحمله exe الحالي"
 print("✔ البرنامج: الشاشات الست وأدوات الإضافة (كل المراحل والوارد والقيود والمبيعات) والبحث والتعديل والتحكم؛ وتحكم "
       "المدير في قاعدة بيانات الجهاز ويبقى بعد إعادة التشغيل؛ والمنفذ ثابت والرابط لا يُوقف من الجهاز ما دام مثبّتاً؛ "
       "ولا شيء من الرابط في السحابة — بلا مكتبةٍ جديدة على exe")
 
-print("\n✅ 1.95: الرابط المباشر الثابت — عرضٌ وإضافة وتعديل ولوحة تحكم، بلا سحابة")
+print("✔ 1.96: الرابط في برنامج المدير وحده (الجهاز يتحقق ببصمة المفتاح ويرسل عنوانه)، والملء التلقائي، وآخر العمليات "
+      "وحذف أي عملية (الفاتورة كاملة والقيد بطرفيه)، والمحذوفات في الرابط")
+print("\n✅ 1.95–1.96: الرابط المباشر الثابت — عرضٌ وإضافة وتعديل ولوحة تحكم، ويظهر في برنامج المدير وحده")

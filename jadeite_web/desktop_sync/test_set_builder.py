@@ -43,7 +43,7 @@ def module_src(name):
 
 class MB:
     """messagebox بديل يسجّل كل رسالة، ويجيب askyesno بما يُحدَّد"""
-    YES = "yes"
+    YES, NO = "yes", "no"
 
     def __init__(self):
         self.log, self.answer = [], True
@@ -132,7 +132,7 @@ class App(ns["Base"]):
         self.mark_backup_dirty()
         return True
 
-    def delete_invoice_from_db(self, inv_id):
+    def delete_invoice_from_db(self, inv_id, reason=None):
         self.invoices.pop(inv_id, None)
         self.mark_backup_dirty()
         return True
@@ -218,7 +218,9 @@ assert "• رصيد سدايا في الخزينة: -0.40 ← -0.60" in mb.last
 assert a.invoices[inv["رقم الفاتورة"]]["الوزن"] == 50.2 and len(a.moves(النوع="صرف تلميع بف")) == 1
 k = len(mb.log)
 assert a.sb_post(S, "p1_before", 50.2) is True and len(mb.log) == k
-assert a.sb_post(S, "p1_after", 0) is True and mb.last()[1] == "حذف «بعد البوليش»"
+assert a.sb_post(S, "p1_after", 0) is True and "حذف «بعد البوليش»" in mb.last()[1]
+assert mb.last()[3].get("default") == "no" and "تفريغ الخانة يحذف هذه الحركة من قسم" in mb.last()[2], \
+    "1.96: الحذف بتفريغ خانة — Enter = لا (كان Enter المعتاد يحذف صرف/قبض المركّب دون قصد)"
 assert a.moves(النوع="قبض تلميع بف") == [] and a.sb_values(S)["p1_after"] is None
 assert a.sb_post(S, "p1_after", 49.6) is True
 assert a.sb_values(S)["p1_khayas"] == 0.6
@@ -424,16 +426,18 @@ assert a.sb_unproduce(S) is False and mb.last()[1] == "طقم مباع"
 assert a.sb_delete(S) is False and mb.last()[1] == "طقم مباع" and a.sb_load(S) is not None
 print("✔ الطقم المباع: حاله «مباع»، ولا يُلغى توليده، ولا يُحذف قالبه")
 
-# ═══ ١٢) حذف قالب طقم: وحركاته المرحَّلة منه بعد التأكيد (خطوة تراجع) ═══
+# ═══ ١٢) حذف ورقة قالب طقم (1.96): حركاته في أقسامها تبقى — والتأكيد افتراضيُّه «لا» (خطوة تراجع) ═══
 assert a.sb_post("9002", "asm_before", 20.0, assembler="خالد", row="7") is True
+kept = sorted(i["رقم الفاتورة"] for i in a.moves(set_number="9002"))
 assert a.sb_delete("9002") is True
-assert "2 حركة" in mb.log[-1][2] and "(خالد — الصف 7)" in mb.log[-1][2]
-assert a.sb_load("9002") is None and a.moves(set_number="9002") == [] and "9002" not in a.assembler_set_index()
+assert "تبقى كما هي" in mb.log[-1][2] and "خالد — الصف 7" in mb.log[-1][2] and mb.log[-1][3].get("default") == "no"
+assert a.sb_load("9002") is None and kept and sorted(i["رقم الفاتورة"] for i in a.moves(set_number="9002")) == kept
+assert "9002" in a.assembler_set_index(), "صرف المركّب باقٍ في قسم المركبين"
 assert a.undo[-1]["label"] == "حذف قالب الطقم (9002)" and "set_build:9002" in a.undo[-1]["settings"]
-print("✔ حذف قالب طقم يحذف حركاته المرحَّلة منه (بوليش 1 وصرف المركّب) بعد التأكيد، وخطوة تراجع")
+print("✔ حذف ورقة قالب طقم لا يمسّ حركاته في الأقسام (صرف/قبض المركّب وبوليش 1 و2 باقية)، والافتراضي «لا»، وخطوة تراجع")
 
 # ═══ ١٣) اقتراح رقم طقم جديد، والتنقّل من أول طقم لآخرها، ووضع العرض ═══
-assert a.sb_next_set_number() == "9002", a.sb_next_set_number()       # أكبر رقم (9001) + ١
+assert a.sb_next_set_number() == "9003", a.sb_next_set_number()       # أكبر رقم (9002 — حركته باقية بعد حذف ورقته) + ١
 a.sb_set_field("9100", "customer", "ثانٍ")
 assert [r["set_number"] for r in a.sb_all()] == [S, "9100"], "الترتيب من أول طقم عُمل عليه إلى آخرها"
 assert a.sb_next_set_number() == "9101"
