@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.93.0"
+APP_VERSION = "1.94.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1667,6 +1667,45 @@ def touch_client_login_async(client_id):
         except Exception:
             pass
     threading.Thread(target=work, name="JadeiteLoginTouch", daemon=True).start()
+
+
+LIVE_SQL_MISSING = ("العرض المباشر يحتاج تشغيل الملف supabase/22_live_view.sql مرة واحدة في Supabase ← SQL Editor "
+                    "(وهو ضمن INSTALL_ALL.sql أيضاً).")
+
+
+def cloud_publish_live_link(client_id, url):
+    """(برنامج العميل) يرسل رابط العرض المباشر للمدير — أو يمسحه (url فارغ) — برمز مزامنة الحساب. يرجع حال السحابة
+    ('ok' / 'removed' / سبب الرفض) أو 'missing' إن لم يُشغَّل 22_live_view.sql، أو None بلا اتصال"""
+    sb = get_supabase_public_client()
+    if sb is None or not client_id or not CURRENT_SYNC_TOKEN:
+        return None
+    dev_id, dev_name = device_identity()
+    try:
+        res = sb.rpc("client_publish_live_link", {
+            "p_client_id": client_id, "p_sync_token": CURRENT_SYNC_TOKEN, "p_device_id": dev_id, "p_url": url or "",
+            "p_device_name": dev_name, "p_app_version": APP_VERSION}).execute()
+        return res.data if isinstance(res.data, str) else "ok"
+    except Exception as e:
+        if _rpc_missing(e):
+            return "missing"
+        log_cloud_error("تعذّر إرسال رابط العرض المباشر", e)
+        return None
+
+
+def cloud_get_live_link(client_id):
+    """(المدير) رابط العرض المباشر الأخير للحساب: (الصف أو None، سبب التعذّر أو None)"""
+    sb = get_supabase_admin_client()
+    if sb is None:
+        return None, "تعذّر الاتصال بالسحابة بمفتاح المدير."
+    try:
+        rows = sb.table("live_links").select("url, device_name, app_version, updated_at") \
+            .eq("client_id", client_id).execute().data or []
+        return (rows[0] if rows else None), None
+    except Exception as e:
+        if "live_links" in str(e):
+            return None, LIVE_SQL_MISSING
+        log_cloud_error("تعذّر جلب رابط العرض المباشر", e)
+        return None, f"تعذّر جلب الرابط:\n{str(e)[:200]}"
 
 
 def cloud_check_can_edit(client_id):
@@ -4528,6 +4567,493 @@ APP_LOGO_B64 = (
 )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  العرض المباشر (1.94): رابط المدير الخاص إلى هذا الجهاز
+#
+#  • LiveViewServer: خادم صغير للقراءة فقط على 127.0.0.1 (منفذٌ حر). لا يلمس الواجهة ولا البيانات: كل طلب
+#    بالمفتاح السري الصحيح يُمرَّر إلى خيط الواجهة (طابور يقرؤه البرنامج بـ after) وينتظر الصفحة. المفتاح
+#    الخاطئ = «غير موجود» بعد تأخير (لا يكشف شيئاً)، وGET/HEAD وحدهما، وطلبٌ صغير بمهلة.
+#  • LiveTunnel: نفق Cloudflare السريع (cloudflared، مجاني بلا حساب) يربط الخادم برابط https عام — يقرأ الرابط
+#    من مخرجات الأداة ويعيد تشغيلها إن توقفت.
+#  • _LiveShadow: نسخةٌ ظلّية من البرنامج تُشغَّل عليها دوال تحديث الشاشات الحقيقية لفترةٍ أخرى: البيانات نفسها
+#    (الحركات والأسماء)، وجداول وإطارات خفية بدل أدوات الشاشة، وكل أداة أخرى بديلٌ يسجّل ولا يكتب — فالرابط
+#    يعرض أرقام الشاشة نفسها، ولا تتغيّر شاشة الجهاز ولا بياناته أبداً.
+# ═══════════════════════════════════════════════════════════════════════════════
+LIVE_TOKEN_PREF = "live_view_token"
+LIVE_ENABLED_PREF = "live_view_enabled"
+CLOUDFLARED_CANDIDATES = (r"%ProgramFiles(x86)%\cloudflared\cloudflared.exe",
+                          r"%ProgramFiles%\cloudflared\cloudflared.exe",
+                          r"%LOCALAPPDATA%\Microsoft\WinGet\Links\cloudflared.exe",
+                          r"%LOCALAPPDATA%\JadeiteERP\cloudflared.exe")
+CLOUDFLARED_WINGET = ["winget", "install", "--id", "Cloudflare.cloudflared", "-e", "--silent",
+                      "--accept-package-agreements", "--accept-source-agreements"]
+_TRYCLOUDFLARE_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+LIVE_LINK_RE = re.compile(r"^https://[A-Za-z0-9.-]+/\?k=[A-Za-z0-9_-]{24,100}$")
+
+
+def find_cloudflared():
+    """cloudflared: في PATH، أو مسارات تثبيته المعتادة على ويندوز، أو بجوار البرنامج — أو None"""
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+    beside = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0] or ".")), "cloudflared.exe")
+    for cand in CLOUDFLARED_CANDIDATES + (beside,):
+        path = os.path.expandvars(cand)
+        if "%" not in path and os.path.isfile(path):
+            return path
+    return None
+
+
+def live_link(base_url, token):
+    """الرابط الكامل للمدير: رابط النفق + المفتاح السري"""
+    return f"{str(base_url).rstrip('/')}/?k={token}" if base_url and token else None
+
+
+def open_url_window(url):
+    """يفتح رابطاً في نافذة Edge مستقلة (بلا شريط عنوان ولا تبويبات) — وإلا بالمتصفح الافتراضي"""
+    edge = find_edge_exe()
+    try:
+        if edge:
+            subprocess.Popen([edge, f"--app={url}", "--window-size=1280,860", "--no-first-run",
+                              "--no-default-browser-check"])
+        elif sys.platform.startswith("win"):
+            os.startfile(url)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+        return True
+    except OSError as e:
+        log_cloud_error("تعذّر فتح الرابط", e)
+        return False
+
+
+class LiveViewServer:
+    """خادم العرض المباشر — يعمل في خيوط خلفية ولا يلمس الواجهة (pending: طابور إلى خيط الواجهة)"""
+    MAX_REQUEST = 8192
+    WAIT_SECONDS = 30
+    FAIL_DELAY = 1.0
+
+    HEADERS = (("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store, max-age=0"),
+               ("Pragma", "no-cache"), ("X-Robots-Tag", "noindex, nofollow"), ("Referrer-Policy", "no-referrer"),
+               ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"),
+               ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                                           "img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"),
+               ("Connection", "close"))
+    REASONS = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 503: "Service Unavailable"}
+
+    def __init__(self, token, pending):
+        self.token = str(token)
+        self.pending = pending
+        self.sock, self.port = None, None
+        self._stop = threading.Event()
+        self._slots = threading.BoundedSemaphore(8)
+        self.served = 0
+
+    def start(self, port=0):
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", int(port)))
+        sock.listen(16)
+        sock.settimeout(1.0)
+        self.sock, self.port = sock, sock.getsockname()[1]
+        threading.Thread(target=self._serve, name="JadeiteLiveView", daemon=True).start()
+        return self.port
+
+    def stop(self):
+        self._stop.set()
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+    def _serve(self):
+        import socket
+        while not self._stop.is_set():
+            try:
+                conn, _addr = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not self._slots.acquire(blocking=False):
+                try:
+                    conn.sendall(self.http(503, self.message_page("البرنامج مشغول — أعد المحاولة بعد لحظة")))
+                except OSError:
+                    pass
+                conn.close()
+                continue
+            threading.Thread(target=self._handle, args=(conn,), name="JadeiteLiveViewReq", daemon=True).start()
+
+    def _handle(self, conn):
+        try:
+            conn.settimeout(10)
+            data = b""
+            while b"\r\n\r\n" not in data and len(data) < self.MAX_REQUEST:
+                chunk = conn.recv(2048)
+                if not chunk:
+                    break
+                data += chunk
+            status, body, head_only = self.respond(data)
+            conn.sendall(self.http(status, b"" if head_only else body))
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._slots.release()
+
+    def respond(self, raw):
+        """(الحالة، الصفحة بايتات، HEAD؟) لطلب HTTP خام — بلا شبكة (يُختبر وحده)"""
+        if len(raw) >= self.MAX_REQUEST:
+            return 400, self.message_page("طلب كبير"), False
+        head = raw.split(b"\r\n\r\n", 1)[0].decode("latin-1", "replace")
+        first = head.split("\r\n", 1)[0].split(" ")
+        if len(first) != 3 or not first[2].startswith("HTTP/"):
+            return 400, self.message_page("طلب غير صالح"), False
+        method, target = first[0], first[1]
+        if method not in ("GET", "HEAD"):
+            return 405, self.message_page("للقراءة فقط"), False
+        from urllib.parse import parse_qs
+        path, _, query = target.partition("?")
+        params = {k: v[-1] for k, v in parse_qs(query, keep_blank_values=True).items()}
+        given = str(params.get("k", ""))
+        if path not in ("/", "") or not given or not live_same(given, self.token):
+            time.sleep(self.FAIL_DELAY)                     # تخمين المفتاح بطيء — والرد لا يكشف شيئاً
+            return 404, self.message_page("غير موجود"), method == "HEAD"
+        box = {"event": threading.Event()}
+        self.pending.append((params, box))                 # deque: الإضافة والسحب آمنان بين الخيوط
+        if not box["event"].wait(self.WAIT_SECONDS):
+            return 503, self.message_page("البرنامج مشغول الآن — أعد تحميل الصفحة بعد لحظة"), method == "HEAD"
+        self.served += 1
+        html = box.get("html") or self.message_page("تعذّر عرض الصفحة")
+        return int(box.get("status", 200)), html.encode("utf-8"), method == "HEAD"
+
+    def http(self, status, body):
+        lines = [f"HTTP/1.1 {status} {self.REASONS.get(status, 'OK')}"]
+        lines += [f"{k}: {v}" for k, v in self.HEADERS]
+        lines.append(f"Content-Length: {len(body)}")
+        return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
+
+    @staticmethod
+    def message_page(text):
+        return ('<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1"><title>جاديت</title></head>'
+                '<body style="font-family:Tahoma,Arial,sans-serif;text-align:center;padding:48px;color:#1f2937">'
+                f'<h2>{live_escape(text)}</h2></body></html>').encode("utf-8")
+
+
+class LiveTunnel:
+    """نفق Cloudflare السريع إلى الخادم المحلي — خيط خلفي لا يلمس الواجهة: البرنامج يقرأ url وstate بـ after"""
+    BACKOFF = (5, 10, 30, 60)
+
+    def __init__(self, exe, port):
+        self.exe, self.port = exe, int(port)
+        self.url, self.state, self.error = None, "starting", ""
+        self.proc = None
+        self._stop = threading.Event()
+
+    def command(self):
+        return [self.exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.port}"]
+
+    def start(self):
+        threading.Thread(target=self._run, name="JadeiteLiveTunnel", daemon=True).start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        proc = self.proc
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self.url, self.state = None, "stopped"
+
+    def _run(self):
+        tries = 0
+        while not self._stop.is_set():
+            self.state, self.url = "starting", None
+            try:
+                flags = 0x08000000 if sys.platform.startswith("win") else 0     # CREATE_NO_WINDOW
+                self.proc = subprocess.Popen(self.command(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                             stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                                             creationflags=flags)
+            except OSError as e:
+                self.state, self.error = "error", str(e)
+                return
+            for line in self.proc.stderr:
+                if self._stop.is_set():
+                    break
+                m = _TRYCLOUDFLARE_RE.search(line)
+                if m and not self.url:
+                    self.url, self.state, self.error, tries = m.group(0), "ready", "", 0
+                elif "ERR" in line and not self.url:
+                    self.error = line.strip()[-200:]
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+            if self._stop.is_set():
+                break
+            self.url, self.state = None, "retry"
+            self._stop.wait(self.BACKOFF[min(tries, len(self.BACKOFF) - 1)])
+            tries += 1
+
+
+def live_same(a, b):
+    """مقارنة المفتاح بزمنٍ ثابت (لا يكشف التوقيت عدد الحروف الصحيحة)"""
+    a, b = str(a).encode("utf-8"), str(b).encode("utf-8")
+    if len(a) != len(b):
+        return False
+    diff = 0
+    for x, y in zip(a, b):
+        diff |= x ^ y
+    return diff == 0
+
+
+def new_live_token():
+    """مفتاح سري جديد للرابط: ٣٢ بايتاً عشوائية (٤٣ حرفاً)"""
+    return base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+
+
+def live_escape(text):
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def _live_noop(*_a, **_k):
+    return _LiveSink()
+
+
+class _LiveSink:
+    """بديل أداة الشاشة في النسخة الظلّية: يقرأ من الأداة الحقيقية (get/cget/winfo) ويسجّل الكتابة بلا لمسها"""
+
+    def __init__(self, real=None, value=None):
+        self.__dict__.update(_real=real, _kw={}, _value=value)
+
+    def configure(self, *_a, **kw):
+        self._kw.update(kw)
+
+    config = configure
+
+    def cget(self, key):
+        if key in self._kw:
+            return self._kw[key]
+        try:
+            return self._real.cget(key) if self._real is not None else ""
+        except Exception:
+            return ""
+
+    def get(self, *a):
+        if self._value is not None:
+            return self._value
+        try:
+            return self._real.get(*a) if self._real is not None else ""
+        except Exception:
+            return ""
+
+    def set(self, value, *_a, **_k):
+        self.__dict__["_value"] = value
+
+    def winfo_exists(self):
+        return 1
+
+    def text(self):
+        return str(self._kw.get("text", "") or "")
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        real = self.__dict__.get("_real")
+        if name.startswith("winfo_") and real is not None:
+            return getattr(real, name)
+        return _live_noop
+
+    def __iter__(self):
+        return iter(())
+
+    def __bool__(self):
+        return True
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
+    def __setitem__(self, key, value):
+        self._kw[key] = value
+
+
+class _LiveShadow:
+    """نسخة ظلّية من البرنامج لعرض شاشةٍ بفترةٍ أخرى (انظر رأس القسم): دوال البرنامج نفسها مربوطة بها، والبيانات
+    المشتركة (الحركات والأسماء) بالمرجع، وكل ما سواها نسخة — والإطارات خفية، والجداول نسخٌ خفية بأعمدتها، وأي أداة
+    أخرى _LiveSink، وأي دالةٍ محفوظة في البرنامج (ردود الشاشة) لا تعمل، ودوال الكتابة لا تعمل"""
+    SHARED = frozenset({"invoices", "categories"})
+    NOOP = frozenset({"set_setting", "save_invoice_to_db", "mark_backup_dirty", "push_undo", "_close_undo_step",
+                      "_log_change", "_log_auto_fix", "save_name_to_db", "register_operation_period", "recalculate_all",
+                      "refresh_screen_info_bar", "toast", "schedule_draft_save", "save_draft", "write_drafts",
+                      "update_undo_buttons", "mark_screen_clean", "mark_all_screens_dirty", "navigate_to_screen"})
+
+    def __init__(self, app, host, **overrides):
+        self.__dict__.update(_app=app, _host=host)
+        self.__dict__.update(overrides)
+
+    def __setattr__(self, name, value):
+        self.__dict__[name] = value
+
+    def __getattr__(self, name):
+        app = self.__dict__["_app"]
+        cls = type(app)
+        for klass in cls.__mro__:
+            if name not in klass.__dict__:
+                continue
+            attr = klass.__dict__[name]
+            if klass.__module__ == cls.__module__:
+                if name in self.NOOP:
+                    return _live_noop
+                if isinstance(attr, staticmethod):
+                    return attr.__func__
+                if isinstance(attr, classmethod):
+                    return attr.__get__(None, cls)
+                if isinstance(attr, property):
+                    return attr.__get__(self)
+                if callable(attr):
+                    return attr.__get__(self, type(self))
+                return attr
+            if name.startswith("winfo_") or name in ("tk", "_w", "cget", "nametowidget", "_root"):
+                return getattr(app, name)
+            return _live_noop if callable(attr) else attr
+        if name in app.__dict__:
+            val = app.__dict__[name]
+            if name in self.SHARED:
+                return val
+            mapped = self._map(val)
+            self.__dict__[name] = mapped
+            return mapped
+        raise AttributeError(name)
+
+    def _frame(self):
+        return tk.Frame(self.__dict__["_host"])
+
+    def _clone_tree(self, real):
+        cols = tuple(real["columns"])
+        tree = ttk.Treeview(self._frame(), columns=cols, show=real["show"])
+        for c in cols:
+            try:
+                tree.heading(c, text=real.heading(c).get("text", c))
+            except tk.TclError:
+                pass
+        try:
+            disp = real["displaycolumns"]
+            if disp and tuple(disp) != ("#all",):
+                tree.configure(displaycolumns=disp)
+        except tk.TclError:
+            pass
+        return tree
+
+    def _map(self, val, depth=0):
+        if isinstance(val, ttk.Treeview):
+            return self._clone_tree(val)
+        # الإطارات وحدها (حاويات الجداول) — أدوات customtkinter كلها ترث tk.Frame (الشريط والزر والعنوان…) فهي بدائل
+        if isinstance(val, (ctk.CTkFrame, ctk.CTkScrollableFrame)) or (
+                isinstance(val, (tk.Frame, ttk.Frame, tk.LabelFrame, ttk.LabelFrame))
+                and not isinstance(val, ctk.CTkBaseClass)):
+            return self._frame()
+        if isinstance(val, (tk.Misc, tk.Variable)):
+            return _LiveSink(val)
+        if isinstance(val, type):
+            return val
+        if callable(val):
+            return _live_noop                          # ردود الشاشة المحفوظة في البرنامج لا تعمل في الظل
+        if depth < 3:
+            if isinstance(val, dict):
+                return {k: self._map(v, depth + 1) for k, v in val.items()}
+            if isinstance(val, list):
+                return [self._map(v, depth + 1) for v in val]
+            if isinstance(val, tuple):
+                return tuple(self._map(v, depth + 1) for v in val)
+            if isinstance(val, set):
+                return set(val)
+        return val
+
+
+def live_tree_tables(host):
+    """جداول الشاشة الظلّية بعد تحديثها: [{heads, rows: [(القيم، إجمالي؟)]}] بترتيب إنشائها — صف الإجمالي المثبّت أسفل
+    الجدول ضمن جدوله، والجدول الفارغ لا يُعرض"""
+    trees, stack = [], [host]
+    while stack:
+        w = stack.pop(0)
+        if isinstance(w, ttk.Treeview):
+            trees.append(w)
+        stack.extend(w.winfo_children())
+    totals = {id(getattr(t, "_total_tree", None)) for t in trees if getattr(t, "_total_tree", None) is not None}
+    out = []
+    for tree in trees:
+        if id(tree) in totals:
+            continue
+        cols = [c for c in tree["columns"] if not str(c).startswith("_")]
+        disp = tuple(tree["displaycolumns"] or ())
+        if disp and disp != ("#all",):
+            cols = [c for c in disp if c in cols]
+        heads = []
+        for c in cols:
+            text = str(tree.heading(c).get("text", c)).replace("\n", " ")
+            heads.append(re.sub(r"\s*[▲▼↑↓]\s*", "", text).strip() or str(c))
+        rows = []
+        # صف الإجمالي المثبّت أسفل الجدول (شجرته المستقلة) — ونسخته داخل الجدول نفسه (للطباعة) لا تتكرر
+        total_tree, pinned = getattr(tree, "_total_tree", None), []
+        if total_tree is not None:
+            try:
+                pinned = [[str(total_tree.set(iid, c)) for c in cols] for iid in total_tree.get_children("")]
+            except tk.TclError:
+                pinned = []
+
+        def walk(parent, level, tree=tree, cols=cols, rows=rows, pinned=pinned):
+            for iid in tree.get_children(parent):
+                tags = tree.item(iid, "tags") or ()
+                total = any("total" in str(t) for t in tags)
+                vals = [str(tree.set(iid, c)) for c in cols]
+                if total and vals in pinned:
+                    continue
+                if level and vals:
+                    vals[0] = "↳ " + vals[0]
+                rows.append((vals, total))
+                walk(iid, level + 1)
+        walk("", 0)
+        rows += [(vals, True) for vals in pinned]
+        if rows:
+            out.append({"heads": heads, "rows": rows})
+    return out
+
+
+def live_shadow_labels(shadow):
+    """نصوص الملخّص التي كتبتها دالة التحديث في عناوين الشاشة (lbl_…/…_lbl/…totals…) — بترتيب كتابتها"""
+    out = []
+
+    def label_name(name):
+        name = str(name)
+        return name.startswith("lbl_") or name.endswith("_lbl") or "total" in name
+
+    for name, val in list(shadow.__dict__.items()):
+        if isinstance(val, _LiveSink) and val.text() and label_name(name):
+            out.append(val.text())
+        elif isinstance(val, dict):
+            for sub in val.values():
+                if isinstance(sub, dict):
+                    out += [w.text() for k, w in sub.items() if isinstance(w, _LiveSink) and w.text() and label_name(k)]
+    seen, unique = set(), []
+    for t in out:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    return unique
+
+
 class ScreenRouter(ctk.CTkFrame):
     """بديل خفيف عن CTkTabview: نفس واجهة add()/tab() المستخدمة في كل شاشات النظام،
     لكن بدل شريط تبويبات جانبي، يعرض شاشة واحدة فقط في كل مرة مع زر عودة للقائمة الرئيسية،
@@ -6119,6 +6645,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def on_app_closing(self):
         try:
             self.flush_all_drafts()        # ما ينتظر الحفظ التلقائي يُحفظ قبل الإغلاق (1.93)
+        except Exception:
+            pass
+        try:
+            self.stop_live_view(user=False)   # النفق لا يبقى بعد الإغلاق، والرابط يُمسح عند المدير (1.94)
         except Exception:
             pass
         try:
@@ -10667,6 +11197,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             hover_color=(UI["surface_alt"], "#232A33"), command=self.open_global_search)
         btn_search_all.pack(side="right", padx=(0, 6))
         HoverTip(btn_search_all, "بحث شامل (Ctrl+F): حساب، رقم تشغيل، فاتورة مبيعات، رقم حركة")
+        # العرض المباشر (1.94): رابط المدير الخاص إلى هذا الجهاز — 🟢 حين يكون الرابط جاهزاً
+        if not getattr(self, "view_only", False):
+            self.btn_live_view = ctk.CTkButton(
+                tools_row, text="🌐 مباشر", width=86, height=32, corner_radius=10,
+                font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent",
+                border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
+                hover_color=(UI["surface_alt"], "#232A33"), command=self.open_live_view_dialog)
+            self.btn_live_view.pack(side="right", padx=(0, 6))
+            HoverTip(self.btn_live_view, "العرض المباشر: رابطٌ خاص للمدير يفتح شاشات هذا الجهاز من أي مكان — للقراءة فقط")
 
         # تراجع عام خطوة بخطوة: إضافة أو تعديل أو حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
         if not IS_ADMIN_BUILD:
@@ -10844,6 +11383,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.update_access_ui()
         self.after(6000, self.warn_access_expiry)
         self.after(2500, self.notify_saved_drafts)     # ما حُفظ تلقائياً ولم يُرحَّل (1.93)
+        if self.live_enabled_pref() and not getattr(self, "view_only", False):
+            self.after(3000, self.start_live_view)        # العرض المباشر يعود مع البرنامج إن كان مشغّلاً (1.94)
         self.update_period_warning()
         self.watch_system_month()
         self.refresh_live_date_fields()
@@ -23702,6 +24243,560 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     pass
         return tot
 
+    # ═══ العرض المباشر (1.94): رابط المدير الخاص إلى هذا الجهاز — انظر LiveViewServer ═══
+    LIVE_TICK_MS = 120
+    LIVE_PUBLISH_EVERY = 600                 # ثوانٍ: تجديد الرابط في السحابة (يرى المدير أنه حيّ)
+    LIVE_SCREENS = (("stages", "مراحل التصنيع", "🏭"), ("khayas", "صناديق الخياس", "⚖️"), ("sales", "المبيعات", "🧾"),
+                    ("inbound", "الوارد", "📥"), ("factory", "صناديق المصنع", "🏦"), ("losses", "شاشة الخسائر", "📉"))
+    LIVE_ALL_SCREENS = ("factory", "losses")  # تقبلان «كل الفترات» كشاشتيهما
+    LIVE_SCREEN_OF = {"stages": "مراحل التصنيع", "khayas": "صناديق الخياس", "sales": "المبيعات", "inbound": "الوارد"}
+
+    def live_enabled_pref(self):
+        return bool(load_ui_prefs().get(LIVE_ENABLED_PREF))
+
+    def live_token(self, renew=False):
+        """المفتاح السري للرابط: محفوظ على هذا الجهاز وحده (لا في قاعدة البيانات ولا نسختها السحابية)"""
+        token = load_ui_prefs().get(LIVE_TOKEN_PREF)
+        if renew or not isinstance(token, str) or len(token) < 32:
+            token = new_live_token()
+            save_ui_pref(LIVE_TOKEN_PREF, token)
+        return token
+
+    def live_state(self):
+        """حال العرض المباشر للنافذة والزر: running، port، url (النفق)، link (للمدير)، local، tunnel، published"""
+        live = self.__dict__.get("_live") or {}
+        server, tunnel = live.get("server"), live.get("tunnel")
+        url = tunnel.url if tunnel is not None else None
+        token = server.token if server is not None else None
+        return {"running": server is not None, "port": server.port if server else None, "url": url,
+                "link": live_link(url, token) if url else None,
+                "local": live_link(f"http://127.0.0.1:{server.port}", token) if server else None,
+                "tunnel": tunnel.state if tunnel is not None else ("none" if server else "off"),
+                "tunnel_error": tunnel.error if tunnel is not None else "",
+                "cloudflared": live.get("exe"), "published": live.get("published"),
+                "served": server.served if server else 0}
+
+    def start_live_view(self, user=False):
+        """يشغّل الخادم (للقراءة فقط) والنفق إن وُجدت أداته — ويتذكّر التشغيل فيعود مع البرنامج"""
+        if getattr(self, "view_only", False):
+            return False
+        if (self.__dict__.get("_live") or {}).get("server") is not None:
+            return True
+        import collections
+        pending = collections.deque()
+        server = LiveViewServer(self.live_token(), pending)
+        try:
+            server.start()
+        except OSError as e:
+            log_cloud_error("تعذّر تشغيل العرض المباشر", e)
+            if user:
+                messagebox.showerror("العرض المباشر", f"تعذّر تشغيل العرض المباشر على هذا الجهاز:\n{e}")
+            return False
+        exe = find_cloudflared()
+        tunnel = LiveTunnel(exe, server.port).start() if exe else None
+        self._live = {"server": server, "tunnel": tunnel, "pending": pending, "exe": exe, "published": None,
+                      "published_url": None, "published_at": 0.0}
+        save_ui_pref(LIVE_ENABLED_PREF, True)
+        self.after(self.LIVE_TICK_MS, self._live_tick)
+        self.update_live_button()
+        return True
+
+    def stop_live_view(self, user=True):
+        """يوقف الخادم والنفق ويمسح الرابط من السحابة — وبطلب المستخدم لا يعود مع البرنامج"""
+        live = self.__dict__.pop("_live", None) or {}
+        for part in ("tunnel", "server"):
+            obj = live.get(part)
+            if obj is not None:
+                try:
+                    obj.stop()
+                except Exception:
+                    pass
+        for _params, box in list(live.get("pending") or ()):
+            box["event"].set()
+        if live.get("published_url"):
+            self._live_publish_async("")
+        if user:
+            save_ui_pref(LIVE_ENABLED_PREF, False)
+        self.update_live_button()
+
+    def renew_live_token(self):
+        """مفتاح جديد: الرابط القديم لا يفتح بعده أبداً (يُرسل الجديد للمدير)"""
+        running = (self.__dict__.get("_live") or {}).get("server") is not None
+        self.live_token(renew=True)
+        if running:
+            self.stop_live_view(user=False)
+            self.start_live_view()
+        return self.live_token()
+
+    def _live_tick(self):
+        """خيط الواجهة: يجيب طلبات الخادم (حتى أربعة في الدورة) ويتابع رابط النفق ويرسله للمدير"""
+        live = self.__dict__.get("_live")
+        if not live or live.get("server") is None:
+            return
+        pending = live["pending"]
+        for _ in range(4):
+            if not pending:
+                break
+            params, box = pending.popleft()
+            try:
+                box["status"], box["html"] = self.live_page(params)
+            except Exception as e:
+                log_cloud_error("تعذّر عرض صفحة العرض المباشر", e)
+                box["status"], box["html"] = 200, self.live_error_html(str(e))
+            box["event"].set()
+        state = self.live_state()
+        link = state["link"]
+        now = time.time()
+        if link and (link != live.get("published_url") or now - live.get("published_at", 0) > self.LIVE_PUBLISH_EVERY):
+            live["published_url"], live["published_at"] = link, now
+            self._live_publish_async(link)
+        if state["tunnel"] != live.get("last_tunnel"):
+            live["last_tunnel"] = state["tunnel"]
+            self.update_live_button()
+        try:
+            self.after(self.LIVE_TICK_MS, self._live_tick)
+        except Exception:
+            pass
+
+    def _live_publish_async(self, link):
+        """يرسل الرابط (أو يمسحه) للسحابة في خيط خلفي — النتيجة تُقرأ في النافذة (published)"""
+        client_id = getattr(self, "client_id", None)
+        if not client_id or IS_ADMIN_BUILD:
+            return
+
+        def work(live=self.__dict__.get("_live")):
+            result = cloud_publish_live_link(client_id, link)
+            if live is not None:
+                live["published"] = result
+        threading.Thread(target=work, name="JadeiteLivePublish", daemon=True).start()
+
+    def install_cloudflared(self, done=None):
+        """يثبّت أداة الربط (cloudflared من Cloudflare) بـ winget — مدير الحزم الرسمي في ويندوز يتحقق من الملف
+        وبصمته — في خيط خلفي، ثم done(نجح؟، الرسالة) في خيط الواجهة"""
+        def work():
+            try:
+                r = subprocess.run(CLOUDFLARED_WINGET, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", timeout=600,
+                                   creationflags=0x08000000 if sys.platform.startswith("win") else 0)
+                ok_ = find_cloudflared() is not None
+                msg = "" if ok_ else (r.stdout + r.stderr).strip()[-300:]
+            except (OSError, subprocess.SubprocessError) as e:
+                ok_, msg = False, str(e)
+            if done is not None:
+                try:
+                    self.after(0, lambda: done(ok_, msg))
+                except Exception:
+                    pass
+        threading.Thread(target=work, name="JadeiteCloudflaredInstall", daemon=True).start()
+
+    def update_live_button(self):
+        btn = getattr(self, "btn_live_view", None)
+        if btn is None:
+            return
+        state = self.live_state()
+        try:
+            if state["link"]:
+                btn.configure(text="🟢 مباشر", text_color=(UI["success"], "#7EE2B8"))
+            elif state["running"]:
+                btn.configure(text="🟡 مباشر", text_color=(UI["ink"], "#F0CF6A"))
+            else:
+                btn.configure(text="🌐 مباشر", text_color=(UI["ink"], "#E6EDF3"))
+        except Exception:
+            pass
+
+    def open_live_view_dialog(self):
+        """نافذة «🌐 العرض المباشر»: تشغيل/إيقاف، والرابط ونسخه ورمز QR، وأداة الربط وتثبيتها، وحال إرساله للمدير"""
+        old = getattr(self, "_live_dialog", None)
+        if old is not None and old.winfo_exists():
+            old.lift()
+            return old
+        win = ctk.CTkToplevel(self)
+        self._live_dialog = win
+        win.title("العرض المباشر — رابط المدير الخاص")
+        self.fit_dialog_to_screen(win, 720, 640)
+        win.transient(self)
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        ctk.CTkLabel(win, text="🌐 العرض المباشر — رابط المدير الخاص إلى هذا الجهاز", font=(UI_FONT, 19, "bold"),
+                     text_color=UI_TITLE).pack(pady=(14, 4), padx=16)
+        ctk.CTkLabel(win, text="رابطٌ للقراءة فقط يفتح على هذا الجهاز مباشرةً من أي مكان (الجوال أو الكمبيوتر): مراحل "
+                               "التصنيع، صناديق الخياس، المبيعات، الوارد، صناديق المصنع، والخسائر — بالفترة التي "
+                               "يختارها. يعمل ما دام البرنامج مفتوحاً والإنترنت متصلاً، ولا يستطيع أحدٌ التعديل منه. "
+                               "الرابط فيه مفتاحٌ سري: لا تعطه إلا للمدير.",
+                     font=(UI_FONT, 13), wraplength=660, justify="right",
+                     text_color=(UI["muted"], "#9AA4B2")).pack(padx=16)
+        status = ctk.CTkLabel(win, text="", font=(UI_FONT, 15, "bold"), wraplength=660, justify="right")
+        status.pack(pady=(10, 4), padx=16)
+        link_box = ctk.CTkEntry(win, font=("Consolas", 13), justify="left", height=36)
+        link_box.pack(fill="x", padx=16, pady=4)
+        qr = tk.Canvas(win, width=200, height=200, highlightthickness=0, bg="#FFFFFF")
+        qr.pack(pady=6)
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=6)
+        tool = ctk.CTkLabel(win, text="", font=(UI_FONT, 13), wraplength=660, justify="right")
+        tool.pack(pady=(6, 2), padx=16)
+        tool_btns = ctk.CTkFrame(win, fg_color="transparent")
+        tool_btns.pack(pady=(0, 10))
+        shown = {"link": object()}
+
+        def copy_link():
+            state = self.live_state()
+            link = state["link"] or state["local"]
+            if link:
+                self.clipboard_clear()
+                self.clipboard_append(link)
+                self.toast("📋 نُسخ الرابط — أرسله للمدير وحده", "success", parent=win)
+
+        def toggle():
+            if self.live_state()["running"]:
+                self.stop_live_view(user=True)
+            else:
+                self.start_live_view(user=True)
+            refresh()
+
+        def renew():
+            if messagebox.askyesno("مفتاح جديد", "سيتوقف الرابط الحالي عن العمل نهائياً، ويُرسل رابطٌ جديد للمدير.\n\n"
+                                                 "متابعة؟", parent=win):
+                self.renew_live_token()
+                refresh()
+
+        def install():
+            btn_install.configure(state="disabled", text="⏳ جارٍ تثبيت أداة الربط…")
+
+            def done(ok_, msg):
+                if not win.winfo_exists():
+                    return
+                btn_install.configure(state="normal", text="⬇️ تثبيت أداة الربط (cloudflared)")
+                if ok_:
+                    if self.live_state()["running"]:
+                        self.stop_live_view(user=False)
+                        self.start_live_view()
+                    self.toast("✔ ثُبّتت أداة الربط", "success", parent=win)
+                else:
+                    messagebox.showwarning("أداة الربط", "تعذّر التثبيت التلقائي. ثبّتها من نافذة الأوامر:\n"
+                                           "winget install --id Cloudflare.cloudflared -e\n\nأو ضع cloudflared.exe "
+                                           f"بجوار البرنامج.\n\n{msg}", parent=win)
+                refresh()
+            self.install_cloudflared(done)
+
+        btn_toggle = ctk.CTkButton(btns, text="", font=(UI_FONT, 15, "bold"), width=150, height=40, command=toggle)
+        btn_toggle.pack(side="right", padx=4)
+        ctk.CTkButton(btns, text="📋 نسخ الرابط", font=(UI_FONT, 14, "bold"), width=130, height=40,
+                      command=copy_link, **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
+        ctk.CTkButton(btns, text="👁️ معاينة هنا", font=(UI_FONT, 14, "bold"), width=120, height=40,
+                      command=lambda: self.live_state()["local"] and open_url_window(self.live_state()["local"]),
+                      **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
+        ctk.CTkButton(btns, text="🔄 مفتاح جديد", font=(UI_FONT, 14, "bold"), width=130, height=40,
+                      command=renew, **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
+        btn_install = ctk.CTkButton(tool_btns, text="⬇️ تثبيت أداة الربط (cloudflared)", font=(UI_FONT, 13, "bold"),
+                                    height=34, command=install, **BUTTON_STYLES["primary"])
+
+        def refresh():
+            if not win.winfo_exists():
+                return
+            state = self.live_state()
+            if not state["running"]:
+                status.configure(text="⚪ العرض المباشر متوقف", text_color=(UI["muted"], "#9AA4B2"))
+            elif state["link"]:
+                status.configure(text=f"🟢 يعمل — الرابط جاهز ({state['served']} طلب)",
+                                 text_color=(UI["success"], "#7EE2B8"))
+            elif state["tunnel"] == "none":
+                status.configure(text="🟡 يعمل على هذا الجهاز وحده — ثبّت أداة الربط ليصل من الإنترنت",
+                                 text_color=("#B7791F", "#F0CF6A"))
+            else:
+                status.configure(text="🟡 جارٍ تجهيز رابط الإنترنت…" + (f"\n{state['tunnel_error']}"
+                                                                        if state["tunnel_error"] else ""),
+                                 text_color=("#B7791F", "#F0CF6A"))
+            btn_toggle.configure(text="⏹️ إيقاف" if state["running"] else "▶️ تشغيل",
+                                 **BUTTON_STYLES["danger" if state["running"] else "primary"])
+            link = state["link"] or ""
+            if link != shown["link"]:
+                shown["link"] = link
+                link_box.configure(state="normal")
+                link_box.delete(0, "end")
+                link_box.insert(0, link or ("…" if state["running"] else ""))
+                link_box.configure(state="readonly")
+                self.draw_qr(qr, link)
+            exe = state["cloudflared"] or find_cloudflared()
+            published = state["published"]
+            pub_text = {"ok": "✔ أُرسل الرابط للمدير — يجده في لوحته («🌐 العرض المباشر»)",
+                        "missing": "⚠️ لإرساله للمدير تلقائياً: شغّل 22_live_view.sql في Supabase (مرة واحدة)",
+                        None: ""}.get(published, f"⚠️ لم يُرسل للمدير ({published})")
+            tool.configure(text=(f"🔗 أداة الربط: {exe}" if exe else
+                                 "🔗 أداة الربط (cloudflared من Cloudflare — مجانية) غير مثبّتة: بدونها يعمل الرابط على "
+                                 "هذا الجهاز وحده") + (f"\n{pub_text}" if pub_text and state["running"] else ""),
+                           text_color=(UI["ink"], "#E5E7EB"))
+            if exe or not sys.platform.startswith("win"):
+                btn_install.pack_forget()
+            elif not btn_install.winfo_manager():
+                btn_install.pack()
+            win.after(1000, refresh)
+        refresh()
+        return win
+
+    def draw_qr(self, canvas, text):
+        """رمز QR للرابط على لوحة الرسم (يُمسح بكاميرا الجوال) — من reportlab إن وُجدت"""
+        canvas.delete("all")
+        if not text:
+            return False
+        try:
+            from reportlab.graphics.barcode.qrencoder import QRCode, QRErrorCorrectLevel
+            q = QRCode(0, QRErrorCorrectLevel.M)
+            q.addData(text)
+            q.make()
+            n = q.getModuleCount()
+        except Exception:
+            return False
+        size = int(canvas.cget("width"))
+        cell = max(1, (size - 16) // n)
+        off = (size - cell * n) // 2
+        for r in range(n):
+            for c in range(n):
+                if q.isDark(r, c):
+                    canvas.create_rectangle(off + c * cell, off + r * cell, off + (c + 1) * cell, off + (r + 1) * cell,
+                                            fill="#000000", outline="")
+        return True
+
+    # ── صفحات العرض المباشر (خيط الواجهة) ──
+    def live_periods(self):
+        periods = list(self.get_recorded_periods())
+        if self.current_display_month not in periods:
+            periods.insert(0, self.current_display_month)
+        return periods
+
+    def live_page(self, params):
+        """صفحة العرض المباشر للطلب: (الحالة، HTML). v الشاشة، p الفترة، c القسم، w العامل، kind نوع المبيعات"""
+        view = str(params.get("v", "") or "")
+        views = {k for k, _t, _i in self.LIVE_SCREENS}
+        periods = self.live_periods()
+        p = str(params.get("p", "") or "")
+        if p == self.LOSSES_ALL and view in self.LIVE_ALL_SCREENS:
+            period = p
+        else:
+            period = p if p in periods else self.current_display_month
+        if view not in views:
+            return 200, self.live_html(params, "", period, periods, [], [], home=True)
+        screen = self.LIVE_SCREEN_OF.get(view)
+        if screen:
+            # الشاشات تُبنى عند أول فتح: جدول شاشةٍ لم تُفتح بعد على الجهاز يُبنى الآن (كما يبنيها البرنامج في الخلفية)
+            self.ensure_screen_built(screen, background=True)
+        data = getattr(self, f"live_view_{view}")(period, params)
+        return 200, self.live_html(params, view, period, periods, data.get("chips", []), data.get("blocks", []),
+                                   summary=data.get("summary", []), note=data.get("note", ""))
+
+    def live_render_shadow(self, refresh, **overrides):
+        """يشغّل دالة تحديث الشاشة الحقيقية على نسخة ظلّية (_LiveShadow) بإطارات خفية — ويرجع (الجداول، الملخّص)"""
+        host_top = self.__dict__.get("_live_host")
+        if host_top is None or not host_top.winfo_exists():
+            host_top = tk.Toplevel(self)
+            host_top.withdraw()
+            self._live_host = host_top
+        host = tk.Frame(host_top)
+        try:
+            shadow = _LiveShadow(self, host, **overrides)
+            refresh(shadow)
+            return live_tree_tables(host), live_shadow_labels(shadow)
+        finally:
+            host.destroy()
+
+    def live_view_stages(self, period, params):
+        stages = ["الكاستنج", "المصنعين", "المركبين", "التلميع", "التلميع/البف"] + list(
+            self.categories.get("أقسام_خياس_إضافية", [])) + [self.SET_TRACK_KEY]
+        stage = str(params.get("c", "") or "")
+        stage = stage if stage in stages else "المصنعين"
+        chips = ("c", stage, [(s, self.get_display_label(s) if s != self.SET_TRACK_KEY else s) for s in stages])
+        overrides = {"current_display_month": period, "current_op_stage": stage}
+        sub = None
+        if stage in ("المصنعين", "المركبين"):
+            workers = list(self.categories.get(stage, []))
+            worker = str(params.get("w", "") or "")
+            worker = worker if worker in workers else (workers[0] if workers else "")
+            sub = ("w", worker, [(n, n) for n in workers])
+            overrides.update(current_op_cat=stage, combo_op_name=_LiveSink(value=worker))
+            if not worker:
+                return {"chips": [chips], "blocks": [], "note": f"لا أسماء في {stage} بعد"}
+        if stage == "الكاستنج":
+            op = str(params.get("w", "") or "")
+            op = op if op in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
+            sub = ("w", op, [(o, o) for o in self.CAST_OPERATIONS])
+            overrides.update(cast_op=_LiveSink(value=op))
+        if stage == self.SET_TRACK_KEY:
+            overrides.update(set_track_search=_LiveSink(value=""), set_track_scope=_LiveSink(value="الفترة"))
+
+        self.live_prepare_stage(stage)
+
+        def refresh(s, stage=stage):
+            if stage in self.categories.get("أقسام_خياس_إضافية", []):
+                s.refresh_generic_stage_table(stage)
+            else:
+                s.refresh_current_stage()
+        tables, labels = self.live_render_shadow(refresh, **overrides)
+        return {"chips": [chips] + ([sub] if sub else []), "summary": labels,
+                "blocks": [("table", t) for t in tables]}
+
+    def live_prepare_stage(self, stage):
+        """أقسام مراحل التصنيع تُبنى عند أول فتحٍ لها: يُبنى القسم هنا مخفياً — بلا تبديل القسم الظاهر على الجهاز — ليُقرأ
+        جدوله في الظل"""
+        self.build_stage_on_demand(stage)
+        if stage in self.categories.get("أقسام_خياس_إضافية", []) and hasattr(self, "operations_tab_ref"):
+            conts = self.__dict__.setdefault("dynamic_stage_containers", {})
+            if stage not in conts:
+                cont = ctk.CTkFrame(self.operations_tab_ref, fg_color="transparent")
+                self.build_generic_stage_ui(cont, stage)
+                conts[stage] = cont
+
+    def live_view_khayas(self, period, params):
+        cats = ["الكاستنج", "المصنعين", "المركبين", "التلميع", "التلميع/البف", "خياس الطقوم"] + list(
+            self.categories.get("أقسام_خياس_إضافية", []))
+        cat = str(params.get("c", "") or "")
+        cat = cat if cat in cats else "المصنعين"
+        chips = ("c", cat, [(c, self.get_display_label(c)) for c in cats])
+        tables, labels = self.live_render_shadow(lambda s: s.refresh_inquiry_table(), current_display_month=period,
+                                                 current_view_cat=cat, tree=None)
+        return {"chips": [chips], "summary": labels, "blocks": [("table", t) for t in tables]}
+
+    def live_view_sales(self, period, params):
+        kind = str(params.get("kind", "") or "")
+        kind = kind if kind in self.SALE_KINDS else self.SALE_KIND_GOLD
+        chips = ("kind", kind, [(k, f"مبيعات {k}") for k in self.SALE_KINDS])
+        tables, labels = self.live_render_shadow(lambda s: s.refresh_sales_ops_table(), current_display_month=period,
+                                                 sales_ops_kind=kind)
+        return {"chips": [chips], "summary": labels, "blocks": [("table", t) for t in tables]}
+
+    def live_view_inbound(self, period, params):
+        tables, labels = self.live_render_shadow(lambda s: s.refresh_inout_tables(), current_display_month=period)
+        return {"summary": labels, "blocks": [("table", t) for t in tables]}
+
+    def live_view_factory(self, period, params):
+        tot = self.factory_boxes_totals(period, period)
+        cards = [("🥇 الذهب", [("المبيعات", tot["sales"]["ذهب"]), ("الوارد", tot["incoming"]["ذهب"])]),
+                 ("💠 فصوص وأحجار", [("المبيعات", tot["sales"]["فصوص وأحجار"]),
+                                     ("الوارد", tot["incoming"]["فصوص وأحجار"])]),
+                 ("💎 الماس", [("مبيعات ذهب", tot["gold_linked"]), ("الألماس", tot["diamond"])]),
+                 ("📊 الإنتاج", [("الذهب + فصوص وأحجار", tot["prod_gold_stones"]),
+                                ("الذهب + الألماس", tot["prod_gold_diamond"]), ("إجمالي الإنتاج", tot["prod_total"]),
+                                ("إنتاج الذهب", tot["prod_gold"]), ("إنتاج الألماس", tot["prod_diamond"])]),
+                 ("⚖️ النسب", [("(الفصوص + الأحجار) / الذهب %", tot["ratio_stones"]),
+                              ("الألماس / الذهب %", tot["ratio_diamond"])])]
+        return {"blocks": [("cards", cards)],
+                "summary": [f"صناديق المصنع — {self.factory_range_label(period, period)}"]}
+
+    def live_view_losses(self, period, params):
+        cards = []
+        for cat in self.get_khayas_box_categories():
+            s = self.get_box_loss_summary(cat, month=period)
+            cards.append((f"صندوق خياس {self.get_display_label(cat)}",
+                          [("الفاقد الحالي", s["current"]), (self.get_box_loss_account(cat), s["loss"]),
+                           (self.get_box_recovery_name(cat), s["recovered"]),
+                           ("الصافي (الفاقد − المسترجع)", s["net"])]))
+        return {"blocks": [("cards", cards)], "summary": [self.range_scope_label(period, period)]}
+
+    LIVE_CSS = """
+*{box-sizing:border-box}body{margin:0;background:#EEF1F6;color:#111827;font:15px/1.5 Tahoma,"Segoe UI",Arial,sans-serif}
+a{color:inherit;text-decoration:none}header{background:#13213F;color:#fff;padding:12px 16px;display:flex;
+flex-wrap:wrap;gap:6px 16px;align-items:center;justify-content:space-between;border-bottom:3px solid #D4AF37}
+.brand{font-size:19px;font-weight:700}.live{font-size:13px;color:#BFD3F2}.live b{color:#7EE2B8}
+nav{display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:#fff;border-bottom:1px solid #DDE3EC}
+nav a{white-space:nowrap;padding:8px 14px;border-radius:10px;background:#F2F5F9;font-weight:700;font-size:14px}
+nav a.on{background:#1F3B73;color:#fff}.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px}
+select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #C8D0DC;background:#fff}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 8px}.chips a{padding:5px 12px;border-radius:999px;
+border:1px solid #C8D0DC;background:#fff;font-size:13px;font-weight:700}.chips a.on{background:#D4AF37;border-color:#B8952E}
+.summary{margin:4px 14px 10px;display:grid;gap:6px}.summary div{background:#FFF7DD;border:1px solid #E8D48A;
+border-radius:10px;padding:8px 12px;font-weight:700}.wrap{margin:0 10px 14px;background:#fff;border-radius:12px;
+border:1px solid #DDE3EC;overflow:auto;max-height:78vh}table{border-collapse:collapse;width:100%;font-size:14px}
+th{position:sticky;top:0;background:#1F3B73;color:#fff;padding:8px 10px;white-space:nowrap;z-index:1}
+td{padding:7px 10px;border-bottom:1px solid #EEF1F5;white-space:nowrap;text-align:center}
+td:first-child{text-align:right;font-weight:700}tr:nth-child(even) td{background:#F7F9FC}
+tr.total td{background:#FFF1C9;font-weight:800;border-top:2px solid #D4AF37}.neg{color:#B00020}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin:0 12px 14px}
+.card{background:#fff;border:1px solid #DDE3EC;border-radius:14px;padding:12px 14px}.card h3{margin:0 0 8px;font-size:16px;
+color:#13213F}.row{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px dashed #E5E9F0}
+.row:last-child{border:0}.row b{font-size:17px}.home{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+gap:12px;margin:14px}.home a{background:#fff;border:1px solid #DDE3EC;border-radius:16px;padding:22px 16px;font-size:18px;
+font-weight:700;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.04)}.home a span{display:block;font-size:30px}
+.note{margin:14px;color:#6B7280}footer{color:#6B7280;font-size:12px;text-align:center;padding:10px 12px 22px}
+"""
+
+    def live_url(self, params, **changes):
+        """رابط داخل العرض المباشر بالمفتاح نفسه، مع تغيير بعض الخيارات"""
+        q = {k: params.get(k) for k in ("k", "v", "p", "c", "w", "kind") if params.get(k)}
+        for k, v in changes.items():
+            if v in (None, ""):
+                q.pop(k, None)
+            else:
+                q[k] = v
+        from urllib.parse import urlencode
+        return "/?" + urlencode(q)
+
+    def live_html(self, params, view, period, periods, chips, blocks, summary=(), note="", home=False):
+        esc = live_escape
+        factory = getattr(self, "client_name", "") or self.LETTERHEAD_AR[0]
+        title = dict((k, t) for k, t, _i in self.LIVE_SCREENS).get(view, "العرض المباشر")
+        out = ['<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">'
+               '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">',
+               f"<title>{esc(title)} — {esc(factory)}</title><style>{self.LIVE_CSS}</style></head><body>",
+               f'<header><div class="brand">◆ {esc(factory)}</div><div class="live"><b>●</b> مباشر من جهاز المصنع — '
+               f'للقراءة فقط · {esc(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</div></header><nav>',
+               f'<a href="{esc(self.live_url(params, v="", c="", w="", kind=""))}" class="{"on" if home else ""}">🏠 الرئيسية</a>']
+        for key, label, icon in self.LIVE_SCREENS:
+            out.append(f'<a class="{"on" if key == view else ""}" href="{esc(self.live_url(params, v=key, c="", w="", kind=""))}">'
+                       f"{icon} {esc(label)}</a>")
+        out.append("</nav>")
+        options = list(periods) + ([self.LOSSES_ALL] if view in self.LIVE_ALL_SCREENS else [])
+        out.append('<form class="bar" method="get">')
+        for k in ("k", "v", "c", "w", "kind"):
+            if params.get(k) and not (home and k == "v"):
+                out.append(f'<input type="hidden" name="{k}" value="{esc(params.get(k))}">')
+        out.append('<label>الفترة: <select name="p" onchange="this.form.submit()">')
+        for p in options:
+            label = "كل الفترات" if p == self.LOSSES_ALL else p
+            out.append(f'<option value="{esc(p)}"{" selected" if p == period else ""}>{esc(label)}</option>')
+        out.append('</select></label><noscript><button>عرض</button></noscript></form>')
+        for key, selected, items in chips:
+            out.append('<div class="chips">')
+            for value, label in items:
+                change = {key: value}
+                if key == "c":
+                    change["w"] = ""                     # قسمٌ آخر: عامله الأول
+                out.append(f'<a class="{"on" if value == selected else ""}" href="{esc(self.live_url(params, **change))}">'
+                           f"{esc(label)}</a>")
+            out.append("</div>")
+        if summary:
+            out.append('<div class="summary">' + "".join(f"<div>{esc(s)}</div>" for s in summary) + "</div>")
+        if home:
+            out.append('<div class="home">' + "".join(
+                f'<a href="{esc(self.live_url(params, v=key))}"><span>{icon}</span>{esc(label)}</a>'
+                for key, label, icon in self.LIVE_SCREENS) + "</div>")
+        for kind, data in blocks:
+            if kind == "table":
+                out.append('<div class="wrap"><table><thead><tr>'
+                           + "".join(f"<th>{esc(h)}</th>" for h in data["heads"]) + "</tr></thead><tbody>")
+                for vals, total in data["rows"]:
+                    cells = []
+                    for v in vals:
+                        try:
+                            neg = float(str(v).replace(",", "")) < 0
+                        except ValueError:
+                            neg = False
+                        cells.append(f'<td{" class=neg" if neg else ""}>{esc(v)}</td>')
+                    out.append(f'<tr{" class=total" if total else ""}>' + "".join(cells) + "</tr>")
+                out.append("</tbody></table></div>")
+            elif kind == "cards":
+                out.append('<div class="cards">')
+                for head, rows in data:
+                    out.append(f'<div class="card"><h3>{esc(head)}</h3>' + "".join(
+                        f'<div class="row"><span>{esc(k)}</span><b class="{"neg" if (v or 0) < 0 else ""}">'
+                        f"{v:.2f}</b></div>" for k, v in rows) + "</div>")
+                out.append("</div>")
+        if not home and not blocks:
+            out.append(f'<div class="note">{esc(note or "لا بيانات لهذه الفترة")}</div>')
+        out.append(f'<footer>جاديت {esc(APP_VERSION)} · الأرقام من البرنامج نفسه لحظة فتح الصفحة · '
+                   f'<a href="{esc(self.live_url(params))}">↻ تحديث</a></footer></body></html>')
+        return "".join(out)
+
+    def live_error_html(self, text):
+        return LiveViewServer.message_page(f"تعذّر عرض الصفحة: {text}").decode("utf-8")
+
     # ═══ الحفظ التلقائي لما لم يُرحَّل بعد (1.93) ═══
     #  فاتورة المبيعات قيد الإدخال (رأسها وسطورها وما كُتب في خانات السطر)، ونموذجا «الوارد» و«القيود اليومية»:
     #  تُحفظ تلقائياً بعد كل تغيير بلحظة في ملف محلي بجوار قاعدة البيانات (<قاعدة البيانات>.drafts.json) — كتابةٌ
@@ -25774,6 +26869,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sb_build_stage_bar()
         self.sb_select_stage(self.SB_MFG_STAGE, focus=False)
 
+        # ── يمين الورقة (1.94): مراحل رقم التشغيل التي تمّت — المصنعين ثم المركبين ثم البوليش، لكلٍّ شريطه باسمه
+        #    وخاناته وعملياته (sb_refresh_stages) ──
+        stages = ctk.CTkScrollableFrame(body, width=self.SB_STAGES_W, corner_radius=12,
+                                        fg_color=(UI["surface"], "#171C23"), border_width=1,
+                                        border_color=(UI["line"], "#2A313B"))
+        st["stages"], st["stages_sig"] = stages, None
+        st["stages_shown"] = bool(load_ui_prefs().get("sb_stages_panel", True))
+        if st["stages_shown"]:
+            stages.pack(side="right", fill="y", padx=(6, 0))
+        btn_stages = ctk.CTkButton(nav, text="📜", font=(UI_FONT, 15), height=30, width=40,
+                                   command=self.sb_toggle_stages, **BUTTON_STYLES["secondary"])
+        btn_stages.grid(row=0, column=4, padx=(2, 2))
+        HoverTip(btn_stages, "مراحل رقم التشغيل يمين القالب: المصنعين والمركبين والبوليش — إظهار / إخفاء")
+
         # ── الورقة: القالب نفسه كاملاً بارتفاع المساحة ──
         holder = ctk.CTkFrame(body, corner_radius=12, fg_color=(UI["canvas"], "#0F1318"))
         holder.pack(side="right", fill="both", expand=True)
@@ -25905,6 +27014,166 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             m["btn"].configure(state="disabled")
         self.sb_mfg_set_kind(m["kind"])
         self.sb_mfg_set_kind(m["sarf_kind"], group="sarf")
+
+    # ═══ مراحل رقم التشغيل يمين القالب (1.94) ═══
+    SB_STAGES_W = 300
+    SB_STAGE_MOVES_MAX = 12                  # عمليات كل شريط المعروضة (الأحدث آخراً) — والباقي يُذكر عدده
+    POLISH_MOVE_TYPES = {"صرف تلميع بف": "قبل البوليش (صرف)", "قبض تلميع بف": "بعد البوليش (قبض)"}
+
+    def set_worker_groups(self, cat, set_number):
+        """صفوف عمال القسم (المصنعين/المركبين) التي لرقم التشغيل — كما يجمعها كشفهم: (العامل، الفترة، الصف)، ورقم
+        الصف أول رقم تشغيل في حركاته؛ وحركةٌ برقمها بلا صف صفٌّ وحدها. [{name, period, row, moves}] بترتيب الفترات"""
+        key = self.normalize_set_number(set_number)
+        workers = set(self.categories.get(cat, []))
+        if not key or not workers:
+            return []
+        moves = sorted((inv for inv in self.invoices.values()
+                        if inv.get("settled_status") in self.ASSEMBLER_KHAYAS_STATUSES and inv.get("الاسم") in workers),
+                       key=lambda x: (str(x.get("التاريخ", "")), x.get("رقم الفاتورة", 0) or 0))
+        groups = {}
+        for inv in moves:
+            row = (inv.get("row_number", "") or "").strip()
+            gkey = (inv.get("الاسم"), self.inv_period(inv), row or f"#{inv.get('رقم الفاتورة')}")
+            g = groups.setdefault(gkey, {"name": gkey[0], "period": gkey[1], "row": row, "set": "", "moves": []})
+            if not g["set"]:
+                g["set"] = self.normalize_set_number(inv.get("set_number", ""))
+            g["moves"].append(inv)
+        return sorted((g for g in groups.values() if g["set"] == key), key=lambda g: (g["period"], g["name"], g["row"]))
+
+    def set_stage_history(self, set_number):
+        """مراحل رقم التشغيل التي تمّت — للوحة يمين القالب (وللعرض المباشر):
+          {"mfg": [...], "asm": [...], "polish": [...]} — كل عنصر شريط: الاسم والفترة والصف، والخانات [(العنوان، القيمة)]
+          (مجموع حركات كل خانة كما في كشف القسم)، والعمليات [(التاريخ، العملية، الوزن، رقم الحركة)]"""
+        key = self.normalize_set_number(set_number)
+        out = {"mfg": [], "asm": [], "polish": []}
+        if not key:
+            return out
+        for cat, part in (("المصنعين", "mfg"), ("المركبين", "asm")):
+            labels = dict(self.ROW_EDIT_FIELDS[cat])
+            for g in self.set_worker_groups(cat, key):
+                sums, ops = {}, []
+                for inv in g["moves"]:
+                    slot = self.movement_slot(inv)
+                    w = round(inv.get("الوزن", 0.0) or 0.0, 2)
+                    sums[slot] = round(sums.get(slot, 0.0) + w, 2)
+                    ops.append((str(inv.get("التاريخ", "") or "")[:10], labels.get(slot, inv.get("النوع", "")), w,
+                                inv.get("رقم الفاتورة")))
+                fields = [(lbl, sums[slot]) for slot, lbl in self.ROW_EDIT_FIELDS[cat] if abs(sums.get(slot, 0.0)) > 0.0001]
+                if cat == "المركبين":
+                    sarf, qabd = sums.get("صرف ذهب"), sums.get("قبض ذهب")
+                    if sarf is not None and qabd is not None:
+                        fields.append(("الخياس", round(sarf - qabd, 2)))
+                out[part].append({"name": g["name"], "period": g["period"], "row": g["row"], "fields": fields,
+                                  "ops": ops})
+        # البوليش: قبل وبعد وخياسه كما في «تتبع رقم التشغيل»، وعملياته حركات التلميع/البف برقمه (من القالب أو غيره)
+        v = self.set_tracking_values(key)
+        polish_ops = sorted(((str(inv.get("التاريخ", "") or "")[:10], self.POLISH_MOVE_TYPES[inv.get("النوع")],
+                              round(inv.get("الوزن", 0.0) or 0.0, 2), inv.get("رقم الفاتورة"), inv.get("الاسم"))
+                             for inv in self.invoices.values()
+                             if inv.get("النوع") in self.POLISH_MOVE_TYPES
+                             and inv.get("settled_status") in self.ASSEMBLER_KHAYAS_STATUSES
+                             and self.normalize_set_number(inv.get("set_number")) == key),
+                            key=lambda o: (o[0], o[3] or 0))
+        manual_before = self.polish_before_map().get(key)
+        if manual_before is not None and not any(o[1].startswith("قبل") for o in polish_ops):
+            polish_ops.insert(0, ("", "قبل البوليش (مسجّل في التتبع)", round(manual_before, 2), None, ""))
+        if v["polish_after"] is not None and not any(o[1].startswith("بعد") for o in polish_ops):
+            polish_ops.append(("", "بعد البوليش (صرف المركّب)", v["polish_after"], None, ""))
+        fields = [(lbl, val) for lbl, val in (("قبل البوليش", v["polish_before"]), ("بعد البوليش", v["polish_after"]),
+                                              ("الخياس", v["polish_khayas"])) if val is not None]
+        if fields or polish_ops:
+            names = []
+            for o in polish_ops:
+                if o[4] and o[4] not in names:
+                    names.append(o[4])
+            out["polish"].append({"name": "، ".join(names) or "البوليش", "period": "", "row": "", "fields": fields,
+                                  "ops": [o[:4] for o in polish_ops]})
+        return out
+
+    def sb_toggle_stages(self):
+        """زر 📜: إظهار لوحة المراحل يمين القالب أو إخفاؤها (يُحفظ للجهاز)"""
+        st = getattr(self, "_sb_state", None)
+        panel = (st or {}).get("stages")
+        if panel is None:
+            return
+        show = not st.get("stages_shown")
+        st["stages_shown"] = show
+        if show:
+            panel.pack(side="right", fill="y", padx=(6, 0), before=st["canvas"].master)
+            st["stages_sig"] = None
+            self.sb_refresh_stages()
+        else:
+            panel.pack_forget()
+        save_ui_pref("sb_stages_panel", show)
+        st["layout_w"] = None
+        self.after_idle(lambda: self.sb_layout_paper(force=True))
+
+    def sb_refresh_stages(self):
+        """يرسم لوحة المراحل للطقم المعروض: «المصنعين» ثم «المركبين» ثم «قبل البوليش وبعد البوليش» — كل شريطٍ عنوانه تحته
+        خط، وفيه الاسم (والصف والفترة)، وخاناته، وعملياته بتاريخها — ويُعاد رسمها فقط إن تغيّر الطقم أو الحركات"""
+        st = getattr(self, "_sb_state", None)
+        panel = (st or {}).get("stages")
+        if panel is None or not st.get("stages_shown"):
+            return
+        key = st.get("key")
+        sig = (key, id(self.invoices), len(self.invoices), getattr(self, "invoice_counter", 0),
+               getattr(self, "_inv_version", 0), getattr(self, "_inv_edits", 0))
+        if st.get("stages_sig") == sig:
+            return
+        st["stages_sig"] = sig
+        for w in panel.winfo_children():
+            w.destroy()
+        ink, muted = self.SB_INK, (UI["muted"], "#9AA4B2")
+        ctk.CTkLabel(panel, text=f"📜 مراحل رقم التشغيل {key}" if key else "📜 مراحل رقم التشغيل", text_color=ink,
+                     font=(UI_FONT, 15, "bold"), anchor="e").pack(fill="x", padx=8, pady=(6, 2))
+        if not key:
+            ctk.CTkLabel(panel, text="ابحث برقم التشغيل لتظهر هنا مراحله التي تمّت: المصنعين والمركبين والبوليش",
+                         text_color=muted, font=(UI_FONT, 13), wraplength=self.SB_STAGES_W - 30, justify="right",
+                         anchor="e").pack(fill="x", padx=8, pady=6)
+            return
+        hist = self.set_stage_history(key)
+        for part, title, icon in (("mfg", "المصنعين", "🏭"), ("asm", "المركبين", "🔧"),
+                                  ("polish", "قبل البوليش وبعد البوليش", "✨")):
+            band = self.sb_section(panel, title)
+            groups = hist[part]
+            if not groups:
+                ctk.CTkLabel(band, text="لم تتمّ بعد", text_color=muted, font=(UI_FONT, 13), anchor="e").grid(
+                    row=0, column=0, columnspan=2, sticky="e", pady=2)
+                continue
+            r = 0
+            for gi, g in enumerate(groups):
+                if gi:
+                    ctk.CTkFrame(band, height=1, fg_color=(UI["line"], "#2A313B")).grid(
+                        row=r, column=0, columnspan=2, sticky="ew", pady=4)
+                    r += 1
+                head = f"{icon} {g['name']}" + (f" — الصف {g['row']}" if g["row"] else "") + (
+                    f" ({g['period']})" if g["period"] else "")
+                ctk.CTkLabel(band, text=head, text_color=(UI["primary"], "#9CC0F5"), font=(UI_FONT, 14, "bold"),
+                             anchor="e", wraplength=self.SB_STAGES_W - 40, justify="right").grid(
+                    row=r, column=0, columnspan=2, sticky="e")
+                r += 1
+                for lbl, val in g["fields"]:
+                    ctk.CTkLabel(band, text=lbl, text_color=ink, font=(UI_FONT, 13, "bold"), anchor="e").grid(
+                        row=r, column=1, sticky="e", padx=(4, 0))
+                    ctk.CTkLabel(band, text=f"{val:.2f}", text_color=ink, font=(UI_FONT, 14, "bold"), anchor="w").grid(
+                        row=r, column=0, sticky="w")
+                    r += 1
+                ops = g["ops"]
+                if ops:
+                    ctk.CTkLabel(band, text="العمليات", text_color=muted, font=(UI_FONT, 12, "bold"), anchor="e").grid(
+                        row=r, column=0, columnspan=2, sticky="e", pady=(3, 0))
+                    r += 1
+                    hidden = max(0, len(ops) - self.SB_STAGE_MOVES_MAX)
+                    for date, label, w, no in ops[hidden:]:
+                        ctk.CTkLabel(band, text=f"{date}  {label}" if date else label, text_color=ink,
+                                     font=(UI_FONT, 12), anchor="e").grid(row=r, column=1, sticky="e", padx=(4, 0))
+                        ctk.CTkLabel(band, text=f"{w:.2f}", text_color=ink, font=(UI_FONT, 12, "bold"),
+                                     anchor="w").grid(row=r, column=0, sticky="w")
+                        r += 1
+                    if hidden:
+                        ctk.CTkLabel(band, text=f"… و{hidden} عملية أقدم", text_color=muted, font=(UI_FONT, 11),
+                                     anchor="e").grid(row=r, column=0, columnspan=2, sticky="e")
+                        r += 1
 
     # «صرف» و«قبض» في جانب القالب (1.92): العنوان تحته خط، وتحته شريطٌ بارز (حافة بلون البرنامج) فيه خاناته — فيُعرف
     # الصرف وبياناته من القبض وبياناته. لون الشريط لون مجموعات الخيارات نفسه فتظهر داخله بلا حواف زائدة
@@ -26876,6 +28145,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             st["chip"].configure(text="لا طقم")
             self.sb_set_warn("")
             self.sb_fill_pieces([])
+            self.sb_refresh_stages()
             return
         rec = self.sb_load(key) or self.sb_new_record(key)
         v = self.sb_values(key, rec)
@@ -26962,6 +28232,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.sb_set_info(f"الطقم {key} — {status}\n{asm_txt}{sale_txt}\nآخر تعديل {str(rec.get('updated') or '')[:16]}"
                          + ("" if st["editing"] else "\n(للعرض — ✏️ تعديل)"))
         self.sb_fill_pieces(pieces)
+        self.sb_refresh_stages()
 
     def sb_fill_pieces(self, pieces):
         st = self._sb_state
@@ -33043,6 +34314,10 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                           fg_color="#d4af37", hover_color="#b8952e", text_color="black",
                           command=lambda cid=c["client_id"], name=c["business_name"]: self.open_as_client(cid, name)
                           ).pack(side="left", padx=10, pady=8)
+            ctk.CTkButton(row, text="🌐 العرض المباشر", font=(UI_FONT, 13, "bold"),
+                          fg_color=UI["success"], hover_color=UI["success_hover"],
+                          command=lambda cid=c["client_id"], name=c["business_name"]: self.open_client_live_view(cid, name)
+                          ).pack(side="left", padx=10, pady=8)
             if not self.restricted:
                 toggle_text = "🔒 إغلاق التعديل" if can_edit else "🔓 فتح التعديل"
                 toggle_color = "#8b0000" if can_edit else "#2ecc71"
@@ -33056,6 +34331,25 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 ctk.CTkButton(row, text="🗑️ حذف الحساب نهائياً", font=(UI_FONT, 13, "bold"), fg_color="#8b0000", hover_color="#a52a2a",
                               command=lambda cid=c["client_id"], name=c["business_name"]: self.delete_client(cid, name)
                               ).pack(side="left", padx=10, pady=8)
+
+    def open_client_live_view(self, client_id, business_name):
+        """«🌐 العرض المباشر» لعميل: آخر رابطٍ أرسله جهازه — يُفتح في نافذة مستقلة (للقراءة فقط)"""
+        row, error = cloud_get_live_link(client_id)
+        if error:
+            messagebox.showwarning("العرض المباشر", error)
+            return False
+        url = (row or {}).get("url") or ""
+        if not row or not LIVE_LINK_RE.match(url):
+            messagebox.showinfo("العرض المباشر", f"العرض المباشر غير مشغّل على جهاز ({business_name}).\n\n"
+                                "يُشغَّل مرة واحدة من جهاز المصنع: زر «🌐 مباشر» أعلى البرنامج ← ▶️ تشغيل — ثم يعود "
+                                "وحده كلما فُتح البرنامج.")
+            return False
+        when, mins = self.format_cloud_time(row.get("updated_at"))
+        if mins is not None and mins > 20 and not messagebox.askyesno(
+                "العرض المباشر", f"آخر رابط من جهاز ({business_name}) أُرسل {self.humanize_since(mins)} ({when}).\n"
+                                 "قد يكون البرنامج مغلقاً هناك الآن. فتحه رغم ذلك؟"):
+            return False
+        return open_url_window(url)
 
     def show_admin_key_card(self, error):
         """سبب تعذّر عرض الحسابات، ومعه خانة لضبط مفتاح المدير على هذا الجهاز مرة واحدة"""

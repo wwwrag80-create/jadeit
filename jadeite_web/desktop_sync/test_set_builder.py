@@ -83,7 +83,7 @@ MEMBERS = ("_SET_DIGITS", "ASSEMBLER_KHAYAS_STATUSES", "SALE_TYPES", "POLISH_BEF
            "ASSEMBLED", "PARTS", "READY_SETS", "SB_PART_FIELDS", "SB_KIND_FIELDS", "TREASURY_KINDS", "invoices_by_period",
            "treasury_kind_of", "treasury_kind_breakdown", "sub_balance_lines", "POLISH1_SADAYA",
            "treasury_set_context", "sb_kind_mark", "sb_split_exit", "treasury_kind_moves", "sb_set_kind_mark",
-           "sb_p2_after_split",
+           "sb_p2_after_split", "ROW_EDIT_FIELDS", "POLISH_MOVE_TYPES", "set_worker_groups", "set_stage_history",
            "get_operation_datetime",
            "SB_DISMISSED_KEY", "sb_dismissed", "sb_set_dismissed", "_sb_undo_setting")
 ns = {"sqlite3": sqlite3, "json": json, "datetime": datetime, "messagebox": mb, "log_cloud_error": lambda *a: None,
@@ -748,4 +748,27 @@ assert 'cell("assembler", right - half, b0, right - 24 * MM, b1, 11)' in member(
 print("✔ 1.92: التركيب بلا اسم مركّب يُحفظ في القالب وحده (تأكيد وتراجع) ويحسب الخياس والوزن والإجمالي وتفصيل الخزينة؛ "
       "وباسمٍ يصير حركةً في حساب المركّب بصفٍّ تلقائي بلا ازدواج؛ والتفريغ يمسحه؛ ووضع العرض لا يكتب")
 
+# ═══ ١٩) 1.94: مراحل رقم التشغيل يمين القالب — المصنعين ثم المركبين ثم البوليش، لكلٍّ اسمه وخاناته وعملياته ═══
+h = a.set_stage_history(S)
+assert [(g["name"], g["row"], g["period"], g["fields"]) for g in h["mfg"]] == [("أحمد", "1", "2026-10", [("قبض/٤", 50.0)])], h["mfg"]
+assert [o[:3] for o in h["mfg"][0]["ops"]] == [("2026-10-10", "قبض/٤", 50.0)]
+assert [(g["name"], g["row"], g["fields"]) for g in h["asm"]] == [
+    ("سالم", "3", [("صرف", 49.6), ("قبض", 49.1), ("الخياس", 0.5)])], h["asm"]
+assert [o[1:3] for o in h["asm"][0]["ops"]] == [("صرف", 49.6), ("قبض", 49.1)]
+assert h["polish"][0]["fields"] == [("قبل البوليش", 50.2), ("بعد البوليش", 49.6), ("الخياس", 0.6)], h["polish"]
+assert [o[1:3] for o in h["polish"][0]["ops"]] == [("قبل البوليش (صرف)", 50.2), ("بعد البوليش (قبض)", 49.6)]
+assert a.set_stage_history("") == {"mfg": [], "asm": [], "polish": []}
+none = a.set_stage_history("77777")
+assert none == {"mfg": [], "asm": [], "polish": []}, none
+build = member("build_set_builder_tab")
+assert 'stages.pack(side="right", fill="y", padx=(6, 0))' in build and "command=self.sb_toggle_stages" in build
+assert build.index("stages = ctk.CTkScrollableFrame") < build.index("holder = ctk.CTkFrame(body"), "اللوحة يمين الورقة"
+render = member("sb_render")
+assert render.count("self.sb_refresh_stages()") == 2, "تُحدَّث مع كل عرض للطقم (وبلا طقم)"
+panel = member("sb_refresh_stages")
+for title in ('"المصنعين"', '"المركبين"', '"قبل البوليش وبعد البوليش"', '"العمليات"', '"لم تتمّ بعد"'):
+    assert title in panel, title
+assert "self.sb_section(panel, title)" in panel, "كل مرحلة عنوانها تحته خط وشريطها"
+print("✔ 1.94: مراحل رقم التشغيل يمين القالب — المصنّع (الصف 1: قبض/٤ 50) ثم المركّب (صرف 49.6 وقبض 49.1 وخياس 0.5) ثم "
+      "البوليش (قبل 50.2 وبعد 49.6 وخياس 0.6)، لكلٍّ اسمه وصفّه وخاناته وعملياته بتاريخها؛ ورقمٌ بلا مراحل فارغ")
 print("\n✅ قالب رقم التشغيل: كل خانة تُرحَّل لمكانها، والأوزان محسوبة، والتوليد يملأ المبيعات بلا ازدواج")

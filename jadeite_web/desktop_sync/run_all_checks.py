@@ -104,6 +104,7 @@ CHECKS = [
     ("ألوان القالب الورقي",      [PY, "test_paper_colors.py", TARGET]),
     ("طباعة قسم صناديق الخياس",  [PY, "test_khayas_print.py", TARGET]),
     ("المعاينة في نافذة Edge",   [PY, "test_edge_preview.py", TARGET]),
+    ("العرض المباشر للمدير",     [PY, "test_live_view.py", TARGET]),
     ("فتح الشاشات فوراً",        [PY, "test_instant_screens.py", TARGET]),
     ("زر تحديث البرنامج",        [PY, "test_app_update.py", TARGET]),
     ("التحديث السريع .jup",      [PY, "test_hot_update.py", TARGET]),
