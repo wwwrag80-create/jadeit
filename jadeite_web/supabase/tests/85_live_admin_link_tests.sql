@@ -60,6 +60,15 @@ begin
            = 'https://live.example.com', 'ولا يُحفظ عنوانه';
     update public.clients set is_active = true where client_id = cid;
 
+    -- 1.96.1: حال الرابط على الجهاز يصل للمدير مع العنوان
+    assert public.client_live_sync(cid, tok, 'pc-D', 'https://live.example.com', 'Tailscale: بانتظار تفعيل Funnel') = h,
+        'الخماسية ترجع البصمة كالرباعية';
+    assert (select live_state from public.client_devices where client_id = cid and device_id = 'pc-D')
+           = 'Tailscale: بانتظار تفعيل Funnel', 'حال الرابط محفوظة ليراها المدير';
+    perform public.client_live_sync(cid, gen_random_uuid(), 'pc-D', null, 'مزوّر');
+    assert (select live_state from public.client_devices where client_id = cid and device_id = 'pc-D')
+           = 'Tailscale: بانتظار تفعيل Funnel', 'برمزٍ خاطئ لا تتغير';
+
     begin
         update public.clients set live_key_hash = 'not-a-hash' where client_id = cid;
         assert false, 'بصمةٌ بغير صيغتها مرفوضة';

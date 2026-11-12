@@ -13,6 +13,8 @@
 --    ٢) client_devices.live_url  : عنوان كل جهاز في وسيط الرابط ووقت تحديثه.
 --    ٣) client_live_sync(…)      : برنامج العميل برمز مزامنته — يحفظ عنوان جهازه ويأخذ البصمة،
 --                                  للحساب الفعّال والجهاز المسموح وحدهما.
+--    ٤) (1.96.1) client_devices.live_state: حال الرابط على جهاز المصنع كما يفحصه هو — يراه المدير
+--       في «🩺 فحص» فيعرف أين توقف الضبط دون أن يكون عند الجهاز. والنسخة الخماسية من الدالة ترسله.
 --
 --  آمن لإعادة التشغيل. ضمن INSTALL_ALL.sql — أو شغّله وحده بعد 21_access_control.sql.
 -- ============================================================================
@@ -32,11 +34,15 @@ begin
     end if;
 end $$;
 
-alter table public.client_devices add column if not exists live_url    text;
-alter table public.client_devices add column if not exists live_url_at timestamptz;
+alter table public.client_devices add column if not exists live_url      text;
+alter table public.client_devices add column if not exists live_url_at   timestamptz;
+alter table public.client_devices add column if not exists live_state    text;
+alter table public.client_devices add column if not exists live_state_at timestamptz;
 
 comment on column public.client_devices.live_url is
     'عنوان الجهاز في وسيط الرابط المباشر (بلا مفتاح) — يكوّن منه برنامج المدير الرابط';
+comment on column public.client_devices.live_state is
+    'حال الرابط على جهاز المصنع (يعمل؟ Tailscale؟ وصل المفتاح؟) — يراه المدير في فحص الرابط (1.96.1)';
 
 -- ----------------------------------------------------------------------------
 --  برنامج العميل: يحفظ عنوان جهازه (إن أرسله) ويأخذ بصمة مفتاح المدير
@@ -77,3 +83,32 @@ end $$;
 
 revoke all on function public.client_live_sync(uuid, uuid, text, text) from public;
 grant execute on function public.client_live_sync(uuid, uuid, text, text) to anon, authenticated, service_role;
+
+-- ----------------------------------------------------------------------------
+--  (1.96.1) الدالة نفسها ومعها حال الرابط على الجهاز (p_state) — الرباعية أعلاه تبقى للإصدار 1.96.0
+-- ----------------------------------------------------------------------------
+create or replace function public.client_live_sync(
+    p_client_id  uuid,
+    p_sync_token uuid,
+    p_device_id  text,
+    p_url        text,
+    p_state      text
+)
+returns text
+language plpgsql security definer set search_path = public as $$
+declare
+    v_dev    text := left(nullif(btrim(coalesce(p_device_id, '')), ''), 128);
+    v_hash   text;
+begin
+    v_hash := public.client_live_sync(p_client_id, p_sync_token, p_device_id, p_url);
+    if v_dev is not null and exists (
+            select 1 from public.tenants t where t.id = p_client_id and t.sync_token = p_sync_token) then
+        update public.client_devices
+           set live_state = left(nullif(btrim(coalesce(p_state, '')), ''), 300), live_state_at = now()
+         where client_id = p_client_id and device_id = v_dev;
+    end if;
+    return v_hash;
+end $$;
+
+revoke all on function public.client_live_sync(uuid, uuid, text, text, text) from public;
+grant execute on function public.client_live_sync(uuid, uuid, text, text, text) to anon, authenticated, service_role;

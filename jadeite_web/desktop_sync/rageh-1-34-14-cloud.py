@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.96.0"
+APP_VERSION = "1.96.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1681,18 +1681,25 @@ def live_key_hash(key):
     return hashlib.sha256(str(key).encode("utf-8")).hexdigest()
 
 
-def cloud_live_sync(client_id, url=""):
-    """(برنامج العميل) يرسل عنوان جهازه في وسيط الرابط — بلا مفتاح، فلا يفتح شيئاً وحده — ويأخذ بصمة مفتاح المدير.
-    يرجع (البصمة أو "" إن لم يُنشئ المدير مفتاحاً بعد، الحال: ok | missing (لم يُشغَّل 24) | offline)"""
+def cloud_live_sync(client_id, url="", state=""):
+    """(برنامج العميل) يرسل عنوان جهازه في وسيط الرابط — بلا مفتاح، فلا يفتح شيئاً وحده — وحال الرابط عليه (يراها المدير
+    في «🩺 فحص»)، ويأخذ بصمة مفتاح المدير. يرجع (البصمة أو "" إن لم يُنشئ المدير مفتاحاً بعد، الحال: ok | ok_nostate
+    (24 قديم: بلا حال) | missing (لم يُشغَّل 24) | offline)"""
     sb = get_supabase_public_client()
     if sb is None or not client_id or not CURRENT_SYNC_TOKEN:
         return None, "offline"
     dev_id, _dev_name = device_identity()
+    args = {"p_client_id": client_id, "p_sync_token": CURRENT_SYNC_TOKEN, "p_device_id": dev_id, "p_url": url or ""}
+    kind = "ok"
     try:
-        res = sb.rpc("client_live_sync", {"p_client_id": client_id, "p_sync_token": CURRENT_SYNC_TOKEN,
-                                          "p_device_id": dev_id, "p_url": url or ""}).execute()
+        try:
+            res = sb.rpc("client_live_sync", dict(args, p_state=str(state or "")[:300])).execute()
+        except Exception as e:
+            if not _rpc_missing(e):
+                raise
+            res, kind = sb.rpc("client_live_sync", args).execute(), "ok_nostate"
         data = res.data
-        return (data if isinstance(data, str) and re.fullmatch(r"[0-9a-f]{64}", data) else ""), "ok"
+        return (data if isinstance(data, str) and re.fullmatch(r"[0-9a-f]{64}", data) else ""), kind
     except Exception as e:
         if _rpc_missing(e):
             return None, "missing"
@@ -1715,29 +1722,56 @@ def cloud_admin_set_live_key(client_id, key_hash):
         return False, f"تعذّر حفظ المفتاح:\n{str(e)[:200]}"
 
 
-def cloud_admin_live_address(client_id):
-    """(المدير) عنوان جهاز المصنع في وسيط الرابط (الأحدث بين أجهزته): (صف أو None، سبب التعذّر أو None)"""
+def cloud_admin_live_devices(client_id):
+    """(المدير) أجهزة المصنع في حسابه للرابط: [{device_name، app_version، last_seen، live_url، live_url_at، live_state،
+    live_state_at}] الأحدث ظهوراً أولاً — (الصفوف أو None، سبب التعذّر أو None)"""
     sb = get_supabase_admin_client()
     if sb is None:
         return None, "تعذّر الاتصال بالسحابة بمفتاح المدير."
+    cols = "device_name, app_version, last_seen, live_url, live_url_at"
     try:
-        rows = sb.table("client_devices").select("device_name, live_url, live_url_at, last_seen") \
-            .eq("client_id", client_id).execute().data or []
+        try:
+            rows = sb.table("client_devices").select(cols + ", live_state, live_state_at") \
+                .eq("client_id", client_id).execute().data or []
+        except Exception as e:
+            if "live_state" not in str(e):
+                raise
+            rows = sb.table("client_devices").select(cols).eq("client_id", client_id).execute().data or []
+            for r in rows:
+                r["live_state"] = None
     except Exception as e:
         if "live_url" in str(e):
             return None, LIVE_SQL_MISSING
-        log_cloud_error("تعذّر جلب عنوان الجهاز", e)
-        return None, f"تعذّر جلب العنوان:\n{str(e)[:200]}"
-    rows = [r for r in rows if r.get("live_url")]
-    rows.sort(key=lambda r: str(r.get("live_url_at") or ""), reverse=True)
-    return (rows[0] if rows else None), None
+        log_cloud_error("تعذّر جلب أجهزة المصنع", e)
+        return None, f"تعذّر جلب أجهزة المصنع:\n{str(e)[:200]}"
+    rows.sort(key=lambda r: str(r.get("last_seen") or ""), reverse=True)
+    return rows, None
+
+
+def live_probe(url, timeout=12):
+    """هل يصل العنوان إلى برنامج جاديت؟ (رمز الحالة أو None، الجواب من جاديت؟، سبب التعذّر)"""
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "JadeiteLiveCheck"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, "جاديت" in r.read(65536).decode("utf-8", "replace"), ""
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(65536).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return e.code, "جاديت" in body, ""
+    except Exception as e:
+        return None, False, str(getattr(e, "reason", e))[:200]
 
 
 # خطوات ضبط رابط المدير (1.96) — في نافذة «🌐 مباشر» على الجهازين، ونفسها في LIVE_LINK_GUIDE_AR.md
 LIVE_GUIDE = (
     ("قبل البدء (مرة واحدة)", (
         "حدّث برنامج المدير وبرنامج المصنع إلى 1.96.0 أو أحدث.",
-        "في Supabase ← SQL Editor: افتح الملف 24_live_admin_link.sql والصق محتواه واضغط Run (مرة واحدة فقط).",
+        "في Supabase ← SQL Editor: افتح الملف 24_live_admin_link.sql والصق محتواه واضغط Run (مرة واحدة — وأعِده مرة إن "
+        "شغّلته قبل 1.96.1: فيه الآن «حال الرابط» التي يراها المدير في الفحص).",
     )),
     ("على جهاز المصنع (مرة واحدة)", (
         "افتح برنامج المصنع، واضغط زر «🌐 مباشر» أعلى الشاشة.",
@@ -1746,10 +1780,15 @@ LIVE_GUIDE = (
         "ثم وافق على إضافة الجهاز.",
         "أول مرة فقط تفتح صفحة «Enable Funnel»: اضغط Enable. (إن لم تفتح وحدها اضغط «🔑 تسجيل الدخول / التفعيل» مرة أخرى).",
         "اضغط «▶️ تشغيل» إن لم يكن يعمل، وانتظر حتى تظهر «🟢 يعمل». على جهاز المصنع لا يظهر أي رابط — هذا مقصود.",
+        "اضغط «🩺 فحص الرابط»: كل خطوة ✔ أو ✘، وزرٌّ يُصلح أول خطوةٍ ناقصة (ثبّت، سجّل الدخول، فعّل، أرسل الآن) — كرّره حتى "
+        "«✔ كل الخطوات مكتملة». ونتيجته تصل لبرنامج المدير وحدها.",
     )),
     ("على جهازك أنت (برنامج المدير)", (
         "افتح برنامج المدير ← لوحة المدير ← بجانب اسم المصنع اضغط «🌐 العرض المباشر».",
-        "أول مرة يُنشئ المفتاح ويرسل بصمته — انتظر حتى ١٠ دقائق ثم اضغط «🔄 تحديث» حتى تظهر «🟢 الرابط جاهز».",
+        "أول مرة يُنشئ المفتاح ويرسل بصمته — انتظر حتى ١٠ دقائق ثم اضغط «🩺 فحص» حتى تظهر «🟢 الرابط جاهز». الفحص يقول "
+        "أين توقف جهاز المصنع: إصداره، وTailscale، وFunnel، ووصول المفتاح، وهل يفتح الرابط من الإنترنت.",
+        "إن قال الفحص إن عنوان الجهاز لم يصل: من موقع Tailscale ← Machines ← جهاز المصنع، انسخ اسمه الكامل (ينتهي بـ "
+        "ts.net) والصقه في خانة «عنوان جهاز المصنع» ← «💾 حفظ العنوان» — فيُكوَّن الرابط منه بمفتاحك.",
         "اضغط «🌐 فتح» ليفتح على جهازك، أو «📋 نسخ»، أو امسح رمز QR بكاميرا جوالك واحفظ الصفحة على الشاشة الرئيسية.",
         "من الرابط ← «⚙️ لوحة التحكم» ← «📌 تثبيت الرابط» حتى لا يُوقف من جهاز المصنع (اختياري، موصى به).",
     )),
@@ -7125,6 +7164,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
         try:
+            if (self.__dict__.get("_live") or {}).get("server") is not None:
+                self.live_report_state("البرنامج مغلق على جهاز المصنع")
             self.stop_live_view(user=False)   # الخادم والوسيط لا يبقيان بعد الإغلاق (والرابط الثابت يعود مع البرنامج)
         except Exception:
             pass
@@ -25178,6 +25219,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     #  حساب عميل: المفتاح يُنشئه برنامج المدير ويبقى عنده؛ وهذا الجهاز يأخذ بصمته من السحابة (صلاحيةٌ في الحساب) ويرسل
     #  عنوانه في الوسيط — فلا يظهر الرابط هنا أبداً، ولا يُكوَّن منه. الجلسة المحلية وبرنامج المدير: المفتاح هنا كما كان
     LIVE_SYNC_EVERY = 600                  # ثوانٍ: أخذ البصمة الجديدة إن جدّد المدير المفتاح (وإرسال العنوان إن تغيّر)
+    LIVE_STATE_GAP = 20                    # ثوانٍ: أقل فاصل لإرسال حالٍ تغيّرت (تسجيل الدخول، تفعيل Funnel…) للمدير
     LIVE_HASH_SETTING = "live_key_hash"
 
     def live_admin_mode(self):
@@ -25203,21 +25245,54 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             server.verifier = value or None
         return True
 
-    def live_sync_async(self, url=None):
-        """(حساب عميل) في الخلفية: يرسل عنوان الجهاز في الوسيط ويأخذ بصمة مفتاح المدير"""
+    def live_sync_async(self, url=None, then=None):
+        """(حساب عميل) في الخلفية: يرسل عنوان الجهاز في الوسيط وحال الرابط عليه، ويأخذ بصمة مفتاح المدير"""
         live = self.__dict__.get("_live")
         if not live or not self.live_admin_mode() or live.get("syncing"):
             return
         live["syncing"], live["synced_at"] = True, time.time()
         client_id = self.client_id
+        summary = self.live_state_summary()
 
         def done(result):
             value, state = result if isinstance(result, tuple) else (None, "offline")
             live["syncing"], live["sync_state"] = False, state
-            if state == "ok":
+            if state in ("ok", "ok_nostate"):
                 live["sent_url"] = url or live.get("sent_url")
+                live["sent_state"] = summary
                 self.live_store_hash(value or "")
-        tk_background(self, lambda: cloud_live_sync(client_id, url or ""), done)
+            if then is not None:
+                then()
+        tk_background(self, lambda: cloud_live_sync(client_id, url or "", summary), done)
+
+    LIVE_RELAY_TEXT = {"ready": "Funnel جاهز", "enable": "بانتظار تفعيل Funnel في Tailscale",
+                       "login": "بانتظار تسجيل الدخول في Tailscale", "starting": "جارٍ تجهيز الوسيط",
+                       "retry": "الوسيط يعيد المحاولة"}
+
+    def live_state_summary(self):
+        """حال الرابط على هذا الجهاز في سطر (يُرسل للمدير فيراه في «🩺 فحص»): ✔ إن كان جاهزاً تماماً، وإلا ✘ وأين توقف"""
+        st = self.live_state()
+        check = (self.__dict__.get("_live") or {}).get("check_text") or ""
+        if not st["running"]:
+            return f"✘ الرابط متوقف على جهاز المصنع — الإصدار {APP_VERSION}"
+        if st["relay"] == "none":
+            relay = st["relay_error"] or "الوسيط غير مضبوط"
+        else:
+            relay = self.LIVE_RELAY_TEXT.get(st["relay"], st["relay_error"] or st["relay"])
+        ready = st["relay"] == "ready" and bool(st["url"]) and st["has_key"]
+        parts = [("✔ جاهز" if ready else "✘ لم يكتمل"), relay,
+                 "وصل مفتاح المدير" if st["has_key"] else "بانتظار مفتاح المدير", f"الإصدار {APP_VERSION}"]
+        if check:
+            parts.append(check)
+        return " · ".join(p for p in parts if p)[:300]
+
+    def live_report_state(self, text):
+        """حالٌ أخيرة للمدير حين يتوقف الرابط أو يُغلق البرنامج (بلا انتظار ولا واجهة)"""
+        if not self.live_admin_mode():
+            return
+        client_id = self.client_id
+        threading.Thread(target=lambda: cloud_live_sync(client_id, "", f"✘ {text} — الإصدار {APP_VERSION}"),
+                         name="JadeiteLiveReport", daemon=True).start()
 
     def live_token(self, renew=False):
         """المفتاح السري للرابط: محفوظ على هذا الجهاز وحده (لا في قاعدة البيانات ولا في أي سحابة)"""
@@ -25317,6 +25392,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             messagebox.showwarning("الرابط المباشر", "ثبّت المدير الرابط (أو أقفل الحساب) من رابطه — فلا يُوقف من هذا "
                                                      "الجهاز. يبقى يعمل ما دام البرنامج مفتوحاً.")
             return False
+        if user:
+            self.live_report_state("أوقف المستخدم الرابط على جهاز المصنع")
         live = self.__dict__.pop("_live", None) or {}
         for part in ("relay", "server"):
             obj = live.get(part)
@@ -25365,12 +25442,180 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.update_live_button()
         if self.live_admin_mode() and (
                 (state["url"] and state["url"] != live.get("sent_url"))
-                or time.time() - live.get("synced_at", 0) > self.LIVE_SYNC_EVERY):
+                or time.time() - live.get("synced_at", 0) > self.LIVE_SYNC_EVERY
+                or (self.live_state_summary() != live.get("sent_state")
+                    and time.time() - live.get("synced_at", 0) > self.LIVE_STATE_GAP)):
             self.live_sync_async(state["url"])
         try:
             self.after(self.LIVE_TICK_MS, self._live_tick)
         except Exception:
             pass
+
+    # ── 🩺 فحص الرابط على جهاز المصنع: كل خطوة ✔ أو ✘ وما يُصلحها ──
+    def live_check_compute(self, snap, provider, exe):
+        """(خيط خلفي — لا واجهة) خطوات الفحص بالترتيب: [{ok، title، detail، action}] — يتوقف عند أول خطوةٍ لم تكتمل"""
+        steps = []
+
+        def add(ok, title, detail="", action=None):
+            steps.append({"ok": ok, "title": title, "detail": detail, "action": action})
+            return ok
+        add(True, "البرنامج والحساب", f"{getattr(self, 'client_name', '') or 'جلسة محلية'} — الإصدار {APP_VERSION}"
+            + ("" if snap["admin_mode"] else " (جلسة محلية: الرابط يظهر هنا)"))
+        if not snap["running"]:
+            add(False, "الرابط على هذا الجهاز", "متوقف — اضغط «▶️ شغّل الآن»", "start")
+            return steps
+        code, mark, err = live_probe(f"http://127.0.0.1:{snap['port']}/", timeout=6)
+        if not add(mark, "البرنامج يستقبل الرابط", f"يعمل على المنفذ {snap['port']}" if mark
+                   else f"لا يجيب على المنفذ {snap['port']} ({code or err}) — أعد تشغيل البرنامج", None if mark else "start"):
+            return steps
+        if provider == "tailscale":
+            if not add(bool(exe), "Tailscale مثبّت", exe or "غير مثبّت — اضغط «⬇️ ثبّت الآن»", None if exe else "install"):
+                return steps
+            st = LiveTailscale(exe, snap["port"]).status()
+            if st is None:
+                add(False, "Tailscale يعمل", "لا يجيب — افتح تطبيق Tailscale من قائمة ابدأ (أو أعد تشغيل الجهاز) ثم أعد الفحص")
+                return steps
+            backend = st.get("BackendState")
+            if backend != "Running":
+                add(False, "تسجيل الدخول في Tailscale", f"الحال: {backend} — اضغط «🔑 سجّل الدخول» وادخل بحسابك أنت", "login")
+                return steps
+            me = st.get("Self") or {}
+            user = ((st.get("User") or {}).get(str(me.get("UserID"))) or {}).get("LoginName", "")
+            add(True, "تسجيل الدخول في Tailscale", f"بحساب {user or '—'} — اسم الجهاز {str(me.get('DNSName') or '').rstrip('.')}")
+            if snap["relay"] == "enable":
+                add(False, "Funnel (فتح الرابط للإنترنت)", "غير مفعّل لشبكتك — اضغط «✅ فعّل الآن» ثم Enable في الصفحة",
+                    "enable")
+                return steps
+            if snap["relay"] != "ready":
+                add(False, "Funnel (فتح الرابط للإنترنت)", (snap["relay_error"] or f"الحال: {snap['relay']}")
+                    + " — اضغط «🔄 أعد المحاولة»", "relay")
+                return steps
+            add(True, "Funnel (فتح الرابط للإنترنت)", "مفعّل وموجّه إلى البرنامج")
+        else:
+            if not add(bool(exe), "cloudflared مثبّت", exe or "غير مثبّت — اضغط «⬇️ ثبّت الآن»", None if exe else "install"):
+                return steps
+            if not add(snap["relay"] == "ready", "نفق Cloudflare", "متصل" if snap["relay"] == "ready"
+                       else (snap["relay_error"] or f"الحال: {snap['relay']}") + " — تأكد من النطاق والرمز", None):
+                return steps
+        url = snap["url"]
+        if not add(bool(url), "عنوان هذا الجهاز", (url + " (بلا مفتاح — لا يفتح شيئاً وحده)") if url else "لم يتكوّن بعد"):
+            return steps
+        if snap["admin_mode"]:
+            sync = snap["sync_state"]
+            if sync == "missing":
+                add(False, "إرسال العنوان للمدير", "يحتاج المدير تشغيل 24_live_admin_link.sql في Supabase مرة واحدة")
+                return steps
+            sent = snap["sent_url"] == url and sync in ("ok", "ok_nostate")
+            if not add(sent, "إرسال العنوان للمدير", "أُرسل — يراه في لوحته" if sent
+                       else "لم يُرسل بعد (لا اتصال بالسحابة؟) — اضغط «📤 أرسل الآن»", None if sent else "sync"):
+                return steps
+            if not add(snap["has_key"], "مفتاح المدير", "وصل" if snap["has_key"] else
+                       "لم يصل بعد — على جهاز المدير: لوحة المدير ← «🌐 العرض المباشر» لهذا المصنع، ثم اضغط هنا «📤 أرسل الآن»",
+                       None if snap["has_key"] else "sync"):
+                return steps
+        code, mark, err = live_probe(url.rstrip("/") + "/", timeout=15)
+        add(mark, "يصل من الإنترنت", "العنوان يوصل إلى البرنامج على هذا الجهاز" if mark else
+            f"لا يصل ({code or err}) — تأكد من الإنترنت ومن تفعيل Funnel، ثم أعد الفحص")
+        return steps
+
+    LIVE_CHECK_ACTIONS = {"start": "▶️ شغّل الآن", "install": "⬇️ ثبّت الآن", "login": "🔑 سجّل الدخول",
+                          "enable": "✅ فعّل الآن", "relay": "🔄 أعد المحاولة", "sync": "📤 أرسل الآن"}
+
+    def open_live_check(self, parent=None):
+        """«🩺 فحص الرابط»: خطوات الضبط على هذا الجهاز ✔/✘ بالترتيب، وزر يُصلح أول خطوةٍ لم تكتمل — والنتيجة تُرسل للمدير"""
+        win = ctk.CTkToplevel(parent or self)
+        win.title("فحص الرابط المباشر")
+        self.fit_dialog_to_screen(win, 760, 620)
+        win.transient(parent or self)
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        ctk.CTkLabel(win, text="🩺 فحص الرابط المباشر على هذا الجهاز", font=(UI_FONT, 19, "bold"),
+                     text_color=UI_TITLE).pack(pady=(14, 2))
+        result = ctk.CTkLabel(win, text="⏳ جارٍ الفحص…", font=(UI_FONT, 15, "bold"), wraplength=700, justify="right")
+        result.pack(pady=(4, 6), padx=16)
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=12)
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(pady=10)
+        action_btn = ctk.CTkButton(bar, text="", width=170, height=40, font=(UI_FONT, 15, "bold"),
+                                   **BUTTON_STYLES["primary"])
+        state = {"steps": [], "busy": False}
+
+        def show(steps):
+            state["busy"] = False
+            state["steps"] = steps or []
+            for w in body.winfo_children():
+                w.destroy()
+            first_bad = next((s for s in state["steps"] if s["ok"] is False), None)
+            for n, st in enumerate(state["steps"], 1):
+                row = ctk.CTkFrame(body, corner_radius=10, fg_color=(UI["surface"], "#171C23"), border_width=1,
+                                   border_color=(UI["line"], "#2A313B") if st["ok"] is not False else UI["danger"])
+                row.pack(fill="x", padx=4, pady=3)
+                icon = "✔" if st["ok"] else ("✘" if st["ok"] is False else "•")
+                ctk.CTkLabel(row, text=f"{icon}  {n}) {st['title']}", font=(UI_FONT, 15, "bold"), anchor="e",
+                             text_color=(UI["success"], "#7EE2B8") if st["ok"] else
+                             ((UI["danger"], "#F08A8F") if st["ok"] is False else (UI["ink"], "#E5E7EB"))).pack(
+                    fill="x", padx=10, pady=(6, 0))
+                ctk.CTkLabel(row, text=st["detail"], font=(UI_FONT, 13), anchor="e", justify="right", wraplength=660,
+                             text_color=(UI["ink"], "#E5E7EB")).pack(fill="x", padx=10, pady=(0, 6))
+            if first_bad is None:
+                text = "✔ كل الخطوات مكتملة — الرابط جاهز في برنامج المدير"
+                result.configure(text=text, text_color=(UI["success"], "#7EE2B8"))
+            else:
+                text = f"✘ توقف عند: {first_bad['title']}"
+                result.configure(text=text + " — أصلحها بالزر أدناه ثم أعد الفحص",
+                                 text_color=(UI["danger"], "#F08A8F"))
+            action = (first_bad or {}).get("action")
+            if action:
+                action_btn.configure(text=self.LIVE_CHECK_ACTIONS[action], command=lambda a=action: fix(a))
+                action_btn.pack(side="right", padx=4, before=again)
+            else:
+                action_btn.pack_forget()
+            live = self.__dict__.get("_live")
+            if live is not None:
+                live["check_text"] = f"آخر فحص {datetime.datetime.now():%H:%M}: {text}"
+                self.live_sync_async(self.live_state()["url"])       # المدير يرى نتيجة الفحص
+
+        def run():
+            if state["busy"] or not win.winfo_exists():
+                return
+            state["busy"] = True
+            result.configure(text="⏳ جارٍ الفحص…", text_color=(UI["muted"], "#9AA4B2"))
+            snap = self.live_state()
+            provider = snap["provider"]
+            exe = find_cloudflared() if provider == "cloudflare" else find_tailscale()
+            tk_background(win, lambda: self.live_check_compute(snap, provider, exe), show)
+
+        def fix(action):
+            provider = self.live_state()["provider"]
+            if action == "start":
+                self.start_live_view(user=True)
+            elif action == "install":
+                self.install_live_tool(provider, lambda ok_, msg: (self.live_start_relay(), run()))
+                result.configure(text="⏳ جارٍ التثبيت… (دقائق)", text_color=(UI["muted"], "#9AA4B2"))
+                return
+            elif action == "login":
+                self.live_tailscale_login()
+            elif action == "enable":
+                url = self.live_state()["action_url"]
+                if url:
+                    open_url_window(url)
+                else:
+                    self.live_start_relay()
+            elif action == "relay":
+                self.live_start_relay()
+            elif action == "sync":
+                self.live_sync_async(self.live_state()["url"], then=run)
+                return
+            win.after(4000, run)
+
+        again = ctk.CTkButton(bar, text="🔄 أعد الفحص", width=140, height=40, font=(UI_FONT, 15, "bold"), command=run,
+                              **BUTTON_STYLES["secondary"])
+        again.pack(side="right", padx=4)
+        ctk.CTkButton(bar, text="📖 الخطوات", width=120, height=40, font=(UI_FONT, 15, "bold"),
+                      command=lambda: show_live_guide(win), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
+        run()
+        win._state, win._run, win._fix = state, run, fix          # للاختبار
+        return win
 
     def install_live_tool(self, provider, done=None):
         """يثبّت أداة الوسيط (Tailscale أو cloudflared) بـ winget — مدير الحزم الرسمي في ويندوز يتحقق من الملف وبصمته —
@@ -25575,6 +25820,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         btn_toggle = ctk.CTkButton(btns, text="", font=(UI_FONT, 15, "bold"), width=150, height=40, command=toggle)
         btn_toggle.pack(side="right", padx=4)
+        ctk.CTkButton(btns, text="🩺 فحص الرابط", font=(UI_FONT, 14, "bold"), width=130, height=40,
+                      command=lambda: self.open_live_check(win), fg_color=UI["success"],
+                      hover_color=UI["success_hover"]).pack(side="right", padx=4)
         ctk.CTkButton(btns, text="📖 الخطوات", font=(UI_FONT, 14, "bold"), width=110, height=40,
                       command=lambda: show_live_guide(win), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
         btn_renew = ctk.CTkButton(btns, text="🔄 مفتاح جديد", font=(UI_FONT, 14, "bold"), width=130, height=40,
@@ -36706,27 +36954,126 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             save_ui_pref(self.ADMIN_LIVE_KEYS_PREF, keys)
         return key
 
+    ADMIN_LIVE_ADDR_PREF = "admin_live_addresses"
+
+    def client_live_manual_address(self, client_id, value=None):
+        """عنوان جهاز المصنع مكتوباً يدوياً (من موقع Tailscale) — على جهاز المدير وحده. value: يُحفظ ("" يمسحه)"""
+        addrs = load_ui_prefs().get(self.ADMIN_LIVE_ADDR_PREF) or {}
+        addrs = dict(addrs) if isinstance(addrs, dict) else {}
+        if value is not None:
+            if value:
+                addrs[str(client_id)] = value
+            else:
+                addrs.pop(str(client_id), None)
+            save_ui_pref(self.ADMIN_LIVE_ADDR_PREF, addrs)
+        url = addrs.get(str(client_id))
+        return url if isinstance(url, str) and url.startswith("https://") else None
+
+    @staticmethod
+    def normalize_live_address(text):
+        """«desktop-abc.tail1234.ts.net» أو رابطٌ كامل ← https://desktop-abc.tail1234.ts.net — أو None إن لم يكن عنواناً"""
+        host = re.sub(r"^https?://", "", str(text or "").strip().lower()).split("/")[0].split("?")[0].rstrip(".")
+        return f"https://{host}" if LIVE_HOST_RE.match(host) else None
+
+    @staticmethod
+    def live_admin_checks(saved, err, rows, manual, link, probe):
+        """(بلا واجهة) خطوات فحص الرابط من جهة المدير: [(تمّ؟، العنوان، التفاصيل)] — بالترتيب، تتوقف عند أول ما لم يكتمل"""
+        out = [(bool(saved), "مفتاح الرابط محفوظ في حساب المصنع", "✔ بصمته وحدها في الحساب" if saved else (err or "تعذّر"))]
+        if not saved:
+            return out
+        if rows is None:
+            out.append((False, "أجهزة المصنع", err or "تعذّر جلبها"))
+            return out
+        if not rows:
+            out.append((False, "جهاز المصنع", "لم يدخل أي جهاز بهذا الحساب بعد — سجّل الدخول في برنامج المصنع"))
+            return out
+        dev = rows[0]
+        ver = str(dev.get("app_version") or "")
+        seen = str(dev.get("last_seen") or "")[:16].replace("T", " ")
+        old = version_tuple(ver) < (1, 96, 0) if ver else True
+        out.append((not old, "جهاز المصنع", f"{dev.get('device_name') or '—'} — الإصدار {ver or 'غير معروف'} — آخر ظهور "
+                    f"{seen or '—'}" + (" — حدّث برنامج المصنع إلى 1.96 أو أحدث ثم سجّل الدخول فيه" if old else "")))
+        state_row = next((r for r in rows if r.get("live_state")), None)
+        if state_row:
+            st = str(state_row["live_state"])
+            when = str(state_row.get("live_state_at") or "")[:16].replace("T", " ")
+            out.append((st.startswith("✔"), "حال الرابط على جهاز المصنع", f"{st} (منذ {when})"))
+        else:
+            out.append((None, "حال الرابط على جهاز المصنع", "لم يُرسل حاله بعد: على جهازه «🌐 مباشر» ← «🩺 فحص الرابط» "
+                        "(وإن بقي هكذا فأعد تشغيل 24_live_admin_link.sql في Supabase)"))
+        addr = next((r.get("live_url") for r in rows if r.get("live_url")), None)
+        if addr:
+            out.append((True, "عنوان جهاز المصنع", f"{addr} (وصل من الجهاز)"))
+        elif manual:
+            out.append((True, "عنوان جهاز المصنع", f"{manual} (مكتوب هنا من موقع Tailscale)"))
+        else:
+            out.append((False, "عنوان جهاز المصنع", "لم يصل — أكمل الضبط على جهاز المصنع («🩺 فحص الرابط» هناك يقول ما "
+                        "ينقص)، أو الصق عنوانه من موقع Tailscale في الخانة أدناه"))
+            return out
+        if probe is None:
+            return out
+        code, mark, perr = probe
+        if mark and code == 200:
+            out.append((True, "الرابط يفتح من الإنترنت", "✔ جاهز — افتحه أو انسخه أو امسح رمزه بجوالك"))
+        elif mark and code == 404:
+            out.append((False, "الرابط يفتح من الإنترنت", "يصل إلى جهاز المصنع لكنه لم يأخذ المفتاح بعد — انتظر حتى ١٠ "
+                        "دقائق، أو على جهاز المصنع: «🩺 فحص الرابط» ← «📤 أرسل الآن»"))
+        else:
+            out.append((False, "الرابط يفتح من الإنترنت", f"لا يصل ({code or perr}) — البرنامج مغلق على جهاز المصنع، أو "
+                        "الرابط متوقف هناك، أو Funnel غير مفعّل، أو لا إنترنت"))
+        return out
+
     def open_client_live_dialog(self, client_id, business_name):
-        """«🌐 العرض المباشر» لمصنع: الرابط يُكوَّن هنا وحده — عنوان جهاز المصنع (من حسابه) + المفتاح (من هذا الجهاز) —
-        مع فتحه ونسخه ورمز QR للجوال و«🔄 مفتاح جديد»"""
+        """«🌐 العرض المباشر» لمصنع: الرابط يُكوَّن هنا وحده — عنوان جهاز المصنع (يصل من جهازه، أو يُلصق من موقع
+        Tailscale) + المفتاح (يُنشأ على هذا الجهاز) — و«🩺 فحص» يقول خطوةً خطوة أين توقف الضبط، مع فتحه ونسخه ورمز QR"""
         win = ctk.CTkToplevel(self)
         win.title(f"الرابط المباشر — {business_name}")
-        win.geometry("760x640")
+        win.geometry("800x800")
         win.transient(self)
-        ctk.CTkLabel(win, text=f"🌐 الرابط المباشر — {business_name}", font=(UI_FONT, 19, "bold"),
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        ctk.CTkLabel(body, text=f"🌐 الرابط المباشر — {business_name}", font=(UI_FONT, 19, "bold"),
                      text_color=UI_TITLE).pack(pady=(14, 4))
-        ctk.CTkLabel(win, text="الرابط يظهر هنا وحده: مفتاحه على جهازك، وجهاز المصنع يعرف بصمته فقط فلا يراه ولا يُكوّنه. "
-                               "افتحه من هنا، أو انسخه أو امسح رمزه بجوالك.", font=(UI_FONT, 13), wraplength=700,
+        ctk.CTkLabel(body, text="الرابط يظهر هنا وحده: مفتاحه يُنشأ على جهازك، وجهاز المصنع يعرف بصمته فقط فلا يراه ولا "
+                                "يُكوّنه. افتحه من هنا، أو انسخه أو امسح رمزه بجوالك.", font=(UI_FONT, 13), wraplength=720,
                      justify="right", text_color=UI["muted"]).pack(padx=16)
-        status = ctk.CTkLabel(win, text="⏳ جارٍ التحضير…", font=(UI_FONT, 14, "bold"), wraplength=700, justify="right")
+        status = ctk.CTkLabel(body, text="⏳ جارٍ الفحص…", font=(UI_FONT, 15, "bold"), wraplength=720, justify="right")
         status.pack(pady=(10, 4), padx=16)
-        link_box = ctk.CTkEntry(win, font=("Consolas", 13), justify="left", height=36)
+        link_box = ctk.CTkEntry(body, font=("Consolas", 13), justify="left", height=36)
         link_box.pack(fill="x", padx=16, pady=4)
-        qr = tk.Canvas(win, width=210, height=210, highlightthickness=0, bg="#FFFFFF")
-        qr.pack(pady=6)
-        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns = ctk.CTkFrame(body, fg_color="transparent")
         btns.pack(pady=6)
-        state = {"link": None}
+        checks = ctk.CTkFrame(body, corner_radius=12, border_width=1, border_color=UI["gold_line"],
+                              fg_color=(UI["surface"], "#171C23"))
+        checks.pack(fill="x", padx=16, pady=6)
+        manual_row = ctk.CTkFrame(body, fg_color="transparent")
+        manual_row.pack(fill="x", padx=16, pady=(8, 2))
+        ctk.CTkLabel(manual_row, text="عنوان جهاز المصنع من موقع Tailscale (إن لم يصل وحده):", font=(UI_FONT, 13, "bold"),
+                     anchor="e").pack(side="right", padx=4)
+        manual_box = ctk.CTkEntry(manual_row, font=("Consolas", 13), justify="left", width=320,
+                                  placeholder_text="desktop-xxxx.tailxxxx.ts.net")
+        manual_box.pack(side="right", padx=4)
+        manual_box.insert(0, (self.client_live_manual_address(client_id) or "").replace("https://", ""))
+        ctk.CTkLabel(body, text="موقع Tailscale ← Machines ← جهاز المصنع ← انسخ اسمه الكامل (ينتهي بـ ts.net) والصقه هنا "
+                                "ثم «💾 حفظ العنوان». المفتاح يُنشأ هنا ويُضاف للعنوان فيصير هو الرابط.",
+                     font=(UI_FONT, 12), wraplength=720, justify="right", text_color=UI["muted"]).pack(padx=16)
+        qr = tk.Canvas(body, width=200, height=200, highlightthickness=0, bg="#FFFFFF")
+        qr.pack(pady=8)
+        state = {"link": None, "busy": False}
+
+        def show_checks(items):
+            for w in checks.winfo_children():
+                w.destroy()
+            ctk.CTkLabel(checks, text="🩺 الفحص", font=(UI_FONT, 15, "bold"), text_color=UI_TITLE, anchor="e").pack(
+                fill="x", padx=10, pady=(6, 2))
+            for n, (ok_, title, detail) in enumerate(items, 1):
+                icon = "✔" if ok_ else ("✘" if ok_ is False else "•")
+                color = (UI["success"], "#7EE2B8") if ok_ else ((UI["danger"], "#F08A8F") if ok_ is False
+                                                                 else (UI["ink"], "#E5E7EB"))
+                ctk.CTkLabel(checks, text=f"{icon}  {n}) {title}", font=(UI_FONT, 14, "bold"), text_color=color,
+                             anchor="e").pack(fill="x", padx=10)
+                ctk.CTkLabel(checks, text=detail, font=(UI_FONT, 12), wraplength=700, justify="right", anchor="e",
+                             text_color=(UI["ink"], "#E5E7EB")).pack(fill="x", padx=18, pady=(0, 4))
 
         def show(link, text, color):
             if not win.winfo_exists():
@@ -36740,32 +37087,49 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             draw_qr_canvas(qr, link)
 
         def load(renew=False):
+            if state["busy"]:
+                return
+            state["busy"] = True
             key = self.client_live_key(client_id, renew=renew)
-            status.configure(text="⏳ جارٍ الاتصال بالحساب…", text_color=UI["muted"])
+            manual = self.client_live_manual_address(client_id)
+            status.configure(text="⏳ جارٍ الفحص…", text_color=UI["muted"])
 
             def work():
                 saved, err = cloud_admin_set_live_key(client_id, live_key_hash(key))
-                row, err2 = cloud_admin_live_address(client_id) if saved else (None, None)
-                return saved, err, row, err2
+                rows, err2 = cloud_admin_live_devices(client_id) if saved else (None, None)
+                addr = next((r.get("live_url") for r in (rows or []) if r.get("live_url")), None) or manual
+                link = live_link(addr, key) if addr else None
+                probe = live_probe(link, timeout=15) if link else None
+                return saved, err or err2, rows, link, probe
 
             def done(result):
-                saved, err, row, err2 = result or (False, "تعذّر الاتصال", None, None)
-                if True:
-                    if not saved:
-                        show(None, f"⚠️ {err}", UI["danger"])
-                    elif err2:
-                        show(None, f"⚠️ {err2}", UI["danger"])
-                    elif not row:
-                        show(None, "⚠️ لم يُضبط الرابط على جهاز المصنع بعد: على جهازه افتح البرنامج ← «🌐 مباشر» ← اتبع "
-                                   "خطوات Tailscale. (المفتاح جاهز هنا — يصل جهاز المصنع وحده)", ("#B7791F", "#F0CF6A"))
-                    else:
-                        when = str(row.get("live_url_at") or "")[:16].replace("T", " ")
-                        show(live_link(row["live_url"], key),
-                             f"🟢 الرابط جاهز — جهاز المصنع: {row.get('device_name') or '—'} (العنوان منذ {when}). "
-                             + ("مفتاحٌ جديد: يعمل بعد أن يأخذه جهاز المصنع (خلال ١٠ دقائق، أو فوراً بإيقاف الرابط وتشغيله "
-                                "على جهازه)" if renew else "إن لم يفتح أول مرة فانتظر دقائق حتى يأخذ جهاز المصنع المفتاح"),
-                             (UI["success"], "#7EE2B8"))
+                state["busy"] = False
+                saved, err, rows, link, probe = result or (False, "تعذّر الاتصال", None, None, None)
+                items = self.live_admin_checks(saved, err, rows, manual, link, probe)
+                show_checks(items)
+                bad = next(((t, d) for ok_, t, d in items if ok_ is False), None)
+                if bad is None and link:
+                    show(link, "🟢 الرابط جاهز ويفتح من الإنترنت", (UI["success"], "#7EE2B8"))
+                elif link:
+                    show(link, f"🟡 الرابط مكوَّن — لكن: {bad[0]}" if bad else "🟡 الرابط مكوَّن",
+                         ("#B7791F", "#F0CF6A"))
+                else:
+                    show(None, f"⚠️ توقف عند: {bad[0]}" if bad else "⚠️ لم يكتمل", UI["danger"])
             tk_background(win, work, done)
+
+        def save_manual():
+            text = manual_box.get().strip()
+            if not text:
+                self.client_live_manual_address(client_id, "")
+                load()
+                return
+            url = self.normalize_live_address(text)
+            if not url:
+                messagebox.showwarning("العنوان", "الصق اسم جهاز المصنع الكامل من موقع Tailscale (مثل "
+                                                  "desktop-abc.tail1234.ts.net).", parent=win)
+                return
+            self.client_live_manual_address(client_id, url)
+            load()
 
         def copy():
             if state["link"]:
@@ -36778,19 +37142,22 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                                                  "ويعمل الجديد بعد دقائق.\n\nمتابعة؟", parent=win):
                 load(renew=True)
 
-        ctk.CTkButton(btns, text="🌐 فتح", width=110, height=40, font=(UI_FONT, 14, "bold"),
+        ctk.CTkButton(manual_row, text="💾 حفظ العنوان", width=110, command=save_manual,
+                      **BUTTON_STYLES["primary"]).pack(side="right", padx=4)
+        ctk.CTkButton(btns, text="🌐 فتح", width=100, height=40, font=(UI_FONT, 14, "bold"),
                       command=lambda: state["link"] and open_url_window(state["link"]),
                       fg_color=UI["success"], hover_color=UI["success_hover"]).pack(side="right", padx=4)
-        ctk.CTkButton(btns, text="📋 نسخ", width=100, height=40, font=(UI_FONT, 14, "bold"), command=copy,
+        ctk.CTkButton(btns, text="📋 نسخ", width=90, height=40, font=(UI_FONT, 14, "bold"), command=copy,
                       **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
-        ctk.CTkButton(btns, text="🔄 تحديث", width=100, height=40, font=(UI_FONT, 14, "bold"), command=load,
+        ctk.CTkButton(btns, text="🩺 فحص", width=100, height=40, font=(UI_FONT, 14, "bold"), command=load,
                       **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
         ctk.CTkButton(btns, text="🔑 مفتاح جديد", width=130, height=40, font=(UI_FONT, 14, "bold"), command=renew,
                       **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
         ctk.CTkButton(btns, text="📖 الخطوات", width=110, height=40, font=(UI_FONT, 14, "bold"),
                       command=lambda: show_live_guide(win), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
         load()
-        win._state, win._status = state, status                  # للاختبار
+        win._state, win._status, win._checks, win._load = state, status, checks, load          # للاختبار
+        win._manual, win._save_manual = manual_box, save_manual
         return win
 
     def show_admin_key_card(self, error):

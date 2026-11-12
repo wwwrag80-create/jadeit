@@ -469,18 +469,58 @@ if "class AdminPanel" in src:
     admin = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AdminPanel")
     open_live = next(m for m in admin.body if isinstance(m, ast.FunctionDef) and m.name == "open_client_live_dialog")
     body = ast.get_source_segment(src, open_live)
-    assert "self.client_live_key(client_id, renew=renew)" in body and 'live_link(row["live_url"], key)' in body
+    assert "self.client_live_key(client_id, renew=renew)" in body and "live_link(addr, key)" in body
     assert "cloud_admin_set_live_key(client_id, live_key_hash(key))" in body and "tk_background(win, work, done)" in body
+    assert "cloud_admin_live_devices(client_id)" in body and "live_probe(link, timeout=15)" in body
+    assert "self.client_live_manual_address(client_id)" in body, "1.96.1: العنوان من موقع Tailscale يدوياً"
+    # 1.96.1: فحص المدير خطوةً خطوة (دالة نقية) والعنوان اليدوي
+    pure = {"re": re, "LIVE_HOST_RE": ns["LIVE_HOST_RE"]}
+    exec(module_src("version_tuple"), pure)
+    for fn in ("live_admin_checks", "normalize_live_address"):
+        node = next(m for m in admin.body if isinstance(m, ast.FunctionDef) and m.name == fn)
+        exec(textwrap.dedent(ast.get_source_segment(src, node)).replace("@staticmethod\n", ""), pure)
+    norm = pure["normalize_live_address"]
+    assert norm("  Factory-PC.tail1a2b3.ts.net/ ") == norm("https://factory-pc.tail1a2b3.ts.net/x?y") == \
+        "https://factory-pc.tail1a2b3.ts.net" and norm("not an address") is None and norm("") is None
+    chk = pure["live_admin_checks"]
+    dev = lambda **kw: dict({"device_name": "جهاز", "app_version": "1.96.1", "last_seen": "2026-11-12T09:00",
+                             "live_url": None, "live_state": None}, **kw)
+    r = chk(False, "LIVE_SQL", None, None, None, None)
+    assert [x[0] for x in r] == [False] and "LIVE_SQL" in r[0][2], "المفتاح لم يُحفظ ← يتوقف أولاً"
+    r = chk(True, None, [], None, None, None)
+    assert r[-1][0] is False and "لم يدخل أي جهاز" in r[-1][2]
+    r = chk(True, None, [dev(app_version="1.95.0")], None, None, None)
+    assert r[1][0] is False and "حدّث برنامج المصنع" in r[1][2], "إصدارٌ قديم على جهاز المصنع"
+    r = chk(True, None, [dev()], None, None, None)
+    assert r[-1][0] is False and "موقع Tailscale" in r[-1][2] and r[2][0] is None, "بلا عنوان ولا حال: يُطلب العنوان"
+    url = "https://factory-pc.tail1a2b3.ts.net"
+    r = chk(True, None, [dev(live_url=url, live_state="✘ لم يكتمل · بانتظار تفعيل Funnel")], None, url + "/?k=x", (404, True, ""))
+    assert r[2][0] is False and "بانتظار تفعيل Funnel" in r[2][2] and r[-1][0] is False and "لم يأخذ المفتاح" in r[-1][2]
+    r = chk(True, None, [dev(live_state="✔ جاهز")], url, url + "/?k=x", (200, True, ""))
+    assert all(x[0] for x in r) and "مكتوب هنا من موقع Tailscale" in r[3][2], "العنوان اليدوي يكفي، والرابط يفتح"
+    r = chk(True, None, [dev(live_url=url, live_state="✔ جاهز")], None, url + "/?k=x", (None, False, "timed out"))
+    assert r[-1][0] is False and "لا يصل" in r[-1][2]
     assert 'text="🌐 العرض المباشر"' in src
 # 1.96: رابط المدير في برنامج المدير وحده — الجهاز يأخذ البصمة ويرسل عنوانه، ولا يعرض رابطاً
 assert "server = LiveViewServer(None, pending, verifier=self.live_stored_hash() or None)" in start
 assert 'save_ui_pref(LIVE_TOKEN_PREF, None)' in start, "مفتاح 1.95 على جهاز العميل يُمسح"
 sync = member("live_sync_async")
-assert "tk_background(self, lambda: cloud_live_sync(client_id, url or \"\"), done)" in sync
+assert "tk_background(self, lambda: cloud_live_sync(client_id, url or \"\", summary), done)" in sync
 assert "self.live_sync_async(state[\"url\"])" in member("_live_tick")
 dlg = member("open_live_view_dialog")
 assert "if admin_mode:" in dlg and "admin_note.pack(" in dlg and "if not admin_mode:" in dlg
 assert '"p_url": url or ""' in module_src("cloud_live_sync") and '"client_live_sync"' in module_src("cloud_live_sync")
+assert 'p_state=str(state or "")[:300]' in module_src("cloud_live_sync") and '"ok_nostate"' in module_src("cloud_live_sync"), \
+    "1.96.1: حال الرابط تُرسل للمدير — و24 القديم (بلا حال) يعمل"
+check = member("live_check_compute")
+for t in ('"Tailscale مثبّت"', '"تسجيل الدخول في Tailscale"', '"Funnel (فتح الرابط للإنترنت)"', '"عنوان هذا الجهاز"',
+          '"إرسال العنوان للمدير"', '"مفتاح المدير"', '"يصل من الإنترنت"'):
+    assert t in check, t
+assert set(re.findall(r'"(\w+)": "', member("LIVE_CHECK_ACTIONS"))) == {"start", "install", "login", "enable", "relay", "sync"}
+summ = member("live_state_summary")
+assert '"✔ جاهز" if ready else "✘ لم يكتمل"' in summ and "[:300]" in summ
+assert "self.live_report_state(" in member("stop_live_view") and "self.live_report_state(" in member("on_app_closing")
+assert "self.open_live_check(win)" in member("open_live_view_dialog")
 assert "connect-src 'self'" in module_src("LiveViewServer"), "الملء التلقائي يسأل الجهاز نفسه فقط"
 fill = member("live_fill")
 assert "self.find_row_by_set_number(cat, set_no, month=month)" in fill and "self.sb_sale_fill(set_no)" in fill
