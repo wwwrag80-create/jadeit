@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.96.2"
+APP_VERSION = "1.96.3"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1769,7 +1769,7 @@ def live_probe(url, timeout=12):
 # خطوات ضبط رابط المدير (1.96) — في نافذة «🌐 مباشر» على الجهازين، ونفسها في LIVE_LINK_GUIDE_AR.md
 LIVE_GUIDE = (
     ("قبل البدء (مرة واحدة)", (
-        "حدّث برنامج المدير وبرنامج المصنع إلى 1.96.2 أو أحدث.",
+        "حدّث برنامج المدير وبرنامج المصنع إلى 1.96.3 أو أحدث.",
         "في Supabase ← SQL Editor: افتح الملف 24_live_admin_link.sql والصق محتواه واضغط Run (مرة واحدة — وأعِده مرة إن "
         "شغّلته قبل 1.96.1: فيه الآن «حال الرابط» التي يراها المدير في الفحص).",
     )),
@@ -1784,6 +1784,8 @@ LIVE_GUIDE = (
         "اضغط «▶️ تشغيل» إن لم يكن يعمل، وانتظر حتى تظهر «🟢 يعمل». على جهاز المصنع لا يظهر أي رابط — هذا مقصود.",
         "اضغط «🩺 فحص الرابط»: كل خطوة ✔ أو ✘، وزرٌّ يُصلح أول خطوةٍ ناقصة (ثبّت، سجّل الدخول، فعّل، أرسل الآن) — كرّره حتى "
         "«✔ كل الخطوات مكتملة». ونتيجته تصل لبرنامج المدير وحدها.",
+        "إن كان جهاز المصنع لابتوب: في الفحص اضغط «💤 امنع النوم» مرة واحدة (إن سأل ويندوز فاضغط نعم)، وأبقِ الشاحن "
+        "موصولاً — بعدها إغلاق الغطاء لا يوقف الرابط.",
     )),
     ("على جهازك أنت (برنامج المدير)", (
         "افتح برنامج المدير ← لوحة المدير ← بجانب اسم المصنع اضغط «🌐 العرض المباشر».",
@@ -4790,6 +4792,91 @@ def find_cloudflared():
 
 def find_tailscale():
     return _find_tool("tailscale", TAILSCALE_CANDIDATES)
+
+
+# ── (1.96.3) جهاز المصنع لا ينام: إغلاق غطاء اللابتوب ينيمه في ويندوز افتراضياً — والجهاز النائم لا يشغّل شيئاً
+#    فيتوقف الرابط. الحل في إعدادات الطاقة نفسها (عند توصيل الشاحن): الغطاء «لا شيء»، والنوم والإسبات «أبداً». ──
+_PWR_SETTINGS = (("SUB_BUTTONS", "LIDACTION"), ("SUB_SLEEP", "STANDBYIDLE"), ("SUB_SLEEP", "HIBERNATEIDLE"))
+_PWR_HEX_RE = re.compile(r"0x([0-9a-fA-F]{8})")
+
+
+def live_power_read():
+    """(ويندوز) إعدادات الطاقة عند توصيل الشاحن: {"LIDACTION": 0 لا شيء، "STANDBYIDLE": ثوانٍ، "HIBERNATEIDLE": ثوانٍ}
+    — أو None (غير ويندوز أو تعذّرت القراءة). في مخرجات powercfg آخر قيمتين سداسيتين هما «الشاحن» ثم «البطارية»
+    بأي لغةٍ لويندوز"""
+    if not sys.platform.startswith("win"):
+        return None
+    values = {}
+    for sub, key in _PWR_SETTINGS:
+        _code, out = live_run_capture(["powercfg", "/q", "SCHEME_CURRENT", sub, key], timeout=15)
+        found = _PWR_HEX_RE.findall(out or "")
+        if len(found) < 2:
+            return None
+        values[key] = int(found[-2], 16)
+    return values
+
+
+def live_power_ok(values):
+    """عند توصيل الشاحن: إغلاق الغطاء لا يفعل شيئاً، ولا نوم ولا إسبات من الخمول"""
+    return bool(values) and all(values.get(key) == 0 for _sub, key in _PWR_SETTINGS)
+
+
+def live_power_fix(wait=60):
+    """(ويندوز — خيط خلفي) يضبط الطاقة عند توصيل الشاحن: الغطاء «لا شيء» والنوم والإسبات «أبداً» — (نجح؟، السبب).
+    إن رُفض بلا صلاحية يُطلب إذن ويندوز (UAC) مرة ويُنتظر حتى يُطبَّق. البطارية تبقى كما هي (حمايةً لها)"""
+    if not sys.platform.startswith("win"):
+        return False, "على ويندوز فقط"
+    cmds = [["powercfg", "/setacvalueindex", "SCHEME_CURRENT", sub, key, "0"] for sub, key in _PWR_SETTINGS]
+    cmds.append(["powercfg", "/setactive", "SCHEME_CURRENT"])
+    for cmd in cmds:
+        live_run_capture(cmd, timeout=15)
+    if live_power_ok(live_power_read()):
+        return True, ""
+    try:
+        import ctypes
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe",
+                                                 "/c " + " & ".join(" ".join(c) for c in cmds), None, 0)
+    except Exception as e:
+        return False, str(e)
+    if rc <= 32:
+        return False, "لم يُعطَ إذن ويندوز"
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if live_power_ok(live_power_read()):
+            return True, ""
+        time.sleep(2)
+    return False, "لم تتغير إعدادات الطاقة"
+
+
+def live_on_battery():
+    """(ويندوز) True اللابتوب على البطارية، False الشاحن موصول، None لا يُعرف أو جهازٌ مكتبي بلا بطارية"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+
+        class _PowerStatus(ctypes.Structure):
+            _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                        ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                        ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+        ps = _PowerStatus()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(ps)) or ps.BatteryFlag in (128, 255):
+            return None
+        return {0: True, 1: False}.get(ps.ACLineStatus)
+    except Exception:
+        return None
+
+
+def live_keep_awake(on):
+    """(ويندوز — خيط الواجهة) ما دام الرابط يعمل لا ينام الجهاز من الخمول (الشاشة قد تنطفئ ولا يضر). لا يمنع نوم
+    إغلاق الغطاء — ذاك في إعدادات الطاقة أعلاه"""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | (0x00000001 if on else 0)))
+    except Exception:
+        return False
 
 
 def live_run_capture(cmd, timeout=30, env=None):
@@ -25211,6 +25298,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # ═══ الرابط المباشر (1.94 — ثابتٌ ويكتب منذ 1.95): رابط المدير الخاص إلى هذا الجهاز — انظر LiveViewServer ═══
     LIVE_TICK_MS = 120
+    LIVE_SLEEP_GAP = 90               # (1.96.3) فجوةٌ أطول من هذا بين دورتين = الجهاز كان نائماً
     LIVE_SCREENS = (("stages", "مراحل التصنيع", "🏭"), ("khayas", "صناديق الخياس", "⚖️"), ("sales", "المبيعات", "🧾"),
                     ("inbound", "الوارد", "📥"), ("factory", "صناديق المصنع", "🏦"), ("losses", "شاشة الخسائر", "📉"))
     LIVE_TOOLS = (("add", "إضافة عملية", "➕"), ("recent", "آخر العمليات", "🕘"), ("set", "رقم تشغيل / حركة", "🔎"),
@@ -25342,6 +25430,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             parts.append(f"رابط التفعيل: {st['action_url']}")      # المدير يفعّله من جهازه بحساب Tailscale نفسه
         if st.get("account"):
             parts.append(f"حساب Tailscale: {st['account']}")
+        if st.get("power_ok") is False:
+            parts.append("⚠️ الجهاز ينام عند إغلاق الغطاء")
+        slept = st.get("slept")
+        if slept and time.time() - slept[1] < 86400:
+            parts.append(f"⚠️ نام الجهاز {datetime.datetime.fromtimestamp(slept[0]):%H:%M}–"
+                         f"{datetime.datetime.fromtimestamp(slept[1]):%H:%M}")
         parts += ["وصل مفتاح المدير" if st["has_key"] else "بانتظار مفتاح المدير", f"الإصدار {APP_VERSION}"]
         if check:
             parts.append(check)
@@ -25384,7 +25478,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "relay": relay.state if relay is not None else ("none" if server else "off"),
                 "relay_error": relay.error if relay is not None else live.get("relay_error", ""),
                 "action_url": relay.action_url if relay is not None else "",
-                "account": getattr(relay, "account", ""),
+                "account": getattr(relay, "account", ""), "slept": live.get("slept"),
+                "power_ok": live.get("power_ok"),
                 "tool": live.get("exe"), "served": server.served if server else 0, "pinned": self.live_pinned()}
 
     def start_live_view(self, user=False):
@@ -25410,7 +25505,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 messagebox.showerror("الرابط المباشر", f"المنفذ {LIVE_PORT} مستخدم على هذا الجهاز (هل البرنامج مفتوح "
                                                        f"مرتين؟) — أغلق النسخة الأخرى ثم أعد المحاولة.\n\n{e}")
             return False
-        self._live = {"server": server, "pending": pending, "msgs": {}, "nonces": collections.deque(maxlen=500)}
+        self._live = {"server": server, "pending": pending, "msgs": {}, "nonces": collections.deque(maxlen=500),
+                      "tick_at": time.time()}
+        live_keep_awake(True)
         self.live_start_relay()
         save_ui_pref(LIVE_ENABLED_PREF, True)
         self.live_sync_async()
@@ -25466,6 +25563,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     pass
         for _params, box in list(live.get("pending") or ()):
             box["event"].set()
+        live_keep_awake(False)
         if user:
             save_ui_pref(LIVE_ENABLED_PREF, False)
         self.update_live_button()
@@ -25487,6 +25585,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         live = self.__dict__.get("_live")
         if not live or live.get("server") is None:
             return
+        now = time.time()
+        last = live.get("tick_at") or now
+        live["tick_at"] = now
+        if now - last > self.LIVE_SLEEP_GAP:
+            # الجهاز نام (غطاء اللابتوب أو الخمول) ثم استيقظ: الوسيط يُعاد ويُبلَّغ المدير بوقت النوم
+            live["slept"] = (last, now)
+            live["synced_at"] = 0
+            self.live_start_relay()
         pending = live["pending"]
         for _ in range(4):
             if not pending:
@@ -25596,10 +25702,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         code, mark, err = live_probe(url.rstrip("/") + "/", timeout=15)
         add(mark, "يصل من الإنترنت", "العنوان يوصل إلى البرنامج على هذا الجهاز" if mark else
             f"لا يصل ({code or err}) — تأكد من الإنترنت ومن تفعيل Funnel، ثم أعد الفحص")
+        self.live_check_power(add, snap)
         return steps
 
+    def live_check_power(self, add, snap):
+        """(خيط خلفي) خطوة الطاقة: الجهاز النائم لا يشغّل الرابط — الغطاء والنوم عند توصيل الشاحن، والشاحن نفسه"""
+        power = live_power_read()
+        live = self.__dict__.get("_live")
+        if power is None:
+            return
+        ok_ = live_power_ok(power)
+        if live is not None:
+            live["power_ok"] = ok_
+        slept = snap.get("slept")
+        note = ""
+        if slept and time.time() - slept[1] < 86400:
+            note = (f"\nنام الجهاز من {datetime.datetime.fromtimestamp(slept[0]):%H:%M} إلى "
+                    f"{datetime.datetime.fromtimestamp(slept[1]):%H:%M} — كان الرابط متوقفاً، وعاد وحده بعد الاستيقاظ")
+        add(ok_, "الجهاز لا ينام (غطاء اللابتوب)",
+            ("عند توصيل الشاحن: إغلاق الغطاء لا يفعل شيئاً، ولا نوم ولا إسبات — أغلق الغطاء والرابط يعمل" if ok_ else
+             "إغلاق الغطاء (أو ترك الجهاز) ينيمه فيتوقف الرابط — اضغط «💤 امنع النوم» مرة واحدة (قد يطلب ويندوز إذنك: "
+             "اضغط نعم)") + note, None if ok_ else "power")
+        if live_on_battery():
+            add(False, "الشاحن موصول", "اللابتوب على البطارية: إغلاق الغطاء عليها ينيمه حمايةً للبطارية — صِل الشاحن "
+                "وأبقِه موصولاً")
+
     LIVE_CHECK_ACTIONS = {"start": "▶️ شغّل الآن", "install": "⬇️ ثبّت الآن", "login": "🔑 سجّل الدخول",
-                          "enable": "✅ فعّل الآن", "relay": "🔄 أعد المحاولة", "sync": "📤 أرسل الآن"}
+                          "enable": "✅ فعّل الآن", "relay": "🔄 أعد المحاولة", "sync": "📤 أرسل الآن",
+                          "power": "💤 امنع النوم"}
 
     def open_live_check(self, parent=None):
         """«🩺 فحص الرابط»: خطوات الضبط على هذا الجهاز ✔/✘ بالترتيب، وزر يُصلح أول خطوةٍ لم تكتمل — والنتيجة تُرسل للمدير"""
@@ -25719,6 +25849,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.live_start_relay()
             elif action == "sync":
                 self.live_sync_async(self.live_state()["url"], then=run)
+                return
+            elif action == "power":
+                result.configure(text="⏳ جارٍ ضبط الطاقة… إن سأل ويندوز «هل تسمح…» فاضغط نعم",
+                                 text_color=(UI["muted"], "#9AA4B2"))
+
+                def powered(res):
+                    done_, why = res if isinstance(res, tuple) else (False, "")
+                    if not done_ and win.winfo_exists():
+                        messagebox.showwarning("منع النوم", "تعذّر ضبط الطاقة تلقائياً" + (f" ({why})" if why else "")
+                                               + ".\n\nاضبطها يدوياً: ابدأ ← اكتب «إغلاق الغطاء» ← «اختيار ما يفعله إغلاق "
+                                               "الغطاء» ← عند توصيل الشاحن: «عدم القيام بأي شيء» ← حفظ التغييرات.",
+                                               parent=win)
+                    run()
+                tk_background(win, live_power_fix, powered)
                 return
             win.after(4000, run)
 
@@ -37116,6 +37260,9 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 detail += ("\n🔓 Tailscale ينتظر تفعيل Funnel لشبكتك مرة واحدة: اضغط «🔓 فعّل من جهازي» أعلاه وسجّل الدخول "
                            "في الصفحة بحساب Tailscale نفسه ثم اضغط Enable (وإن جاءت صفحةٌ ثانية فـ Enable أيضاً) — أو على "
                            "جهاز المصنع: «🩺 فحص الرابط» ← «✅ فعّل الآن»")
+            if "ينام عند إغلاق الغطاء" in st or "نام الجهاز" in st:
+                detail += ("\n💤 جهاز المصنع ينام (غطاء اللابتوب أو الخمول) فيتوقف الرابط: على جهاز المصنع «🩺 فحص الرابط» ← "
+                           "«💤 امنع النوم» مرة واحدة، وأبقِ الشاحن موصولاً")
             out.append((st.startswith("✔"), "حال الرابط على جهاز المصنع", detail))
         else:
             out.append((None, "حال الرابط على جهاز المصنع", "لم يُرسل حاله بعد: على جهازه «🌐 مباشر» ← «🩺 فحص الرابط» "
@@ -37138,8 +37285,8 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             out.append((False, "الرابط يفتح من الإنترنت", "يصل إلى جهاز المصنع لكنه لم يأخذ المفتاح بعد — انتظر حتى ١٠ "
                         "دقائق، أو على جهاز المصنع: «🩺 فحص الرابط» ← «📤 أرسل الآن»"))
         else:
-            out.append((False, "الرابط يفتح من الإنترنت", f"لا يصل ({code or perr}) — البرنامج مغلق على جهاز المصنع، أو "
-                        "الرابط متوقف هناك، أو Funnel غير مفعّل، أو لا إنترنت"))
+            out.append((False, "الرابط يفتح من الإنترنت", f"لا يصل ({code or perr}) — جهاز المصنع نائم (غطاء اللابتوب "
+                        "مغلق؟) أو مطفأ، أو البرنامج مغلق عليه، أو الرابط متوقف هناك، أو Funnel غير مفعّل، أو لا إنترنت"))
         return out
 
     def open_client_live_dialog(self, client_id, business_name):

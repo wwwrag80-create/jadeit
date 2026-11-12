@@ -552,6 +552,8 @@ if "class AdminPanel" in src:
     assert r[2][0] is False and "«🔓 فعّل من جهازي»" in r[2][2] and "Enable" in r[2][2], "فحص المدير يدلّه على التفعيل من جهازه"
     r = chk(True, None, [dev(live_state="✘ لم يكتمل · بانتظار مفتاح المدير")], None, None, None)
     assert "فعّل من جهازي" not in r[2][2], "بلا رابط تفعيل: لا زر"
+    r = chk(True, None, [dev(live_state="✔ جاهز · ⚠️ نام الجهاز 14:02–14:40")], url, url + "/?k=x", (None, False, "timed out"))
+    assert "«💤 امنع النوم»" in r[2][2] and "نائم" in r[-1][2], "المدير يعرف أن جهاز المصنع ينام وما يُصلحه"
     assert 'state["enable_url"] = urls[0] if urls and bad is not None else None' in body and "enable_btn.pack(" in body
     assert "open_url_window(state[\"enable_url\"])" in body
     assert 'text="🌐 العرض المباشر"' in src
@@ -578,12 +580,63 @@ assert "self.live_check_compute(snap, provider, exe, relay)" in olc
 assert 'state["follow_until"] = time.time() + self.LIVE_FOLLOW_SECS' in olc and "win.after(self.LIVE_FOLLOW_MS, run)" in olc
 assert "win.after_cancel(state[\"follow_job\"])" in olc, "متابعةٌ واحدة لا تتكرر"
 assert "📋 نسخ رابط التفعيل" in olc and 'if text != state["sent_text"]:' in olc
+# 1.96.3: لابتوب المصنع لا ينام عند إغلاق الغطاء (إعدادات الطاقة عند توصيل الشاحن) — والنوم يُكشف ويُبلَّغ
+import types
+PW = {"LIDACTION": 1, "STANDBYIDLE": 1800, "HIBERNATEIDLE": 10800}
+PW_CALLS = []
+
+
+def fake_powercfg(cmd, timeout=30, env=None):
+    PW_CALLS.append(cmd)
+    if cmd[1] == "/q":
+        key = cmd[4]
+        extra = ("" if key == "LIDACTION" else
+                 "      الحد الأدنى: 0x00000000\n      الحد الأقصى: 0xffffffff\n      الزيادة: 0x00000001\n")
+        return 0, (f"معرّف GUID لنظام الطاقة: 381b4222-f694-41f0-9685-ff5bb260df2e  (متوازن)\n  {cmd[3]}\n    {key}\n"
+                   f"      Possible Setting Index: 000\n{extra}"
+                   f"    Current AC Power Setting Index: 0x{PW[key]:08x}\n    Current DC Power Setting Index: 0x{PW[key] + 7:08x}\n")
+    if cmd[1] == "/setacvalueindex":
+        PW[cmd[4]] = int(cmd[5])
+    return 0, ""
+
+
+pw = {"re": re, "time": time, "sys": types.SimpleNamespace(platform="win32"), "live_run_capture": fake_powercfg}
+for fn in ("_PWR_SETTINGS", "_PWR_HEX_RE", "live_power_read", "live_power_ok", "live_power_fix", "live_on_battery",
+           "live_keep_awake"):
+    exec(module_src(fn), pw)
+vals = pw["live_power_read"]()
+assert vals == {"LIDACTION": 1, "STANDBYIDLE": 1800, "HIBERNATEIDLE": 10800}, f"قيمة الشاحن (لا البطارية) بأي لغة: {vals}"
+assert not pw["live_power_ok"](vals) and not pw["live_power_ok"](None)
+assert pw["live_power_fix"](wait=1) == (True, "") and pw["live_power_ok"](pw["live_power_read"]()), "الضبط بلا إذن"
+sets = [c for c in PW_CALLS if c[1] == "/setacvalueindex"]
+assert {(c[3], c[4], c[5]) for c in sets} == {("SUB_BUTTONS", "LIDACTION", "0"), ("SUB_SLEEP", "STANDBYIDLE", "0"),
+                                             ("SUB_SLEEP", "HIBERNATEIDLE", "0")}, "الغطاء «لا شيء» والنوم والإسبات «أبداً»"
+assert ["powercfg", "/setactive", "SCHEME_CURRENT"] in PW_CALLS and not any("/setdcvalueindex" in c for c in PW_CALLS), \
+    "عند توصيل الشاحن وحده — البطارية كما هي"
+PW.update(LIDACTION=1)
+pw["live_run_capture"] = lambda cmd, timeout=30, env=None: (fake_powercfg(cmd) if cmd[1] == "/q" else (1, "Access denied"))
+done_, why = pw["live_power_fix"](wait=1)
+assert done_ is False and why, "رُفض بلا صلاحية ولا إذن ويندوز (UAC): فشلٌ بسببه لا انهيار"
+assert pw["live_on_battery"]() is None and pw["live_keep_awake"](True) is False, "خارج ويندوز الحقيقي: لا شيء"
+linux_pw = {"sys": sys, "re": re, "_PWR_SETTINGS": pw["_PWR_SETTINGS"]}
+exec(module_src("live_power_read"), linux_pw)
+assert sys.platform.startswith("win") or linux_pw["live_power_read"]() is None, "غير ويندوز: لا خطوة طاقة"
+start2 = member("start_live_view")
+assert "live_keep_awake(True)" in start2 and '"tick_at": time.time()' in start2, "الرابط يعمل ← لا نوم من الخمول"
+assert "live_keep_awake(False)" in member("stop_live_view")
+tick2 = member("_live_tick")
+assert "if now - last > self.LIVE_SLEEP_GAP:" in tick2 and 'live["slept"] = (last, now)' in tick2 \
+    and "self.live_start_relay()" in tick2, "بعد الاستيقاظ: الوسيط يُعاد ويُبلَّغ المدير"
+assert "self.live_check_power(add, snap)" in check and '"power")' in member("live_check_power")
+assert "tk_background(win, live_power_fix, powered)" in member("open_live_check")
+assert '"⚠️ الجهاز ينام عند إغلاق الغطاء"' in member("live_state_summary") and "نام الجهاز" in member("live_state_summary")
 summ2 = member("live_state_summary")
 assert 'parts.append(f"رابط التفعيل: {st[\'action_url\']}")' in summ2 and 'f"حساب Tailscale: {st[\'account\']}"' in summ2
 for t in ('"Tailscale مثبّت"', '"تسجيل الدخول في Tailscale"', '"Funnel (فتح الرابط للإنترنت)"', '"عنوان هذا الجهاز"',
           '"إرسال العنوان للمدير"', '"مفتاح المدير"', '"يصل من الإنترنت"'):
     assert t in check, t
-assert set(re.findall(r'"(\w+)": "', member("LIVE_CHECK_ACTIONS"))) == {"start", "install", "login", "enable", "relay", "sync"}
+assert set(re.findall(r'"(\w+)": "', member("LIVE_CHECK_ACTIONS"))) == {"start", "install", "login", "enable", "relay", "sync",
+                                                                        "power"}
 summ = member("live_state_summary")
 assert '"✔ جاهز" if ready else "✘ لم يكتمل"' in summ and "[:300]" in summ
 assert "self.live_report_state(" in member("stop_live_view") and "self.live_report_state(" in member("on_app_closing")
