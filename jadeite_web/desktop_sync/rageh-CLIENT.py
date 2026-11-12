@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.96.3"
+APP_VERSION = "1.96.4"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4935,12 +4935,31 @@ class LiveViewServer:
                ("X-Robots-Tag", "noindex, nofollow"), ("Referrer-Policy", "no-referrer"),
                ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"),
                ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                                           "connect-src 'self'; "
+                                           "connect-src 'self'; font-src 'self'; "
                                            "img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"),
                ("Connection", "close"))
     REASONS = {200: "OK", 303: "See Other", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
                405: "Method Not Allowed", 413: "Payload Too Large", 415: "Unsupported Media Type",
                503: "Service Unavailable"}
+
+    # (1.96.4) خط الرابط: خط البرنامج نفسه (IBM Plex Sans Arabic، رخصة OFL) من ملفاته المرفقة — بالمفتاح كالصفحات
+    FONTS = {"/font/400": "IBMPlexSansArabic-Regular.ttf", "/font/600": "IBMPlexSansArabic-SemiBold.ttf",
+             "/font/700": "IBMPlexSansArabic-Bold.ttf"}
+    _font_cache = {}
+
+    @classmethod
+    def font_bytes(cls, path):
+        """ملف الخط لمسارٍ من FONTS (يُقرأ مرة) — أو None إن لم يكن مرفقاً"""
+        name = cls.FONTS.get(path)
+        if not name:
+            return None
+        if path not in cls._font_cache:
+            try:
+                with open(resource_path(os.path.join("fonts", name)), "rb") as f:
+                    cls._font_cache[path] = f.read()
+            except OSError:
+                cls._font_cache[path] = b""
+        return cls._font_cache[path] or None
 
     def __init__(self, token, pending, verifier=None):
         # token: المفتاح نفسه (جلسةٌ محلية أو برنامج المدير)، أو verifier: بصمته وحدها (حساب عميل منذ 1.96 — المفتاح على
@@ -5066,6 +5085,11 @@ class LiveViewServer:
             form = {k: v[-1] for k, v in parse_qs(body_b[:need].decode("utf-8", "replace"),
                                                  keep_blank_values=True).items()}
         given = str(params.get("k") or form.get("k") or "")
+        if path in self.FONTS and method != "POST" and given and self.key_ok(given):
+            font = self.font_bytes(path)
+            if font:
+                return 200, font, method == "HEAD", (("Content-Type", "font/ttf"),
+                                                      ("Cache-Control", "private, max-age=2592000, immutable"))
         if path not in ("/", "") or not given or not self.key_ok(given):
             time.sleep(self.FAIL_DELAY)                     # تخمين المفتاح بطيء — والرد لا يكشف شيئاً
             return 404, self.message_page("غير موجود"), method == "HEAD", ()
@@ -5104,7 +5128,7 @@ class LiveViewServer:
         names = {k.lower() for k, _v in headers}
         if "content-type" not in names:
             lines.append(f"Content-Type: {self.HTML}")
-        lines += [f"{k}: {v}" for k, v in self.HEADERS]
+        lines += [f"{k}: {v}" for k, v in self.HEADERS if k.lower() not in names]
         lines += [f"{k}: {v}" for k, v in headers]
         lines.append(f"Content-Length: {len(body)}")
         return ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + body
@@ -11275,13 +11299,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         rec_col = (shown_extra[1],) if shown_extra else ()
         # كشف «صب وتحليل»: كل حركة صفٌّ برقم سندها (المطبوع على سندها)، والقديم برقم صفّه
         first_col = ("رقم السند",) if analysis_view else ("الصف",)
-        an_cols = ("التاريخ",) if analysis_view else ()
+        # (1.96.4) الرابط (live_date_first): في الكاستنج تاريخ كل صف أولاً — قبل رقم الصف (أو السند)
+        date_first = bool(recover_name) and bool(getattr(self, "live_date_first", False))
+        lead_cols = ("التاريخ",) if date_first else ()
+        an_cols = ("التاريخ",) if analysis_view and not date_first else ()
         raw_cols = ("الوزن", "العيار") if analysis_view else ()
+        lead = lead_cols + first_col + an_cols + op_col + name_col + raw_cols
         if with_trees:
-            cols = (first_col + an_cols + op_col + name_col + raw_cols + ("صرف", "قبض") + rec_col + ("الخياس",)
-                    + ("عدد الأشجار", "خياس كل شجرة", "البيان"))
+            cols = lead + ("صرف", "قبض") + rec_col + ("الخياس",) + ("عدد الأشجار", "خياس كل شجرة", "البيان")
         else:
-            cols = first_col + an_cols + op_col + name_col + raw_cols + ("صرف", "قبض") + rec_col + ("الخياس", "البيان")
+            cols = lead + ("صرف", "قبض") + rec_col + ("الخياس", "البيان")
 
         tree, total_tree, _reused = self.reuse_or_create_tree(
             table_frame, cols, height=height, sticky_total=True)
@@ -11325,8 +11352,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # التلوين حسب إعداد القسم نفسه: الأحمر فقط لو كان الخياس سالباً
             # (أي أن القبض أكبر من الصرف) والزر مفعّل في هذا القسم.
             tags = ("red_tag",) if (color_negative and khayas < 0) else ()
-            vals = [row_label]
-            if analysis_view:
+            vals = ([str(g["dt"])[:10]] if date_first else []) + [row_label]
+            if analysis_view and not date_first:
                 vals.append(str(g["dt"])[:10])
             if op_column:
                 op_label = g.get("op", "فاقد")
@@ -11357,7 +11384,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         tot_khayas = round(tot_madin - tot_daen + extra_sign * tot_rec, 2)
         if rows_map:
-            tvals = ["إجمالي الشهر"] + (["-"] if analysis_view else []) + (
+            tvals = (["-"] if date_first else []) + ["إجمالي الشهر"] + (["-"] if analysis_view and not date_first else []) + (
                 ["-"] if (op_column or show_name) else []) + (["-", "-"] if analysis_view else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
                      [f"{tot_rec:.2f}"] if shown_extra else []) + [f"{tot_khayas:.2f}"]
@@ -25298,11 +25325,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # ═══ الرابط المباشر (1.94 — ثابتٌ ويكتب منذ 1.95): رابط المدير الخاص إلى هذا الجهاز — انظر LiveViewServer ═══
     LIVE_TICK_MS = 120
+    live_date_first = False           # (1.96.4) الرابط وحده يقدّم تاريخ الصف في جدول الكاستنج (نسخته الظلّية)
     LIVE_SLEEP_GAP = 90               # (1.96.3) فجوةٌ أطول من هذا بين دورتين = الجهاز كان نائماً
     LIVE_SCREENS = (("stages", "مراحل التصنيع", "🏭"), ("khayas", "صناديق الخياس", "⚖️"), ("sales", "المبيعات", "🧾"),
                     ("inbound", "الوارد", "📥"), ("factory", "صناديق المصنع", "🏦"), ("losses", "شاشة الخسائر", "📉"))
     LIVE_TOOLS = (("add", "إضافة عملية", "➕"), ("recent", "آخر العمليات", "🕘"), ("set", "رقم تشغيل / حركة", "🔎"),
-                  ("bin", "المحذوفات", "🗑️"), ("control", "لوحة التحكم", "⚙️"))
+                  ("control", "لوحة التحكم", "⚙️"))
     LIVE_ALL_SCREENS = ("factory", "losses")  # تقبلان «كل الفترات» كشاشتيهما
     LIVE_SCREEN_OF = {"stages": "مراحل التصنيع", "khayas": "صناديق الخياس", "sales": "المبيعات", "inbound": "الوارد"}
     LIVE_PROVIDER_NAMES = {"tailscale": "Tailscale (مجاني — موصى به)", "cloudflare": "Cloudflare (بنطاقك)"}
@@ -26219,7 +26247,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         data = getattr(self, f"live_view_{view}")(period, dict(params, _message=message))
         return 200, self.live_html(params, view, period, periods, data.get("chips", []), data.get("blocks", []),
                                    summary=data.get("summary", []), note=data.get("note", ""), message=message,
-                                   no_period=data.get("no_period", view in ("set", "control", "bin")))
+                                   no_period=data.get("no_period", view in ("set", "control")))
 
     def live_render_shadow(self, refresh, **overrides):
         """يشغّل دالة تحديث الشاشة الحقيقية على نسخة ظلّية (_LiveShadow) بإطارات خفية — ويرجع (الجداول، الملخّص)"""
@@ -26257,7 +26285,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             op = str(params.get("w", "") or "")
             op = op if op in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
             sub = ("w", op, [(o, o) for o in self.CAST_OPERATIONS])
-            overrides.update(cast_op=_LiveSink(value=op))
+            overrides.update(cast_op=_LiveSink(value=op), live_date_first=True)     # التاريخ قبل رقم الصف
         if stage == self.SET_TRACK_KEY:
             overrides.update(set_track_search=_LiveSink(value=""), set_track_scope=_LiveSink(value="الفترة"))
 
@@ -26314,8 +26342,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                  ("📊 الإنتاج", [("الذهب + فصوص وأحجار", tot["prod_gold_stones"]),
                                 ("الذهب + الألماس", tot["prod_gold_diamond"]), ("إجمالي الإنتاج", tot["prod_total"]),
                                 ("إنتاج الذهب", tot["prod_gold"]), ("إنتاج الألماس", tot["prod_diamond"])]),
-                 ("⚖️ النسب", [("(الفصوص + الأحجار) / الذهب %", tot["ratio_stones"]),
-                              ("الألماس / الذهب %", tot["ratio_diamond"])])]
+                 ("⚖️ النسب", [("نسبة الفصوص والأحجار %", tot["ratio_stones"]),
+                              ("نسبة الألماس %", tot["ratio_diamond"])])]
         return {"blocks": [("cards", cards)],
                 "summary": [f"صناديق المصنع — {self.factory_range_label(period, period)}"]}
 
@@ -26326,7 +26354,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             cards.append((f"صندوق خياس {self.get_display_label(cat)}",
                           [("الفاقد الحالي", s["current"]), (self.get_box_loss_account(cat), s["loss"]),
                            (self.get_box_recovery_name(cat), s["recovered"]),
-                           ("الصافي (الفاقد − المسترجع)", s["net"])]))
+                           ("الصافي", s["net"])]))
         return {"blocks": [("cards", cards)], "summary": [self.range_scope_label(period, period)]}
 
     # ── الكتابة من الرابط (1.95): الإضافة والتعديل والحذف ولوحة التحكم — كلها بدوال الجهاز نفسها ──
@@ -26576,7 +26604,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             nonces.append(nonce)
             handler = {"add": self.live_do_add, "move_save": self.live_do_move, "control": self.live_do_control,
                        "any_del": self.live_do_any_delete, "inb_save": self.live_do_inbound, "je_save": self.live_do_journal,
-                       "bin_restore": self.live_do_bin_restore,
                        "move_del": lambda prm: self.live_do_move(prm, delete=True)}.get(action)
             try:
                 result = handler(params) if handler else {"ok": False, "lines": ["طلب غير معروف"]}
@@ -26681,8 +26708,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             hidden[spec["subs"][0]] = spec["subs"][1]
         html = self.live_form_html(params, hidden, spec["fields"], values, rows=spec.get("rows"),
                                    submit=f"ترحيل إلى {spec['title']} 💾", force=True, fill=True)
-        return {"chips": chips, "summary": [f"➕ {spec['title']} — تُسجَّل على الجهاز في فترة {period}، بالتحقق نفسه الذي "
-                                           "في شاشته، وتظهر فيها فوراً"], "blocks": [("html", html)]}
+        return {"chips": chips, "summary": [f"➕ {spec['title']} — فترة {period}"], "blocks": [("html", html)]}
 
     def live_view_set(self, period, params):
         esc = live_escape
@@ -26719,8 +26745,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                         out.append(self.live_move_html(params, inv, self.set_move_label(inv, g["cat"])))
             if not any_moves:
                 out.append('<div class="note">لا حركات بهذا الرقم</div>')
-        return {"summary": ["🔎 ابحث برقم التشغيل لترى حركاته في كل المراحل وتعدّل أي خانة أو تحذف — أو برقم الحركة"],
-                "no_period": True,
+        return {"no_period": True,
                 "blocks": [("html", "".join(out))]}
 
     def live_move_html(self, params, inv, label):
@@ -26738,7 +26763,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         def delete(text="🗑️ حذف"):
             return self.live_form_html(params, dict(base, a="any_del", mid=inv_id), [], {}, submit=text, compact=True,
-                                       confirm="تأكيد الحذف (يذهب إلى المحذوفات)", danger=True)
+                                       confirm="تأكيد الحذف", danger=True)
 
         if self.set_move_editable(inv):
             fields = [("date", "التاريخ", "date", None, vals["date"]), ("weight", "الوزن", "num", None, vals["weight"]),
@@ -26769,11 +26794,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             recs = self.get_sale_invoice_records(self.sale_key_of(inv))
             total = sum(float(r.get("الوزن") or 0) for r in recs if r.get("النوع") in self.SALE_TYPES)
             return (head + f'<div class="hint">فاتورة {esc(inv.get("رقم الفاتورة اليدوي", "") or "-")} — {len(recs)} حركة '
-                    f'بإجمالي {total:.2f} · تعديل سطورها من شاشة المبيعات على الجهاز</div>'
+                    f'بإجمالي {total:.2f}</div>'
                     + delete("🗑️ حذف الفاتورة كاملة") + "</div>")
         return (head + '<div class="grid">' + "".join(
             f"<div><span>{esc(lbl)}</span><b>{esc(vals[k])}</b></div>" for k, lbl in self.SET_MOVE_FIELDS)
-            + '</div><div class="hint">تُعدَّل من نافذتها على الجهاز</div>' + delete() + "</div>")
+            + "</div>" + delete() + "</div>")
 
     def journal_legs(self, inv):
         ref = inv.get("set_number")
@@ -26802,7 +26827,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return False, "لم تُحذف (فترتها مقفلة)"
         self.update_period_selector()
         self.recalculate_all()
-        return True, f"✔ حُذفت {label} — {len(ids)} حركة إلى «المحذوفات» (تُستعاد منها)"
+        return True, f"✔ حُذفت {label} — {len(ids)} حركة"
 
     def _parse_move_date(self, date, inv):
         text = str(date or "").strip().translate(self._DATE_DIGITS)
@@ -26886,14 +26911,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         inv_id = self._live_mid(params)
         (ok, msg), lines, _ids = self.live_run("update_journal_entry", inv_id, date=params.get("date"),
                                                amount=params.get("amount"), note=params.get("note"), force=True)
-        return {"ok": bool(ok), "lines": [msg] + self.live_lines(lines)}
-
-    def live_do_bin_restore(self, params):
-        try:
-            bin_id = int(str(params.get("bid") or "").strip())
-        except ValueError:
-            return {"ok": False, "lines": ["رقم غير صحيح"]}
-        (ok, msg), lines, _ids = self.live_run("bin_restore", bin_id, force=True)
         return {"ok": bool(ok), "lines": [msg] + self.live_lines(lines)}
 
     def live_fill(self, params):
@@ -27009,33 +27026,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         html = "".join(self.live_move_html(params, inv, f"{self.movement_label(inv)} · {self.set_move_label(inv)}")
                        for inv in invs)
         return {"chips": chips, "no_period": True,
-                "summary": [f"🕘 آخر {len(invs)} عملية سُجّلت على الجهاز (الأحدث أولاً) — عدّل أي عملية أو احذفها"],
+                "summary": [f"🕘 آخر {len(invs)} عملية"],
                 "blocks": [("html", html)] if html else [], "note": "لا عمليات بعد"}
-
-    # ── 🗑️ المحذوفات في الرابط: كل ما حُذف ومتى ولماذا — و♻️ استعادة ──
-    def live_view_bin(self, period, params):
-        esc = live_escape
-        q = str(params.get("q") or "").strip()
-        items = self.bin_rows(q, limit=80)
-        out = ['<form class="frm search" method="get"><input type="hidden" name="k" value="'
-               f'{esc(params.get("k", ""))}"><input type="hidden" name="v" value="bin">'
-               f'<label><span>بحث: اسم، عملية، صف، رقم تشغيل، فترة، سبب</span><input name="q" value="{esc(q)}"></label>'
-               '<button>🔎 بحث</button></form>']
-        for item in items:
-            inv = item["inv"]
-            out.append(f'<div class="mv del"><div class="mvh"><b>🗑️ {esc(item["deleted_at"])}</b> · {esc(item["reason"])}</div>'
-                       f'<div class="grid"><div><span>القسم</span><b>{esc(self.movement_label(inv))}</b></div>'
-                       f'<div><span>الفترة</span><b>{esc(self.inv_period(inv))}</b></div>'
-                       f'<div><span>الاسم</span><b>{esc(inv.get("الاسم", ""))}</b></div>'
-                       f'<div><span>العملية</span><b>{esc(inv.get("النوع", ""))}</b></div>'
-                       f'<div><span>الوزن</span><b>{float(inv.get("الوزن") or 0):.2f}</b></div>'
-                       f'<div><span>الصف</span><b>{esc(inv.get("row_number", "") or "—")}</b></div>'
-                       f'<div><span>رقم التشغيل</span><b>{esc(inv.get("set_number", "") or "—")}</b></div></div>'
-                       + self.live_form_html(params, {"a": "bin_restore", "v": "bin", "q": q, "bid": item["bin_id"]}, [],
-                                             {}, submit="♻️ استعادة", compact=True) + "</div>")
-        return {"no_period": True,
-                "summary": [f"🗑️ المحذوفات: {len(items)} حركة — لا يُحذف شيءٌ نهائياً؛ كل ما حُذف هنا بوقته وسببه ويُستعاد"],
-                "blocks": [("html", "".join(out))]}
 
     def live_view_control(self, period, params):
         esc = live_escape
@@ -27053,30 +27045,25 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 ("الرابط", "📌 مثبّت" if state["pinned"] else "عادي"), ("طلبات الرابط منذ التشغيل", f"{state['served']}")]
         out = ['<div class="cards"><div class="card"><h3>📟 حال الجهاز</h3>' + "".join(
             f'<div class="row"><span>{esc(k)}</span><b>{esc(v)}</b></div>' for k, v in rows) + "</div></div>"]
-        acts = [("lock", "unlock", flags.get("edit_locked"), "🔒 قفل تعديل الحركات المسجّلة", "🔓 فتح التعديل",
-                 "يمنع تعديل ما سُجّل (الإضافة والحذف يبقيان) — كقفل التعديل في لوحة المدير", None),
+        acts = [("lock", "unlock", flags.get("edit_locked"), "🔒 قفل تعديل الحركات المسجّلة", "🔓 فتح التعديل", None),
                 ("suspend", "resume", flags.get("suspended"), "⛔ إيقاف البرنامج على الجهاز", "▶️ إعادة تشغيله",
-                 "يغطي البرنامج كله على الجهاز برسالة الإيقاف (البيانات كما هي) — والرابط يبقى يعمل لتعيده من هنا",
                  "تأكيد الإيقاف"),
-                ("pin", "unpin", flags.get("pinned"), "📌 تثبيت الرابط", "📍 إلغاء التثبيت",
-                 "لا يُوقف الرابط ولا يتغير مفتاحه من الجهاز، ويعود وحده مع البرنامج", None)]
+                ("pin", "unpin", flags.get("pinned"), "📌 تثبيت الرابط", "📍 إلغاء التثبيت", None)]
         out.append('<div class="ctl">')
-        for on_do, off_do, is_on, on_text, off_text, hint, confirm in acts:
+        for on_do, off_do, is_on, on_text, off_text, confirm in acts:
             do = off_do if is_on else on_do
-            out.append('<div class="card">' + f'<div class="hint">{esc(hint)}</div>' + self.live_form_html(
+            out.append('<div class="card">' + self.live_form_html(
                 params, {"a": "control", "v": "control", "do": do}, [], {}, submit=off_text if is_on else on_text,
                 compact=True, confirm=confirm if not is_on else None, danger=(do == "suspend")) + "</div>")
         out.append("</div>")
-        out.append('<div class="cards"><div class="card"><h3>💾 نسخة احتياطية</h3><div class="hint">نسخة كاملة من قاعدة '
-                   'بيانات الجهاز الآن (ملف ‎.db) — احفظها عندك؛ السحابة لم تعد تحفظ نسخاً</div>'
+        out.append('<div class="cards"><div class="card"><h3>💾 نسخة احتياطية</h3>'
                    f'<a class="btn" href="{esc(self.live_url({"k": params.get("k")}, v="backup"))}">⬇️ تنزيل النسخة'
                    "</a></div></div>")
-        return {"summary": ["⚙️ لوحة التحكم — تُطبَّق على الجهاز فوراً"], "blocks": [("html", "".join(out))]}
+        return {"summary": ["⚙️ لوحة التحكم"], "blocks": [("html", "".join(out))]}
 
     # الملء التلقائي في نماذج الإضافة (1.96): تغيّر خانة ← يُسأل الجهاز (v=fill) ← تُملأ الخانات الفارغة (أو التي ملأها هو
     # قبلُ) بما يملؤه الجهاز نفسه: رقم التشغيل من الصف، والصف من رقم التشغيل، والصف التالي، وسطر البيع من القالب والتتبع
     LIVE_FILL_JS = ("(function(){var f=document.querySelector('form[data-fill]');if(!f)return;"
-                    "var h=document.getElementById('fillhint');"
                     "f.addEventListener('input',function(e){if(e.target.dataset)e.target.dataset.auto='';});"
                     "f.addEventListener('change',function(e){var t=e.target;if(!t.name)return;"
                     "var u=new URL(f.getAttribute('action'),location.href);"
@@ -27085,7 +27072,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "fetch(u.toString(),{credentials:'same-origin'}).then(function(r){return r.json();})"
                     ".then(function(d){var s=d.set||{};for(var k in s){var x=f.elements[k];if(!x||x===t)continue;"
                     "if(!x.value||x.dataset.auto==='1'){x.value=s[k];x.dataset.auto='1';}}"
-                    "if(h)h.textContent=d.hint||'';}).catch(function(){});});})();")
+                    "}).catch(function(){});});})();")
 
     def live_form_html(self, params, hidden, fields, values, rows=None, submit="حفظ", force=False, compact=False,
                        confirm=None, danger=False, fill=False):
@@ -27131,17 +27118,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if confirm:
             out.append(f'<label class="chk"><input type="checkbox" name="c" value="1"> {esc(confirm)}</label>')
         if force:
-            out.append('<label class="chk"><input type="checkbox" name="force" value="1"> متابعة رغم التنبيهات '
-                       '(رقم مكرر، اسم جديد…) كما لو أجبت «نعم» على الجهاز</label>')
-        if fill:
-            out.append('<div id="fillhint" class="fillhint"></div>')
+            out.append('<label class="chk"><input type="checkbox" name="force" value="1"> متابعة رغم التنبيهات</label>')
         out.append(f'<button class="{"danger" if danger else ""}">{esc(submit)}</button></form>')
         if fill:
             out.append(f"<script>{self.LIVE_FILL_JS}</script>")
         return "".join(out)
 
     LIVE_CSS = """
-*{box-sizing:border-box}body{margin:0;background:#EEF1F6;color:#111827;font:15px/1.5 Tahoma,"Segoe UI",Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:#EEF1F6;color:#111827;
+font:15px/1.6 "Jadeite Plex",Tahoma,"Segoe UI",Arial,sans-serif;-webkit-text-size-adjust:100%}
 a{color:inherit;text-decoration:none}header{background:#13213F;color:#fff;padding:12px 16px;display:flex;
 flex-wrap:wrap;gap:6px 16px;align-items:center;justify-content:space-between;border-bottom:3px solid #D4AF37}
 .brand{font-size:19px;font-weight:700}.live{font-size:13px;color:#BFD3F2}.live b{color:#7EE2B8}
@@ -27154,10 +27139,12 @@ select,input{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #C
 .chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 8px}.chips a{padding:5px 12px;border-radius:999px;
 border:1px solid #C8D0DC;background:#fff;font-size:13px;font-weight:700}.chips a.on{background:#D4AF37;border-color:#B8952E}
 .summary{margin:4px 14px 10px;display:grid;gap:6px}.summary div{background:#FFF7DD;border:1px solid #E8D48A;
-border-radius:10px;padding:8px 12px;font-weight:700}.wrap{margin:0 10px 14px;background:#fff;border-radius:12px;
-border:1px solid #DDE3EC;overflow:auto;max-height:78vh}table{border-collapse:collapse;width:100%;font-size:14px}
-th{position:sticky;top:0;background:#1F3B73;color:#fff;padding:8px 10px;white-space:nowrap;z-index:1}
-td{padding:7px 10px;border-bottom:1px solid #EEF1F5;white-space:nowrap;text-align:center}
+border-radius:10px;padding:8px 12px;font-weight:700;white-space:pre-line}
+.wrap{margin:0 10px 14px;background:#fff;border-radius:12px;border:1px solid #DDE3EC;overflow:auto;max-height:78vh;
+width:fit-content;max-width:calc(100% - 20px)}table{border-collapse:collapse;width:auto;font-size:14px}
+th{position:sticky;top:0;background:#1F3B73;color:#fff;padding:8px 12px;white-space:nowrap;z-index:1;font-weight:700}
+td{padding:7px 12px;border-bottom:1px solid #EEF1F5;white-space:nowrap;text-align:center;font-variant-numeric:tabular-nums}
+td.long{white-space:normal;min-width:180px;max-width:340px;text-align:right}
 td:first-child{text-align:right;font-weight:700}tr:nth-child(even) td{background:#F7F9FC}
 tr.total td{background:#FFF1C9;font-weight:800;border-top:2px solid #D4AF37}.neg{color:#B00020}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin:0 12px 14px}
@@ -27184,9 +27171,10 @@ table.rows input{width:90px;padding:5px 6px}table.rows td{padding:4px}
 .mv{margin:0 12px 10px;background:#fff;border:1px solid #DDE3EC;border-radius:12px;padding:10px 12px}
 .mvh{font-size:14px;margin-bottom:6px}.mv .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
 .mv .grid span{display:block;font-size:12px;color:#6B7280}.hint{font-size:13px;color:#6B7280;margin:4px 0}
-h3.sec{margin:14px 14px 6px;font-size:16px;color:#13213F}.fillhint{margin-top:8px;color:#1F3B73;font-weight:700;font-size:14px}
+h3.sec{margin:14px 14px 6px;font-size:16px;color:#13213F}
 .mv.del{border-color:#F3B4B4;background:#FFFBFB}.ctl{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));
-gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0}
+gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .frm.compact .grid:empty{display:none}
+.ctl .frm.compact button{margin-top:4px}
 """
 
     LIVE_URL_KEYS = ("k", "v", "p", "c", "w", "kind", "f", "op", "q", "id")
@@ -27209,11 +27197,15 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0}
         titles = {k: t for k, t, _i in self.LIVE_SCREENS + self.LIVE_TOOLS}
         title = titles.get(view, "الرابط المباشر")
         base = {"k": params.get("k"), "p": params.get("p")}
+        from urllib.parse import quote
+        key = quote(str(params.get("k") or ""), safe="")
+        fonts = "".join(f'@font-face{{font-family:"Jadeite Plex";src:url("{path}?k={key}") format("truetype");'
+                        f"font-weight:{path.rsplit('/', 1)[1]};font-display:swap}}" for path in LiveViewServer.FONTS)
         out = ['<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">'
                '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">',
-               f"<title>{esc(title)} — {esc(factory)}</title><style>{self.LIVE_CSS}</style></head><body>",
-               f'<header><div class="brand">◆ {esc(factory)}</div><div class="live"><b>●</b> مباشر من جهاز المصنع · '
-               f'{esc(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</div></header><nav>',
+               f"<title>{esc(title)} — {esc(factory)}</title><style>{fonts}{self.LIVE_CSS}</style></head><body>",
+               f'<header><div class="brand">◆ {esc(factory)}</div><div class="live"><b>●</b> مباشر · '
+               f'{esc(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))}</div></header><nav>',
                f'<a href="{esc(self.live_url(base))}" class="{"on" if home else ""}">🏠 الرئيسية</a>']
         for key, label, icon in self.LIVE_SCREENS:
             out.append(f'<a class="{"on" if key == view else ""}" href="{esc(self.live_url(base, v=key))}">'
@@ -27248,6 +27240,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0}
                 out.append(f'<a class="{"on" if value == selected else ""}" href="{esc(self.live_url(params, **change))}">'
                            f"{esc(label)}</a>")
             out.append("</div>")
+        summary = self.live_clean_summary(summary)
         if summary:
             out.append('<div class="summary">' + "".join(f"<div>{esc(s)}</div>" for s in summary) + "</div>")
         if home:
@@ -27269,7 +27262,10 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0}
                             neg = float(str(v).replace(",", "")) < 0
                         except ValueError:
                             neg = False
-                        cells.append(f'<td{" class=neg" if neg else ""}>{esc(v)}</td>')
+                        # النص الطويل (البيان ومصدر الحركة) يلتف في عمودٍ محدود بدل أن يمدّ الجدول كله
+                        cls = " ".join(c for c in ("neg" if neg else "", "long" if len(str(v)) > 32 else "") if c)
+                        attr = f' class="{cls}"' if cls else ""
+                        cells.append(f"<td{attr}>{esc(v)}</td>")
                     out.append(f'<tr{" class=total" if total else ""}>' + "".join(cells) + "</tr>")
                 out.append("</tbody></table></div>")
             elif kind == "cards":
@@ -27281,9 +27277,29 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0}
                 out.append("</div>")
         if not home and not blocks:
             out.append(f'<div class="note">{esc(note or "لا بيانات لهذه الفترة")}</div>')
-        out.append(f'<footer>جاديت {esc(APP_VERSION)} · الأرقام من البرنامج نفسه لحظة فتح الصفحة · '
+        out.append(f'<footer>جاديت {esc(APP_VERSION)} · '
                    f'<a href="{esc(self.live_url(params))}">↻ تحديث</a></footer></body></html>')
         return "".join(out)
+
+    # (1.96.4) الرابط بلا شروحٍ ولا معادلات: من نصوص الشاشات يُحذف كل سطرٍ فيه معادلة («=») أو نصيحة (💡/ℹ️)،
+    # وتُزال الملاحظات بين قوسين؛ ويبقى ما سواها (الأرقام والإجماليات وعنوان الكشف)
+    LIVE_HIDE_NOTES = ("(بالمعادل لعيار 18)", "(العمليات مدموجة)")
+
+    @classmethod
+    def live_clean_summary(cls, items):
+        out = []
+        for text in items or ():
+            lines = []
+            for line in str(text).split("\n"):
+                for note in cls.LIVE_HIDE_NOTES:
+                    line = line.replace(note, "")
+                line = re.sub(r"[ \t]{3,}", "  ", line).strip()
+                if not line or "=" in line or line.startswith(("💡", "ℹ️", "ℹ")):
+                    continue
+                lines.append(line)
+            if lines:
+                out.append("\n".join(lines))
+        return out
 
     def live_error_html(self, text):
         return LiveViewServer.message_page(f"تعذّر عرض الصفحة: {text}").decode("utf-8")

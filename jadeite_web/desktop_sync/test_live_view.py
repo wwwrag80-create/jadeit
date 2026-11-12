@@ -133,6 +133,21 @@ for req, code in ((b"GET / HTTP/1.1\r\n\r\n", 404), (f"GET /admin?k={tok} HTTP/1
                   (b"garbage\r\n\r\n", 400), (b"GET /?k=" + b"A" * 9000 + b" HTTP/1.1\r\n\r\n", 400)):
     h, b = raw(req)
     assert h.startswith(f"HTTP/1.1 {code}") or (code == 400 and h == "RESET"), (req[:30], h[:40])
+# 1.96.4: خط الرابط (خط البرنامج) من الجهاز نفسه — بالمفتاح كالصفحات، ويُحفظ في المتصفح فلا يُنزَّل كل مرة
+ns["__file__"] = os.path.abspath(TARGET)
+exec(module_src("resource_path"), ns)
+font_file = os.path.join(os.path.dirname(os.path.abspath(TARGET)), "fonts", "IBMPlexSansArabic-SemiBold.ttf")
+h, b = raw(f"GET /font/600?k={tok} HTTP/1.1\r\n\r\n".encode())
+assert h.startswith("HTTP/1.1 200") and "Content-Type: font/ttf" in h and b == open(font_file, "rb").read(), h[:200]
+assert "Cache-Control: private, max-age=2592000, immutable" in h and "no-store" not in h, "الخط يُحفظ — رأسٌ واحد"
+assert h.count("Content-Type:") == 1 and "font-src 'self'" in h
+h, b = raw(f"HEAD /font/400?k={tok} HTTP/1.1\r\n\r\n".encode())
+assert h.startswith("HTTP/1.1 200") and b == b""
+for req in (b"GET /font/600 HTTP/1.1\r\n\r\n", f"GET /font/600?k={tok[:-1]}Z HTTP/1.1\r\n\r\n".encode(),
+            f"GET /font/900?k={tok} HTTP/1.1\r\n\r\n".encode(), f"GET /fonts/OFL.txt?k={tok} HTTP/1.1\r\n\r\n".encode()):
+    h, b = raw(req)
+    assert h.startswith("HTTP/1.1 404"), req
+print("✔ 1.96.4: خط الرابط من الجهاز بالمفتاح (وبدونه أو بغيره 404)، ويُحفظ في المتصفح")
 h, b = raw(f"HEAD /?k={tok} HTTP/1.1\r\n\r\n".encode())
 assert h.startswith("HTTP/1.1 200") and b == b"", "HEAD بلا جسم"
 
@@ -242,12 +257,19 @@ def wait_for(cond, secs=15):
     return cond()
 
 
-open(mode_file, "w").write("login")
+def set_mode(m):                          # كتابةٌ ذرّية: الأداة الوهمية لا تقرأ ملفاً فارغاً أثناء الكتابة
+    tmp = mode_file + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(m)
+    os.replace(tmp, mode_file)
+
+
+set_mode("login")
 r = TS(ts, 47815).start()
 assert wait_for(lambda: r.state == "login"), r.state
 assert r.action_url == "https://login.tailscale.com/a/abc123" and r.url is None, "تسجيل الدخول: رابطه يظهر"
 r.stop()
-open(mode_file, "w").write("https")
+set_mode("https")
 open(os.path.join(work, "ts_calls"), "w").close()
 r = TS(ts, 47815)
 r.CHECK_EVERY, r.CONFIGURE_TIMEOUT = 0.2, 1.5
@@ -260,16 +282,16 @@ assert r.action_url == "https://login.tailscale.com/f/serve?node=n1" and "HTTPS"
 assert r.host == "https://factory-pc.tail1a2b3.ts.net" and r.url is None, "العنوان يُعرف قبل جاهزية Funnel، والرابط لا"
 time.sleep(2.5)                                    # أطول من مهلة الأمر: ما دام رابط التفعيل ظاهراً لا يُوقف
 assert r.state == "enable", r.state
-open(mode_file, "w").write("enable")
+set_mode("enable")
 assert wait_for(lambda: r.action_url == "https://login.tailscale.com/f/funnel?node=n1", 10), r.action_url
 assert "Funnel" in r.error and "HTTPS" not in r.error, "الصفحة الثانية: Funnel"
-open(mode_file, "w").write("ok")
+set_mode("ok")
 assert wait_for(lambda: r.state == "ready", 10), (r.state, r.error)
 assert r.url == "https://factory-pc.tail1a2b3.ts.net" and r.command()[1:] == ["funnel", "--bg", "47815"]
 assert open(os.path.join(work, "ts_calls")).read().count("funnel --bg 47815") == 1, \
     "بعد Enable يكمل الأمر نفسه وحده — بلا إعادة"
 r.stop()
-open(mode_file, "w").write("enable")
+set_mode("enable")
 r = TS(ts, 47815)
 r.CHECK_EVERY = 0.2
 r.start()
@@ -288,7 +310,7 @@ def gone(pid):
 
 assert wait_for(lambda: gone(funnel_pid), 10), "الإيقاف يُنهي الأمر المنتظر"
 assert r.state == "stopped"
-open(mode_file, "w").write("ok")
+set_mode("ok")
 assert TS(ts, 47815, private=True).command()[1:] == ["serve", "--bg", "47815"], "لأجهزتي فقط: Serve"
 calls = open(os.path.join(work, "ts_calls")).read()
 assert "funnel --bg 47815" in calls and "status --json" in calls
@@ -462,7 +484,8 @@ page = member("live_page")
 assert "self.ensure_screen_built(screen, background=True)" in page and "p if p in periods else self.current_display_month" in page
 assert set(re.findall(r'\("(\w+)", "[^"]+", "[^"]+"\)', member("LIVE_SCREENS"))) == {
     "stages", "khayas", "sales", "inbound", "factory", "losses"}
-assert set(re.findall(r'\("(\w+)", "[^"]+", "[^"]+"\)', member("LIVE_TOOLS"))) == {"add", "recent", "set", "bin", "control"}
+assert set(re.findall(r'\("(\w+)", "[^"]+", "[^"]+"\)', member("LIVE_TOOLS"))) == {"add", "recent", "set", "control"}, \
+    "1.96.4: المحذوفات ليست في الرابط (تبقى في البرنامج)"
 respond = member("live_respond")
 assert 'if method == "POST":' in respond and "self.live_post(params)" in respond and "self.live_backup()" in respond
 post = member("live_post")
@@ -630,6 +653,33 @@ assert "if now - last > self.LIVE_SLEEP_GAP:" in tick2 and 'live["slept"] = (las
 assert "self.live_check_power(add, snap)" in check and '"power")' in member("live_check_power")
 assert "tk_background(win, live_power_fix, powered)" in member("open_live_check")
 assert '"⚠️ الجهاز ينام عند إغلاق الغطاء"' in member("live_state_summary") and "نام الجهاز" in member("live_state_summary")
+# 1.96.4: الرابط — الخط، والجداول على قدر محتواها، وبلا المحذوفات، وتاريخ الكاستنج أولاً، وبلا شروحٍ ولا معادلات
+css = member("LIVE_CSS")
+assert '"Jadeite Plex"' in css and "width:fit-content" in css and "table{border-collapse:collapse;width:auto" in css
+assert "td.long{white-space:normal" in css and "white-space:pre-line" in css
+lh = member("live_html")
+assert "@font-face" in lh and "LiveViewServer.FONTS" in lh and "summary = self.live_clean_summary(summary)" in lh
+assert '"long" if len(str(v)) > 32' in lh and "الأرقام من البرنامج نفسه" not in lh
+lcs = {"re": re}
+exec("class C:\n" + textwrap.indent(member("LIVE_HIDE_NOTES") + "\n\n@classmethod\n" + member("live_clean_summary"), "    "), lcs)
+clean = lcs["C"].live_clean_summary
+assert clean(["(المصنعين) — ذهب/باقي: ‎25.50  −  المرجع ٧٥٠: ‎0.00  =  الخياس الفعلي: ‎25.50 جم"]) == [], "المعادلة تُخفى"
+assert clean(["كشف فاقد — صرف: 1.00  |  قبض: 2.00\nخياس قسم بوليش 1 (العمليات مدموجة) = فاقد 0.00  +  ليزر 0.00  =  0.00 جم"]) \
+    == ["كشف فاقد — صرف: 1.00  |  قبض: 2.00"], "سطر المعادلة وحده يُخفى"
+assert clean(["كشف صب — صرف: 1.00  |  قبض: 2.00  (بالمعادل لعيار 18)  |  خياس: 3.00 جم"]) == \
+    ["كشف صب — صرف: 1.00  |  قبض: 2.00  |  خياس: 3.00 جم"], "والملاحظة بين قوسين"
+assert clean(["الخياس الفعلي (المصنعين): 25.50 جم", "💡 نصيحة: …", ""]) == ["الخياس الفعلي (المصنعين): 25.50 جم"]
+for gone in ("def live_view_bin", "def live_do_bin_restore", "تُسجَّل على الجهاز في فترة", "عدّل أي عملية أو احذفها",
+             "ابحث برقم التشغيل لترى", "تُطبَّق على الجهاز فوراً", "تعديل سطورها من شاشة المبيعات",
+             '<div class="hint">تُعدَّل من نافذتها',
+             "كما لو أجبت «نعم»", 'id="fillhint"', '("(الفصوص + الأحجار) / الذهب %"', '("الصافي (الفاقد − المسترجع)", s["net"])',
+             "إلى «المحذوفات» (تُستعاد منها)\"", "احفظها عندك؛ السحابة لم تعد تحفظ نسخاً"):
+    assert gone not in src, gone
+rsot = member("render_stage_ops_table")
+assert 'date_first = bool(recover_name) and bool(getattr(self, "live_date_first", False))' in rsot
+assert "lead = lead_cols + first_col" in rsot and '([str(g["dt"])[:10]] if date_first else []) + [row_label]' in rsot
+assert 'live_date_first=True' in member("live_view_stages") and "live_date_first = False" in src, \
+    "تاريخ الكاستنج أولاً في الرابط وحده"
 summ2 = member("live_state_summary")
 assert 'parts.append(f"رابط التفعيل: {st[\'action_url\']}")' in summ2 and 'f"حساب Tailscale: {st[\'account\']}"' in summ2
 for t in ('"Tailscale مثبّت"', '"تسجيل الدخول في Tailscale"', '"Funnel (فتح الرابط للإنترنت)"', '"عنوان هذا الجهاز"',
@@ -646,7 +696,7 @@ fill = member("live_fill")
 assert "self.find_row_by_set_number(cat, set_no, month=month)" in fill and "self.sb_sale_fill(set_no)" in fill
 assert "self.row_set_numbers(name, row, month=month)" in fill and "get_assembler_khayas_details" in fill
 assert "data-fill" in member("live_form_html") and "fetch(" in member("LIVE_FILL_JS")
-assert '"any_del": self.live_do_any_delete' in post and '"bin_restore": self.live_do_bin_restore' in post
+assert '"any_del": self.live_do_any_delete' in post and "bin_restore" not in post
 anyd = member("live_delete_any")
 assert "get_sale_invoice_records(self.sale_key_of(inv))" in anyd and "self.journal_legs(inv)" in anyd
 for mod_name in ("http.server", "socketserver", "secrets", "hmac", "queue"):
@@ -656,5 +706,5 @@ print("✔ البرنامج: الشاشات الست وأدوات الإضافة
       "ولا شيء من الرابط في السحابة — بلا مكتبةٍ جديدة على exe")
 
 print("✔ 1.96: الرابط في برنامج المدير وحده (الجهاز يتحقق ببصمة المفتاح ويرسل عنوانه)، والملء التلقائي، وآخر العمليات "
-      "وحذف أي عملية (الفاتورة كاملة والقيد بطرفيه)، والمحذوفات في الرابط")
+      "وحذف أي عملية (الفاتورة كاملة والقيد بطرفيه)")
 print("\n✅ 1.95–1.96: الرابط المباشر الثابت — عرضٌ وإضافة وتعديل ولوحة تحكم، ويظهر في برنامج المدير وحده")
