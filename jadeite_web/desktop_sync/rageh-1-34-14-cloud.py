@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.96.1"
+APP_VERSION = "1.96.2"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -1769,7 +1769,7 @@ def live_probe(url, timeout=12):
 # خطوات ضبط رابط المدير (1.96) — في نافذة «🌐 مباشر» على الجهازين، ونفسها في LIVE_LINK_GUIDE_AR.md
 LIVE_GUIDE = (
     ("قبل البدء (مرة واحدة)", (
-        "حدّث برنامج المدير وبرنامج المصنع إلى 1.96.0 أو أحدث.",
+        "حدّث برنامج المدير وبرنامج المصنع إلى 1.96.2 أو أحدث.",
         "في Supabase ← SQL Editor: افتح الملف 24_live_admin_link.sql والصق محتواه واضغط Run (مرة واحدة — وأعِده مرة إن "
         "شغّلته قبل 1.96.1: فيه الآن «حال الرابط» التي يراها المدير في الفحص).",
     )),
@@ -1778,7 +1778,9 @@ LIVE_GUIDE = (
         "اختر «Tailscale (مجاني — موصى به)»، ثم اضغط «⬇️ تثبيت Tailscale» وانتظر حتى ينتهي (دقائق).",
         "اضغط «🔑 تسجيل الدخول / التفعيل»: تفتح صفحة — سجّل الدخول بحسابك أنت (Google أو Microsoft)، لا بحساب المصنع، "
         "ثم وافق على إضافة الجهاز.",
-        "أول مرة فقط تفتح صفحة «Enable Funnel»: اضغط Enable. (إن لم تفتح وحدها اضغط «🔑 تسجيل الدخول / التفعيل» مرة أخرى).",
+        "أول مرة فقط يطلب Tailscale تفعيل Funnel لشبكتك: في «🩺 فحص الرابط» اضغط «✅ فعّل الآن» ← تفتح صفحة Tailscale "
+        "(بالإنجليزية) ← اضغط الزر الأزرق Enable (وإن جاءت صفحةٌ ثانية فـ Enable أيضاً). الفحص يكمل وحده خلال ثوانٍ. "
+        "ويمكنك تفعيله من جهازك أنت: لوحة المدير ← «🌐 العرض المباشر» ← «🔓 فعّل من جهازي».",
         "اضغط «▶️ تشغيل» إن لم يكن يعمل، وانتظر حتى تظهر «🟢 يعمل». على جهاز المصنع لا يظهر أي رابط — هذا مقصود.",
         "اضغط «🩺 فحص الرابط»: كل خطوة ✔ أو ✘، وزرٌّ يُصلح أول خطوةٍ ناقصة (ثبّت، سجّل الدخول، فعّل، أرسل الآن) — كرّره حتى "
         "«✔ كل الخطوات مكتملة». ونتيجته تصل لبرنامج المدير وحدها.",
@@ -5055,12 +5057,61 @@ class LiveTailscale(LiveRelay):
     وServe (private) لأجهزتك المسجّلة في Tailscale وحدها. الإعداد يبقى في Tailscale نفسه (--bg) بعد إعادة التشغيل،
     فالأمر يُعاد عند كل تشغيل بلا ضرر"""
     CHECK_EVERY = 60
-    CONFIGURE_TIMEOUT = 45            # أمر Funnel ينتظر تفعيله بلا نهاية: يُوقف بعد المهلة ويُقرأ رابط التفعيل
+    CONFIGURE_TIMEOUT = 45            # بلا نتيجة ولا رابط تفعيل خلال المهلة: يُوقف الأمر ويُعاد
+    ENABLE_WAIT = 900                 # (1.96.2) ظهر رابط التفعيل: الأمر يبقى ينتظر Enable في الصفحة فيكتمل وحده
     LOGIN_STATES = ("NeedsLogin", "NoState", "NeedsMachineAuth")
 
     def __init__(self, exe, port, private=False):
         super().__init__(exe, port)
         self.private = bool(private)
+        self.host, self.account = None, ""          # عنوان الجهاز في Tailscale وحسابه — يُعرفان قبل جاهزية Funnel
+
+    def enable_text(self, url):
+        """ما تطلبه صفحة التفعيل: HTTPS أولاً (Serve يحتاجه وFunnel كذلك) ثم Funnel — كلٌّ مرة واحدة"""
+        if self.private or "/f/funnel" not in url:
+            return "فعّل HTTPS لشبكتك في Tailscale من الرابط (مرة واحدة)" + ("" if self.private else " — ثم Funnel")
+        return "فعّل Funnel لشبكتك في Tailscale من الرابط (مرة واحدة)"
+
+    def _configure(self):
+        """أمر Funnel (أو Serve) ومخرجاته أولاً بأول: إن طلب التفعيل ظهر رابطه فوراً (state=enable) وبقي الأمر ينتظر
+        حتى يُضغط Enable في الصفحة فيكمل وحده — (رمز الخروج، أو None إن أُوقف، والمخرجات)"""
+        flags = 0x08000000 if sys.platform.startswith("win") else 0          # CREATE_NO_WINDOW
+        try:
+            proc = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                                    creationflags=flags)
+        except OSError as e:
+            return -1, str(e)
+        lines = []
+
+        def read():
+            try:
+                for line in proc.stdout:
+                    lines.append(line)
+            except (OSError, ValueError):
+                pass
+        reader = threading.Thread(target=read, name="JadeiteLiveTailscaleOut", daemon=True)
+        reader.start()
+        started, asked = time.monotonic(), None
+        while True:
+            code = proc.poll()
+            if code is not None:
+                reader.join(timeout=3)
+                return code, "".join(lines)
+            urls = _TS_ACTION_RE.findall("".join(lines))
+            if urls and urls[-1] != asked and not self._stop.is_set():
+                asked = urls[-1]
+                self.state, self.url, self.action_url, self.error = "enable", None, asked, self.enable_text(asked)
+            limit = self.ENABLE_WAIT if asked else self.CONFIGURE_TIMEOUT
+            if self._stop.is_set() or time.monotonic() - started > limit:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+                reader.join(timeout=3)
+                return None, "".join(lines)
+            self._stop.wait(0.3)
 
     def command(self):
         return [self.exe, "serve" if self.private else "funnel", "--bg", str(self.port)]
@@ -5090,19 +5141,23 @@ class LiveTailscale(LiveRelay):
             elif backend != "Running":
                 self.state, self.url, configured, wait = "starting", None, False, 5
             else:
-                dns = str((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
+                me = st.get("Self") or {}
+                dns = str(me.get("DNSName") or "").rstrip(".")
+                self.host = f"https://{dns}" if dns else None
+                self.account = str(((st.get("User") or {}).get(str(me.get("UserID"))) or {}).get("LoginName") or "")
                 if not dns:
                     self.state, self.url, self.error, wait = "error", None, "لا اسم لهذا الجهاز في Tailscale بعد", 10
                 elif not configured:
-                    code, out = live_run_capture(self.command(), timeout=self.CONFIGURE_TIMEOUT)
-                    m = _TS_ACTION_RE.search(out)
+                    code, out = self._configure()
+                    urls = _TS_ACTION_RE.findall(out)
+                    if self._stop.is_set():
+                        break
                     if code == 0:
                         configured, tries = True, 0
                         self.url, self.state, self.error, self.action_url = f"https://{dns}", "ready", "", ""
-                    elif m:
-                        self.state, self.url, self.action_url = "enable", None, m.group(0)
-                        self.error = ("فعّل HTTPS لشبكتك في Tailscale من الرابط (مرة واحدة)" if self.private else
-                                      "فعّل Funnel لشبكتك في Tailscale من الرابط (مرة واحدة)")
+                    elif urls:
+                        self.state, self.url, self.action_url = "enable", None, urls[-1]
+                        self.error = self.enable_text(urls[-1])
                         wait = 15
                     else:
                         lines = [x for x in out.strip().splitlines() if x.strip()]
@@ -25277,11 +25332,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return f"✘ الرابط متوقف على جهاز المصنع — الإصدار {APP_VERSION}"
         if st["relay"] == "none":
             relay = st["relay_error"] or "الوسيط غير مضبوط"
+        elif st["relay"] == "enable" and "/f/funnel" not in (st["action_url"] or ""):
+            relay = "بانتظار تفعيل HTTPS ثم Funnel في Tailscale"
         else:
             relay = self.LIVE_RELAY_TEXT.get(st["relay"], st["relay_error"] or st["relay"])
         ready = st["relay"] == "ready" and bool(st["url"]) and st["has_key"]
-        parts = [("✔ جاهز" if ready else "✘ لم يكتمل"), relay,
-                 "وصل مفتاح المدير" if st["has_key"] else "بانتظار مفتاح المدير", f"الإصدار {APP_VERSION}"]
+        parts = [("✔ جاهز" if ready else "✘ لم يكتمل"), relay]
+        if st["relay"] == "enable" and st["action_url"]:
+            parts.append(f"رابط التفعيل: {st['action_url']}")      # المدير يفعّله من جهازه بحساب Tailscale نفسه
+        if st.get("account"):
+            parts.append(f"حساب Tailscale: {st['account']}")
+        parts += ["وصل مفتاح المدير" if st["has_key"] else "بانتظار مفتاح المدير", f"الإصدار {APP_VERSION}"]
         if check:
             parts.append(check)
         return " · ".join(p for p in parts if p)[:300]
@@ -25323,6 +25384,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "relay": relay.state if relay is not None else ("none" if server else "off"),
                 "relay_error": relay.error if relay is not None else live.get("relay_error", ""),
                 "action_url": relay.action_url if relay is not None else "",
+                "account": getattr(relay, "account", ""),
                 "tool": live.get("exe"), "served": server.served if server else 0, "pinned": self.live_pinned()}
 
     def start_live_view(self, user=False):
@@ -25452,8 +25514,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             pass
 
     # ── 🩺 فحص الرابط على جهاز المصنع: كل خطوة ✔ أو ✘ وما يُصلحها ──
-    def live_check_compute(self, snap, provider, exe):
-        """(خيط خلفي — لا واجهة) خطوات الفحص بالترتيب: [{ok، title، detail، action}] — يتوقف عند أول خطوةٍ لم تكتمل"""
+    LIVE_CHECK_WAIT = 75              # الفحص ينتظر الوسيط ما دام «يجهّز» (تشغيله أو إعادة تشغيله) — بدل أن يعدّه ✘
+    LIVE_FOLLOW_SECS = 600            # بعد «✅ فعّل الآن»: يُعاد الفحص وحده حتى يكتمل (حتى ١٠ دقائق)
+    LIVE_FOLLOW_MS = 8000
+
+    def live_check_compute(self, snap, provider, exe, relay=None):
+        """(خيط خلفي — لا واجهة) خطوات الفحص بالترتيب: [{ok، title، detail، action}] — يتوقف عند أول خطوةٍ لم تكتمل.
+        relay: الوسيط نفسه — يُنتظر ما دام يجهّز ثم تُقرأ حاله الأخيرة"""
         steps = []
 
         def add(ok, title, detail="", action=None):
@@ -25468,6 +25535,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not add(mark, "البرنامج يستقبل الرابط", f"يعمل على المنفذ {snap['port']}" if mark
                    else f"لا يجيب على المنفذ {snap['port']} ({code or err}) — أعد تشغيل البرنامج", None if mark else "start"):
             return steps
+        if relay is not None:
+            end = time.monotonic() + self.LIVE_CHECK_WAIT
+            while relay.state == "starting" and time.monotonic() < end and not relay._stop.is_set():
+                time.sleep(0.5)
+            snap = dict(snap, relay=relay.state, relay_error=relay.error, action_url=relay.action_url, url=relay.url)
         if provider == "tailscale":
             if not add(bool(exe), "Tailscale مثبّت", exe or "غير مثبّت — اضغط «⬇️ ثبّت الآن»", None if exe else "install"):
                 return steps
@@ -25483,8 +25555,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             user = ((st.get("User") or {}).get(str(me.get("UserID"))) or {}).get("LoginName", "")
             add(True, "تسجيل الدخول في Tailscale", f"بحساب {user or '—'} — اسم الجهاز {str(me.get('DNSName') or '').rstrip('.')}")
             if snap["relay"] == "enable":
-                add(False, "Funnel (فتح الرابط للإنترنت)", "غير مفعّل لشبكتك — اضغط «✅ فعّل الآن» ثم Enable في الصفحة",
-                    "enable")
+                url = snap.get("action_url") or ""
+                what = "Funnel" if "/f/funnel" in url else "HTTPS ثم Funnel"
+                add(False, "Funnel (فتح الرابط للإنترنت)",
+                    f"Tailscale ينتظر تفعيل {what} لشبكتك — مرة واحدة فقط: اضغط «✅ فعّل الآن» ← تُفتح صفحة Tailscale "
+                    "(بالإنجليزية) ← اضغط الزر الأزرق Enable. يكمل هنا وحده خلال ثوانٍ، وإن جاءت صفحةٌ ثانية فاضغط Enable "
+                    "فيها أيضاً.\nأو افتح هذا الرابط من أي جهاز (جهازك مثلاً) وسجّل الدخول بحساب Tailscale نفسه:"
+                    + (f"\n{url}" if url else ""), "enable")
+                return steps
+            if snap["relay"] == "starting":
+                add(False, "Funnel (فتح الرابط للإنترنت)", "Tailscale ما زال يجهّز الرابط — انتظر قليلاً ثم «🔄 أعد الفحص»")
                 return steps
             if snap["relay"] != "ready":
                 add(False, "Funnel (فتح الرابط للإنترنت)", (snap["relay_error"] or f"الحال: {snap['relay']}")
@@ -25531,6 +25611,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkLabel(win, text="🩺 فحص الرابط المباشر على هذا الجهاز", font=(UI_FONT, 19, "bold"),
                      text_color=UI_TITLE).pack(pady=(14, 2))
         result = ctk.CTkLabel(win, text="⏳ جارٍ الفحص…", font=(UI_FONT, 15, "bold"), wraplength=700, justify="right")
+        waiting_text = "⏳ جارٍ الفحص… (حتى دقيقة إن كان Tailscale يجهّز الرابط)"
         result.pack(pady=(4, 6), padx=16)
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12)
@@ -25538,7 +25619,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         bar.pack(pady=10)
         action_btn = ctk.CTkButton(bar, text="", width=170, height=40, font=(UI_FONT, 15, "bold"),
                                    **BUTTON_STYLES["primary"])
-        state = {"steps": [], "busy": False}
+        copy_btn = ctk.CTkButton(bar, text="📋 نسخ رابط التفعيل", width=160, height=40, font=(UI_FONT, 14, "bold"),
+                                 **BUTTON_STYLES["secondary"])
+        state = {"steps": [], "busy": False, "follow_until": 0.0, "sent_text": None}
+
+        def copy_enable():
+            url = self.live_state()["action_url"]
+            if url:
+                self.clipboard_clear()
+                self.clipboard_append(url)
+                result.configure(text="📋 نُسخ رابط التفعيل — افتحه في أي متصفح مسجّل بحساب Tailscale نفسه واضغط Enable",
+                                 text_color=(UI["success"], "#7EE2B8"))
+        copy_btn.configure(command=copy_enable)
 
         def show(steps):
             state["busy"] = False
@@ -25570,20 +25662,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 action_btn.pack(side="right", padx=4, before=again)
             else:
                 action_btn.pack_forget()
+            if action == "enable":
+                copy_btn.pack(side="right", padx=4, before=again)
+            else:
+                copy_btn.pack_forget()
+            if first_bad is not None and time.time() < state["follow_until"]:
+                # بعد «✅ فعّل الآن»: يُعاد الفحص وحده حتى يكتمل — لا حاجة للضغط مرة أخرى
+                if action == "enable":
+                    result.configure(text="⏳ بانتظار التفعيل: اضغط Enable في صفحة Tailscale — ويكمل هنا وحده",
+                                     text_color=("#B7791F", "#F0CF6A"))
+                if state.get("follow_job"):
+                    try:
+                        win.after_cancel(state["follow_job"])
+                    except Exception:
+                        pass
+                state["follow_job"] = win.after(self.LIVE_FOLLOW_MS, run)
+            elif first_bad is None:
+                state["follow_until"] = 0.0
             live = self.__dict__.get("_live")
             if live is not None:
                 live["check_text"] = f"آخر فحص {datetime.datetime.now():%H:%M}: {text}"
-                self.live_sync_async(self.live_state()["url"])       # المدير يرى نتيجة الفحص
+                if text != state["sent_text"]:                         # المدير يرى نتيجة الفحص (عند تغيّرها)
+                    state["sent_text"] = text
+                    self.live_sync_async(self.live_state()["url"])
 
         def run():
             if state["busy"] or not win.winfo_exists():
                 return
             state["busy"] = True
-            result.configure(text="⏳ جارٍ الفحص…", text_color=(UI["muted"], "#9AA4B2"))
+            if not time.time() < state["follow_until"]:
+                result.configure(text=waiting_text, text_color=(UI["muted"], "#9AA4B2"))
             snap = self.live_state()
             provider = snap["provider"]
             exe = find_cloudflared() if provider == "cloudflare" else find_tailscale()
-            tk_background(win, lambda: self.live_check_compute(snap, provider, exe), show)
+            relay = (self.__dict__.get("_live") or {}).get("relay")
+            tk_background(win, lambda: self.live_check_compute(snap, provider, exe, relay), show)
 
         def fix(action):
             provider = self.live_state()["provider"]
@@ -25601,6 +25714,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     open_url_window(url)
                 else:
                     self.live_start_relay()
+                state["follow_until"] = time.time() + self.LIVE_FOLLOW_SECS
             elif action == "relay":
                 self.live_start_relay()
             elif action == "sync":
@@ -25614,7 +25728,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkButton(bar, text="📖 الخطوات", width=120, height=40, font=(UI_FONT, 15, "bold"),
                       command=lambda: show_live_guide(win), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
         run()
-        win._state, win._run, win._fix = state, run, fix          # للاختبار
+        win._state, win._run, win._fix, win._result = state, run, fix, result          # للاختبار
         return win
 
     def install_live_tool(self, provider, done=None):
@@ -36997,7 +37111,12 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
         if state_row:
             st = str(state_row["live_state"])
             when = str(state_row.get("live_state_at") or "")[:16].replace("T", " ")
-            out.append((st.startswith("✔"), "حال الرابط على جهاز المصنع", f"{st} (منذ {when})"))
+            detail = f"{st} (منذ {when})"
+            if _TS_ACTION_RE.search(st) and not st.startswith("✔"):
+                detail += ("\n🔓 Tailscale ينتظر تفعيل Funnel لشبكتك مرة واحدة: اضغط «🔓 فعّل من جهازي» أعلاه وسجّل الدخول "
+                           "في الصفحة بحساب Tailscale نفسه ثم اضغط Enable (وإن جاءت صفحةٌ ثانية فـ Enable أيضاً) — أو على "
+                           "جهاز المصنع: «🩺 فحص الرابط» ← «✅ فعّل الآن»")
+            out.append((st.startswith("✔"), "حال الرابط على جهاز المصنع", detail))
         else:
             out.append((None, "حال الرابط على جهاز المصنع", "لم يُرسل حاله بعد: على جهازه «🌐 مباشر» ← «🩺 فحص الرابط» "
                         "(وإن بقي هكذا فأعد تشغيل 24_live_admin_link.sql في Supabase)"))
@@ -37059,7 +37178,10 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                      font=(UI_FONT, 12), wraplength=720, justify="right", text_color=UI["muted"]).pack(padx=16)
         qr = tk.Canvas(body, width=200, height=200, highlightthickness=0, bg="#FFFFFF")
         qr.pack(pady=8)
-        state = {"link": None, "busy": False}
+        state = {"link": None, "busy": False, "enable_url": None}
+        enable_btn = ctk.CTkButton(btns, text="🔓 فعّل من جهازي", width=150, height=40, font=(UI_FONT, 14, "bold"),
+                                   command=lambda: state["enable_url"] and open_url_window(state["enable_url"]),
+                                   **BUTTON_STYLES["primary"])
 
         def show_checks(items):
             for w in checks.winfo_children():
@@ -37108,6 +37230,13 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                 items = self.live_admin_checks(saved, err, rows, manual, link, probe)
                 show_checks(items)
                 bad = next(((t, d) for ok_, t, d in items if ok_ is False), None)
+                urls = [m.group(0) for r in (rows or []) if not str(r.get("live_state") or "").startswith("✔")
+                        for m in [_TS_ACTION_RE.search(str(r.get("live_state") or ""))] if m]
+                state["enable_url"] = urls[0] if urls and bad is not None else None
+                if state["enable_url"]:
+                    enable_btn.pack(side="right", padx=4)
+                else:
+                    enable_btn.pack_forget()
                 if bad is None and link:
                     show(link, "🟢 الرابط جاهز ويفتح من الإنترنت", (UI["success"], "#7EE2B8"))
                 elif link:
@@ -37157,7 +37286,7 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
                       command=lambda: show_live_guide(win), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
         load()
         win._state, win._status, win._checks, win._load = state, status, checks, load          # للاختبار
-        win._manual, win._save_manual = manual_box, save_manual
+        win._manual, win._save_manual, win._enable = manual_box, save_manual, enable_btn
         return win
 
     def show_admin_key_card(self, error):

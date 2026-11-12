@@ -209,9 +209,23 @@ ts = fake_tool("tailscale", """
         else:
             print(json.dumps({"BackendState": "Running", "Self": {"DNSName": "factory-pc.tail1a2b3.ts.net."}}))
     elif sys.argv[1] in ("funnel", "serve"):
-        if mode == "enable":
-            print("Funnel is not enabled on your tailnet.\\nTo enable, visit:\\n\\n  https://login.tailscale.com/f/funnel?node=n1\\n")
-            sys.stdout.flush(); time.sleep(120)
+        # كأداة Tailscale الحقيقية: تكتب رابط التفعيل ثم تنتظر حتى يُفعَّل من الصفحة فتكمل وحدها
+        open(os.path.join(W, "ts_funnel_pid"), "w").write(str(os.getpid()))
+
+        def now():
+            return open(os.path.join(W, "ts_mode")).read().strip()
+        if mode == "https":
+            print("HTTPS is not enabled on your tailnet.\\nTo enable, visit:\\n\\n  https://login.tailscale.com/f/serve?node=n1\\n",
+                  flush=True)
+            while now() == "https":
+                time.sleep(0.1)
+            print("Success.", flush=True)
+        if now() == "enable":
+            print("Funnel is not enabled on your tailnet.\\nTo enable, visit:\\n\\n  https://login.tailscale.com/f/funnel?node=n1\\n",
+                  flush=True)
+            while now() == "enable":
+                time.sleep(0.1)
+            print("Success.", flush=True)
         print("Available on the internet:\\n\\nhttps://factory-pc.tail1a2b3.ts.net/\\n|-- proxy http://127.0.0.1:47815")
 """)
 assert ns["find_tailscale"]() == ts, "Tailscale من PATH"
@@ -233,16 +247,48 @@ r = TS(ts, 47815).start()
 assert wait_for(lambda: r.state == "login"), r.state
 assert r.action_url == "https://login.tailscale.com/a/abc123" and r.url is None, "تسجيل الدخول: رابطه يظهر"
 r.stop()
-open(mode_file, "w").write("enable")
+open(mode_file, "w").write("https")
+open(os.path.join(work, "ts_calls"), "w").close()
 r = TS(ts, 47815)
 r.CHECK_EVERY, r.CONFIGURE_TIMEOUT = 0.2, 1.5
 r.start()
+t0 = time.time()
 assert wait_for(lambda: r.state == "enable", 20), (r.state, r.error)
-assert r.action_url == "https://login.tailscale.com/f/funnel?node=n1" and "Funnel" in r.error, "تفعيل Funnel: رابطه يظهر"
+assert time.time() - t0 < 5, "1.96.2: رابط التفعيل يظهر فوراً (لا بعد مهلة الأمر)"
+assert r.action_url == "https://login.tailscale.com/f/serve?node=n1" and "HTTPS" in r.error and "ثم Funnel" in r.error, \
+    "الصفحة الأولى: HTTPS ثم Funnel"
+assert r.host == "https://factory-pc.tail1a2b3.ts.net" and r.url is None, "العنوان يُعرف قبل جاهزية Funnel، والرابط لا"
+time.sleep(2.5)                                    # أطول من مهلة الأمر: ما دام رابط التفعيل ظاهراً لا يُوقف
+assert r.state == "enable", r.state
+open(mode_file, "w").write("enable")
+assert wait_for(lambda: r.action_url == "https://login.tailscale.com/f/funnel?node=n1", 10), r.action_url
+assert "Funnel" in r.error and "HTTPS" not in r.error, "الصفحة الثانية: Funnel"
 open(mode_file, "w").write("ok")
-assert wait_for(lambda: r.state == "ready", 30), (r.state, r.error)
+assert wait_for(lambda: r.state == "ready", 10), (r.state, r.error)
 assert r.url == "https://factory-pc.tail1a2b3.ts.net" and r.command()[1:] == ["funnel", "--bg", "47815"]
+assert open(os.path.join(work, "ts_calls")).read().count("funnel --bg 47815") == 1, \
+    "بعد Enable يكمل الأمر نفسه وحده — بلا إعادة"
 r.stop()
+open(mode_file, "w").write("enable")
+r = TS(ts, 47815)
+r.CHECK_EVERY = 0.2
+r.start()
+assert wait_for(lambda: r.state == "enable", 20)
+r.stop()
+funnel_pid = int(open(os.path.join(work, "ts_funnel_pid")).read())
+
+
+def gone(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+assert wait_for(lambda: gone(funnel_pid), 10), "الإيقاف يُنهي الأمر المنتظر"
+assert r.state == "stopped"
+open(mode_file, "w").write("ok")
 assert TS(ts, 47815, private=True).command()[1:] == ["serve", "--bg", "47815"], "لأجهزتي فقط: Serve"
 calls = open(os.path.join(work, "ts_calls")).read()
 assert "funnel --bg 47815" in calls and "status --json" in calls
@@ -474,7 +520,7 @@ if "class AdminPanel" in src:
     assert "cloud_admin_live_devices(client_id)" in body and "live_probe(link, timeout=15)" in body
     assert "self.client_live_manual_address(client_id)" in body, "1.96.1: العنوان من موقع Tailscale يدوياً"
     # 1.96.1: فحص المدير خطوةً خطوة (دالة نقية) والعنوان اليدوي
-    pure = {"re": re, "LIVE_HOST_RE": ns["LIVE_HOST_RE"]}
+    pure = {"re": re, "LIVE_HOST_RE": ns["LIVE_HOST_RE"], "_TS_ACTION_RE": ns["_TS_ACTION_RE"]}
     exec(module_src("version_tuple"), pure)
     for fn in ("live_admin_checks", "normalize_live_address"):
         node = next(m for m in admin.body if isinstance(m, ast.FunctionDef) and m.name == fn)
@@ -500,6 +546,14 @@ if "class AdminPanel" in src:
     assert all(x[0] for x in r) and "مكتوب هنا من موقع Tailscale" in r[3][2], "العنوان اليدوي يكفي، والرابط يفتح"
     r = chk(True, None, [dev(live_url=url, live_state="✔ جاهز")], None, url + "/?k=x", (None, False, "timed out"))
     assert r[-1][0] is False and "لا يصل" in r[-1][2]
+    # 1.96.2: رابط التفعيل يصل في حال الجهاز ← المدير يفعّل Funnel من جهازه
+    st = "✘ لم يكتمل · بانتظار تفعيل Funnel في Tailscale · رابط التفعيل: https://login.tailscale.com/f/funnel?node=n1 · الإصدار 1.96.2"
+    r = chk(True, None, [dev(live_state=st)], None, None, None)
+    assert r[2][0] is False and "«🔓 فعّل من جهازي»" in r[2][2] and "Enable" in r[2][2], "فحص المدير يدلّه على التفعيل من جهازه"
+    r = chk(True, None, [dev(live_state="✘ لم يكتمل · بانتظار مفتاح المدير")], None, None, None)
+    assert "فعّل من جهازي" not in r[2][2], "بلا رابط تفعيل: لا زر"
+    assert 'state["enable_url"] = urls[0] if urls and bad is not None else None' in body and "enable_btn.pack(" in body
+    assert "open_url_window(state[\"enable_url\"])" in body
     assert 'text="🌐 العرض المباشر"' in src
 # 1.96: رابط المدير في برنامج المدير وحده — الجهاز يأخذ البصمة ويرسل عنوانه، ولا يعرض رابطاً
 assert "server = LiveViewServer(None, pending, verifier=self.live_stored_hash() or None)" in start
@@ -513,6 +567,19 @@ assert '"p_url": url or ""' in module_src("cloud_live_sync") and '"client_live_s
 assert 'p_state=str(state or "")[:300]' in module_src("cloud_live_sync") and '"ok_nostate"' in module_src("cloud_live_sync"), \
     "1.96.1: حال الرابط تُرسل للمدير — و24 القديم (بلا حال) يعمل"
 check = member("live_check_compute")
+# 1.96.2: Funnel — رابط التفعيل فوراً، والأمر ينتظر Enable فيكمل وحده؛ والفحص ينتظر الوسيط ويتابع التفعيل وحده
+cfg = module_src("LiveTailscale")
+assert "code, out = self._configure()" in cfg and "limit = self.ENABLE_WAIT if asked else self.CONFIGURE_TIMEOUT" in cfg
+assert "live_run_capture(self.command()" not in cfg, "لا انتظارٌ أعمى للمهلة قبل قراءة رابط التفعيل"
+assert 'while relay.state == "starting" and time.monotonic() < end' in check, "الفحص لا يعدّ «يجهّز» فشلاً"
+assert '"Tailscale ما زال يجهّز الرابط' in check and "Enable" in check
+olc = member("open_live_check")
+assert "self.live_check_compute(snap, provider, exe, relay)" in olc
+assert 'state["follow_until"] = time.time() + self.LIVE_FOLLOW_SECS' in olc and "win.after(self.LIVE_FOLLOW_MS, run)" in olc
+assert "win.after_cancel(state[\"follow_job\"])" in olc, "متابعةٌ واحدة لا تتكرر"
+assert "📋 نسخ رابط التفعيل" in olc and 'if text != state["sent_text"]:' in olc
+summ2 = member("live_state_summary")
+assert 'parts.append(f"رابط التفعيل: {st[\'action_url\']}")' in summ2 and 'f"حساب Tailscale: {st[\'account\']}"' in summ2
 for t in ('"Tailscale مثبّت"', '"تسجيل الدخول في Tailscale"', '"Funnel (فتح الرابط للإنترنت)"', '"عنوان هذا الجهاز"',
           '"إرسال العنوان للمدير"', '"مفتاح المدير"', '"يصل من الإنترنت"'):
     assert t in check, t
