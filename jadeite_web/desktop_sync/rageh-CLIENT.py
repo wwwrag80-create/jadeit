@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.96.4"
+APP_VERSION = "1.97.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -421,6 +421,34 @@ ADMIN_MIRROR_DIR = os.path.join(APP_DATA_DIR, "AdminMirror")
 # نسخة المدير: الملف الذي تُفتح منه مرآة كل حساب في هذه الجلسة — الأصلي، أو ملف جديد بجواره إن
 # كان الأصلي مقفولاً (نافذة أخرى للحساب نفسه، برنامج مدير آخر مفتوح، أو مضاد الفيروسات)
 _ADMIN_MIRROR_ACTIVE = {}
+
+
+_DB_LOCKS = {}
+
+
+def acquire_db_lock(db_path):
+    """(1.97) قفلٌ على قاعدة الحساب طوال تشغيل البرنامج (ملف ‎.lock بجوارها) — يرجع True إن صار لهذه العملية أو كان لها،
+    وFalse إن كانت نسخةٌ أخرى من البرنامج تفتحها الآن. القفل يزول وحده بإغلاق البرنامج (ولو انقطعت الكهرباء)"""
+    key = os.path.normcase(os.path.abspath(db_path))
+    if key in _DB_LOCKS:
+        return True
+    try:
+        fh = open(key + ".lock", "a+b")
+    except OSError:
+        return True                 # تعذّر إنشاء ملف القفل (مجلد للقراءة فقط…): لا يُمنع البرنامج بسببه
+    try:
+        if sys.platform.startswith("win"):
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+    _DB_LOCKS[key] = fh
+    return True
 
 
 def client_db_path(client_id):
@@ -5960,6 +5988,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # نسخة العميل: Data وBackups كما كانا دائماً؛ نسخة المدير: AdminMirror (لا تلمس ملفات العميل)
         self.db_path = client_db_path(client_id) if client_id else old_generic_path
         self.backup_dir = client_backup_dir(client_id)
+        # (1.97) نسخةٌ واحدة من البرنامج على الحساب الواحد: نسختان مفتوحتان (نقرتان على الأيقونة) تعطي كلٌّ منهما
+        # الحركة الجديدة الرقم نفسه فتستبدل إحداهما حركة الأخرى بصمت، وتعرض كلٌّ منهما أرقاماً قديمة
+        if not getattr(self, "view_only", False) and not acquire_db_lock(self.db_path):
+            messagebox.showerror("البرنامج مفتوح بالفعل",
+                                 "البرنامج مفتوح بالفعل على هذا الحساب في هذا الجهاز — استعمل النافذة المفتوحة (من شريط "
+                                 "المهام أسفل الشاشة).\n\nفتحه مرتين يجعل نسخةً تكتب فوق حركات الأخرى، فلا يُفتح مرة ثانية.")
+            try:
+                self.destroy()
+            finally:
+                raise SystemExit(0)
 
         # ترحيل أي قاعدة بيانات قديمة كانت بجوار البرنامج إلى المجلد الجديد (مرة واحدة، بدون فقدان بيانات)
         if client_id and not IS_ADMIN_BUILD:
@@ -7697,10 +7735,26 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
             threading.Thread(target=_work, daemon=True).start()
 
+        def do_export_copy():
+            """(1.97) نسخة كاملة في مكانٍ تختاره (فلاش، OneDrive، قرص آخر): النسخ التلقائية على القرص نفسه، فإن تعطّل
+            القرص أو ضاع الجهاز ضاعت معه"""
+            label = re.sub(r'[\\/:*?"<>|\s]+', "_", getattr(self, "client_name", "") or "نسخة").strip("_") or "نسخة"
+            path = filedialog.asksaveasfilename(
+                parent=win, title="حفظ نسخة في مكان آخر (فلاش أو OneDrive)", defaultextension=".db",
+                initialfile=f"Jadeite_{label}_{datetime.datetime.now():%Y-%m-%d_%H%M}.db",
+                filetypes=[("نسخة بيانات جاديت", "*.db")])
+            if not path:
+                return
+            done, why = self.export_backup_copy(path)
+            lbl_status.configure(text=f"✅ حُفظت نسخة كاملة وسليمة في:\n{path}" if done else f"⚠️ {why}",
+                                 text_color="#2ecc71" if done else "#e74c3c")
+
         btns = ctk.CTkFrame(win, fg_color="transparent")
         btns.pack(pady=10)
         ctk.CTkButton(btns, text="💾 نسخة احتياطية الآن", font=(UI_FONT, 14, "bold"), width=185, height=42,
                       fg_color="#1e8449", hover_color="#145a32", command=do_backup_now).pack(side="right", padx=6)
+        ctk.CTkButton(btns, text="📤 حفظ نسخة في مكان آخر", font=(UI_FONT, 14, "bold"), width=210, height=42,
+                      command=do_export_copy, **BUTTON_STYLES["primary"]).pack(side="right", padx=6)
         if not IS_ADMIN_BUILD:
             ctk.CTkButton(btns, text="⬆️ رفع للسحابة الآن", font=(UI_FONT, 14, "bold"), width=185, height=42,
                           fg_color="#1f77b4", hover_color="#144d75", command=do_upload_now).pack(side="right", padx=6)
@@ -7752,6 +7806,33 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     os.remove(os.path.join(self.backup_dir, old))
         except Exception as e:
             print("فشل النسخ الاحتياطي التلقائي:", e)
+
+    def export_backup_copy(self, path):
+        """(1.97) نسخة كاملة من قاعدة الحساب إلى path (فلاش، OneDrive…) بواجهة sqlite للنسخ (سليمة ولو أثناء العمل)،
+        ثم فحص سلامتها — (تمّ؟، السبب)"""
+        path = os.path.abspath(path)
+        if os.path.normcase(path) == os.path.normcase(os.path.abspath(self.db_path)):
+            return False, "اختر مكاناً آخر غير قاعدة البيانات نفسها"
+        tmp = path + ".partial"
+        try:
+            src, dst = sqlite3.connect(self.db_path), sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+                healthy = dst.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            finally:
+                dst.close()
+                src.close()
+            if not healthy:
+                os.remove(tmp)
+                return False, "النسخة لم تكتمل سليمة — أعد المحاولة"
+            replace_db_file(tmp, path)
+            return True, ""
+        except (OSError, sqlite3.Error) as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False, f"تعذّر الحفظ هناك ({e}) — تأكد أن الفلاش موصول وفيه مساحة"
 
     def schedule_backup(self):
         """جدولة النسخ الاحتياطي كل 15 دقيقة (900000 ملي ثانية)"""
@@ -8355,6 +8436,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     
             cursor.execute("SELECT MAX(invoice_id) FROM invoices")
             max_id = cursor.fetchone()[0]
+            # (1.97) ولا رقمٌ في المحذوفات: آخر حركة حُذفت ثم أُعيد تشغيل البرنامج فأخذت حركةٌ جديدة رقمها، ثم استُعيدت
+            # المحذوفة برقمها فـ«استبدلتها» الحركة التالية بصمت (INSERT OR REPLACE لا يمرّ بسلة المحذوفات)
+            try:
+                bin_max = cursor.execute("SELECT MAX(invoice_id) FROM deleted_invoices").fetchone()[0]
+            except sqlite3.Error:
+                bin_max = None
+            max_id = max([x for x in (max_id, bin_max) if isinstance(x, int)] or [0])
 
         self.invoice_counter = max_id if max_id else 1000
 
@@ -8627,6 +8715,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self._inv_version = getattr(self, "_inv_version", 0) + 1
                 return False
 
+            # (1.97) لا رقمٌ غير صالح يدخل الحسابات: float() في بايثون يقبل «nan» و«inf» و«1e400» — وقيمةٌ منها تجعل
+            # كل إجمالي وخياس ورصيد بعدها «nan». الحارس هنا لأن كل حركة (من أي شاشة أو من الرابط) تمرّ من هنا
+            bad = self.invalid_movement_numbers(inv_data)
+            if bad:
+                if existing_row:
+                    self.invoices[inv_id] = self.invoice_from_row(existing_row)
+                elif self.invoices.get(inv_id) is inv_data:
+                    self.invoices.pop(inv_id, None)
+                self._inv_version = getattr(self, "_inv_version", 0) + 1
+                self.warn_invalid_number(bad)
+                return False
+
             # فاتورة موجودة بالفعل بقاعدة البيانات (تعديل على عملية سابقة) ومقفول عليه التعديل؟
             if existing_row and not self.check_edit_permission():
                 # نرجّع الذاكرة لنفس القيمة المخزّنة فعلياً بقاعدة البيانات (بدون أي تغيير وهمي)
@@ -8664,8 +8764,41 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # كل حفظٍ يغيّر بصمة فهارس أرقام التشغيل (القالب والمركبين والمبيعات): تعديلٌ في مكانه (رقم تشغيل الصف أو وزنه
         # من نافذة تعديل الصف) لا يغيّر عدد الحركات ولا كائنها، فكانت تبقى على القيمة السابقة (1.87)
         self._inv_edits = getattr(self, "_inv_edits", 0) + 1
+        # (1.97) العدّاد لا يتأخر عن أي رقمٍ كُتب (استعادةٌ برقمها القديم مثلاً): الحركة الجديدة التالية لا تأخذ رقماً
+        # مستخدماً فتستبدل حركةً قائمة
+        if isinstance(inv_id, int) and inv_id > getattr(self, "invoice_counter", 0):
+            self.invoice_counter = inv_id
         self.mark_backup_dirty()
         return True
+
+    MOVEMENT_NUMBER_FIELDS = (("الوزن", "الوزن"), ("قبل", "قبل"), ("بعد", "بعد/العيار"), ("trees_count", "عدد الأشجار"))
+    MOVEMENT_NUMBER_LIMIT = 1_000_000           # جرام لحركة واحدة (طنّ) — ما فوقه خطأ إدخال لا وزن
+
+    @classmethod
+    def invalid_movement_numbers(cls, inv_data):
+        """أسماء خانات الحركة التي ليست رقماً منتهياً معقولاً (nan أو inf أو أكبر من الحد) — [] إن كانت سليمة"""
+        import math
+        bad = []
+        for key, label in cls.MOVEMENT_NUMBER_FIELDS:
+            value = inv_data.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                bad.append(label)
+                continue
+            if not math.isfinite(num) or abs(num) > cls.MOVEMENT_NUMBER_LIMIT:
+                bad.append(label)
+        return bad
+
+    def warn_invalid_number(self, labels):
+        text = (f"قيمة غير صالحة في: {'، '.join(labels)}.\n\nاكتب وزناً بالأرقام (مثل 12.5) — لا تُقبل nan ولا inf "
+                f"ولا قيمة أكبر من {self.MOVEMENT_NUMBER_LIMIT:,} جم. لم يُسجَّل شيء.")
+        try:
+            messagebox.showerror("قيمة غير صالحة", text)     # من الرابط تُجمع لصفحة النتيجة (_LiveDialogs)
+        except Exception:
+            pass
 
     def delete_invoice_from_db(self, inv_id, reason=None):
         """يرجع True لو تم الحذف فعلياً، أو False لو تم المنع.
@@ -11694,7 +11827,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                      font=(UI_FONT, 18, "bold"), text_color=UI_TITLE).pack(side="right")
         if len(sarf_invs) > 1 or len(qabd_invs) > 1 or len(rec_invs) > 1:
             # صف فيه أكثر من حركة للنوع نفسه (دُمج قبل هذا الإصلاح، أو أُضيف له مرتين): الخانة مجموعها
-            ctk.CTkLabel(head, text="ℹ️ في الصف أكثر من حركة للنوع نفسه — الخانة مجموعها، والحفظ يجعلها حركة واحدة",
+            ctk.CTkLabel(head, text="ℹ️ في الصف أكثر من حركة للنوع نفسه — الخانة مجموعها، وتبقى حركاته كلها (الفرق على أحدثها)",
                          font=(UI_FONT, 12, "bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="left")
 
         specs = [("رقم الصف:", ref_row, False), (sarf_label or "الصرف (مدين):", shown(total(sarf_invs)), False)]
@@ -11734,7 +11867,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 messagebox.showerror("خطأ", "لا يمكن إدخال قيم بالسالب.", parent=win)
                 return
             if new_sarf <= 0 and new_qabd <= 0 and new_rec <= 0:
-                if not messagebox.askyesno("تأكيد", "الصرف والقبض كلاهما صفر — سيتم حذف هذه الحركة بالكامل.\nهل تريد المتابعة؟", parent=win):
+                # (1.97) الافتراضي «لا»: النافذة تُدار بـ Enter، فلا يحذف Enter عابرٌ الصف كله
+                if not messagebox.askyesno("تأكيد", "الصرف والقبض كلاهما صفر — سيتم حذف هذه الحركة بالكامل.\n"
+                                           "(تذهب إلى «🗑️ المحذوفات» وتُستعاد منها)\n\nهل تريد المتابعة؟",
+                                           parent=win, default=messagebox.NO):
                     return
             new_note = ent_note.get().strip()
             new_row_no = ent_row_no.get().strip()
@@ -11754,14 +11890,34 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # المحاسبي بلا داعٍ داخل اليوم نفسه
             old_time = str(ref_dt)[11:] or datetime.datetime.now().strftime("%H:%M:%S")
             new_dt = f"{new_date} {old_time}"
+            # (1.97) التاريخ والبيان والأشجار تتغيّر حين يغيّرها المستخدم وحدها
+            date_changed = new_date != str(ref_dt)[:10]
+            note_changed = new_note != common_note
+            trees_changed = abs(new_trees - cur_trees) >= 0.005
 
             # الحفظ كله خطوة تراجع واحدة (Ctrl+Z يعيد الصف كما كان)
             self.push_undo(f"تعديل الصف ({ref_row or 'بدون ترقيم'}) — {ref_name}")
             any_blocked = False
 
             def upsert(existing_list, value, op_type, name=ref_name, note=new_note, set_no=new_set_no, trees=None):
-                """القيمة المكتوبة = النوع كله في الصف: حركة واحدة بها، وما زاد عليها يُحذف"""
+                """القيمة المكتوبة = النوع كله في الصف. حركاته كلها تبقى (والفرق على أحدثها) ما أمكن، وإلا حركة واحدة
+                بها وما زاد عليها يُحذف (إلى المحذوفات)"""
                 nonlocal any_blocked
+                keep = self.row_slot_plan(existing_list, value)
+                if keep is not None:
+                    for k, (inv, weight) in enumerate(keep):
+                        inv.update({"الوزن": weight, "row_number": new_row_no, "set_number": set_no})
+                        if note_changed:
+                            inv["البيان"] = note
+                        if date_changed:
+                            inv["التاريخ"] = new_dt
+                        if trees is not None:
+                            inv["trees_count"] = trees
+                        elif trees_changed:
+                            inv["trees_count"] = new_trees if k == 0 else 0.0
+                        if not self.save_invoice_to_db(inv["رقم الفاتورة"], inv):
+                            any_blocked = True
+                    return
                 existing = existing_list[0] if existing_list else None
                 for dup in existing_list[1:]:
                     if not self.delete_invoice_from_db(dup["رقم الفاتورة"]):
@@ -11769,8 +11925,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 trees = new_trees if trees is None else trees
                 if value > 0:
                     if existing:
-                        existing.update({"الوزن": value, "البيان": note, "trees_count": trees, "النوع": op_type,
-                                         "row_number": new_row_no, "set_number": set_no, "التاريخ": new_dt})
+                        existing.update({"الوزن": value, "trees_count": trees, "النوع": op_type,
+                                         "row_number": new_row_no, "set_number": set_no})
+                        if note_changed or len(existing_list) > 1:
+                            existing["البيان"] = note
+                        if date_changed or len(existing_list) > 1:
+                            existing["التاريخ"] = new_dt
                         if not self.save_invoice_to_db(existing["رقم الفاتورة"], existing):
                             any_blocked = True
                     else:
@@ -11806,7 +11966,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     continue
                 extra["row_number"] = new_row_no
                 extra["set_number"] = new_set_no
-                extra["التاريخ"] = new_dt
+                if date_changed:
+                    extra["التاريخ"] = new_dt
                 if not self.save_invoice_to_db(extra["رقم الفاتورة"], extra):
                     any_blocked = True
 
@@ -13813,7 +13974,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "تأكيد الحذف",
                 f"هل أنت متأكد من حذف القيد الافتتاحي رقم ({inv_id})؟\n"
                 f"الاسم: {inv['الاسم']} — الوزن (عيار 18): {inv['الوزن']:.2f} جم\n\n"
-                "سيتم إعادة حساب رصيد الخزينة وكل الأرصدة المرتبطة تلقائياً."):
+                "سيتم إعادة حساب رصيد الخزينة وكل الأرصدة المرتبطة تلقائياً.", default=messagebox.NO):
             return
         if not self.delete_invoice_from_db(inv_id):
             return  # تم المنع (رسالة ظهرت بالفعل)
@@ -15133,7 +15294,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if not sel:
             messagebox.showwarning("تنبيه", "الرجاء تحديد الحركة المراد حذفها أولاً.")
             return
-        if not messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف حركة {stage_name} المحددة؟"):
+        if not messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف حركة {stage_name} المحددة؟", default=messagebox.NO):
             return
         inv_ids = w["table_rows_map"].get(sel[0], [])
         any_blocked = False
@@ -15603,7 +15764,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ids = self.cast_table_rows_map.get(sel[0])
         if not ids:
             return
-        if messagebox.askyesno("تأكيد الحذف", "هل أنت متأكد من حذف حركة الكاستنج المحددة؟"):
+        if messagebox.askyesno("تأكيد الحذف", "هل أنت متأكد من حذف حركة الكاستنج المحددة؟", default=messagebox.NO):
             any_blocked = False
             for inv_id in ids:
                 if not self.delete_invoice_from_db(inv_id):
@@ -15695,7 +15856,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return
             self.push_undo(title)
             if new_raw <= 0:
-                if not messagebox.askyesno("تأكيد", "الوزن صفر — ستُحذف هذه العملية.\nهل تريد المتابعة؟", parent=win):
+                if not messagebox.askyesno("تأكيد", "الوزن صفر — ستُحذف هذه العملية.\nهل تريد المتابعة؟", parent=win, default=messagebox.NO):
                     return
                 if not self.delete_invoice_from_db(inv_id):
                     return
@@ -15845,7 +16006,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ids = self.polish_table_rows_map.get(sel[0])
         if not ids:
             return
-        if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف حركة {self.get_display_label('التلميع')} المحددة؟"):
+        if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف حركة {self.get_display_label('التلميع')} المحددة؟", default=messagebox.NO):
             any_blocked = False
             for inv_id in ids:
                 if not self.delete_invoice_from_db(inv_id):
@@ -16030,7 +16191,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                 "هذا الصف مجموع أرقام التشغيل المرحَّلة من «قالب رقم التشغيل».\n"
                                 "يُعدَّل كل رقم أو يُحذف من القالب نفسه (أو من كشف أرقامه بنقرتين على الصف).")
             return
-        if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف حركة {self.get_display_label('التلميع/البف')} المحددة؟"):
+        if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف حركة {self.get_display_label('التلميع/البف')} المحددة؟", default=messagebox.NO):
             any_blocked = False
             for inv_id in ids:
                 if not self.delete_invoice_from_db(inv_id):
@@ -17078,7 +17239,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         else:
             prompt = f"هل أنت متأكد من حذف العمليات المنفذة في تاريخ ({ref_key})؟"
 
-        if messagebox.askyesno("تأكيد الحذف", prompt):
+        if messagebox.askyesno("تأكيد الحذف", prompt, default=messagebox.NO):
             if group_by_row:
                 to_delete = [inv["رقم الفاتورة"] for inv in self.invoices.values() if inv.get("الاسم") == worker_name and (inv.get("row_number", "") or "") == ref_key]
             else:
@@ -17091,6 +17252,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 return  # تم منع حذف بعض/كل الحركات (رسالة "غير مسموح" ظهرت بالفعل)
             self.recalculate_all()
             messagebox.showinfo("تم الحذف", "تم حذف العمليات بنجاح وتحديث الأرصدة المرتبطة.")
+
+    @staticmethod
+    def row_slot_plan(existing_list, value):
+        """(1.97) خانة صفٍّ فيها أكثر من حركة للعملية نفسها (صرفان في يومين مثلاً): الحركات كلها تبقى بتواريخها وبياناتها،
+        وإن تغيّرت القيمة يُضاف الفرق إلى أحدث حركة. يرجع [(الحركة، وزنها بعد الحفظ)] — أو None إن لزم جمعها في حركة
+        واحدة (حركةٌ واحدة أصلاً، أو صُفّرت الخانة، أو الفرق ينقص أحدث حركة إلى صفر أو دونه).
+        كان أي حفظٍ — ولو لتعديل البيان وحده — يجمعها في حركة ويحذف الباقي ويوحّد تواريخها: «البرنامج يحذف الأسطر»"""
+        if len(existing_list) < 2 or value <= 0:
+            return None
+        moves = sorted(existing_list, key=lambda i: (str(i.get("التاريخ", "") or ""), i.get("رقم الفاتورة", 0)))
+        total = round(sum(float(i.get("الوزن") or 0) for i in moves), 2)
+        diff = round(value - total, 2)
+        last = moves[-1]
+        new_last = round(float(last.get("الوزن") or 0) + diff, 2)
+        if abs(diff) >= 0.005 and new_last <= 0:
+            return None
+        return [(inv, new_last if inv is last else float(inv.get("الوزن") or 0)) for inv in moves]
 
     ROW_EDIT_FIELDS = {
         "المصنعين": [("صرف ذهب", "صرف"), ("صرف لحام", "صرف/لحام"), ("صرف واير", "صرف/واير"), ("صرف شجر", "صرف/شجر"),
@@ -17159,7 +17337,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         ctk.CTkLabel(head, text=f"✏️ تعديل كل خانات الصف ({row_key or 'بدون ترقيم'}) — {worker_name} — {cat}",
                      font=(UI_FONT, 18, "bold"), text_color=UI_TITLE).pack(side="right")
         if merged:
-            ctk.CTkLabel(head, text="ℹ️ في الصف أكثر من حركة للعملية نفسها — الخانة مجموعها، والحفظ يجعلها حركة واحدة",
+            ctk.CTkLabel(head, text="ℹ️ في الصف أكثر من حركة للعملية نفسها — الخانة مجموعها، وتبقى حركاتها كلها (الفرق على أحدثها)",
                          font=(UI_FONT, 12, "bold"), text_color=(UI["primary"], "#9CC0F5")).pack(side="left")
 
         specs = ([("رقم الصف", row_key, False), ("رقم التشغيل", cur_set, False)]
@@ -17214,6 +17392,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             old_time = str(ref_dt)[11:] or datetime.datetime.now().strftime("%H:%M:%S")
             new_dt = f"{new_date} {old_time}"
 
+            # (1.97) التاريخ والبيان يتغيّران حين يغيّرهما المستخدم وحدهما: كان كل حفظٍ يوحّد تواريخ حركات الصف
+            # وبياناتها على أول حركة
+            date_changed = new_date != str(ref_dt)[:10]
+            note_changed = new_note != cur_note
+
             # الحفظ كله خطوة تراجع واحدة (Ctrl+Z يعيد الصف كما كان)
             self.push_undo(f"تعديل الصف ({row_key or 'بدون ترقيم'}) — {worker_name}")
             blocked = False
@@ -17222,7 +17405,22 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 op_type = self.slot_op_type(slot)
                 existing_list = by_type.get(slot) or []
                 existing = existing_list[0] if existing_list else None
-                # القيمة المكتوبة = العملية كلها في الصف: حركة واحدة بها، وما زاد يُحذف
+                keep = None if slot == "العيار بعد الفحص" else self.row_slot_plan(existing_list, value)
+                if keep is not None:
+                    # حركات العملية كلها تبقى (والفرق على أحدثها) — لا يُحذف سطر
+                    for inv, weight in keep:
+                        inv["الوزن"] = weight
+                        inv["row_number"], inv["set_number"] = new_row_no, new_set_no
+                        if note_changed:
+                            inv_head = (self.SLOT_HEADS.get(slot) or (self.note_head(inv) if self.note_head(inv)
+                                                                      in self.NOTE_HEADS else ""))
+                            inv["البيان"] = self.with_note_head(inv_head, new_note)
+                        if date_changed:
+                            inv["التاريخ"] = new_dt
+                        if not self.save_invoice_to_db(inv["رقم الفاتورة"], inv):
+                            blocked = True
+                    continue
+                # قيمةٌ صُفّرت أو نقصت عن مجموع ما قبل أحدث حركة: حركة واحدة بها، وما زاد يُحذف (إلى المحذوفات)
                 for dup in existing_list[1:]:
                     if not self.delete_invoice_from_db(dup["رقم الفاتورة"]):
                         blocked = True
@@ -17238,10 +17436,12 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 if value > 0 or (keep_zero and existing and entries[slot].get().strip() != ""):
                     if existing:
                         existing["الوزن"] = value
-                        existing["البيان"] = move_note
+                        if note_changed or len(existing_list) > 1:
+                            existing["البيان"] = move_note
                         existing["row_number"] = new_row_no
                         existing["set_number"] = new_set_no
-                        existing["التاريخ"] = new_dt
+                        if date_changed or len(existing_list) > 1:
+                            existing["التاريخ"] = new_dt
                         if not self.save_invoice_to_db(existing["رقم الفاتورة"], existing):
                             blocked = True
                     else:
@@ -17268,7 +17468,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     continue
                 inv["row_number"] = new_row_no
                 inv["set_number"] = new_set_no
-                inv["التاريخ"] = new_dt
+                if date_changed:
+                    inv["التاريخ"] = new_dt
                 if not self.save_invoice_to_db(inv["رقم الفاتورة"], inv):
                     blocked = True
 
@@ -19398,7 +19599,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     f"سيُحذف قيد الإقفال ({ref}) بمبلغ {en(entry['amount'])} جم.\n\n"
                     f"• يعود الخياس إلى صندوق ({display})\n"
                     f"• ويخرج المبلغ من «{loss_account}»\n\n"
-                    "هل تريد المتابعة؟", parent=win):
+                    "هل تريد المتابعة؟", parent=win, default=messagebox.NO):
                 return
 
             # خطوة تراجع قبل التنفيذ (يمكن التراجع عن إعادة الفتح نفسها)
@@ -20284,7 +20485,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             vals = sub_tree.item(sub_sel, "values")
             ref_dt = vals[1]
             
-            if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف العمليات المنفذة في تاريخ ({ref_dt})؟", parent=win):
+            if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف العمليات المنفذة في تاريخ ({ref_dt})؟", parent=win, default=messagebox.NO):
                 to_delete = [inv["رقم الفاتورة"] for inv in self.invoices.values() if inv.get("الاسم") == worker_name and inv.get("التاريخ") == ref_dt]
                 any_blocked = False
                 for inv_ref in to_delete:
@@ -20595,7 +20796,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 messagebox.showwarning("تنبيه", "الرجاء تحديد السجل المراد مسحه.", parent=win)
                 return
             inv_id = int(tree.item(sel, "values")[0])
-            if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف القيد رقم {inv_id}؟", parent=win):
+            if messagebox.askyesno("تأكيد الحذف", f"هل أنت متأكد من حذف القيد رقم {inv_id}؟", parent=win, default=messagebox.NO):
                 if not self.delete_invoice_from_db(inv_id):
                     return  # تم المنع (رسالة "غير مسموح" ظهرت بالفعل)
                 self.recalculate_all()  
@@ -23479,7 +23680,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 "تأكيد حذف الفاتورة",
                 f"سيتم حذف فاتورة مبيعات {kind} رقم ({manual_no or '-'}) للعميل ({name})\n"
                 f"بتاريخ {date_str}، وعدد حركاتها {len(recs)} بإجمالي {tot_w:.2f} جم.\n\n"
-                "سيتم إعادة حساب الخزينة وكل الحسابات المرتبطة تلقائياً. هل تريد المتابعة؟"):
+                "سيتم إعادة حساب الخزينة وكل الحسابات المرتبطة تلقائياً. هل تريد المتابعة؟", default=messagebox.NO):
             return
 
         self.push_undo(f"حذف فاتورة المبيعات ({manual_no or '-'})")
@@ -23846,7 +24047,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             idx = get_sel_index()
             if idx is None:
                 return
-            if not messagebox.askyesno("تأكيد", "هل تريد حذف هذا السطر من الفاتورة؟", parent=win):
+            if not messagebox.askyesno("تأكيد", "هل تريد حذف هذا السطر من الفاتورة؟", parent=win, default=messagebox.NO):
                 return
             del edit_rows[idx]
             clear_fields()
@@ -28878,7 +29079,9 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         delta = round((value or 0.0) - (old or 0.0), 2)
         lines += self.sub_balance_lines({self.SADAYA: -delta} if field == "asm_before" else {self.ASSEMBLED: delta})
         lines += ["", "— Enter للتأكيد"]
-        if confirm and not messagebox.askyesno(title, "\n".join(lines), default=messagebox.YES, parent=parent):
+        # (1.97) مسح قيمةٍ من القالب: الافتراضي «لا» (القالب يُدار بـ Enter)
+        if confirm and not messagebox.askyesno(title, "\n".join(lines), parent=parent,
+                                               default=messagebox.YES if value is not None else messagebox.NO):
             return False
         skey = self.SB_PREFIX + key
         old_raw = self.get_setting(skey, None)
@@ -35503,7 +35706,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         msg = f"هل أنت متأكد من حذف حركة الوارد رقم ({inv.get('set_number') or inv_id}) بوزن {inv['الوزن']:.2f} جم؟"
         if linked_ids:
             msg += f"\n\nملاحظة: سيتم أيضاً حذف قيد (المسترجع) المرتبط بها وعدده {len(linked_ids)} قيد، حفاظاً على توازن الحسابات."
-        if not messagebox.askyesno("تأكيد الحذف", msg):
+        if not messagebox.askyesno("تأكيد الحذف", msg, default=messagebox.NO):
             return
 
         any_blocked = False
@@ -35861,7 +36064,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
                         if partner is None else
                         f"سيُحذف القيد اليومي بطرفيه معاً (هذا الطرف و«{partner.get('الاسم')}»)، فلا يبقى طرف بلا مقابل.\n"
                         "هل أنت متأكد؟")
-            if messagebox.askyesno("تأكيد الحذف", question):
+            if messagebox.askyesno("تأكيد الحذف", question, default=messagebox.NO):
                 deleted_ok = self.delete_invoice_from_db(inv_id)
                 if not deleted_ok:
                     return  # تم المنع (رسالة "غير مسموح" ظهرت بالفعل)
