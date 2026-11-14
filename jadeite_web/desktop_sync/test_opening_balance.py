@@ -64,7 +64,8 @@ print("✔ الحركات الملغاة لا تدخل رصيد أول المد�
 
 # ═══ ٢) الحلقة الحية تبدأ من رصيد أول المدة ═══
 rec = seg("recalculate_all")
-assert "running_balance = self.get_opening_treasury_balance(self.current_display_month)" in rec
+assert "self.treasury_ledger(self.current_display_month)" in rec       # (1.99) الدفتر بالفترة المعروضة
+assert "running_balance = self.get_opening_treasury_balance(month)" in seg("treasury_ledger")
 print("✔ رصيد الخزينة الحي يبدأ من رصيد أول المدة لا من الصفر")
 
 # ═══ ٣) عمود الخياس من شاشة المبيعات ═══

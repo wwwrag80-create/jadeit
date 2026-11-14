@@ -13,7 +13,9 @@ cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.n
 
 # ---------- ١) حلقة الرصيد الحي تفلتر الحالة ----------
 recalc = ast.get_source_segment(src, next(m for m in cls.body if isinstance(m, ast.FunctionDef)
-                                          and m.name == "recalculate_all"))
+                                          and m.name == "treasury_ledger"))      # حلقة الشريط (1.99)
+assert "self.treasury_ledger(self.current_display_month)" in ast.get_source_segment(
+    src, next(m for m in cls.body if isinstance(m, ast.FunctionDef) and m.name == "recalculate_all"))
 loop_idx = recalc.find("for inv in sorted_invoices:")
 assert loop_idx != -1, "لم يُعثر على حلقة حساب الخزينة"
 loop_head = recalc[loop_idx:loop_idx + 600]

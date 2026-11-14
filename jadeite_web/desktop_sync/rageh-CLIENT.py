@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.98.0"
+APP_VERSION = "1.99.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -5742,6 +5742,11 @@ class _LiveDialogs:
         return any(kind in ("warning", "error") for kind, _t in self.lines)
 
 
+class LiveStaleEdit(BaseException):
+    """(1.99) حفظٌ من نافذة تعديلٍ على الجهاز فُتحت قبل أن يغيّر رابط المدير حركاتها: يُلغى كاملاً — لا يكتب فوق ما فعله
+    المدير ولا يعيد حركةً حذفها. BaseException عمداً: «except Exception» داخل النافذة لا يبتلعه فيكمل الحفظ"""
+
+
 class _LiveWriter:
     """نسخةٌ كاتبة من البرنامج لعمليةٍ من الرابط (انظر رأس القسم): overrides (قيم النموذج مكان خانات الشاشة وما يخص
     العملية) في النسخة، وكل ما سواها البرنامج الحقيقي — بياناته وحفظه وتراجعه. دوال البرنامج مربوطة بالنسخة فتقرأ
@@ -8817,6 +8822,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.view_only_blocked()
             self._view_only_restore()
             return False
+        self.guard_stale_write(inv_id)              # (1.99) نافذةٌ قديمة لا تكتب فوق ما فعله رابط المدير
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(f"SELECT {self.INVOICE_COLUMNS} FROM invoices WHERE invoice_id = ?", (inv_id,))
@@ -8935,6 +8941,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         وتُستعاد منها متى شئت"""
         if not self.check_delete_permission():
             return False
+        self.guard_stale_write(inv_id)              # (1.99) ولا تعيد حذفاً أو تحذف ما عدّله
         reason = reason or self.delete_reason_hint()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -9448,7 +9455,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     step["label"], step["auto"] = label, False
                     self.update_undo_buttons()
                 return step
-            step = {"label": label, "auto": auto, "rows": {}, "names": [], "cats": [], "deleted": 0, "saved": 0}
+            step = {"label": label, "auto": auto, "rows": {}, "names": [], "cats": [], "deleted": 0, "saved": 0,
+                    "seq": self.__dict__.get("_live_seq", 0)}    # (1.99) ما فعله رابط المدير بعدها لا يُتراجع عنه
             self._undo_stack.append(step)
             if len(self._undo_stack) > self.UNDO_LIMIT:
                 self._undo_stack.pop(0)
@@ -9549,6 +9557,20 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         step = self._undo_stack[-1]
         label = self.undo_step_label(step)
+        # (1.99) رابط المدير عدّل حركات هذه الخطوة (أو حذفها أو أضاف إليها) بعدها: التراجع كان يعيد صورها القديمة فوق ما
+        # فعله المدير — تُزال الخطوة من التراجع، وتُعدَّل الحركات من شاشاتها
+        touched = self.__dict__.get("_live_touch") or {}
+        clash = [i for i in step["rows"] if touched.get(i, 0) > step.get("seq", 0)]
+        if clash:
+            self._undo_stack.pop()
+            if getattr(self, "_undo_open", None) is step:
+                self._undo_open = None
+            self.update_undo_buttons()
+            messagebox.showwarning(
+                "لا تراجع عن هذه الخطوة",
+                f"«{label}»: رابط المدير عدّل حركاتها ({len(clash)}) بعدها — التراجع كان سيكتب فوق ما فعله.\n\n"
+                "أُزيلت الخطوة من التراجع. عدّل الحركات من شاشاتها إن لزم.")
+            return
         # فترات الخطوة (صور الحركات قبلها، والحركات الآن): فترة مقفلة ← لا تراجع
         periods = self.undo_step_periods(step)
         if self.period_lock_blocked(periods):
@@ -18434,23 +18456,19 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         else:
             return round(sum_faqid - sum_marja - sum_pos_khayas, 2)
 
-    def recalculate_all(self):
-        if hasattr(self, 'treasury_tree') and self.treasury_tree:
-            for item in self.treasury_tree.get_children():
-                self.treasury_tree.delete(item)
-
+    def treasury_ledger(self, month):
+        """(1.99) دفتر الخزينة لفترة ← (رصيد أول المدة، [(الحركة، خانتها، مقدارها، الرصيد الجاري بعدها)]، رصيد الخزينة) —
+        المصدر الواحد لشريط «رصيد الخزينة الحالي» على الجهاز (recalculate_all) وفي رابط المدير لأي فترة"""
         # رصيد أول المدة: صافي كل حركات الخزينة في الفترات **السابقة**.
         # بدونه يبدأ رصيد كل فترة من الصفر فلا يعكس الذهب الفعلي لديك.
-        running_balance = self.get_opening_treasury_balance(self.current_display_month)
-        self.current_opening_balance = running_balance
+        running_balance = self.get_opening_treasury_balance(month)
+        opening = running_balance
         sorted_invoices = sorted(self.invoices.values(), key=lambda x: (x.get("التاريخ", ""), x.get("رقم الفاتورة", 0)))
-        
-        total_mufanish_4 = 0.0
 
         # تصنيف الحركات من المصدر الموحّد نفسه الذي يبني رصيد أول المدة والتقرير
         # الشهري وكشف حساب الخزينة (treasury_bucket) — فلا يختلف الشريط عنها أبداً
         type_sets = self.get_treasury_type_sets()
-
+        rows = []
         for inv in sorted_invoices:
             if not inv.get("التاريخ"): continue
             # فلتر الحالة كان مفقوداً هنا تماماً، فكان رصيد الخزينة يحتسب
@@ -18458,14 +18476,33 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # يفلترها. لذلك اختلف الشريط العلوي عن الكشف. الآن كلاهما بنفس الفلتر.
             if inv.get("settled_status") not in ("ACTIVE", "SETTLED_INOUT"): continue
             # كل فترة مستقلة بأرصدتها: الشريط يعرض رصيد الفترة المعروضة وحدها
-            if not self.inv_in_period(inv, self.current_display_month): continue
+            if not self.inv_in_period(inv, month): continue
             bucket, amount = self.treasury_bucket(inv, type_sets)
             if not bucket:
                 continue
             # «رصيد افتتاحي» يُضاف كأي حركة — كان يستبدل الرصيد الجاري كله
             # (running = الوزن) فيمحو رصيد أول المدة وما سبقه من حركات الفترة
             running_balance += amount
+            rows.append((inv, bucket, amount, running_balance))
 
+        # الخياس الفعلي للمصنعين والمركبين يُخصم من رصيد الخزينة الحي مباشرة،
+        # ويتحدّث مع كل عملية (لا ينتظر الإقفال، ولا يعود بعد الإقفال).
+        # قيود «حساب الخزينة» اليومية صارت ضمن الحلقة أعلاه — **لفترتها فقط**:
+        # كانت تُجمع من كل الفترات وتُضاف لكل فترة معروضة.
+        running_balance -= self.get_workers_khayas(month)
+        return opening, rows, round(running_balance, 2)
+
+    def recalculate_all(self):
+        if hasattr(self, 'treasury_tree') and self.treasury_tree:
+            for item in self.treasury_tree.get_children():
+                self.treasury_tree.delete(item)
+
+        opening, ledger_rows, treasury_balance = self.treasury_ledger(self.current_display_month)
+        self.current_opening_balance = opening
+
+        total_mufanish_4 = 0.0
+
+        for inv, bucket, amount, running_balance in ledger_rows:
             if hasattr(self, 'treasury_tree') and self.treasury_tree:
                 w_in = amount if bucket in ("opening", "inbound") else 0.0
                 w_qabd = amount if bucket in ("boxes", "journal") and amount > 0 else 0.0
@@ -18480,13 +18517,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     f"{running_balance:.2f} جم"
                 ))
 
-        # الخياس الفعلي للمصنعين والمركبين يُخصم من رصيد الخزينة الحي مباشرة،
-        # ويتحدّث مع كل عملية (لا ينتظر الإقفال، ولا يعود بعد الإقفال).
-        # قيود «حساب الخزينة» اليومية صارت ضمن الحلقة أعلاه — **لفترتها فقط**:
-        # كانت تُجمع من كل الفترات وتُضاف لكل فترة معروضة.
-        running_balance -= self.get_workers_khayas(self.current_display_month)
-
-        self.current_treasury_balance = round(running_balance, 2)
+        # الخياس الفعلي للمصنعين والمركبين يُخصم من رصيد الخزينة (في treasury_ledger)
+        self.current_treasury_balance = treasury_balance
         if hasattr(self, 'lbl_live_treasury'):
             self.lbl_live_treasury.configure(text=f"رصيد الخزينة الحالي: {en(self.current_treasury_balance)} جم")
         # الرصيد الحالي: يُحسب بعد الخزينة مباشرة لأنه يعتمد عليها
@@ -19659,14 +19691,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         return round(total, 2)
 
-    def get_gold_balance_breakdown(self):
-        """تفصيل الرصيد الحالي لعرضه عند الطلب (تلميح الشريط)"""
+    def get_gold_balance_breakdown(self, month=None, treasury=None):
+        """تفصيل الرصيد الحالي لعرضه عند الطلب (تلميح الشريط) — للفترة المعروضة، أو لفترةٍ أخرى (month) برصيد خزينتها
+        (treasury) لرابط المدير (1.99)"""
+        month = month or self.current_display_month
+        if treasury is None:
+            treasury = getattr(self, "current_treasury_balance", 0.0)
         # المصنعون والمركبون بالخياس الفعلي — نفس ما تعرضه لوحة كل قسم
-        parts = [("الخزينة", getattr(self, "current_treasury_balance", 0.0)),
-                 ("الخياس الفعلي (المصنعين)", self.get_current_unclosed_khayas("المصنعين")),
-                 ("الخياس الفعلي (المركبين)", self.get_current_unclosed_khayas("المركبين"))]
+        parts = [("الخزينة", treasury),
+                 ("الخياس الفعلي (المصنعين)", self.get_current_unclosed_khayas("المصنعين", month)),
+                 ("الخياس الفعلي (المركبين)", self.get_current_unclosed_khayas("المركبين", month))]
         for cat in self.get_all_stage_categories():
-            parts.append((self.get_display_label(cat), self.get_box_khayas_cumulative(cat)))
+            parts.append((self.get_display_label(cat), self.get_box_khayas_cumulative(cat, month=month)))
         return parts
 
     def get_box_closing_entries(self, cat, month=None):
@@ -23891,17 +23927,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # نوع الفاتورة يبقى كما هو بعد الحفظ (ويُصحَّح من خانته هنا إن اختير خطأً)
         old_kind = self.sale_kind_inferred(next((r.get("sale_kind") for r in recs if r.get("sale_kind")), ""),
                                            {r.get("النوع") for r in recs})
-        # الفاتورة تبقى في فترتها الأصلية بعد الحفظ، حتى لو فُتحت من البحث أو التدقيق
-        # وأنت على فترة أخرى (كانت تُعاد كتابتها بالفترة المعروضة فتنتقل إليها)
-        old_period = self.inv_period(min(recs, key=lambda x: x.get("رقم الفاتورة", 0)))
+        # الفاتورة تبقى في فترتها الأصلية بعد الحفظ (rewrite_sale_invoice تأخذها من حركاتها)، حتى لو فُتحت من البحث
         edit_rows = self.sale_records_to_rows(recs)
         # بيان الفاتورة = البيان الذي تشترك فيه أكثر سطورها؛ وسطرٌ كُتب له بيان خاص (عند «إضافة سطر»)
         # يبقى ببيانه — كان الحفظ يستبدل بيانات السطور كلها ببيان الفاتورة
-        row_notes = [r.get("البيان", "") for r in edit_rows]
-        old_note = max(set(row_notes), key=row_notes.count) if row_notes else ""
-        for r in edit_rows:
-            if r.get("البيان", "") == old_note:
-                r["البيان"] = ""
+        old_note = self.sale_invoice_note_split(edit_rows)
 
         win = ctk.CTkToplevel(self)
         win.title("تعديل فاتورة مبيعات مرحّلة")
@@ -24284,27 +24314,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "وسيتم تحديث الخزينة وصندوق بوليش 2 وكل الحسابات المرتبطة تلقائياً.\n\nهل تريد المتابعة؟", parent=win):
                 return
 
-            # توقيت الفاتورة لا يتغيّر بالتعديل (حتى لو صُحّح يومها): تتغيّر بياناتها وحدها
-            old_time = old_date[11:] if len(old_date) > 11 else datetime.datetime.now().strftime('%H:%M:%S')
-            new_full_dt = f"{new_date[:10]} {old_time}"
-            edit_rows.sort(key=self.sale_row_order)
-
-            # حذف الحركات القديمة ثم إعادة كتابتها بالكامل — يضمن تطابق الحسابات مع الفاتورة بعد التعديل
-            # (الحذف وإعادة الكتابة خطوة تراجع واحدة تعيد الفاتورة كما كانت)
-            self.push_undo(f"تعديل فاتورة المبيعات ({old_manual_no or '-'})")
-            for r in list(self.get_sale_invoice_records(key)):
-                if not self.delete_invoice_from_db(r["رقم الفاتورة"]):
-                    messagebox.showerror("تعذّر الحفظ", "تم منع حذف إحدى الحركات القديمة، وأُلغي التعديل حفاظاً على سلامة الحسابات.", parent=win)
-                    self.recalculate_all()
-                    return
-
-            self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip(),
-                                period=old_period, kind=kind_state["kind"])
+            # (1.99) إعادة كتابة الفاتورة بالدالة نفسها التي يعدّل بها رابط المدير (rewrite_sale_invoice)
+            ok, msg = self.rewrite_sale_invoice(key, edit_rows, new_name, new_date, new_manual, ent_note.get().strip(),
+                                                kind=kind_state["kind"])
+            if not ok:
+                messagebox.showerror("تعذّر الحفظ", msg, parent=win)
+                return
             # الفاتورة تبقى ظاهرة في شريط نوعها في «المبيعات الصادرة»
             self.sales_ops_kind = kind_state["kind"]
-
-            self.register_operation_period(new_date)
-            self.recalculate_all()
             self.refresh_sales_ops_table()
             win.destroy()
             messagebox.showinfo("تم", "تم حفظ تعديلات الفاتورة وتحديث الخزينة وكل الحسابات المرتبطة.")
@@ -24314,6 +24331,81 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # يُحجز مكانه أسفل النافذة قبل الجدول، فلا يدفعه الجدول خارجها على الشاشة القصيرة
         btn_save_inv.pack(side="bottom", pady=10, before=table_frame)
         self.apply_edit_lock_to_button(btn_save_inv, win)
+
+    SALE_ROW_NUM_KEYS = ("ذهب", "فصوص", "أحجار", "أحجار بعد الخصم", "الماس", "خياس", "خياس البوليش", "خياس المركب")
+
+    def rewrite_sale_invoice(self, key, rows, name, date, manual_no, note="", kind=None):
+        """(1.99) تعديل فاتورة مبيعات مرحّلة — مصدرٌ واحد لنافذة التعديل على الجهاز ولرابط المدير: تُحذف حركاتها ثم تُكتب
+        سطورها (rows بشكل السطور المعلّقة) بـ post_sale_rows نفسها، في فترتها الأصلية وبتوقيتها، خطوة تراجعٍ واحدة — وإن
+        مُنع حذفُ إحدى حركاتها عادت الفاتورة كما كانت. يرجع (تمّ؟، الرسالة)"""
+        recs = self.get_sale_invoice_records(key)
+        if not recs:
+            return False, "الفاتورة غير موجودة (حُذفت أو عُدّلت) — افتحها من جديد"
+        old_manual_no, old_date = key[0], key[1]
+        kind = kind if kind in self.SALE_KINDS else self.sale_kind_inferred(
+            next((r.get("sale_kind") for r in recs if r.get("sale_kind")), ""), {r.get("النوع") for r in recs})
+        old_period = self.inv_period(min(recs, key=lambda x: x.get("رقم الفاتورة", 0)))
+        manual_no, name = str(manual_no or "").strip(), str(name or "").strip()
+        date = str(date or "").strip().translate(self._DATE_DIGITS)
+        if not manual_no:
+            return False, "رقم الفاتورة مطلوب"
+        try:
+            datetime.datetime.strptime(date[:10], "%Y-%m-%d")
+        except ValueError:
+            return False, "التاريخ بالصيغة YYYY-MM-DD"
+        if not name or name not in self.get_supplier_name_values_no_mustarja():
+            return False, "اختر اسماً من الموردين المسجلين"
+        if not rows:
+            return False, "لا سطور في الفاتورة — لحذفها كاملة استخدم «حذف الفاتورة»"
+        # توقيت الفاتورة لا يتغيّر بالتعديل (حتى لو صُحّح يومها): تتغيّر بياناتها وحدها
+        old_time = old_date[11:] if len(old_date) > 11 else datetime.datetime.now().strftime('%H:%M:%S')
+        new_full_dt = f"{date[:10]} {old_time}"
+        rows = sorted(rows, key=self.sale_row_order)
+        # حذف الحركات القديمة ثم إعادة كتابتها بالكامل — يضمن تطابق الحسابات مع الفاتورة بعد التعديل
+        # (الحذف وإعادة الكتابة خطوة تراجع واحدة تعيد الفاتورة كما كانت)
+        step = self.push_undo(f"تعديل فاتورة المبيعات ({old_manual_no or '-'})")
+        for r in list(recs):
+            if not self.delete_invoice_from_db(r["رقم الفاتورة"]):
+                if step is not None and step.get("rows"):
+                    try:
+                        self.apply_undo_step(step)        # ما حُذف منها يعود: الفاتورة كما كانت
+                    except Exception as e:
+                        log_cloud_error("تعذّر إعادة الفاتورة بعد منع تعديلها", e)
+                self.recalculate_all()
+                return False, "تم منع حذف إحدى الحركات القديمة، وأُلغي التعديل حفاظاً على سلامة الحسابات."
+        self.post_sale_rows(rows, name, new_full_dt, manual_no, str(note or "").strip(), period=old_period, kind=kind)
+        self.register_operation_period(date[:10])
+        self.recalculate_all()
+        return True, f"✔ عُدِّلت فاتورة المبيعات ({manual_no}) — {len(rows)} سطر"
+
+    def sale_rows_from_form(self, raw_rows, kind):
+        """(1.99) سطور فاتورة من نموذج (الرابط): [{المفتاح: النص}] ← سطور post_sale_rows، أو (None، الخطأ). السطر الفارغ
+        يُحذف، ولا سالب، ولكل سطرٍ قيمة، والأحجار بعد الخصم الفارغة تُحسب بالنسبة المختارة كما في الشاشة"""
+        hidden = set(self.sale_hidden_keys(kind))
+        ratio = self.sale_discount_ratio()
+        out = []
+        for n, raw in enumerate(raw_rows, 1):
+            raw = {k: str(v or "").strip().translate(self._SET_DIGITS) for k, v in raw.items()}
+            if not any(raw.get(k) for k in self.SALE_ROW_NUM_KEYS + ("set_number",)):
+                continue
+            row = {"set_number": raw.get("set_number", ""), "row_number": "", "البيان": raw.get("البيان", "")}
+            for k in self.SALE_ROW_NUM_KEYS:
+                text = "" if k in hidden else raw.get(k, "")
+                try:
+                    v = round(float(text.replace("٫", ".")), 2) if text else 0.0
+                except ValueError:
+                    return None, f"السطر ({n}): ({k}) ليس رقماً"
+                if v < 0 or v != v or v in (float("inf"), float("-inf")):
+                    return None, f"السطر ({n}): لا قيمة بالسالب"
+                row[k] = v
+            if row["أحجار"] and not row["أحجار بعد الخصم"] and "أحجار بعد الخصم" not in hidden:
+                row["أحجار بعد الخصم"] = round(row["أحجار"] * ratio, 2)
+            if (row["ذهب"] <= 0 and row["فصوص"] <= 0 and row["أحجار بعد الخصم"] <= 0 and row["الماس"] <= 0
+                    and row["خياس"] <= 0 and row["خياس البوليش"] <= 0):
+                return None, f"السطر ({n}): لا بد من قيمة واحدة على الأقل (ذهب/فصوص/أحجار/ماس/خياس)"
+            row["row_number"] = self.normalize_set_number(raw.get("row_number", "")) or self.next_free_sale_row_number(out)
+            out.append(row)
+        return out, None
 
     def remember_discount_pct(self):
         """يحفظ النسبة الظاهرة في خانة نسبة الخصم إن كانت رقماً صحيحاً (مكتوبة أو مختارة)"""
@@ -25708,9 +25800,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     LIVE_SLEEP_GAP = 90               # (1.96.3) فجوةٌ أطول من هذا بين دورتين = الجهاز كان نائماً
     LIVE_SCREENS = (("stages", "مراحل التصنيع", "🏭"), ("khayas", "صناديق الخياس", "⚖️"), ("sales", "المبيعات", "🧾"),
                     ("inbound", "الوارد", "📥"), ("factory", "صناديق المصنع", "🏦"), ("losses", "شاشة الخسائر", "📉"))
-    LIVE_TOOLS = (("add", "إضافة عملية", "➕"), ("recent", "آخر العمليات", "🕘"), ("set", "رقم تشغيل / حركة", "🔎"),
+    LIVE_TOOLS = (("add", "إضافة عملية", "➕"), ("recent", "العمليات: تعديل وحذف", "🗂️"), ("set", "رقم تشغيل / حركة", "🔎"),
                   ("control", "لوحة التحكم", "⚙️"))
-    LIVE_ALL_SCREENS = ("factory", "losses")  # تقبلان «كل الفترات» كشاشتيهما
+    LIVE_ALL_SCREENS = ("factory", "losses", "recent")  # تقبل «كل الفترات» (والعمليات بها افتراضياً)
+    # (1.99) صفحاتٌ بلا زرٍّ في الشريط: تعديل فاتورة مبيعات، وأين الرصيد
+    LIVE_HIDDEN_VIEWS = (("sedit", "تعديل فاتورة مبيعات", "✏️"), ("bal", "الرصيد", "💰"))
     LIVE_SCREEN_OF = {"stages": "مراحل التصنيع", "khayas": "صناديق الخياس", "sales": "المبيعات", "inbound": "الوارد"}
     LIVE_PROVIDER_NAMES = {"tailscale": "Tailscale (مجاني — موصى به)", "cloudflare": "Cloudflare (بنطاقك)"}
     LIVE_KEEP_MSGS = 40
@@ -26609,11 +26703,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         f نموذج الإضافة، q رقم التشغيل، id رقم الحركة، m نتيجة النموذج السابق"""
         view = str(params.get("v", "") or "")
         screens = {k for k, _t, _i in self.LIVE_SCREENS}
-        tools = {k for k, _t, _i in self.LIVE_TOOLS}
+        tools = {k for k, _t, _i in self.LIVE_TOOLS + self.LIVE_HIDDEN_VIEWS}
         periods = self.live_periods()
         p = str(params.get("p", "") or "")
-        if p == self.LOSSES_ALL and view in self.LIVE_ALL_SCREENS:
-            period = p
+        if (p == self.LOSSES_ALL or (not p and view == "recent")) and view in self.LIVE_ALL_SCREENS:
+            period = self.LOSSES_ALL
         else:
             period = p if p in periods else self.current_display_month
         message = ((self.__dict__.get("_live") or {}).get("msgs") or {}).get(str(params.get("m") or ""))
@@ -26953,16 +27047,150 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def live_run(self, method, *args, overrides=None, force=False, period=None, **kwargs):
         """يشغّل دالة الجهاز (method اسمها) بنسخةٍ كاتبة (_LiveWriter): قيم النموذج مكان خاناتها، والفترة فترة الصفحة،
-        ونوافذ الجهاز تجيب نفسها (_LiveDialogs) — يرجع (نتيجة الدالة، الأسئلة والرسائل، أرقام الحركات الجديدة)"""
+        ونوافذ الجهاز تجيب نفسها (_LiveDialogs) — يرجع (نتيجة الدالة، الأسئلة والرسائل، أرقام الحركات الجديدة).
+
+        (1.99) وما فعله المدير ثابتٌ على الجهاز: الحركات التي مسّها (أضافها أو عدّلها أو حذفها) تُعرف من خطوة التراجع
+        نفسها، فلا يتراجع عنها زر التراجع على الجهاز، ولا تحفظ فوقها نافذةُ تعديلٍ كانت مفتوحة قبلها (guard_stale_write)"""
         over = dict(overrides or {})
         over.setdefault("_delete_via", "من الرابط المباشر")
         if period:
             over["current_display_month"] = period
         before = set(self.invoices)
+        # خطوة تراجعٍ فتحها الجهاز ولم تُغلق بعد لا تضمّ ما يفعله المدير
+        if getattr(self, "_undo_open", None) is not None:
+            self._close_undo_step(self._undo_open)
+        stack = getattr(self, "_undo_stack", None)
+        steps_before = list(stack) if stack else []
         writer = _LiveWriter(self, **over)
-        with _LiveDialogs(force=force) as dialogs:
-            result = getattr(writer, method)(*args, **kwargs)
+        self.__dict__["_live_writing"] = True
+        try:
+            with _LiveDialogs(force=force) as dialogs:
+                result = getattr(writer, method)(*args, **kwargs)
+        finally:
+            self.__dict__["_live_writing"] = False
+            touched = set()
+            stack = getattr(self, "_undo_stack", None) or []
+            for step in [st for st in stack if not any(st is b for b in steps_before)]:
+                touched.update(step.get("rows", {}))
+                stack.remove(step)                       # خطوة المدير ليست خطوة تراجعٍ على الجهاز
+            if getattr(self, "_undo_open", None) is not None and not any(self._undo_open is b for b in steps_before):
+                self._undo_open = None
+            touched.update(set(self.invoices) - before)
+            if touched:
+                self.live_mark_touched(touched)
+            try:
+                self.update_undo_buttons()
+            except Exception:
+                pass
         return result, dialogs.lines, sorted(set(self.invoices) - before)
+
+    # ── (1.99) ما يفعله المدير من رابطه ثابتٌ على الجهاز ──
+    def live_mark_touched(self, ids):
+        """حركاتٌ مسّها الرابط الآن: رقم تسلسلٍ جديد لها (التراجع على الجهاز لا يعيد ما قبلها)، وكل نافذةٍ مفتوحة على
+        الجهاز الآن تُعلَّم بها — فإن حفظت إحداها شيئاً منها أُلغي حفظها كاملاً"""
+        seq = self.__dict__.get("_live_seq", 0) + 1
+        self.__dict__["_live_seq"] = seq
+        touch = self.__dict__.setdefault("_live_touch", {})
+        for i in ids:
+            touch[i] = seq
+        stale = self.__dict__.setdefault("_live_stale", {})
+        for path in list(stale):                       # نوافذ أُغلقت
+            try:
+                gone = not self.nametowidget(path).winfo_exists()
+            except (KeyError, tk.TclError):
+                gone = True
+            if gone:
+                stale.pop(path, None)
+        for path in self.open_dialog_paths():
+            stale.setdefault(path, set()).update(ids)
+        self.__dict__["_live_last_touched"] = set(ids)
+
+    def open_dialog_paths(self):
+        """النوافذ المفتوحة على الجهاز الآن (غير النافذة الرئيسية ونافذة الرابط الخفية)"""
+        try:
+            paths = [str(p) for p in self.tk.splitlist(self.tk.call("wm", "stackorder", "."))]
+        except tk.TclError:
+            paths = []
+        host = self.__dict__.get("_live_host")
+        skip = {".", str(host) if host is not None else ""}
+        return [p for p in paths if p not in skip]
+
+    def _pointer_widget(self):
+        x, y = self.winfo_pointerxy()
+        return self.winfo_containing(x, y)
+
+    def _write_origin(self):
+        """النافذة التي يكتب منها الجهاز الآن: صاحبة الإمساك (النافذة المشروطة)، أو التي تحت المؤشر (نقر زر «حفظ» لا
+        ينقل التركيز)، أو صاحبة التركيز (Enter) — None للرئيسية"""
+        for getter in (self.grab_current, self._pointer_widget, self.focus_get):
+            try:
+                w = getter()
+                top = w.winfo_toplevel() if w is not None else None
+            except Exception:                            # focus_get يرفع KeyError لأدواتٍ داخلية
+                continue
+            if top is not None and str(top) != ".":
+                return top
+        return None
+
+    def guard_stale_write(self, inv_id):
+        """(في save_invoice_to_db وdelete_invoice_from_db) نافذةٌ فُتحت قبل أن يغيّر الرابط هذه الحركة تحاول حفظها أو
+        حذفها: يُلغى ما كتبته في هذه الضغطة (من خطوة تراجعها)، ولا يُكتب شيءٌ بعده منها، وتُغلق برسالة — LiveStaleEdit"""
+        d = self.__dict__
+        if d.get("_live_writing") or not (d.get("_live_stale") or d.get("_stale_block")):
+            return
+        top = self._write_origin()
+        if top is None:
+            return
+        path = str(top)
+        if d.get("_stale_block") == path:
+            raise LiveStaleEdit(path)
+        if inv_id not in (d.get("_live_stale") or {}).get(path, ()):
+            return
+        d["_stale_block"] = path
+        step = getattr(self, "_undo_open", None)
+        if step is not None and step.get("rows"):
+            try:
+                self.apply_undo_step(step)               # ما كتبته النافذة في الضغطة نفسها قبل هذه الحركة
+            except Exception as e:
+                log_cloud_error("تعذّر إلغاء حفظ نافذةٍ قديمة", e)
+        if step is not None:
+            stack = getattr(self, "_undo_stack", [])
+            if step in stack:
+                stack.remove(step)
+            self._undo_open = None
+        self.after_idle(lambda: self._stale_write_stopped(path))
+        raise LiveStaleEdit(path)
+
+    def _stale_write_stopped(self, path):
+        self.__dict__["_stale_block"] = None
+        (self.__dict__.get("_live_stale") or {}).pop(path, None)
+        try:
+            win = self.nametowidget(path)
+            if win.winfo_exists():
+                win.destroy()
+        except (KeyError, tk.TclError):
+            pass
+        try:
+            self.recalculate_all()
+            self.update_undo_buttons()
+        except Exception as e:
+            log_cloud_error("تعذّر تحديث الشاشات بعد إلغاء حفظ نافذةٍ قديمة", e)
+        messagebox.showwarning(
+            "تغيّرت من رابط المدير",
+            "رابط المدير عدّل هذه العملية (أو حذفها) بعد أن فُتحت هذه النافذة.\n\n"
+            "لم يُحفظ شيءٌ منها — حتى لا يُكتب فوق ما فعله المدير. أُغلقت النافذة: افتحها من جديد لترى آخر البيانات.")
+
+    def report_callback_exception(self, exc, val, tb):
+        if isinstance(val, LiveStaleEdit):
+            return                                       # أُلغي الحفظ عمداً، والرسالة في _stale_write_stopped
+        try:
+            log_cloud_error("خطأ غير متوقع في الواجهة", val)
+        except Exception:
+            pass
+        try:
+            super().report_callback_exception(exc, val, tb)
+        except Exception:
+            pass
 
     @staticmethod
     def live_lines(lines):
@@ -26983,7 +27211,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             nonces.append(nonce)
             handler = {"add": self.live_do_add, "move_save": self.live_do_move, "control": self.live_do_control,
                        "any_del": self.live_do_any_delete, "inb_save": self.live_do_inbound, "je_save": self.live_do_journal,
+                       "rec_save": self.live_do_recovery, "mach_save": self.live_do_machine, "sale_save": self.live_do_sale_edit,
                        "move_del": lambda prm: self.live_do_move(prm, delete=True)}.get(action)
+            self.__dict__.pop("_live_last_touched", None)
             try:
                 result = handler(params) if handler else {"ok": False, "lines": ["طلب غير معروف"]}
             except Exception as e:
@@ -26991,15 +27221,31 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 result = {"ok": False, "lines": [f"تعذّر التنفيذ: {e}"]}
             if not result.get("ok"):
                 result["values"] = {k: v for k, v in params.items() if k not in ("k", "n", "a")}
+            if self.__dict__.pop("_live_last_touched", None) and result.get("ok"):
+                self.live_device_notice(result)
         msgs = live.setdefault("msgs", {})
         mid = new_live_token()[:12]
         msgs[mid] = result
         while len(msgs) > self.LIVE_KEEP_MSGS:
             msgs.pop(next(iter(msgs)))
-        back = {k: params.get(k) for k in ("k", "v", "p", "f", "op", "kind", "q", "id", "c") if params.get(k)}
+        back = {k: params.get(k) for k in ("k", "v", "p", "f", "op", "kind", "q", "id", "c", "w", "s", "o")
+                if params.get(k)}
         if action in ("move_del", "any_del") and result.get("ok") and str(params.get("id")) == str(params.get("mid")):
             back.pop("id", None)                       # الحركة المبحوث عنها برقمها حُذفت
+            if back.get("v") == "sedit":
+                back["v"] = "recent"                   # فاتورةٌ حُذفت من صفحة تعديلها: إلى العمليات
+        if action == "sale_save" and result.get("ok") and result.get("ids"):
+            back["id"] = str(min(result["ids"]))       # الفاتورة بعد إعادة كتابتها بأرقام حركاتها الجديدة
         return {"status": 303, "location": self.live_url(back, m=mid)}
+
+    def live_device_notice(self, result):
+        """(1.99) ما فعله المدير من رابطه يظهر على الجهاز فوراً: الشاشات تُحدَّث (recalculate_all في دوال الحفظ نفسها)،
+        وإشعارٌ أسفل البرنامج بما حدث"""
+        head = str((result.get("lines") or [""])[0]).lstrip("✔ ").strip()
+        try:
+            self.toast(f"📡 من رابط المدير: {head}"[:160], "info", ms=7000)
+        except Exception:
+            pass
 
     def live_do_add(self, params):
         key = str(params.get("f") or "")
@@ -27251,7 +27497,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         vals = {"date": str(inv.get("التاريخ", "") or "")[:10], "weight": f"{inv.get('الوزن', 0.0) or 0.0:g}",
                 "row": str(inv.get("row_number", "") or ""), "set": str(inv.get("set_number", "") or ""),
                 "note": str(inv.get("البيان", "") or "")}
-        base = {"q": params.get("q"), "id": params.get("id"), "c": params.get("c"), "v": params.get("v") or "set"}
+        base = {"q": params.get("q"), "id": params.get("id"), "c": params.get("c"), "v": params.get("v") or "set",
+                "w": params.get("w"), "s": params.get("s"), "o": params.get("o"), "p": params.get("p")}
 
         def delete(text="🗑️ حذف"):
             return self.live_form_html(params, dict(base, a="any_del", mid=inv_id), [], {}, submit=text, compact=True,
@@ -27285,9 +27532,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if t in self.SALE_TYPES or t == "خياس طقوم":
             recs = self.get_sale_invoice_records(self.sale_key_of(inv))
             total = sum(float(r.get("الوزن") or 0) for r in recs if r.get("النوع") in self.SALE_TYPES)
+            edit = self.live_url({"k": params.get("k")}, v="sedit", id=inv_id)
             return (head + f'<div class="hint">فاتورة {esc(inv.get("رقم الفاتورة اليدوي", "") or "-")} — {len(recs)} حركة '
                     f'بإجمالي {total:.2f}</div>'
+                    f'<a class="btn" href="{esc(edit)}">✏️ تعديل الفاتورة وسطورها</a>'
                     + delete("🗑️ حذف الفاتورة كاملة") + "</div>")
+        if self.is_carat_recovery_move(inv):
+            fields = [("date", "التاريخ", "date", None, vals["date"]),
+                      ("raw", "الوزن كما كُتب", "num", None, f"{float(inv.get('قبل') or 0):g}"),
+                      ("carat", "العيار", "num", None, f"{float(inv.get('بعد') or 0):g}"),
+                      ("note", "البيان", "text", None, vals["note"])]
+            save = self.live_form_html(params, dict(base, a="rec_save", mid=inv_id), fields, {},
+                                       submit="💾 حفظ (يُعاد المعادل لعيار 18)", compact=True)
+            return head + f'<div class="hint">المعادل لعيار 18 الآن: {float(inv.get("الوزن") or 0):.2f}</div>' + save + \
+                delete() + "</div>"
+        if t == "خياس الاله/المكائن":
+            fields = [("date", "التاريخ", "date", None, vals["date"]),
+                      ("before", "قبل", "num", None, f"{float(inv.get('قبل') or 0):g}"),
+                      ("after", "بعد", "num", None, f"{float(inv.get('بعد') or 0):g}"),
+                      ("khayas", "الخياس", "num", None, vals["weight"]), ("note", "البيان", "text", None, vals["note"])]
+            save = self.live_form_html(params, dict(base, a="mach_save", mid=inv_id), fields, {},
+                                       submit="💾 حفظ التعديل", compact=True)
+            return head + save + delete() + "</div>"
         return (head + '<div class="grid">' + "".join(
             f"<div><span>{esc(lbl)}</span><b>{esc(vals[k])}</b></div>" for k, lbl in self.SET_MOVE_FIELDS)
             + "</div>" + delete() + "</div>")
@@ -27377,6 +27643,65 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.recalculate_all()
         return True, f"✔ عُدِّل القيد ({inv.get('set_number', '')}) بطرفيه: {value:.2f}"
 
+    def update_recovery_move(self, inv_id, date=None, raw=None, carat=None, note=None):
+        """(1.99) حركة «صب وتحليل» بعيارها: الوزن كما كُتب والعيار ← المعادل لعيار 18 (carat_equivalent) — بقواعد نافذتها
+        على الجهاز (open_recovery_op_edit_dialog)، والحذف بزرّه"""
+        inv = self.invoices.get(inv_id)
+        if inv is None or not self.is_carat_recovery_move(inv):
+            return False, "ليست حركة صب وتحليل بعيار"
+        new = dict(inv)
+        try:
+            if date is not None:
+                new["التاريخ"] = self._parse_move_date(date, inv)
+            raw_v = round(float(str(raw if raw is not None else inv.get("قبل") or 0).translate(self._SET_DIGITS)), 2)
+            carat_t = str(carat if carat is not None else inv.get("بعد") or "").strip().translate(self._SET_DIGITS)
+        except ValueError:
+            return False, "التاريخ YYYY-MM-DD، والوزن رقم"
+        if raw_v <= 0:
+            return False, "الوزن أكبر من صفر (ولحذف العملية: 🗑️ حذف)"
+        w = self.carat_equivalent(raw_v, carat_t)
+        if not w:
+            return False, "العيار بالقيراط (18 أو 21 أو 24) أو بالألف (750)"
+        new.update({"قبل": raw_v, "بعد": round(float(carat_t), 2), "الوزن": w})
+        if note is not None:
+            new["البيان"] = str(note).strip()
+        self.push_undo(f"تعديل {inv.get('الاسم', '')} ({inv_id})")
+        if not self.save_invoice_to_db(inv_id, new):
+            return False, "لم يُحفظ (الفترة مقفلة)"
+        self.update_period_selector()
+        self.recalculate_all()
+        return True, f"✔ عُدِّلت: {raw_v:g} عيار {new['بعد']:g} ← {w:.2f} لعيار 18"
+
+    def is_carat_recovery_move(self, inv):
+        try:
+            return (inv.get("الاسم") in self.CAST_ANALYSIS_OPS and float(inv.get("قبل") or 0) > 0
+                    and float(inv.get("بعد") or 0) > 0)
+        except (TypeError, ValueError):
+            return False
+
+    def update_machine_move(self, inv_id, date=None, before=None, after=None, khayas=None, note=None):
+        """(1.99) «خياس الآلة/المكائن»: قبل وبعد والخياس والبيان (كنافذته على الجهاز) والتاريخ"""
+        inv = self.invoices.get(inv_id)
+        if inv is None or inv.get("النوع") != "خياس الاله/المكائن":
+            return False, "ليست حركة خياس مكائن"
+        new = dict(inv)
+        try:
+            if date is not None:
+                new["التاريخ"] = self._parse_move_date(date, inv)
+            for key, val in (("قبل", before), ("بعد", after), ("الوزن", khayas)):
+                if val is not None and str(val).strip() != "":
+                    new[key] = round(float(str(val).strip().translate(self._SET_DIGITS)), 2)
+        except ValueError:
+            return False, "التاريخ YYYY-MM-DD، والقيم أرقام"
+        if note is not None:
+            new["البيان"] = str(note).strip()
+        self.push_undo(f"تعديل خياس المكائن ({inv_id})")
+        if not self.save_invoice_to_db(inv_id, new):
+            return False, "لم يُحفظ (الفترة مقفلة)"
+        self.update_period_selector()
+        self.recalculate_all()
+        return True, f"✔ عُدِّل خياس {inv.get('الاسم', '')}: {new['الوزن']:.2f}"
+
     def _live_mid(self, params):
         try:
             return int(str(params.get("mid") or "").strip())
@@ -27391,6 +27716,100 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return {"ok": False, "lines": ["ضع علامة ✔ «تأكيد الحذف» أولاً"]}
         (ok, msg), lines, _ids = self.live_run("live_delete_any", inv_id, force=True)
         return {"ok": bool(ok), "lines": [msg] + self.live_lines(lines)}
+
+    def live_do_recovery(self, params):
+        (ok, msg), lines, _ids = self.live_run(
+            "update_recovery_move", self._live_mid(params), date=params.get("date"), raw=params.get("raw"),
+            carat=params.get("carat"), note=params.get("note"), force=True)
+        return {"ok": bool(ok), "lines": [msg] + self.live_lines(lines)}
+
+    def live_do_machine(self, params):
+        (ok, msg), lines, _ids = self.live_run(
+            "update_machine_move", self._live_mid(params), date=params.get("date"), before=params.get("before"),
+            after=params.get("after"), khayas=params.get("khayas"), note=params.get("note"), force=True)
+        return {"ok": bool(ok), "lines": [msg] + self.live_lines(lines)}
+
+    def live_sale_edit_cols(self, kind):
+        """أعمدة سطور الفاتورة في صفحة تعديلها: الصف ثم خانات نوعها (كما في نافذة التعديل)"""
+        return [("الصف", "row_number")] + [(label, k) for label, k in self.SALE_EDIT_FIELDS
+                                          if k not in self.sale_hidden_keys(kind)]
+
+    def live_do_sale_edit(self, params):
+        inv = self.invoices.get(self._live_mid(params) or -1)
+        if inv is None or not (inv.get("النوع") in self.SALE_TYPES or inv.get("النوع") == "خياس طقوم"):
+            return {"ok": False, "lines": ["الفاتورة غير موجودة (حُذفت أو عُدّلت) — افتحها من جديد"]}
+        key = self.sale_key_of(inv)
+        recs = self.get_sale_invoice_records(key)
+        kind = self.sale_kind_inferred(next((r.get("sale_kind") for r in recs if r.get("sale_kind")), ""),
+                                       {r.get("النوع") for r in recs})
+        cols = self.live_sale_edit_cols(kind)
+        raw_rows = []
+        for i in range(self.LIVE_SALE_EDIT_MAX):
+            if not any(f"r{i}_{j}" in params for j in range(len(cols))):
+                continue
+            raw_rows.append({k: params.get(f"r{i}_{j}", "") for j, (_l, k) in enumerate(cols)})
+        rows, err = self.sale_rows_from_form(raw_rows, kind)
+        if err:
+            return {"ok": False, "lines": [f"✖ {err}"]}
+        (ok, msg), lines, new_ids = self.live_run(
+            "rewrite_sale_invoice", key, rows, params.get("name"), params.get("date"), params.get("invoice"),
+            params.get("note"), kind=kind, force=True)
+        return {"ok": bool(ok), "lines": [msg] + self.live_lines(lines), "ids": new_ids}
+
+    LIVE_SALE_EDIT_MAX = 60          # سطور فاتورة واحدة في صفحة تعديلها (الموجودة وأربعة فارغة للإضافة)
+
+    def live_view_sedit(self, period, params):
+        """✏️ تعديل فاتورة مبيعات من الرابط: رأسها (الاسم والرقم والتاريخ والبيان) وكل سطورها، وسطورٌ فارغة للإضافة —
+        السطر الذي تُفرغ خاناته يُحذف، والحفظ يعيد كتابتها بالدالة نفسها التي في نافذة التعديل على الجهاز"""
+        esc = live_escape
+        try:
+            inv = self.invoices.get(int(str(params.get("id") or "").strip()))
+        except ValueError:
+            inv = None
+        if inv is None or not (inv.get("النوع") in self.SALE_TYPES or inv.get("النوع") == "خياس طقوم"):
+            return {"no_period": True, "note": "الفاتورة غير موجودة (حُذفت أو عُدّلت) — ابحث عنها في «🗂️ العمليات»"}
+        key = self.sale_key_of(inv)
+        recs = self.get_sale_invoice_records(key)
+        kind = self.sale_kind_inferred(next((r.get("sale_kind") for r in recs if r.get("sale_kind")), ""),
+                                       {r.get("النوع") for r in recs})
+        rows = self.sale_records_to_rows(recs)
+        note = self.sale_invoice_note_split(rows)
+        cols = self.live_sale_edit_cols(kind)
+        message = params.get("_message") or {}
+        values = dict(message.get("values") or {}) if message and not message.get("ok") else {}
+        if not values:
+            values = {"name": key[2], "invoice": key[0], "date": str(key[1])[:10], "note": note}
+            for i, row in enumerate(rows):
+                for j, (_l, k) in enumerate(cols):
+                    v = row.get(k, "")
+                    values[f"r{i}_{j}"] = (f"{v:g}" if isinstance(v, float) and v else ("" if isinstance(v, float) else v))
+        fields = [("name", "الاسم", "select", list(self.get_supplier_name_values_no_mustarja()), key[2]),
+                  ("invoice", "رقم الفاتورة", "text", None, key[0]), ("date", "التاريخ", "date", None, str(key[1])[:10]),
+                  ("note", "البيان", "text", None, "")]
+        count = min(self.LIVE_SALE_EDIT_MAX, len(rows) + 4)
+        form = self.live_form_html(params, {"a": "sale_save", "v": "sedit", "id": params.get("id"),
+                                            "mid": inv.get("رقم الفاتورة")},
+                                   fields, values, rows=cols, row_count=count, submit="💾 حفظ الفاتورة")
+        head = (f'<div class="mv"><div class="mvh"><b>فاتورة مبيعات {esc(kind)} ({esc(key[0] or "-")})</b> · '
+                f'{esc(key[2])} · فترة {esc(self.inv_period(inv))}</div></div>')
+        delete = ('<div class="mv del">'
+                  + self.live_form_html(params, {"a": "any_del", "v": "sedit", "id": params.get("id"),
+                                                 "mid": inv.get("رقم الفاتورة")}, [], {},
+                                        submit="🗑️ حذف الفاتورة كاملة", compact=True, confirm="تأكيد الحذف", danger=True)
+                  + "</div>")
+        return {"no_period": True, "summary": [f"✏️ تعديل فاتورة المبيعات ({key[0] or '-'}) — سطورها: {len(rows)}"],
+                "blocks": [("html", head + form + delete)]}
+
+    @staticmethod
+    def sale_invoice_note_split(rows):
+        """بيان الفاتورة = البيان الذي تشترك فيه أكثر سطورها؛ ويُفرَّغ من سطوره (يُلحق بها عند الحفظ) — وسطرٌ كُتب له بيانٌ
+        خاص يبقى ببيانه. مصدرٌ واحد لنافذة التعديل على الجهاز ولصفحة تعديل الفاتورة في الرابط"""
+        row_notes = [r.get("البيان", "") for r in rows]
+        old_note = max(set(row_notes), key=row_notes.count) if row_notes else ""
+        for r in rows:
+            if r.get("البيان", "") == old_note:
+                r["البيان"] = ""
+        return old_note
 
     def live_do_inbound(self, params):
         inv_id = self._live_mid(params)
@@ -27472,7 +27891,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         p = str(params.get("p") or "")
         return p if p in self.live_periods() else self.current_display_month
 
-    # ── 🕘 آخر العمليات: الأحدث أولاً لكل شاشة — وتعديل أي عملية أو حذفها ──
+    # ── 🗂️ العمليات (1.99): كل عمليةٍ موجودة أو مضافة — الأحدث أولاً، بالفترة والشاشة والاسم والبحث — تُعدَّل أو تُحذف ──
     LIVE_RECENT_GROUPS = (("all", "الكل"), ("stages", "مراحل التصنيع"), ("inbound", "الوارد"),
                           ("sales", "الصادر (المبيعات)"), ("journal", "القيود"))
     LIVE_RECENT_LIMIT = 40
@@ -27491,8 +27910,17 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def live_recent(self, group="all", limit=None):
         """آخر العمليات المسجّلة (الأحدث إضافةً أولاً): فاتورة المبيعات مرة واحدة والقيد مرة واحدة"""
+        return self.live_recent_page(group, limit)[0]
+
+    def live_recent_page(self, group="all", limit=None, period=None, name="", text="", offset=0):
+        """صفحة من العمليات (الأحدث إضافةً أولاً) ← (العمليات، هل بعدها المزيد؟): period فترتها (أو كل الفترات)، name
+        اسمها (أي طرفٍ في القيد)، text بحثٌ في رقمها ورقم التشغيل والصف والبيان ورقم الفاتورة والاسم — فاتورة المبيعات
+        مرة واحدة والقيد مرة واحدة"""
         limit = limit or self.LIVE_RECENT_LIMIT
-        out, seen = [], set()
+        text = str(text or "").strip()
+        low = text.lower()
+        set_key = self.normalize_set_number(text) if text else ""
+        out, seen, skipped = [], set(), 0
         for inv_id in sorted((i for i in self.invoices if isinstance(i, int)), reverse=True):
             inv = self.invoices[inv_id]
             if inv.get("settled_status") not in self.TRACE_STATUSES:
@@ -27500,26 +27928,174 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             g = self.live_recent_group(inv)
             if g is None or (group != "all" and g != group):
                 continue
+            if period and period != self.LOSSES_ALL and self.inv_period(inv) != period:
+                continue
+            if name and inv.get("الاسم") != name:
+                continue
+            if text and not (str(inv_id) == text or (set_key and self.normalize_set_number(inv.get("set_number")) == set_key)
+                             or any(low in str(inv.get(k, "") or "").lower()
+                                    for k in ("الاسم", "البيان", "row_number", "set_number", "رقم الفاتورة اليدوي",
+                                              "النوع"))):
+                continue
             mark = (("sale",) + self.sale_key_of(inv)) if g == "sales" else (
                 ("je", inv.get("set_number")) if g == "journal" else ("inv", inv_id))
             if mark in seen:
                 continue
             seen.add(mark)
-            out.append(inv)
+            if skipped < offset:
+                skipped += 1
+                continue
             if len(out) >= limit:
-                break
-        return out
+                return out, True
+            out.append(inv)
+        return out, False
+
+    def live_recent_names(self):
+        names = []
+        for cat in ("المصنعين", "المركبين"):
+            names += list(self.categories.get(cat, []))
+        names += [n for n in self.get_supplier_name_values() if n not in names]
+        return names
 
     def live_view_recent(self, period, params):
+        esc = live_escape
         group = str(params.get("c") or "")
         group = group if group in dict(self.LIVE_RECENT_GROUPS) else "all"
         chips = [("c", group, list(self.LIVE_RECENT_GROUPS))]
-        invs = self.live_recent(group)
-        html = "".join(self.live_move_html(params, inv, f"{self.movement_label(inv)} · {self.set_move_label(inv)}")
-                       for inv in invs)
-        return {"chips": chips, "no_period": True,
-                "summary": [f"🕘 آخر {len(invs)} عملية"],
-                "blocks": [("html", html)] if html else [], "note": "لا عمليات بعد"}
+        name = str(params.get("w") or "").strip()
+        text = str(params.get("s") or "").strip()
+        try:
+            offset = max(0, int(str(params.get("o") or "0")))
+        except ValueError:
+            offset = 0
+        invs, more = self.live_recent_page(group, period=period, name=name, text=text, offset=offset)
+        # البحث: الاسم والنص (رقم العملية أو رقم التشغيل أو الصف أو البيان أو رقم الفاتورة)
+        names = self.live_recent_names()
+        search = ['<form class="frm search" method="get">']
+        for k in ("k", "v", "c", "p"):
+            val = params.get(k) if k != "p" else period
+            if val:
+                search.append(f'<input type="hidden" name="{k}" value="{esc(val)}">')
+        search.append(f'<label><span>الاسم</span><input name="w" value="{esc(name)}" list="dl_w" autocomplete="off">'
+                      '<datalist id="dl_w">' + "".join(f'<option value="{esc(n)}">' for n in names) + "</datalist></label>")
+        search.append(f'<label><span>بحث</span><input name="s" value="{esc(text)}" autocomplete="off" '
+                      'placeholder="رقم العملية، رقم التشغيل، الصف، البيان…"></label><button>🔎 بحث</button>')
+        if name or text:
+            search.append(f'<a class="btn ghost" href="{esc(self.live_url(params, w="", s="", o=""))}">✖ مسح</a>')
+        search.append("</form>")
+        cards = "".join(self.live_move_html(params, inv, f"{self.movement_label(inv)} · {self.set_move_label(inv)}")
+                        for inv in invs)
+        pager = []
+        if offset:
+            pager.append(f'<a class="btn ghost" href="{esc(self.live_url(params, o=max(0, offset - self.LIVE_RECENT_LIMIT) or ""))}">'
+                         "➡️ الأحدث</a>")
+        if more:
+            pager.append(f'<a class="btn ghost" href="{esc(self.live_url(params, o=offset + self.LIVE_RECENT_LIMIT))}">'
+                         "الأقدم ⬅️</a>")
+        pages = f'<div class="pager">{"".join(pager)}</div>' if pager else ""
+        scope = "كل الفترات" if period == self.LOSSES_ALL else f"فترة {period}"
+        first = offset + 1 if invs else 0
+        summary = [f"🗂️ العمليات — {scope}: {first}–{offset + len(invs)}" + (" (والمزيد)" if more else "")]
+        blocks = [("html", "".join(search))]
+        if cards:
+            blocks.append(("html", cards + pages))
+        else:
+            blocks.append(("html", '<div class="note">لا عمليات بهذا البحث</div>'))
+        return {"chips": chips, "summary": summary, "blocks": blocks}
+
+    # ── 💰 الأرصدة في الرابط (1.99): «رصيد الخزينة الحالي» و«الرصيد الحالي» كشريطي البرنامج — وأين الرصيد ──
+    def live_balance_period(self, period, periods):
+        return period if period in periods else self.current_display_month
+
+    def live_balances(self, month):
+        """(رصيد الخزينة، الرصيد الحالي، تفصيله [(المكان، القيمة)]) لفترة — فترة الجهاز المعروضة بأرقامها المحسوبة
+        نفسها (شريطا البرنامج)، وغيرها من دفتر الخزينة (treasury_ledger) وتفصيل الرصيد نفسيهما"""
+        if month == self.current_display_month and hasattr(self, "current_treasury_balance"):
+            treasury = self.current_treasury_balance
+        else:
+            treasury = self.treasury_ledger(month)[2]
+        parts = self.get_gold_balance_breakdown(month, treasury)
+        total = round(sum(v for _l, v in parts), 2)
+        if month == self.current_display_month and hasattr(self, "current_total_gold"):
+            total = self.current_total_gold
+        return treasury, total, parts
+
+    def live_balance_strip(self, params, period, periods):
+        esc = live_escape
+        month = self.live_balance_period(period, periods)
+        treasury, total, _parts = self.live_balances(month)
+        base = {"k": params.get("k"), "p": month}
+        return (f'<div class="bal"><a class="b1" href="{esc(self.live_url(base, v="bal", c="tr"))}">'
+                f'<span>🏦 رصيد الخزينة الحالي</span><b>{en(treasury)} جم</b></a>'
+                f'<a class="b2" href="{esc(self.live_url(base, v="bal"))}"><span>💰 الرصيد الحالي</span>'
+                f'<b>{en(total)} جم</b></a><div class="bp">فترة {esc(month)}</div></div>')
+
+    def live_view_bal(self, period, params):
+        """💰 أين الرصيد (النقر على «الرصيد الحالي» كزرّه في البرنامج): مرتّباً — الخزينة، ثم عند العمال (الخياس الفعلي)،
+        ثم صناديق الخياس — ولكلٍّ مجموعه. و«🏦 تفصيل الخزينة» (c=tr): أنواعها وأرصدتها، والنوع يعرض حركته في الفترة"""
+        esc = live_escape
+        month = self.live_balance_period(period, self.live_periods())
+        view = "tr" if params.get("c") == "tr" else "where"
+        chips = [("c", view, [("where", "💰 أين الرصيد الحالي"), ("tr", "🏦 تفصيل رصيد الخزينة")])]
+        if view == "tr":
+            return self.live_view_treasury_kinds(month, params, chips)
+        treasury, total, parts = self.live_balances(month)
+        by = dict(parts)
+        workers = [(lbl, v) for lbl, v in parts[1:3]]
+        boxes = [(lbl, v) for lbl, v in parts[3:] if abs(v) >= 0.005]
+        hidden = sum(1 for _l, v in parts[3:] if abs(v) < 0.005)
+
+        def num(v):
+            return f'<b class="{"neg" if v < 0 else ""}">{en(v)} جم</b>'
+
+        def group(icon, title, items, link=None):
+            sub = round(sum(v for _l, v in items), 2)
+            rows = "".join(f'<div class="row"><span>{esc(lbl)}</span>{num(v)}</div>' for lbl, v in items)
+            more = f'<a class="btn ghost" href="{esc(link)}">التفصيل ←</a>' if link else ""
+            return (f'<div class="card grp"><h3>{icon} {esc(title)}<b class="{"neg" if sub < 0 else ""}">{en(sub)} جم</b>'
+                    f'</h3>{rows}{more}</div>')
+        tr_link = self.live_url({"k": params.get("k"), "p": month}, v="bal", c="tr")
+        html = [f'<div class="hero"><span>💰 الرصيد الحالي — فترة {esc(month)}</span><b>{en(total)} جم</b></div>',
+                '<div class="cards">',
+                group("🏦", "في الخزينة", [("رصيد الخزينة الحالي", by.get("الخزينة", treasury))], tr_link),
+                group("👷", "عند العمال", workers)]
+        if boxes:
+            html.append(group("📦", "في صناديق الخياس", boxes))
+        html.append("</div>")
+        if hidden:
+            html.append(f'<div class="note">صناديق رصيدها صفر (لا تُعرض): {hidden}</div>')
+        return {"chips": chips, "blocks": [("html", "".join(html))]}
+
+    def live_view_treasury_kinds(self, month, params, chips):
+        """🏦 تفصيل رصيد الخزينة كنافذته في البرنامج: النوع ورصيده متراكماً حتى الفترة (أول المدة وداخل الفترة وخارجها)،
+        واختيار نوعٍ يعرض حركته في الفترة"""
+        esc = live_escape
+        data = self.treasury_kind_breakdown(month)
+        kind = str(params.get("kind") or "")
+        base = {"k": params.get("k"), "p": month, "v": "bal", "c": "tr"}
+        rows = []
+        for k, _src in self.TREASURY_KINDS:
+            d = data[k]
+            on = " on" if k == kind else ""
+            rows.append(f'<a class="krow{on}" href="{esc(self.live_url(base, kind=k))}"><span>{esc(k)}</span>'
+                        f'<i>أول المدة {en(d["opening"])}</i><i>داخل {en(d["in"])}</i><i>خارج {en(d["out"])}</i>'
+                        f'<b class="{"neg" if d["balance"] < -0.005 else ""}">{en(d["balance"])}</b></a>')
+        html = [f'<h3 class="sec">🏦 تفصيل رصيد الخزينة — حتى الفترة ({esc(month)})</h3>',
+                '<div class="kinds">' + "".join(rows) + "</div>"]
+        blocks = [("html", "".join(html))]
+        if kind in data:
+            moves = sorted(data[kind]["moves"], key=lambda x: (str(x[0].get("التاريخ", "")),
+                                                               x[0].get("رقم الفاتورة", 0) or 0))
+            table = {"heads": ["التاريخ", "الاسم", "الحركة", "الصف", "رقم التشغيل", "الوزن", "البيان"],
+                     "rows": [([str(inv.get("التاريخ", ""))[:10], inv.get("الاسم", ""), "داخل" if sign > 0 else "خارج",
+                                inv.get("row_number", "") or "-", inv.get("set_number", "") or "-", f"{w:.2f}",
+                                note or inv.get("البيان", "") or ""], False) for inv, sign, w, note in moves]}
+            blocks.append(("html", f'<h3 class="sec">حركة «{esc(kind)}» في الفترة ({esc(month)})</h3>'))
+            if table["rows"]:
+                blocks.append(("table", table))
+            else:
+                blocks.append(("html", '<div class="note">لا حركة لهذا النوع في الفترة</div>'))
+        return {"chips": chips, "blocks": blocks}
 
     def live_view_control(self, period, params):
         esc = live_escape
@@ -27567,7 +28143,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "}).catch(function(){});});})();")
 
     def live_form_html(self, params, hidden, fields, values, rows=None, submit="حفظ", force=False, compact=False,
-                       confirm=None, danger=False, fill=False):
+                       confirm=None, danger=False, fill=False, row_count=None):
         """نموذج POST إلى الرابط نفسه (المفتاح في عنوانه) برمزٍ يُستعمل مرة واحدة"""
         esc = live_escape
         out = [f'<form class="frm{" compact" if compact else ""}" method="post"{" data-fill" if fill else ""} '
@@ -27598,11 +28174,11 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if rows:
             out.append('<div class="wrap"><table class="rows"><thead><tr><th>#</th>'
                        + "".join(f"<th>{esc(label)}</th>" for label, _k in rows) + "</tr></thead><tbody>")
-            for i in range(self.LIVE_SALE_ROWS):
+            for i in range(row_count or self.LIVE_SALE_ROWS):
                 cells = []
                 for j, (_label, k) in enumerate(rows):
                     name = f"r{i}_{j}"
-                    mode = "" if k in ("set_number", "البيان") else ' inputmode="decimal"'
+                    mode = "" if k in ("set_number", "البيان", "row_number") else ' inputmode="decimal"'
                     cells.append(f'<td><input name="{name}" value="{esc((values or {}).get(name, ""))}"{mode} '
                                  'autocomplete="off"></td>')
                 out.append(f"<tr><td>{i + 1}</td>{''.join(cells)}</tr>")
@@ -27669,9 +28245,25 @@ h3.sec{margin:14px 14px 6px;font-size:16px;color:#13213F}
 .mv.del{border-color:#F3B4B4;background:#FFFBFB}.ctl{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));
 gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .frm.compact .grid:empty{display:none}
 .ctl .frm.compact button{margin-top:4px}
+.btn.ghost{background:#fff;color:#1F3B73;border:1px solid #C8D0DC;margin:0}
+.bal{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 12px 2px}.bal a{display:flex;flex-direction:column;
+align-items:center;gap:2px;padding:9px 10px;border-radius:12px;text-align:center}.bal a span{font-size:13px;font-weight:700}
+.bal a b{font-size:20px;font-variant-numeric:tabular-nums;direction:ltr}.bal .b1{background:#FFF4D6;border:1px solid #E8C96A;color:#6B4E00}
+.bal .b2{background:#EEF2F8;border:1px solid #CBD5E3;color:#13213F}.bal .bp{grid-column:1/-1;text-align:center;font-size:12px;
+color:#6B7280}.hero{margin:6px 12px 12px;padding:16px;border-radius:16px;background:#13213F;color:#fff;display:flex;
+flex-direction:column;align-items:center;gap:4px;border-bottom:3px solid #D4AF37}.hero span{font-size:14px;color:#BFD3F2}
+.hero b{font-size:30px;direction:ltr;font-variant-numeric:tabular-nums}.card.grp h3{display:flex;justify-content:space-between;
+gap:8px;align-items:center;border-bottom:2px solid #EEF1F5;padding-bottom:6px}.card.grp h3 b{font-size:17px;white-space:nowrap}
+.card.grp .btn{margin-top:8px;padding:6px 14px}.row b{direction:ltr}
+.kinds{display:grid;gap:6px;margin:0 12px 12px}.krow{display:grid;grid-template-columns:1.3fr repeat(3,1fr) .9fr;gap:6px;
+align-items:center;background:#fff;border:1px solid #DDE3EC;border-radius:10px;padding:8px 12px}.krow.on{border-color:#D4AF37;
+background:#FFFBEA}.krow span{font-weight:700}.krow i{font-style:normal;font-size:12px;color:#6B7280;text-align:center}
+.krow b{font-size:16px;direction:ltr;text-align:left}
+@media (max-width:560px){.krow{grid-template-columns:1fr auto}.krow i{display:none}.bal a b{font-size:17px}}.pager{display:flex;gap:8px;margin:0 12px 16px}
+.mv .btn{margin:6px 0 0;padding:7px 16px}
 """
 
-    LIVE_URL_KEYS = ("k", "v", "p", "c", "w", "kind", "f", "op", "q", "id")
+    LIVE_URL_KEYS = ("k", "v", "p", "c", "w", "kind", "f", "op", "q", "id", "s", "o")
 
     def live_url(self, params, **changes):
         """رابط داخل الرابط المباشر بالمفتاح نفسه، مع تغيير بعض الخيارات"""
@@ -27688,7 +28280,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
                   no_period=False):
         esc = live_escape
         factory = self.brand_display_name()
-        titles = {k: t for k, t, _i in self.LIVE_SCREENS + self.LIVE_TOOLS}
+        titles = {k: t for k, t, _i in self.LIVE_SCREENS + self.LIVE_TOOLS + self.LIVE_HIDDEN_VIEWS}
         title = titles.get(view, "الرابط المباشر")
         base = {"k": params.get("k"), "p": params.get("p")}
         from urllib.parse import quote
@@ -27708,6 +28300,10 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
             out.append(f'<a class="tool{" on" if key == view else ""}" href="{esc(self.live_url(base, v=key))}">'
                        f"{icon} {esc(label)}</a>")
         out.append("</nav>")
+        try:
+            out.append(self.live_balance_strip(params, period, periods))
+        except Exception as e:
+            log_cloud_error("تعذّر حساب أرصدة الرابط", e)
         if message:
             out.append(f'<div class="msg {"ok" if message.get("ok") else "bad"}">'
                        + esc((message.get("lines") or [""])[0])
@@ -27715,7 +28311,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         if not no_period:
             options = list(periods) + ([self.LOSSES_ALL] if view in self.LIVE_ALL_SCREENS else [])
             out.append('<form class="bar" method="get">')
-            for k in ("k", "v", "c", "w", "kind", "f", "op"):
+            for k in ("k", "v", "c", "w", "kind", "f", "op", "s"):
                 if params.get(k) and not (home and k == "v"):
                     out.append(f'<input type="hidden" name="{k}" value="{esc(params.get(k))}">')
             out.append('<label>الفترة: <select name="p" onchange="this.form.submit()">')

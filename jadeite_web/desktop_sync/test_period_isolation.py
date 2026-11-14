@@ -23,7 +23,8 @@ print("✔ صناديق الخياس: تعرض الفترة المعروضة و�
 
 # ═══ ٢) رصيد الخزينة للفترة المعروضة ═══
 rec = seg("recalculate_all")
-assert "self.inv_in_period(inv, self.current_display_month)" in rec
+assert "self.treasury_ledger(self.current_display_month)" in rec       # (1.99) الدفتر بالفترة المعروضة
+assert "self.inv_in_period(inv, month)" in seg("treasury_ledger")
 print("✔ رصيد الخزينة البارز = رصيد الفترة المعروضة وحدها")
 
 # ═══ ٣) خياس الصندوق مقيّد بالفترة افتراضياً ═══

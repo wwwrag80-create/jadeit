@@ -108,6 +108,7 @@ CHECKS = [
     ("لا يُحذف شيءٌ نهائياً",      [PY, "test_recycle_bin.py", TARGET]),
     ("لا يُحذف سطرٌ بتعديل الصف — مراجعة 1.97", [PY, "test_audit_197.py", TARGET]),
     ("هوية المصنع: الشعار والترويسة — 1.98", [PY, "test_brand_identity_198.py", TARGET]),
+    ("رابط المدير ← جهاز المصنع — 1.99", [PY, "test_link_device_199.py", TARGET]),
     ("فتح الشاشات فوراً",        [PY, "test_instant_screens.py", TARGET]),
     ("زر تحديث البرنامج",        [PY, "test_app_update.py", TARGET]),
     ("التحديث السريع .jup",      [PY, "test_hot_update.py", TARGET]),

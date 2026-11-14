@@ -27,9 +27,11 @@ assert A.next_free_sale_row_number([]) == "1"
 print("✔ ترتيب السطور برقم الصف (والهندي كاللاتيني)، وأصغر رقم شاغر لسطر جديد أو معاد")
 
 ed = member("open_sale_invoice_editor")
-assert "if has_pending() and not save_row():" in ed and ed.index("has_pending() and not save_row()") < ed.index("push_undo(")
-assert "edit_rows.sort(key=self.sale_row_order)" in ed and ed.count("edit_rows.sort(key=self.sale_row_order)") == 2
-assert 'new_full_dt = f"{new_date[:10]} {old_time}"' in ed and "if new_date == old_date[:10] else" not in ed
+rw = member("rewrite_sale_invoice")          # (1.99) إعادة الكتابة مصدرٌ واحد للنافذة ولرابط المدير
+assert "if has_pending() and not save_row():" in ed and ed.index("has_pending() and not save_row()") < ed.index("self.rewrite_sale_invoice(")
+assert "edit_rows.sort(key=self.sale_row_order)" in ed and "rows = sorted(rows, key=self.sale_row_order)" in rw
+assert 'new_full_dt = f"{date[:10]} {old_time}"' in rw and "if new_date == old_date[:10] else" not in rw
+assert rw.index("push_undo(") < rw.index("delete_invoice_from_db(") < rw.index("self.post_sale_rows(")
 assert 'entries["row_number"].insert(0, self.next_free_sale_row_number(edit_rows))' in ed
 assert "self.attach_polish2_hint(entries[\"خياس\"], win," in ed
 assert "return sorted((rows[s] for s in order), key=self.sale_row_order)" in member("sale_records_to_rows")

@@ -48,7 +48,7 @@ M9 = "2026-09"
 METHODS = [
     # البيان والترحيل والعمليات
     "sale_bayan", "sale_note_of", "post_sale_rows", "get_sale_invoice_groups", "get_sale_invoice_records",
-    "sale_records_to_rows", "sale_row_order", "commit_sale_invoice", "save_invoice_to_db", "invalid_movement_numbers", "warn_invalid_number", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row", "mark_backup_dirty",
+    "sale_records_to_rows", "sale_row_order", "commit_sale_invoice", "save_invoice_to_db", "guard_stale_write", "invalid_movement_numbers", "warn_invalid_number", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row", "mark_backup_dirty",
     "inv_period", "inv_in_period", "invoices_by_period", "period_invoices",
     # المعلقات
     "list_suspended_sales", "get_suspended_sale", "save_suspended_sale", "delete_suspended_sale",
@@ -264,11 +264,13 @@ ops = seg("refresh_sales_ops_table")
 assert '"الاسم", "البيان", "الذهب"' in ops and 'g.get("البيان", "")' in ops
 assert 'self.fit_columns_to_content(tree, "sales_ops"' in ops
 editor = seg("open_sale_invoice_editor")
-assert "row_notes = [r.get(\"البيان\", \"\") for r in edit_rows]" in editor and "ent_note.get().strip()" in editor
+rewrite = seg("rewrite_sale_invoice")          # (1.99) إعادة الكتابة دالةٌ واحدة للنافذة ولرابط المدير
+assert "self.sale_invoice_note_split(edit_rows)" in editor and "ent_note.get().strip()" in editor
+assert 'row_notes = [r.get("البيان", "") for r in rows]' in seg("sale_invoice_note_split")
 assert '("البيان", "البيان")' in editor and '"البيان": entries["البيان"].get().strip()' in editor
 # البيان يُمرَّر، والفاتورة تبقى في فترتها الأصلية عند الحفظ
-assert "self.post_sale_rows(edit_rows, new_name, new_full_dt, new_manual, ent_note.get().strip()," in editor
-assert "period=old_period" in editor
+assert "self.rewrite_sale_invoice(key, edit_rows, new_name, new_date, new_manual, ent_note.get().strip()," in editor
+assert "self.post_sale_rows(rows, name, new_full_dt, manual_no, str(note or \"\").strip(), period=old_period" in rewrite
 print("✔ جدول العمليات: عمود البيان بعد الاسم؛ ونافذة التعديل تعرض البيان وتحفظه")
 
 # ═══ ٢) تعليق الفاتورة: بلا أي حركة محاسبية ═══

@@ -29,7 +29,7 @@ def member(name):
 
 MEMBERS = ("LOCKED_PERIODS_KEY", "locked_periods", "is_period_locked", "set_period_locked", "period_lock_blocked",
            "UNDO_LIMIT", "INVOICE_COLUMNS", "CHANGE_LOG_LIMIT", "CHANGE_LOG_SQL", "CHANGE_LOG_FIELDS", "BIN_TABLE_SQL", "BIN_CONTEXT_SQL", "BIN_TRIGGER_SQL", "DELETE_REASONS", "ensure_recycle_bin", "_bin_reason", "delete_reason_hint", "_log_change",
-           "_change_detail", "save_invoice_to_db", "invalid_movement_numbers", "warn_invalid_number", "MOVEMENT_NUMBER_FIELDS", "MOVEMENT_NUMBER_LIMIT", "push_undo", "_close_undo_step", "_undo_note_row",
+           "_change_detail", "save_invoice_to_db", "guard_stale_write", "invalid_movement_numbers", "warn_invalid_number", "MOVEMENT_NUMBER_FIELDS", "MOVEMENT_NUMBER_LIMIT", "push_undo", "_close_undo_step", "_undo_note_row",
            "_undo_note_name", "undo_step_label", "can_undo", "apply_undo_step", "undo_step_periods",
            "undo_last_action", "invoice_from_row", "inv_period", "inv_in_period", "get_setting", "set_setting",
            "view_only_blocked", "clean_name", "check_name_exists", "invoices_by_name", "DELETED_ACCOUNTS_KEY",

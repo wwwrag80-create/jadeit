@@ -61,7 +61,7 @@ METHODS = [
     "get_box_closed_total", "get_stage_totals_for_month", "get_treasury_type_sets", "treasury_bucket", "stage_types",
     # الفهارس والفترات والحفظ
     "invoices_by_name", "invoices_by_period", "period_invoices", "inv_period", "inv_in_period",
-    "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "invalid_movement_numbers", "warn_invalid_number", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row",
+    "period_closing_datetime", "mark_backup_dirty", "save_invoice_to_db", "guard_stale_write", "invalid_movement_numbers", "warn_invalid_number", "locked_periods", "is_period_locked", "period_lock_blocked", "_log_change", "_change_detail", "_log_auto_fix", "undo_step_periods", "_undo_note_row", "invoice_from_row",
     # الإقفال والبيانات القديمة
     "close_khayas_box", "close_split_khayas_box", "_post_closing_entry", "neutralize_auto_recovery_closings",
     "migrate_casting_returns", "migrate_analysis_name", "migrate_polish2_names",

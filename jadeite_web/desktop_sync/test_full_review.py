@@ -92,7 +92,7 @@ assert "self.worker_rows_raji(worker_invs)" in window and "- raji_v" in window
 print("✔ كشف حركة العامل ونافذة الحركة القديمة من المصدر نفسه (والنافذة صارت تخصم الراجع/عيار)")
 
 # ═══ ٢) التعديل يبقي الفترة ═══
-editor = body("open_sale_invoice_editor")
+editor = body("open_sale_invoice_editor") + body("rewrite_sale_invoice")    # (1.99) إعادة الكتابة في دالتها
 assert "old_period = self.inv_period(" in editor and "period=old_period" in editor
 post = body("post_sale_rows")
 assert "period=None" in post and 'record["period"] = period' in post

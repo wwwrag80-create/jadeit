@@ -19,6 +19,8 @@ INHERITED = {"after","after_idle","title","geometry","update_idletasks","state",
  "clipboard_append","selection_get","winfo_width", "winfo_viewable","winfo_ismapped","winfo_height","wm_attributes","tk","cget",
  "yview","yview_moveto","yview_scroll","bind_all","unbind_all","item","identify_column",
  "get_children","index","selection","winfo_rgb","iconify","winfo_rootx","winfo_rooty","focus_get",
+ # (1.99) من يكتب على الجهاز: النافذة تحت المؤشر، ومسار النافذة
+ "winfo_pointerxy","winfo_containing","nametowidget",
  # رسوم لوحة المؤشرات (MiniChart يرث tk.Canvas)
  "bbox","create_line","create_oval","create_rectangle","create_text","delete","move","tag_lower","find_withtag",
  # خانة الاسم على ورقة «قالب رقم التشغيل» (PaperNameEntry يرث tk.Entry)
