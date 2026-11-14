@@ -35,9 +35,12 @@ marks = {n.targets[0].id: n.value.value for n in tree.body
          if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "").startswith("KHAYAS_MARK_")}
 MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
            "SALES_SUMMARY_SIGNATURES", "SALE_NOTE_SEP", "sale_note_of",
-           "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "pdf_logo", "draw_pdf_letterhead",
+           "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "BRAND_FIELDS", "BRAND_DEFAULT", "_brand_setting", "brand_identity", "letterhead_ar", "letterhead_en", "default_brand_logo", "brand_logo_image", "pdf_logo", "draw_pdf_letterhead",
            "sales_summary_layout", "draw_sales_summary_pages")
 ns = dict(marks, REPORTLAB_AVAILABLE=False, SALE_READ_STATUSES=("ACTIVE", "SETTLED_INOUT", "MEMO"))
+BRAND_GLOBALS = {"BRAND_KEY": "brand_identity", "BRAND_LOGO_KEY": "brand_logo_png", "json": __import__("json"),
+                 "sqlite3": __import__("sqlite3"), "log_cloud_error": lambda *a: None}     # هوية المصنع (1.98)
+ns.update(BRAND_GLOBALS)
 for _fn in ("sale_standing_weight", "sale_bound_weight"):     # الوزنان بلا الماس (1.93)
     exec(module_src(_fn), ns)
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
@@ -98,9 +101,10 @@ page = member("draw_sales_summary_pages")
 head = member("draw_pdf_letterhead")
 assert "self.draw_pdf_letterhead(" in page and "APP_LOGO_B64" not in page and "45 * mm" not in page
 assert '"رقم الفاتورة"' in page and 'd.get("manual_no")' in page and "box(M, band_top, side_w" in page
-assert "LETTERHEAD_AR" in head and "LETTERHEAD_EN" in head and "self.pdf_logo()" in head
+assert "self.letterhead_ar()" in head and "self.letterhead_en()" in head and "self.pdf_logo()" in head
+assert App.BRAND_DEFAULT["name_ar"] == App.LETTERHEAD_AR[0], "الافتراضي هوية جاديت"
 assert App.LETTERHEAD_AR[0] == "مصنع جاديت للتصنيع" and App.LETTERHEAD_EN[0] == "Jadeite Factory"
-assert 'resource_path("jadeite_logo.png")' in member("pdf_logo")
+assert 'resource_path("jadeite_logo.png")' in member("default_brand_logo") and "self.brand_logo_image()" in member("pdf_logo")
 assert App.SALES_SUMMARY_MIN_ROWS == 26 and "max(len(page_rows), fill_rows) if is_last" in page
 assert '"بضاعة صادرة" if page_no == 1 else "بضاعة صادرة (تابع)"' in page and "فاتورة مبيعات" not in page.split('"""')[2], \
     "عنوان القالب «بضاعة صادرة» (الدفعة ٣٣)"
@@ -141,6 +145,7 @@ if HAVE_RL:
     g["__file__"] = os.path.abspath(TARGET)
     g["_register_arabic_font"]()
     g.update(marks)
+    g.update(BRAND_GLOBALS)
     exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), g)
     g["App"].sb_polish2_khayas = lambda self, k: None
     ar = g["ar"]

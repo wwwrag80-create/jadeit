@@ -564,10 +564,11 @@ print("✔ أول فتح يعرض آخر طقم، والسهمان من أول �
 print("✔ المقترح: «قبل» التركيب = «بعد» البوليش و«قبل» بوليش 2 = الوزن الإجمالي (بحافة تنبيه حتى يُؤكَّد)")
 
 # ═══ ١٥) 1.80: الشاشة هي القالب الورقي نفسه — هندسة سند رقم التشغيل، والإدخال في خاناته ═══
-pns = {}
+pns = {"BRAND_KEY": "brand_identity", "json": __import__("json"), "sqlite3": __import__("sqlite3")}     # هوية المصنع (1.98): رأس القالب
 exec("class Paper:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
     "VOUCHER_MARGIN_MM", "set_voucher_layout", "SB_CELL_KINDS", "SB_PIECE_ROWS", "SB_PIECE_COLS",
-    "SB_KHAYAS_KEYS", "sb_paper_spec", "sb_neighbor")), pns)
+    "SB_KHAYAS_KEYS", "sb_paper_spec", "sb_neighbor", "BRAND_FIELDS", "BRAND_DEFAULT", "_brand_setting",
+    "brand_identity")), pns)
 paper = pns["Paper"]()
 spec = paper.sb_paper_spec()
 L = paper.set_voucher_layout(compact=True)

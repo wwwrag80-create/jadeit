@@ -32,10 +32,10 @@ for key in ("green", "lavender", "cream", "khayas"):
 print("✔ لوحة ألوان واحدة (SET_PAPER_COLORS) للشاشة والسند المطبوع، كلها فاتحة يُقرأ عليها النص")
 
 # ═══ الشاشة: لون كل عنوان وخانة في الورقة المرسومة ═══
-ns = {}
+ns = {"BRAND_KEY": "brand_identity", "json": __import__("json"), "sqlite3": __import__("sqlite3")}     # هوية المصنع (1.98): رأس القالب
 exec("class Paper:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in (
     "VOUCHER_MARGIN_MM", "set_voucher_layout", "SB_CELL_KINDS", "SB_PIECE_ROWS", "SB_PIECE_COLS",
-    "SB_KHAYAS_KEYS", "sb_paper_spec")), ns)
+    "SB_KHAYAS_KEYS", "sb_paper_spec", "BRAND_FIELDS", "BRAND_DEFAULT", "_brand_setting", "brand_identity")), ns)
 spec = ns["Paper"]().sb_paper_spec()
 assert spec[0][0] == "box" and spec[0][5] == "green", "الرأس (مصنع جاديت) أخضر"
 fill_of_text, fill_of_cell = {}, {}

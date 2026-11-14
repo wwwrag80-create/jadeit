@@ -79,7 +79,7 @@ for w, expect_w in ((1920, 330), (1600, 300), (1366, 268)):
     print(f"✔ شاشة {w}px → عرض الشريط {app.sidebar_width()} ومعامل {app.ui_scale()}")
 
 # ═══ ٥) الشعار في المساحة الفارغة ═══
-home = seg("build_home_screen")
+home = seg("build_home_screen") + seg("render_home_logo")     # الشعار في render_home_logo (1.98)
 assert 'logo_card.pack(fill="both", expand=True' in home
 assert 'relx=0.5, rely=0.5, anchor="center"' in home
 print("✔ بطاقة الشعار تملأ المساحة الفارغة")

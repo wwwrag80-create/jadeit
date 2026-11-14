@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.97.0"
+APP_VERSION = "1.98.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -3142,6 +3142,134 @@ def _apply_theme_defaults():
     t["CTkScrollbar"].update(corner_radius=6, border_spacing=3, fg_color="transparent",
                              button_color=["#C3CCD8", "#3C4655"],
                              button_hover_color=["#8E9AAC", "#5A6678"])
+
+
+# ═══ هوية المصنع (1.98): لكل مصنع شعاره وبيانات ترويسته — في إعدادات قاعدة حسابه، فلا يعتمد على هوية جاديت ═══
+BRAND_KEY = "brand_identity"             # بيانات الترويسة (JSON)
+BRAND_LOGO_KEY = "brand_logo_png"        # الشعار PNG بـ base64 — «none» إن حُذف، وفارغ = شعار جاديت الافتراضي
+BRAND_LOGO_MAX = 800                     # أطول ضلعٍ للشعار المحفوظ (يكفي للطباعة بوضوح ٣٠٠ نقطة/بوصة)
+BRAND_DEVICE_FILE = "brand_device.json"  # نسخة العميل: اسم المصنع وشعاره لشاشة الدخول (قبل اختيار الحساب)
+
+
+def _brand_crop(img, pad_ratio=0.02):
+    """يقصّ الصورة على ما فيها (البكسلات غير الشفافة) بحاشيةٍ صغيرة"""
+    box = img.getchannel("A").point(lambda a: 255 if a > 12 else 0).getbbox()
+    if not box:
+        return img
+    pad = int(round(max(img.size) * pad_ratio))
+    x0, y0, x1, y1 = box
+    return img.crop((max(0, x0 - pad), max(0, y0 - pad), min(img.width, x1 + pad), min(img.height, y1 + pad)))
+
+
+def _brand_ring(img):
+    """بكسلات الحافة الخارجية (صفٌّ وعمود من كل جهة)"""
+    w, h = img.size
+    px = img.load()
+    out = [px[x, 0] for x in range(w)] + [px[x, h - 1] for x in range(w)]
+    out += [px[0, y] for y in range(1, h - 1)] + [px[w - 1, y] for y in range(1, h - 1)]
+    return out
+
+
+def _brand_clear_connected(img, bg, tol):
+    """يجعل شفافاً كل بكسلٍ قريب من لون الخلفية bg ومتصلٍ بحافة الصورة (فلا تُمسّ الفراغات داخل الشعار
+    إلا ما اتصل منها بالخارج)، بحوافٍّ ناعمة"""
+    from PIL import ImageChops, ImageDraw, ImageFilter
+    rgb = img.convert("RGB")
+    r, g, b = ImageChops.difference(rgb, Image.new("RGB", img.size, tuple(bg))).split()
+    dist = ImageChops.lighter(ImageChops.lighter(r, g), b)          # أكبر فرقٍ بين القنوات
+    alpha = img.getchannel("A")
+    near = ImageChops.lighter(dist.point(lambda v: 255 if v <= tol else 0),
+                              alpha.point(lambda a: 255 if a <= 12 else 0))     # الشفاف أصلاً يمرّ أيضاً
+    # الاتصال بالحافة في نسخة مصغّرة (سريعة)، ثم يُطابق بالحجم الكامل مع البكسلات القريبة من الخلفية
+    scale = min(1.0, 320.0 / max(img.size))
+    small_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+    small = near.resize(small_size, Image.BOX).point(lambda v: 255 if v >= 128 else 0)
+    sw, sh = small.size
+    spx = small.load()
+    seeds = [(x, y) for x in range(sw) for y in (0, sh - 1)] + [(x, y) for y in range(sh) for x in (0, sw - 1)]
+    for seed in seeds:
+        if spx[seed] == 255:
+            ImageDraw.floodfill(small, seed, 128)
+    conn = small.point(lambda v: 255 if v == 128 else 0).resize(img.size, Image.NEAREST)
+    conn = conn.filter(ImageFilter.MaxFilter(5))
+    bgmask = ImageChops.multiply(conn, near)
+    new_alpha = ImageChops.subtract(alpha, bgmask)
+    # حوافّ ناعمة: ما جاور الخلفية يشفّ بقدر قربه من لونها
+    soft = dist.point(lambda v: 0 if v <= tol else min(255, int((v - tol) * 255 / max(1, 2 * tol))))
+    edge = bgmask.filter(ImageFilter.MaxFilter(3))
+    new_alpha = Image.composite(ImageChops.darker(new_alpha, soft), new_alpha, edge)
+    out = img.copy()
+    out.putalpha(new_alpha)
+    return out
+
+
+def brand_logo_cleanup(img, tol=40, max_side=1000):
+    """(1.98) شعارٌ بلا خلفية ولا إطار: لون الخلفية من حافة الصورة يصير شفافاً (ما اتصل منه بالحافة)، ثم تُقصّ
+    الصورة على ما فيها — ويتكرر ما دامت الحافة كلها لوناً واحداً (إطارٌ أو مربعٌ حول الشعار) فيبقى الرسم والكلمات
+    وحدها. صورةٌ شفافة أصلاً تُقصّ فقط"""
+    img = img.convert("RGBA")
+    if max(img.size) > max_side:
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
+    for step in range(6):
+        img = _brand_crop(img, 0)
+        if min(img.size) < 8:
+            break
+        ring = _brand_ring(img)
+        opaque = [p for p in ring if p[3] > 200]
+        if len(opaque) < 0.6 * len(ring):
+            break
+        bg = [sorted(p[i] for p in opaque)[len(opaque) // 2] for i in range(3)]
+        # لون الحافة يغلب عليها (لا شعارٌ يملأ الصورة حتى حوافّها)
+        close = sum(1 for p in opaque if max(abs(p[i] - bg[i]) for i in range(3)) <= tol)
+        if close < 0.6 * len(ring):
+            break
+        cleared = _brand_clear_connected(img, bg, tol)
+        if cleared.getchannel("A").getbbox() is None:
+            break                       # كلها خلفية: لا شيء يبقى — تُترك كما هي
+        if step:
+            # بعد الخلفية الخارجية: إطارٌ رفيع يُزال، وخلفيةٌ فاتحة محايدة داخل الإطار تُزال — أما شكلٌ ملوّن ممتلئ
+            # (شارة أو مربعٌ ملوّن عليه الكلمات) فجزءٌ من الشعار يبقى
+            before = sum(img.getchannel("A").point(lambda a: 1 if a > 12 else 0).histogram()[1:])
+            after = sum(cleared.getchannel("A").point(lambda a: 1 if a > 12 else 0).histogram()[1:])
+            light = min(bg) >= 200 and max(bg) - min(bg) <= 30
+            if before and (before - after) / before > 0.35 and not light:
+                break
+        img = cleared
+    return _brand_crop(img)
+
+
+def device_brand():
+    """(نسخة العميل) هوية المصنع على هذا الجهاز لشاشة الدخول: (مسار الشعار أو None، الاسم، هل حُذف الشعار)"""
+    if IS_ADMIN_BUILD:
+        return None, "", False
+    try:
+        with open(os.path.join(APP_DATA_DIR, BRAND_DEVICE_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None, "", False
+    logo = os.path.join(APP_DATA_DIR, "brand_logo.png")
+    has = bool(data.get("logo")) and os.path.isfile(logo)
+    return (logo if has else None), str(data.get("name") or ""), not data.get("logo", True)
+
+
+def write_device_brand(name, logo_img):
+    """يحفظ هوية المصنع لشاشة الدخول على هذا الجهاز (name فارغ: تُمسح فتعود هوية جاديت)"""
+    path = os.path.join(APP_DATA_DIR, BRAND_DEVICE_FILE)
+    logo = os.path.join(APP_DATA_DIR, "brand_logo.png")
+    try:
+        if not name:
+            for p in (path, logo):
+                if os.path.exists(p):
+                    os.remove(p)
+            return
+        if logo_img is not None:
+            logo_img.save(logo, "PNG")
+        elif os.path.exists(logo):
+            os.remove(logo)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"name": name, "logo": logo_img is not None}, f, ensure_ascii=False)
+    except OSError as e:
+        log_cloud_error("تعذّر حفظ هوية المصنع لشاشة الدخول", e)
 
 
 BRAND_FONT_FILES = ("IBMPlexSansArabic-Regular.ttf", "IBMPlexSansArabic-Bold.ttf", "IBMPlexSansArabic-SemiBold.ttf")
@@ -12204,11 +12332,23 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         head = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         head.pack(fill="x", padx=10, pady=(14, 8))
         try:
+            if self.brand_is_custom():
+                # هوية المصنع (1.98): شعاره واسمه بدل ترويسة جاديت
+                logo = self.brand_logo_image()
+                if logo is not None:
+                    ratio = min(200 * scale / logo.width, 70 * scale / logo.height)
+                    size = (max(1, round(logo.width * ratio)), max(1, round(logo.height * ratio)))
+                    ctk.CTkLabel(head, image=crisp_ctk_image(logo, logo, size, self), text="").pack()
+                ctk.CTkLabel(head, text=self.brand_identity()["name_ar"], font=(UI_FONT, max(13, int(15 * scale)), "bold"),
+                             text_color=UI_TITLE, wraplength=int(210 * scale)).pack(pady=(4, 0))
+                raise StopIteration
             logo_img = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64)))
             w0, h0 = logo_img.size
             dw = int(200 * scale)
             mini = crisp_ctk_image(logo_img, logo_img, (dw, max(1, round(dw * h0 / w0))), self)
             ctk.CTkLabel(head, image=mini, text="").pack()
+        except StopIteration:
+            pass
         except Exception:
             ctk.CTkLabel(head, text="جاديت", font=(UI_FONT, 20, "bold"),
                          text_color="#d4af37").pack()
@@ -12451,6 +12591,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             hover_color=(UI["surface_alt"], "#232A33"), command=self.open_recycle_bin)
         btn_bin.pack(side="right", padx=(0, 6))
         HoverTip(btn_bin, "المحذوفات: كل حركة حُذفت (أي قسم، أي شهر) بوقتها وسببها — تُستعاد بضغطة، وفحص صفوف مراحل التصنيع")
+        # هوية المصنع (1.98): شعاره وبيانات ترويسته في المطبوعات والواجهة — لكل مصنع هويته
+        if not getattr(self, "view_only", False):
+            btn_brand = ctk.CTkButton(
+                tools_row, text="🏷️ هوية المصنع", width=112, height=32, corner_radius=10,
+                font=ctk.CTkFont(family=UI_FONT, size=12, weight="bold"), fg_color="transparent",
+                border_width=1, border_color=(UI["line"], "#3A434F"), text_color=(UI["ink"], "#E6EDF3"),
+                hover_color=(UI["surface_alt"], "#232A33"), command=self.open_brand_identity_window)
+            btn_brand.pack(side="right", padx=(0, 6))
+            HoverTip(btn_brand, "هوية المصنع: الشعار (عرضه، أو أي صورة تُستخرج بلا خلفية ولا إطار، أو حذفه) واسم المصنع "
+                                "وعنوانه وسجله التجاري في كل المطبوعات")
 
         # تراجع عام خطوة بخطوة: إضافة أو تعديل أو حذف أو إقفال (وCtrl+Z) — نسخة العميل وحدها تعدّل البيانات
         if not IS_ADMIN_BUILD:
@@ -13122,21 +13272,30 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         except Exception:
             pass
 
-    def build_home_screen(self):
-        # الشريط الجانبي يُبنى بعد تسجيل كل الشاشات، فيعرف أيّها متاح فعلاً
-        try:
-            self.build_sidebar()
-        except Exception as e:
-            log_cloud_error("تعذّر بناء الشريط الجانبي", e)
-
-        self.home_frame = ctk.CTkFrame(self.main_shell, fg_color="transparent")
-
-        # ====== الشعار: بطاقة بلون النظام نفسه (لا إطار أبيض) بارزة في أعلى الواجهة ======
-        # المساحة اليسرى بيضاء بالكامل بلا هوامش، والشعار في منتصفها تماماً
-        logo_card = ctk.CTkFrame(self.home_frame, corner_radius=0, border_width=0,
-                                 fg_color=("#ffffff", "#12161c"))
-        logo_card.pack(fill="both", expand=True, padx=0, pady=0)
-
+    def render_home_logo(self):
+        """الشعار في المساحة اليسرى من الشاشة الرئيسية: شعار المصنع (1.98) كما هو، أو اسمه إن حُذف الشعار — وإلا شعار
+        جاديت بلون شريط الخزينة"""
+        logo_card = getattr(self, "_home_logo_card", None)
+        if logo_card is None or not logo_card.winfo_exists():
+            return
+        for w in logo_card.winfo_children():
+            w.destroy()
+        if self.brand_is_custom():
+            logo = self.brand_logo_image()
+            if logo is None:
+                ctk.CTkLabel(logo_card, text=self.brand_identity()["name_ar"], font=(UI_FONT, 30, "bold"),
+                             text_color=UI_TITLE).place(relx=0.5, rely=0.5, anchor="center")
+                return
+            try:
+                avail = self.logical_screen_width() - self.sidebar_width() - 60
+            except Exception:
+                avail = 1000
+            box_w, box_h = max(240, min(420, int(avail * 0.26))), 300
+            ratio = min(box_w / logo.width, box_h / logo.height)
+            size = (max(1, round(logo.width * ratio)), max(1, round(logo.height * ratio)))
+            ctk.CTkLabel(logo_card, image=crisp_ctk_image(logo, logo, size, self), text="",
+                         fg_color=("#ffffff", "#12161c")).place(relx=0.5, rely=0.5, anchor="center")
+            return
         try:
             # الشعار النقي المرفق أولاً؛ صورة الترويسة (الاسم والعنوان) بديل
             # فقط لو غاب الملف — المطلوب شعار كبير وحده بلا نصوص جانبية
@@ -13169,7 +13328,26 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                          fg_color=("#ffffff", "#12161c")).place(
                 relx=0.5, rely=0.5, anchor="center")
         except Exception:
-            ctk.CTkLabel(logo_card, text="💎 مصنع جاديت للتصنيع", font=(UI_FONT, 26, "bold"), text_color="#d4af37").pack(pady=16)
+            ctk.CTkLabel(logo_card, text=f"💎 {self.brand_display_name()}", font=(UI_FONT, 26, "bold"),
+                         text_color="#d4af37").pack(pady=16)
+
+    def build_home_screen(self):
+        # الشريط الجانبي يُبنى بعد تسجيل كل الشاشات، فيعرف أيّها متاح فعلاً
+        try:
+            self.build_sidebar()
+        except Exception as e:
+            log_cloud_error("تعذّر بناء الشريط الجانبي", e)
+
+        self.home_frame = ctk.CTkFrame(self.main_shell, fg_color="transparent")
+
+        # ====== الشعار: بطاقة بلون النظام نفسه (لا إطار أبيض) بارزة في أعلى الواجهة ======
+        # المساحة اليسرى بيضاء بالكامل بلا هوامش، والشعار في منتصفها تماماً
+        logo_card = ctk.CTkFrame(self.home_frame, corner_radius=0, border_width=0,
+                                 fg_color=("#ffffff", "#12161c"))
+        logo_card.pack(fill="both", expand=True, padx=0, pady=0)
+
+        self._home_logo_card = logo_card
+        self.render_home_logo()
 
         header_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         header_row.pack(fill="x", padx=30, pady=(10, 6))
@@ -26931,6 +27109,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             out.append('<div class="cards"><div class="card"><h3>📄 رقم التشغيل ' + esc(q) + "</h3>" + "".join(
                 f'<div class="row"><span>{esc(k)}</span><b>{esc(v)}</b></div>' for k, v in self.set_number_summary(q))
                        + "</div></div>")
+            # (1.98) قالبه كما في البرنامج: الورقة نفسها بقيمها
+            try:
+                filled = [k for k, (t, _st) in self.sb_cell_values(q).items() if t and k not in ("set_no", "kind")]
+                if self.sb_load(q) is not None or filled:
+                    out.append('<h3 class="sec">🧾 القالب</h3><div class="tplwrap">' + self.live_template_svg(q) + "</div>")
+            except Exception as e:
+                log_cloud_error("تعذّر رسم قالب رقم التشغيل في الرابط", e)
             sections = self.set_number_moves(q)
             any_moves = False
             for part, title, icon in self.SET_SECTIONS:
@@ -26948,6 +27133,112 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 out.append('<div class="note">لا حركات بهذا الرقم</div>')
         return {"no_period": True,
                 "blocks": [("html", "".join(out))]}
+
+    def sb_cell_values(self, set_number):
+        """(1.98) نصوص خانات قالب رقم التشغيل وحالها كما تعرضها الورقة (المحفوظ وحده، بلا ما كُتب ولم يُؤكَّد) —
+        {مفتاح الخانة: (النص، الحال)}؛ الحال: posted مُرحَّلة | ext من فاتورة البيع/التتبع | mfg من قبض المصنّع |
+        auto محسوبة لم تُكتب | None. مصدرٌ واحد للرابط، ويطابق sb_render على الشاشة"""
+        key = self.normalize_set_number(set_number)
+        rec = self.sb_load(key) or self.sb_new_record(key)
+        v = self.sb_values(key, rec)
+
+        def f(x):
+            return "" if x is None else f"{x:g}"
+
+        def calc(x):
+            return "" if x is None else f"{x:.2f}"
+        out = {"set_no": (key, None)}
+        for k in ("customer", "model", "label", "date", "assembler"):
+            val = v.get(k) if k == "assembler" else rec.get(k)
+            out[k] = (str(val or ""), None)
+        out["kind"] = (rec.get("kind") or ("الماس" if v["diamond"] else "ذهب"), None)
+        for k in ("p08", "gems", "stones", "stones_pct", "diamond", "chain", "gems_ct", "stones_ct"):
+            out[k] = (f(v[k]), "mfg" if (k == "p08" and v["mfg_w8"] is not None) else None)
+        written = self.sb_num(rec.get("mfg_khayas"))
+        out["mfg_khayas"] = ((f(v["mfg_khayas"]), "auto") if (written is None and v["mfg_khayas"] is not None)
+                             else (f(written), None))
+        for cell_key, field in self.SB_POST_CELLS.items():
+            posted = v[field]
+            if cell_key == "p04":
+                out[cell_key] = (f(v["p04"]), "mfg")
+            elif field in v["ext"]:
+                out[cell_key] = (f(posted), "ext")
+            elif posted is not None:
+                out[cell_key] = (f(posted), "posted")
+            else:
+                out[cell_key] = ("", None)
+        for k, val in (("p1_khayas", v["p1_khayas"]), ("asm_khayas", v["asm_khayas"]),
+                       ("weight_after", v["weight_after"]), ("total", v["total"]), ("p2_khayas", v["p2_khayas"]),
+                       ("final", v["final"]), ("minus_gems", v["gems"]), ("minus_stones", v["stones"]),
+                       ("minus_diamond", v["diamond"]), ("net", v["net"]), ("net2", v["net"]),
+                       ("gems2", v["gems"]), ("stones_disc", v["stones_disc"]), ("bound", v["bound"])):
+            out[k] = (calc(val), None)
+        out["pct2"] = (f"{v['stones_pct']:g}%" if v["stones_pct"] is not None else "", None)
+        for r, row in enumerate(rec.get("pieces") or []):
+            for c, val in enumerate((list(row) + [""] * 5)[:5]):
+                out[f"piece:{r}:{c}"] = (str(val or ""), None)
+        return out
+
+    def live_template_svg(self, set_number):
+        """(1.98) قالب رقم التشغيل في الرابط: الورقة نفسها (sb_paper_spec — أقسامها وألوانها وشعار المصنع) صورة SVG
+        بقيمها — المُرحَّل بخلفيةٍ زرقاء خفيفة، وما من فاتورة البيع بالأخضر"""
+        esc = live_escape
+        spec = self.sb_paper_spec()
+        L = self.set_voucher_layout(compact=True)
+        PW, PH = float(L["PW"]), float(L["PH"])
+        P = self.SB_PAPER
+        vals = self.sb_cell_values(set_number)
+        tint = {"posted": P["posted"], "ext": P["ext"], "mfg": P["posted"]}
+
+        def fit(text, size, maxw, h):
+            n = max(1, len(str(text)))
+            return max(4.0, min(size * 0.8, h * 0.62, maxw / (n * 0.56)))
+
+        def text_el(x, y, text, size, bold=False, color=None):
+            rtl = any("\u0600" <= ch <= "\u06FF" for ch in str(text))
+            return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size:.1f}" text-anchor="middle" dominant-baseline="central"'
+                    f' direction="{"rtl" if rtl else "ltr"}"{" font-weight=\"700\"" if bold else ""}'
+                    f' fill="{color or P["ink"]}">{esc(text)}</text>')
+        out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {PW:.1f} {PH:.1f}" role="img" '
+               f'aria-label="قالب رقم التشغيل {esc(vals["set_no"][0])}">',
+               f'<rect width="{PW:.1f}" height="{PH:.1f}" fill="{P["page"]}"/>']
+        logo = None
+        for item in spec:
+            kind = item[0]
+            if kind == "box":
+                _k, x0, t0, x1, t1, fill = item
+                color = P.get(fill, P["page"]) if fill else P["page"]
+                out.append(f'<rect x="{x0:.1f}" y="{t0:.1f}" width="{x1 - x0:.1f}" height="{t1 - t0:.1f}" fill="{color}"'
+                           f' stroke="{P["line"]}" stroke-width="0.7"/>')
+            elif kind == "text":
+                _k, x, t, text, size, maxw, h = item
+                out.append(text_el(x, t, text, fit(text, size, maxw, h), bold=True))
+            elif kind == "line":
+                _k, x0, t, x1, width = item
+                out.append(f'<line x1="{x0:.1f}" y1="{t:.1f}" x2="{x1:.1f}" y2="{t:.1f}" stroke="{P["line"]}"'
+                           f' stroke-width="{width:.1f}"/>')
+            elif kind == "logo":
+                _k, x1, t0, t1 = item
+                if logo is None:
+                    img = self.brand_logo_image()
+                    logo = (img, self.brand_logo_bytes(img) if img is not None else "") if img is not None else ("", "")
+                img, data = logo
+                if data:
+                    h = t1 - t0
+                    w = h * img.width / img.height
+                    out.append(f'<image x="{x1 - w:.1f}" y="{t0:.1f}" width="{w:.1f}" height="{h:.1f}"'
+                               f' href="data:image/png;base64,{data}"/>')
+            elif kind in ("cell", "calc"):
+                _k, key, x0, t0, x1, t1, size = item
+                text, state = vals.get(key, ("", None))
+                if state in tint:
+                    out.append(f'<rect x="{x0 + 0.6:.1f}" y="{t0 + 0.6:.1f}" width="{x1 - x0 - 1.2:.1f}"'
+                               f' height="{t1 - t0 - 1.2:.1f}" fill="{tint[state]}"/>')
+                if text:
+                    out.append(text_el((x0 + x1) / 2, (t0 + t1) / 2, text, fit(text, size, x1 - x0 - 2, t1 - t0),
+                                       bold=kind == "calc", color=P["muted"] if state == "auto" else None))
+        out.append("</svg>")
+        return "".join(out)
 
     def live_move_html(self, params, inv, label):
         """بطاقة عملية: تُعدَّل خاناتها في مكانها وتُحذف — والوارد بعياره والقيد بطرفيه يُعدَّلان هنا أيضاً، وفاتورة المبيعات
@@ -27238,7 +27529,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             size = os.path.getsize(self.db_path) / 1048576
         except OSError:
             size = 0.0
-        rows = [("المصنع / الحساب", getattr(self, "client_name", "") or self.LETTERHEAD_AR[0]),
+        rows = [("المصنع / الحساب", self.brand_display_name()),
                 ("إصدار البرنامج", APP_VERSION), ("الفترة الحالية على الجهاز", self.current_display_month),
                 ("عدد الحركات", f"{len(self.invoices)}"), ("حجم قاعدة البيانات", f"{size:.1f} ميغابايت"),
                 ("التعديل", "🔒 مقفول من المدير" if flags.get("edit_locked") else "🔓 مفتوح"),
@@ -27373,6 +27664,8 @@ table.rows input{width:90px;padding:5px 6px}table.rows td{padding:4px}
 .mvh{font-size:14px;margin-bottom:6px}.mv .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
 .mv .grid span{display:block;font-size:12px;color:#6B7280}.hint{font-size:13px;color:#6B7280;margin:4px 0}
 h3.sec{margin:14px 14px 6px;font-size:16px;color:#13213F}
+.tplwrap{margin:0 10px 14px;overflow:auto;background:#fff;border:1px solid #DDE3EC;border-radius:12px;padding:6px}
+.tplwrap svg{display:block;width:100%;min-width:640px;height:auto;font-family:"Jadeite Plex",Tahoma,sans-serif}
 .mv.del{border-color:#F3B4B4;background:#FFFBFB}.ctl{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));
 gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .frm.compact .grid:empty{display:none}
 .ctl .frm.compact button{margin-top:4px}
@@ -27394,7 +27687,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
     def live_html(self, params, view, period, periods, chips, blocks, summary=(), note="", home=False, message=None,
                   no_period=False):
         esc = live_escape
-        factory = getattr(self, "client_name", "") or self.LETTERHEAD_AR[0]
+        factory = self.brand_display_name()
         titles = {k: t for k, t, _i in self.LIVE_SCREENS + self.LIVE_TOOLS}
         title = titles.get(view, "الرابط المباشر")
         base = {"k": params.get("k"), "p": params.get("p")}
@@ -29378,7 +29671,8 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         hh = t1 - t0
         box(left, t0, right, t1, "green")
         centre = (left + right) / 2
-        out.append(("text", centre, (t0 + t1) / 2, "مصنع جاديت", 24, 2 * (centre - left - 69 * MM), hh))  # بين NO والشعار
+        out.append(("text", centre, (t0 + t1) / 2, self.brand_identity()["short_ar"], 24, 2 * (centre - left - 69 * MM),
+                    hh))  # بين NO والشعار
         out.append(("logo", right - 3 * MM, t0 + 0.1 * hh, t1 - 0.1 * hh))
         out.append(("text", left + 9 * MM, (t0 + t1) / 2, "NO:", 15, 14 * MM, hh * 0.6))
         cell("set_no", left + 17 * MM, t0 + 0.18 * hh, left + 66 * MM, t1 - 0.18 * hh, 17)   # يُكتب فيه الرقم ثم Enter
@@ -30520,8 +30814,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         img = None
         try:
             from PIL import ImageTk
-            path = resource_path("jadeite_logo.png")
-            src = Image.open(path).convert("RGBA") if os.path.exists(path) else None
+            src = self.brand_logo_image()                         # شعار المصنع (1.98)
             if src is not None and height > 4:
                 w = max(1, int(src.width * height / src.height))
                 img = ImageTk.PhotoImage(src.resize((w, height)), master=self)
@@ -31607,7 +31900,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         # ── الرأس: مصنع جاديت في الوسط، وشعار المصنع يميناً، ورقم التشغيل (NO) يساراً ──
         t0, t1 = L["head"]
         box(left, t0, right, t1, HEAD, lw=1.4)
-        text((left + right) / 2, (t0 + t1) / 2, "مصنع جاديت", 24)
+        text((left + right) / 2, (t0 + t1) / 2, self.brand_identity()["short_ar"], 24)
         logo = self.pdf_logo()
         if logo:
             lh = (t1 - t0) - 4 * MM
@@ -31727,24 +32020,340 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
                      "سجل تجاري: 1010851840")
     LETTERHEAD_EN = ("Jadeite Factory", "Saudi Arabia, Riyadh", "Industrial City", "C.R: 1010851840")
 
-    def pdf_logo(self):
-        """الشعار للمطبوعات وحده (بلا نصوص): الشعار النقي المرفق، وإلا وسط صورة الترويسة المضمّنة.
-        يرجع (صورة، العرض ÷ الارتفاع) أو None — ويُحمَّل مرة واحدة"""
-        cache = self.__dict__.get("_pdf_logo_cache", False)
-        if cache is False:
-            img = None
-            try:
-                path = resource_path("jadeite_logo.png")
-                if os.path.exists(path):
-                    img = Image.open(path).convert("RGBA")
-                else:
-                    sheet = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64))).convert("RGBA")
-                    img = sheet.crop((410, 0, 590, sheet.height))      # الشعار في وسط الترويسة
-            except Exception:
+    # (1.98) هوية المصنع: الحقول وقيمها الافتراضية (هوية جاديت ما لم يُضبط غيرها لهذا الحساب)
+    BRAND_FIELDS = (("name_ar", "اسم المصنع"), ("short_ar", "الاسم في رأس قالب رقم التشغيل"),
+                    ("addr1_ar", "العنوان — السطر الأول"), ("addr2_ar", "العنوان — السطر الثاني"),
+                    ("cr", "رقم السجل التجاري"), ("name_en", "Factory name (English)"),
+                    ("addr1_en", "Address — line 1"), ("addr2_en", "Address — line 2"))
+    BRAND_DEFAULT = {"name_ar": "مصنع جاديت للتصنيع", "short_ar": "مصنع جاديت", "addr1_ar": "المملكة العربية السعودية",
+                     "addr2_ar": "الرياض - صناعية الموسى", "cr": "1010851840", "name_en": "Jadeite Factory",
+                     "addr1_en": "Saudi Arabia, Riyadh", "addr2_en": "Industrial City"}
+
+    def _brand_setting(self, key):
+        override = self.__dict__.get("_brand_preview")          # معاينة الترويسة قبل الحفظ
+        if override is not None and key in override:
+            return override[key]
+        try:
+            return self.get_setting(key, None) if getattr(self, "db_path", None) else None
+        except sqlite3.Error:
+            return None
+
+    def brand_identity(self):
+        """بيانات المصنع للترويسة والقالب والتذاكر: المحفوظة لهذا الحساب، وإلا هوية جاديت — dict بكل الحقول"""
+        data = dict(self.BRAND_DEFAULT)
+        raw = self._brand_setting(BRAND_KEY)
+        try:
+            saved = json.loads(raw) if raw else {}
+        except ValueError:
+            saved = {}
+        if isinstance(saved, dict):
+            data.update({k: str(v or "").strip() for k, v in saved.items() if k in data})
+        data["short_ar"] = data["short_ar"] or data["name_ar"]
+        return data
+
+    def brand_is_custom(self):
+        """هل ضُبطت لهذا المصنع هوية غير جاديت (بيانات أو شعار)؟"""
+        return bool(self._brand_setting(BRAND_KEY) or self._brand_setting(BRAND_LOGO_KEY))
+
+    def brand_display_name(self):
+        """اسم المصنع للواجهة والرابط: من هويته إن ضُبطت، وإلا اسم الحساب، وإلا هوية جاديت"""
+        if self.brand_is_custom():
+            return self.brand_identity()["name_ar"]
+        return getattr(self, "client_name", "") or self.BRAND_DEFAULT["name_ar"]
+
+    def letterhead_ar(self):
+        b = self.brand_identity()
+        lines = (b["name_ar"], b["addr1_ar"], b["addr2_ar"], f"سجل تجاري: {b['cr']}" if b["cr"] else "")
+        return tuple(x for x in lines if x)
+
+    def letterhead_en(self):
+        b = self.brand_identity()
+        lines = (b["name_en"], b["addr1_en"], b["addr2_en"], f"C.R: {b['cr']}" if b["cr"] else "")
+        return tuple(x for x in lines if x)
+
+    @staticmethod
+    def default_brand_logo():
+        """شعار جاديت الافتراضي (بلا نصوص): الشعار النقي المرفق، وإلا وسط صورة الترويسة المضمّنة"""
+        try:
+            path = resource_path("jadeite_logo.png")
+            if os.path.exists(path):
+                return Image.open(path).convert("RGBA")
+            sheet = Image.open(io.BytesIO(base64.b64decode(APP_LOGO_B64))).convert("RGBA")
+            return sheet.crop((410, 0, 590, sheet.height))      # الشعار في وسط الترويسة
+        except Exception:
+            return None
+
+    def brand_logo_image(self):
+        """شعار المصنع (صورة RGBA جديدة لكل استدعاء): المحفوظ لهذا الحساب، أو None إن حُذف، أو شعار جاديت"""
+        raw = self._brand_setting(BRAND_LOGO_KEY) or ""
+        cache = self.__dict__.get("_brand_logo_cache")
+        if not (cache and cache[0] == raw):
+            if raw == "none":
                 img = None
-            cache = (ImageReader(img), img.width / img.height) if img else None
+            elif raw:
+                try:
+                    img = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGBA")
+                except Exception as e:
+                    log_cloud_error("تعذّر قراءة شعار المصنع المحفوظ", e)
+                    img = self.default_brand_logo()
+            else:
+                img = self.default_brand_logo()
+            cache = (raw, img)
+            self.__dict__["_brand_logo_cache"] = cache
+        return cache[1].copy() if cache[1] is not None else None
+
+    def pdf_logo(self):
+        """شعار المصنع للمطبوعات (بلا نصوص) — (صورة، العرض ÷ الارتفاع) أو None إن حُذف؛ ويُحمَّل مرة لكل شعار"""
+        raw = self._brand_setting(BRAND_LOGO_KEY) or ""
+        cache = self.__dict__.get("_pdf_logo_cache", False)
+        if cache is False or not isinstance(cache, tuple) or len(cache) != 2 or cache[0] != raw:
+            img = self.brand_logo_image()
+            cache = (raw, (ImageReader(img), img.width / img.height) if img else None)
             self.__dict__["_pdf_logo_cache"] = cache
-        return cache
+        return cache[1]
+
+    # ═══ 🏷️ هوية المصنع (1.98) ═══
+    BRAND_IMAGE_TYPES = (("الصور", "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff"), ("كل الملفات", "*.*"))
+
+    @staticmethod
+    def brand_preview_image(img, box=(380, 210)):
+        """الشعار على خلفية مربعات (تُظهر الشفافية) بحجم المعاينة — أو None"""
+        if img is None:
+            return None
+        ratio = min(box[0] / img.width, box[1] / img.height, 1.0)
+        size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+        small = img.resize(size, Image.LANCZOS)
+        board = Image.new("RGBA", size, (255, 255, 255, 255))
+        cell = 10
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(board)
+        for y in range(0, size[1], cell):
+            for x in range(0, size[0], cell):
+                if (x // cell + y // cell) % 2:
+                    draw.rectangle((x, y, x + cell - 1, y + cell - 1), fill=(226, 230, 236, 255))
+        board.alpha_composite(small)
+        return board
+
+    @staticmethod
+    def brand_logo_bytes(img):
+        """الشعار للحفظ: PNG بأطول ضلعٍ BRAND_LOGO_MAX ← base64"""
+        img = img.convert("RGBA")
+        if max(img.size) > BRAND_LOGO_MAX:
+            img.thumbnail((BRAND_LOGO_MAX, BRAND_LOGO_MAX), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "PNG", optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def save_brand_identity(self, data, logo_mode, logo_img=None):
+        """يحفظ هوية هذا المصنع: data بيانات الترويسة؛ logo_mode: keep (الشعار كما هو) | new (logo_img) | none (بلا شعار)
+        | default (شعار جاديت) — ثم يُطبّقها على الواجهة فوراً"""
+        clean = {k: str(data.get(k, "") or "").strip() for k, _l in self.BRAND_FIELDS}
+        self.set_setting(BRAND_KEY, json.dumps(clean, ensure_ascii=False))
+        if logo_mode == "new" and logo_img is not None:
+            self.set_setting(BRAND_LOGO_KEY, self.brand_logo_bytes(logo_img))
+        elif logo_mode == "none":
+            self.set_setting(BRAND_LOGO_KEY, "none")
+        elif logo_mode == "default":
+            self.set_setting(BRAND_LOGO_KEY, "")
+        self.brand_changed()
+
+    def brand_changed(self):
+        """الهوية تغيّرت: المطبوعات التالية بها، والشريط الجانبي والشاشة الرئيسية والقالب فوراً، وشاشة الدخول على هذا
+        الجهاز (نسخة العميل)"""
+        for key in ("_brand_logo_cache", "_pdf_logo_cache", "_sb_logo_cache"):
+            self.__dict__.pop(key, None)
+        for fn in ("build_sidebar", "render_home_logo"):
+            try:
+                getattr(self, fn)()
+            except Exception as e:
+                log_cloud_error("تعذّر تحديث الواجهة بهوية المصنع", e)
+        st = getattr(self, "_sb_state", None)
+        if st and st.get("canvas") is not None:
+            try:
+                self.sb_layout_paper(force=True)
+            except Exception:
+                pass
+        if not IS_ADMIN_BUILD:
+            write_device_brand(self.brand_identity()["name_ar"] if self.brand_is_custom() else "",
+                               self.brand_logo_image() if self.brand_is_custom() else None)
+
+    def preview_brand_letterhead(self, data, logo_mode, logo_img=None, parent=None):
+        """ورقة PDF بترويسة الهوية المكتوبة (قبل حفظها) — كما ستظهر في كل المطبوعات"""
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showwarning("المعاينة", "مكتبة الطباعة غير متوفرة على هذا الجهاز.", parent=parent)
+            return None
+        override = {BRAND_KEY: json.dumps(data, ensure_ascii=False)}
+        if logo_mode == "new" and logo_img is not None:
+            override[BRAND_LOGO_KEY] = self.brand_logo_bytes(logo_img)
+        elif logo_mode in ("none", "default"):
+            override[BRAND_LOGO_KEY] = "none" if logo_mode == "none" else ""
+        self.__dict__["_brand_preview"] = override
+        for key in ("_brand_logo_cache", "_pdf_logo_cache"):
+            self.__dict__.pop(key, None)
+        out_path = os.path.join(INVOICES_DIR, "معاينة_هوية_المصنع.pdf")
+        try:
+            c = pdf_canvas.Canvas(out_path, pagesize=A4)
+            y = self.draw_standard_letterhead(c, 14 * mm)
+            c.setFont(_ARABIC_FONT_NAME, 12)
+            c.drawRightString(A4[0] - 14 * mm, y - 8 * mm, ar("معاينة الترويسة — هكذا تظهر في كل المطبوعات"))
+            c.save()
+        finally:
+            self.__dict__.pop("_brand_preview", None)
+            for key in ("_brand_logo_cache", "_pdf_logo_cache"):
+                self.__dict__.pop(key, None)
+        self._open_file(out_path)
+        return out_path
+
+    def open_brand_identity_window(self):
+        """«🏷️ هوية المصنع»: الشعار الذي في المطبوعات والواجهة — عرضه، واختيار أي صورة (تُستخرج بلا خلفية ولا إطار:
+        شفافة مقصوصة على الرسم والكلمات)، أو حذفه، أو شعار جاديت — وبيانات الترويسة: اسم المصنع وعنوانه وسجله
+        التجاري بالعربية والإنجليزية. لكل حساب في قاعدة بياناته، فلكل مصنع هويته"""
+        if getattr(self, "view_only", False):
+            return None
+        old = getattr(self, "_brand_window", None)
+        if old is not None and old.winfo_exists():
+            old.lift()
+            return old
+        win = ctk.CTkToplevel(self)
+        self._brand_window = win
+        win.title("هوية المصنع — الشعار وبيانات الترويسة")
+        self.fit_dialog_to_screen(win, 900, 780)
+        win.transient(self)
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        muted = (UI["muted"], "#9AA4B2")
+        ctk.CTkLabel(body, text="🏷️ هوية المصنع", font=(UI_FONT, 20, "bold"), text_color=UI_TITLE).pack(pady=(14, 2))
+        ctk.CTkLabel(body, text="الشعار وبيانات المصنع في كل المطبوعات (الترويسة، وقالب رقم التشغيل، والتذاكر) وفي "
+                                "الواجهة — لهذا المصنع وحده", font=(UI_FONT, 13), text_color=muted).pack(padx=16)
+        state = {"mode": "keep", "orig": None, "clean": None}
+
+        card = ctk.CTkFrame(body, corner_radius=12, border_width=1, border_color=UI["gold_line"],
+                            fg_color=(UI["surface"], "#171C23"))
+        card.pack(fill="x", padx=16, pady=10)
+        ctk.CTkLabel(card, text="الشعار", font=(UI_FONT, 15, "bold"), text_color=UI_TITLE).pack(pady=(10, 4))
+        preview = ctk.CTkLabel(card, text="", height=220)
+        preview.pack(pady=4)
+        info = ctk.CTkLabel(card, text="", font=(UI_FONT, 12), text_color=muted, wraplength=760, justify="center")
+        info.pack(padx=12)
+        clean_var = tk.BooleanVar(value=True)
+        logo_btns = ctk.CTkFrame(card, fg_color="transparent")
+        logo_btns.pack(pady=(6, 12))
+
+        def current_logo():
+            if state["mode"] == "new":
+                return state["clean"] if clean_var.get() else state["orig"]
+            if state["mode"] == "none":
+                return None
+            if state["mode"] == "default":
+                return self.default_brand_logo()
+            return self.brand_logo_image()
+
+        def show_logo():
+            if not win.winfo_exists():
+                return
+            img = current_logo()
+            board = self.brand_preview_image(img)
+            # صورةٌ لا None (customtkinter يبقى على الصورة المحذوفة فيتعطّل) — ومرجعها محفوظ
+            if board is None:
+                blank = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+                state["img_ref"] = ctk.CTkImage(blank, blank, size=(1, 1))
+                preview.configure(image=state["img_ref"], text="— بلا شعار — (المطبوعات باسم المصنع وحده)",
+                                  font=(UI_FONT, 15, "bold"), compound="top")
+            else:
+                state["img_ref"] = ctk.CTkImage(board, board, size=board.size)
+                preview.configure(image=state["img_ref"], text="")
+            texts = {"keep": "الشعار الحالي" + ("" if self.brand_is_custom() else " (شعار جاديت الافتراضي)"),
+                     "new": ("الصورة المختارة — بلا خلفية ولا إطار (المربعات = شفاف)" if clean_var.get()
+                             else "الصورة المختارة كما هي"),
+                     "none": "سيُحذف الشعار عند الحفظ", "default": "شعار جاديت الافتراضي عند الحفظ"}
+            info.configure(text=texts[state["mode"]] + (f" — {img.width}×{img.height}" if img is not None else ""))
+            switch.configure(state="normal" if state["mode"] == "new" else "disabled")
+
+        def choose():
+            path = filedialog.askopenfilename(parent=win, title="اختر صورة الشعار", filetypes=self.BRAND_IMAGE_TYPES)
+            if not path:
+                return
+            try:
+                with Image.open(path) as src:
+                    orig = src.convert("RGBA")
+            except Exception as e:
+                messagebox.showerror("الشعار", f"تعذّر فتح الصورة:\n{e}", parent=win)
+                return
+            if max(orig.size) > 1600:
+                orig.thumbnail((1600, 1600), Image.LANCZOS)
+            info.configure(text="⏳ استخراج الشعار بلا خلفية ولا إطار…")
+
+            def done(result):
+                if isinstance(result, Image.Image):
+                    state.update(mode="new", orig=_brand_crop(orig, 0.0), clean=result)
+                else:
+                    state.update(mode="new", orig=orig, clean=orig)
+                show_logo()
+            tk_background(win, lambda: brand_logo_cleanup(orig.copy()), done)
+
+        def set_mode(mode):
+            state["mode"] = mode
+            show_logo()
+
+        ctk.CTkButton(logo_btns, text="🖼️ اختيار صورة…", width=150, height=38, font=(UI_FONT, 14, "bold"),
+                      command=choose, **BUTTON_STYLES["primary"]).pack(side="right", padx=4)
+        switch = ctk.CTkSwitch(logo_btns, text="✂️ بلا خلفية ولا إطار", variable=clean_var, command=show_logo,
+                               font=(UI_FONT, 13, "bold"))
+        switch.pack(side="right", padx=8)
+        ctk.CTkButton(logo_btns, text="🗑️ حذف الشعار", width=120, height=38, font=(UI_FONT, 13, "bold"),
+                      command=lambda: set_mode("none"), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
+        ctk.CTkButton(logo_btns, text="↩️ شعار جاديت", width=120, height=38, font=(UI_FONT, 13, "bold"),
+                      command=lambda: set_mode("default"), **BUTTON_STYLES["secondary"]).pack(side="right", padx=4)
+
+        form = ctk.CTkFrame(body, corner_radius=12, border_width=1, border_color=UI["gold_line"],
+                            fg_color=(UI["surface"], "#171C23"))
+        form.pack(fill="x", padx=16, pady=6)
+        ctk.CTkLabel(form, text="بيانات المصنع في الترويسة", font=(UI_FONT, 15, "bold"), text_color=UI_TITLE).grid(
+            row=0, column=0, columnspan=4, pady=(10, 6))
+        current = self.brand_identity()
+        entries = {}
+        for i, (key, label) in enumerate(self.BRAND_FIELDS):
+            row, col = 1 + i // 2, (i % 2) * 2
+            english = key.endswith("_en")
+            ctk.CTkLabel(form, text=label, font=(UI_FONT, 13, "bold"), anchor="e").grid(
+                row=row, column=3 - col, padx=(6, 10), pady=5, sticky="e")
+            ent = ctk.CTkEntry(form, width=270, justify="left" if english else "right", font=(UI_FONT, 14))
+            ent.insert(0, current.get(key, ""))
+            ent.grid(row=row, column=2 - col, padx=6, pady=5, sticky="ew")
+            entries[key] = ent
+        ctk.CTkLabel(form, text="الأسطر الفارغة لا تُطبع. رقم السجل يُكتب في الترويسة بالعربية والإنجليزية.",
+                     font=(UI_FONT, 12), text_color=muted).grid(row=9, column=0, columnspan=4, pady=(2, 10))
+
+        def form_data():
+            return {k: e.get().strip() for k, e in entries.items()}
+
+        def save():
+            data = form_data()
+            if not data["name_ar"]:
+                messagebox.showwarning("هوية المصنع", "اكتب اسم المصنع.", parent=win)
+                entries["name_ar"].focus_set()
+                return
+            img = current_logo() if state["mode"] == "new" else None
+            self.save_brand_identity(data, state["mode"], img)
+            state["mode"] = "keep"
+            show_logo()
+            self.toast("✅ حُفظت هوية المصنع — المطبوعات والواجهة بها الآن", "success", parent=win)
+
+        bar = ctk.CTkFrame(body, fg_color="transparent")
+        bar.pack(pady=12)
+        ctk.CTkButton(bar, text="💾 حفظ الهوية", width=150, height=42, font=(UI_FONT, 15, "bold"), command=save,
+                      fg_color=UI["success"], hover_color=UI["success_hover"]).pack(side="right", padx=5)
+        ctk.CTkButton(bar, text="👁️ معاينة الترويسة", width=160, height=42, font=(UI_FONT, 14, "bold"),
+                      command=lambda: self.preview_brand_letterhead(
+                          form_data(), state["mode"], current_logo() if state["mode"] == "new" else None, parent=win),
+                      **BUTTON_STYLES["secondary"]).pack(side="right", padx=5)
+        ctk.CTkButton(bar, text="إغلاق", width=100, height=42, font=(UI_FONT, 14, "bold"), command=win.destroy,
+                      **BUTTON_STYLES["secondary"]).pack(side="right", padx=5)
+        show_logo()
+        win._state, win._entries, win._choose, win._save, win._set_mode = state, entries, choose, save, set_mode
+        win._clean_var = clean_var                                               # للاختبار
+        return win
 
     # ارتفاع الترويسة (حتى الخط الذهبي) — يُحسب منه مكان الجدول
     LETTERHEAD_H = 30.2 * mm if REPORTLAB_AVAILABLE else 0
@@ -31756,7 +32365,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
         from reportlab.lib.colors import Color
         PW = page_w or A4[0]
         gray = Color(0.26, 0.28, 0.34)
-        for side, lines in ((PW - margin, self.LETTERHEAD_AR), (margin, self.LETTERHEAD_EN)):
+        for side, lines in ((PW - margin, self.letterhead_ar()), (margin, self.letterhead_en())):
             right = side > PW / 2
             for k, line in enumerate(lines):
                 bold = k == 0
@@ -32156,7 +32765,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
             c.setStrokeColorRGB(0, 0, 0)
             p = 3 * mm
             right, left, top = x0 + TW - p, x0 + p, y0 + TH - p
-            text(right, top - 3 * mm, "مصنع جاديت للتصنيع", 8.5, True)
+            text(right, top - 3 * mm, self.brand_identity()["name_ar"], 8.5, True)
             text(left, top - 3 * mm, "تذكرة طقم — مبيعات", 8.5, True, "left")
             c.setLineWidth(0.6)
             c.line(left, top - 4.8 * mm, right, top - 4.8 * mm)
@@ -32396,7 +33005,7 @@ gap:10px;margin:0 12px 14px}.ctl .frm.compact{border:0;margin:0;padding:0}.ctl .
 
         c.setLineWidth(0.8)
         c.roundRect(2 * mm, 2 * mm, W - 4 * mm, H - 4 * mm, 3 * mm)
-        txt(W - M, H - M - 4 * mm, "مصنع جاديت للتصنيع", size=10, bold=True)
+        txt(W - M, H - M - 4 * mm, self.brand_identity()["name_ar"], size=10, bold=True)
         txt(M, H - M - 4 * mm, "تذكرة تشغيل", size=10, bold=True, align="left")
         c.line(M, H - M - 6.5 * mm, W - M, H - M - 6.5 * mm)
 
@@ -36269,7 +36878,7 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("جاديت — تسجيل الدخول")
+        self.title(f"{device_brand()[1] or 'جاديت'} — تسجيل الدخول")
         apply_app_icon(self)
         self.configure(fg_color=self._BG[0])
         self._alive = True           # النافذة قائمة (لم تُغلق)
@@ -36522,11 +37131,13 @@ class LoginWindow(StableWindowMixin, ctk.CTk):
         from PIL import ImageTk
         self._logo_frames, self._logo_small = [], []
         self._logo_h = int(min(self.H * 0.23, 250 * self.S))
-        path = resource_path("jadeite_logo.png")
-        if not os.path.exists(path):
+        # هوية المصنع على هذا الجهاز (1.98 — نسخة العميل): شعاره واسمه بدل جاديت
+        brand_logo, brand_name, no_logo = device_brand()
+        path = brand_logo or resource_path("jadeite_logo.png")
+        if no_logo or not os.path.exists(path):
             self.logo_item = self.cv.create_text(self.W / 2, self._logo_center_y("splash"),
-                                                 text="💎 جاديت", fill=self._GOLD,
-                                                 font=self._font(54, True))
+                                                 text=brand_name or "💎 جاديت", fill=self._GOLD,
+                                                 font=self._font(54 if not brand_name else 40, True))
             return
         base = Image.open(path).convert("RGBA")
         bw = round(base.width * self._logo_h / base.height)
@@ -38082,6 +38693,8 @@ class AdminPanel(StableWindowMixin, ctk.CTk):
             if ok:
                 messagebox.showinfo("تم", f"تم إنشاء حساب المدير المساعد بنجاح.\nاسم المستخدم: {user}\nكلمة المرور: {pw}")
                 win.destroy()
+            elif any(w in str(err).lower() for w in ("duplicate", "unique", "23505")):
+                lbl_msg.configure(text="هذا الاسم مستخدمٌ لمدير مساعد آخر — اختر اسماً غيره")   # (1.98) الاسم فريد
             else:
                 lbl_msg.configure(text=f"فشل الإنشاء: {err}")
 

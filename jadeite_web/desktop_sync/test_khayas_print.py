@@ -99,7 +99,9 @@ if HAVE_RL:
         exec(module_src(name), g)
     g["__file__"] = os.path.abspath(TARGET)
     g["_register_arabic_font"]()
-    MEMBERS = ("LETTERHEAD_AR", "LETTERHEAD_EN", "pdf_logo", "draw_pdf_letterhead", "draw_standard_letterhead",
+    g.update({"BRAND_KEY": "brand_identity", "BRAND_LOGO_KEY": "brand_logo_png", "json": __import__("json"),
+              "sqlite3": __import__("sqlite3"), "log_cloud_error": lambda *a: None})     # هوية المصنع (1.98)
+    MEMBERS = ("LETTERHEAD_AR", "LETTERHEAD_EN", "BRAND_FIELDS", "BRAND_DEFAULT", "_brand_setting", "brand_identity", "letterhead_ar", "letterhead_en", "default_brand_logo", "brand_logo_image", "pdf_logo", "draw_pdf_letterhead", "draw_standard_letterhead",
                "KHAYAS_PRINT_LANDSCAPE_COLS", "khayas_print_pages", "draw_khayas_section_pdf",
                "khayas_section_print_data", "table_headers", "SORT_ARROWS")
     exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), g)

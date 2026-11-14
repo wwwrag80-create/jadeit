@@ -139,7 +139,8 @@ assert 'final_values = sec.get("final_values") or self.set_voucher_values(data)'
 assert voucher.count('f"{value:.2f}"') == 1, "جدول «الوزن النهائي» من set_voucher_values وحده"
 assert "sec = self.set_voucher_sections(data)" in voucher, "بقية القيم من set_voucher_sections (التتبع + سطر البيع)"
 assert 'str(data.get("set_number") or "")' in voucher, "رقم التشغيل في خانة NO"
-for label in ("مصنع جاديت", "التصنيع", "البوليش", "التركيب", "الوزن النهائي", "السلسال",
+assert 'self.brand_identity()["short_ar"]' in voucher, "رأس السند: الاسم المختصر من هوية المصنع (1.98)"
+for label in ("التصنيع", "البوليش", "التركيب", "الوزن النهائي", "السلسال",
               "الوزن الأجمالي:", "رقم الموديل:", "اسم المركب:", "الوزن المقيد", "توقيع مدير الانتاج"):
     assert f'"{label}"' in voucher, label
 # مرحلة «التلميع النهائي» في السند اسمها «بوليش 2» وقيمها قيم نافذة «قبل/بعد» تحت خانة خياس بوليش 2

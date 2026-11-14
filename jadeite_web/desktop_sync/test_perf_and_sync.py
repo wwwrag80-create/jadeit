@@ -37,7 +37,7 @@ assert sql.count("select distinct on") == 2
 print("✔ السحابة تُزيل التكرار داخل الدفعة")
 
 # ═══ ٤) الشعار شفاف وأصغر ═══
-hb = seg("build_home_screen")
+hb = seg("build_home_screen") + seg("render_home_logo")       # الشعار في render_home_logo (1.98)
 assert 'Image.open(pure).convert("RGBA")' in hb
 print("✔ الشعار يُقرأ بوضع RGBA — لا خلفية سوداء")
 assert "min(420, int(avail * 0.26))" in hb

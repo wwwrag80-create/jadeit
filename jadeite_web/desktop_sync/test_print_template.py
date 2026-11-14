@@ -62,7 +62,8 @@ assert '"التلميع النهائي"' not in tpl
 import sys, types
 layout_fn = method("set_voucher_layout")
 exec(compile(ast.Module(body=[layout_fn], type_ignores=[]), "set_voucher_layout", "exec"), ns)
-fake = types.SimpleNamespace(VOUCHER_MARGIN_MM=10.0)
+fake = types.SimpleNamespace(VOUCHER_MARGIN_MM=10.0,
+                             brand_identity=lambda: {"short_ar": "مصنع جاديت", "name_ar": "مصنع جاديت للتصنيع"})
 L = ns["set_voucher_layout"](fake)
 MM, PW, PH, M = L["MM"], L["PW"], L["PH"], L["M"]
 close = lambda a, b: abs(a - b) < 0.01
