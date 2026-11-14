@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "2.00.0"
+APP_VERSION = "2.00.1"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4956,6 +4956,9 @@ _PWR_SETTINGS = (("SUB_BUTTONS", "LIDACTION"), ("SUB_SLEEP", "STANDBYIDLE"), ("S
 # (2.00) والغطاء «لا شيء» على البطارية أيضاً: إغلاقه لا يوقف الرابط أبداً (نوم الخمول على البطارية يمنعه البرنامج نفسه
 # ما دام الرابط يعمل — live_keep_awake — ويعود لطبيعته حين يُغلق)
 _PWR_DC_SETTINGS = (("SUB_BUTTONS", "LIDACTION"),)
+# (2.00.1) الواي فاي «أقصى أداء» على الشاحن والبطارية (لا يُبطئه توفير الطاقة والشاشة مطفأة) — أفضل جهد: إعدادٌ قد لا
+# يوجد على الجهاز فلا يدخل في «ضُبطت الطاقة»
+_PWR_WIFI = ("19cbb8fa-5279-450e-9fac-8a3d5fedd0c1", "12bbebe6-58d6-4636-95bb-3217ef867c1a")
 _PWR_HEX_RE = re.compile(r"0x([0-9a-fA-F]{8})")
 
 
@@ -4990,6 +4993,7 @@ def live_power_fix(wait=60, elevate=True):
         return False, "على ويندوز فقط"
     cmds = [["powercfg", "/setacvalueindex", "SCHEME_CURRENT", sub, key, "0"] for sub, key in _PWR_SETTINGS]
     cmds += [["powercfg", "/setdcvalueindex", "SCHEME_CURRENT", sub, key, "0"] for sub, key in _PWR_DC_SETTINGS]
+    cmds += [["powercfg", f"/set{side}valueindex", "SCHEME_CURRENT", *_PWR_WIFI, "0"] for side in ("ac", "dc")]
     cmds.append(["powercfg", "/setactive", "SCHEME_CURRENT"])
     for cmd in cmds:
         live_run_capture(cmd, timeout=15)
@@ -5032,16 +5036,79 @@ def live_on_battery():
         return None
 
 
-def live_keep_awake(on):
-    """(ويندوز — خيط الواجهة) ما دام الرابط يعمل لا ينام الجهاز من الخمول (الشاشة قد تنطفئ ولا يضر). لا يمنع نوم
-    إغلاق الغطاء — ذاك في إعدادات الطاقة أعلاه"""
+def live_keep_awake(on, display=False):
+    """(ويندوز — خيط الواجهة) ما دام الرابط يعمل لا ينام الجهاز من الخمول، و(display) لا تنطفئ الشاشة — على أجهزة
+    «السكون الحديث» انطفاء الشاشة نفسه يُدخلها السكون (2.00.1). لا يمنع نوم إغلاق الغطاء — ذاك في إعدادات الطاقة"""
     if not sys.platform.startswith("win"):
         return False
     try:
         import ctypes
-        return bool(ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | (0x00000001 if on else 0)))
+        flags = 0x80000000 | ((0x00000001 | (0x00000002 if display else 0)) if on else 0)
+        return bool(ctypes.windll.kernel32.SetThreadExecutionState(flags))
     except Exception:
         return False
+
+
+_LIVE_POWER_REQ = {"handle": None, "ctx": None, "types": ()}
+LIVE_POWER_REASON = "جاديت: رابط المدير يعمل — الجهاز لا يدخل السكون"
+
+
+def live_power_request(on, display=False):
+    """(2.00.1 — ويندوز، خيط الواجهة) طلب طاقة رسمي باسم البرنامج (يظهر في «powercfg /requests»): النظام يعمل (لا سكون
+    ولا نوم)، والبرنامج لا يُجمَّد في «السكون الحديث» (ExecutionRequired)، و(display) الشاشة مضاءة. on=False يُلغيه.
+    يرجع أنواع الطلبات المقبولة (0 الشاشة، 1 النظام، 3 التنفيذ)"""
+    if not sys.platform.startswith("win"):
+        return ()
+    try:
+        import ctypes
+
+        class _ReasonContext(ctypes.Structure):
+            _fields_ = [("Version", ctypes.c_ulong), ("Flags", ctypes.c_ulong), ("SimpleReasonString", ctypes.c_wchar_p)]
+        k32 = ctypes.windll.kernel32
+        k32.PowerCreateRequest.restype = ctypes.c_void_p
+        k32.PowerCreateRequest.argtypes = [ctypes.POINTER(_ReasonContext)]
+        k32.PowerSetRequest.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        k32.PowerClearRequest.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        old = _LIVE_POWER_REQ["handle"]
+        if old:
+            for t in _LIVE_POWER_REQ["types"]:
+                k32.PowerClearRequest(old, t)
+            k32.CloseHandle(old)
+            _LIVE_POWER_REQ.update(handle=None, ctx=None, types=())
+        if not on:
+            return ()
+        ctx = _ReasonContext(0, 1, LIVE_POWER_REASON)          # POWER_REQUEST_CONTEXT_SIMPLE_STRING
+        handle = k32.PowerCreateRequest(ctypes.byref(ctx))
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return ()
+        types = tuple(t for t in ((0,) if display else ()) + (1, 3) if k32.PowerSetRequest(handle, t))
+        _LIVE_POWER_REQ.update(handle=handle, ctx=ctx, types=types)
+        return types
+    except Exception:
+        return ()
+
+
+def live_modern_standby():
+    """(ويندوز — خيط خلفي) هل الجهاز من نوع «السكون الحديث» (S0 Low Power Idle) — حيث يدخل السكون بانطفاء الشاشة؟
+    True/False، أو None إن لم يُعرف. من «powercfg /a»: القسم الأول (المتاح) حتى أول سطرٍ فارغ بعد الحالات، بأي لغة"""
+    if not sys.platform.startswith("win"):
+        return False
+    code, out = live_run_capture(["powercfg", "/a"], timeout=20)
+    if code != 0 or not out:
+        return None
+    lines = out.splitlines()
+    available, started = [], False
+    for line in lines[1:]:
+        if line.strip():
+            started = True
+            available.append(line)
+        elif started:
+            break
+    text = " ".join(available)
+    if not text:
+        return None
+    return bool(re.search(r"\bS0\b", text))
 
 
 def live_run_capture(cmd, timeout=30, env=None):
@@ -25968,6 +26035,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             parts.append(f"حساب Tailscale: {st['account']}")
         if st.get("power_ok") is False:
             parts.append("⚠️ الجهاز ينام عند إغلاق الغطاء")
+        live = self.__dict__.get("_live") or {}
+        if live.get("display_on"):
+            parts.append("الشاشة مضاءة (سكونٌ حديث)" if live.get("modern_standby") else "الشاشة مضاءة")
         slept = st.get("slept")
         if slept and time.time() - slept[1] < 86400:
             parts.append(f"⚠️ نام الجهاز {datetime.datetime.fromtimestamp(slept[0]):%H:%M}–"
@@ -26045,6 +26115,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       "tick_at": time.time(),
                       "auto_check_at": time.time() - self.LIVE_AUTO_CHECK_SECS + self.LIVE_AUTO_FIRST_SECS}
         live_keep_awake(True)
+        self.live_awake_apply(None)                       # (2.00.1) طلب طاقة باسم البرنامج فوراً، ثم نوع الجهاز
+        tk_background(self, live_modern_standby, self.live_awake_apply)
         self.live_start_relay()
         save_ui_pref(LIVE_ENABLED_PREF, True)
         self.live_sync_async()
@@ -26103,6 +26175,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         for _params, box in list(live.get("pending") or ()):
             box["event"].set()
         live_keep_awake(False)
+        live_power_request(False)
         if user:
             save_ui_pref(LIVE_ENABLED_PREF, False)
         self.update_live_button()
@@ -26175,6 +26248,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.start_live_view()
             live = self.__dict__.get("_live")
             if live and live.get("server") is not None:
+                live_keep_awake(True, display=bool(live.get("display_on")))      # (2.00.1) يُؤكَّد كل دقيقة
                 auto = self.__dict__.setdefault("_live_auto", {})
                 if not auto.get("power_done"):
                     auto["power_done"] = True
@@ -26190,8 +26264,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             except Exception:
                 pass
 
+    def live_awake_apply(self, modern):
+        """(2.00.1) الجهاز لا يدخل السكون ما دام الرابط يعمل: طلب طاقة رسمي باسم البرنامج (النظام يعمل، والبرنامج لا
+        يُجمَّد)، و— على أجهزة «السكون الحديث» حيث انطفاء الشاشة نفسه سكون، أو إن لم يُعرف نوع الجهاز — الشاشة مضاءة.
+        modern: True/False/None من live_modern_standby (None قبل معرفته)"""
+        live = self.__dict__.get("_live")
+        if not live or live.get("server") is None or not sys.platform.startswith("win"):
+            return None
+        if modern is not None or "modern_standby" not in live:
+            live["modern_standby"] = modern
+        display = live.get("modern_standby") is not False
+        live["display_on"] = display
+        live_keep_awake(True, display=display)
+        live["power_request"] = live_power_request(True, display=display)
+        return display
+
     def live_power_auto(self):
-        """الطاقة وحدها: بلا إذنٍ أولاً، وإن احتاج إذن ويندوز طُلب مرة (نعم واحدة) — والنتيجة للمدير"""
+        """الطاقة وحدها: بلا إذنٍ أولاً، وإن احتاج إذن ويندوز طُلب مرة (نعم واحدة) — والنتيجة للمدير، وعلى الجهاز
+        نافذة «السماح» مرة (live_awake_notice)"""
         def work():
             if live_power_ok(live_power_read()):
                 return True, ""
@@ -26202,7 +26292,61 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             live = self.__dict__.get("_live")
             if live is not None and sys.platform.startswith("win"):
                 live["power_ok"] = ok_
+                self.live_awake_notice(ok_)
         tk_background(self, work, done)
+
+    LIVE_AWAKE_NOTICE_PREF = "live_awake_notice_v1"
+
+    def live_awake_notice(self, power_ok, force=False):
+        """(2.00.1) على جهاز المصنع: «السماح» — ما فُعّل ليبقى الرابط يعمل (الغطاء، والسكون، والشاشة) — مرةً واحدة على
+        الجهاز (أو إن لم يسمح ويندوز بضبط الطاقة: زر «🔓 السماح» يطلب إذنه)"""
+        if not force and power_ok and load_ui_prefs().get(self.LIVE_AWAKE_NOTICE_PREF):
+            return None
+        old = self.__dict__.get("_awake_notice")
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        live = self.__dict__.get("_live") or {}
+        win = ctk.CTkToplevel(self)
+        self._awake_notice = win
+        win.title("رابط المدير — الجهاز لا يدخل السكون")
+        self.fit_dialog_to_screen(win, 720, 290)
+        win.transient(self)
+        win.configure(fg_color=(UI["canvas"], "#10141A"))
+        ok_color, bad_color = (UI["success"], "#7EE2B8"), (UI["danger"], "#F08A8F")
+        ctk.CTkLabel(win, text="🟢 رابط المدير يعمل دائماً على هذا الجهاز" if power_ok else
+                     "⚠️ يحتاج ويندوز إذنك مرة واحدة", font=(UI_FONT, 19, "bold"),
+                     text_color=ok_color if power_ok else bad_color).pack(padx=22, pady=(16, 6))
+        lines = [("✔ " if power_ok else "✘ ") + "إغلاق غطاء اللابتوب لا ينيمه — والرابط يعمل والغطاء مغلق",
+                 "✔ لا سكون ولا نوم ما دام البرنامج مفتوحاً (طلبٌ رسمي من ويندوز باسم البرنامج)"]
+        if live.get("display_on"):
+            lines.append("✔ الشاشة تبقى مضاءة: هذا الجهاز يدخل السكون إذا انطفأت شاشته — لإطفائها أغلق الغطاء")
+        lines.append("🔌 أبقِ الشاحن موصولاً")
+        ctk.CTkLabel(win, text="\n".join(lines), font=(UI_FONT, 15), justify="right", anchor="e", wraplength=660,
+                     text_color=(UI["ink"], "#E5E7EB")).pack(padx=22, pady=4, fill="x")
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(pady=(10, 16))
+
+        def allow():
+            btn_allow.configure(state="disabled", text="⏳ اضغط «نعم» في رسالة ويندوز…")
+
+            def done(res):
+                ok_ = bool(res[0]) if isinstance(res, tuple) else False
+                if live is not None:
+                    live["power_ok"] = ok_
+                if win.winfo_exists():
+                    win.destroy()
+                self.live_awake_notice(ok_, force=True)
+            tk_background(self, lambda: live_power_fix(elevate=True), done)
+        btn_allow = ctk.CTkButton(bar, text="🔓 السماح", width=160, height=40, font=(UI_FONT, 15, "bold"), command=allow,
+                                  **BUTTON_STYLES["primary"])
+        if not power_ok:
+            btn_allow.pack(side="right", padx=6)
+        ctk.CTkButton(bar, text="موافق", width=120, height=40, font=(UI_FONT, 15, "bold"), command=win.destroy,
+                      **BUTTON_STYLES["primary" if power_ok else "secondary"]).pack(side="right", padx=6)
+        if power_ok:
+            save_ui_pref(self.LIVE_AWAKE_NOTICE_PREF, True)
+        win._allow, win._lines = allow, lines                       # للاختبار
+        return win
 
     def live_auto_check(self):
         """الفحص نفسه (live_check_compute) في الخلفية بلا نافذة: نتيجته للمدير، وأول خطوةٍ لم تكتمل تُصلح وحدها إن أمكن"""
@@ -26351,6 +26495,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if slept and time.time() - slept[1] < 86400:
             note = (f"\nنام الجهاز من {datetime.datetime.fromtimestamp(slept[0]):%H:%M} إلى "
                     f"{datetime.datetime.fromtimestamp(slept[1]):%H:%M} — كان الرابط متوقفاً، وعاد وحده بعد الاستيقاظ")
+        if live is not None and live.get("modern_standby"):
+            note += ("\nهذا الجهاز يدخل «السكون الحديث» إذا انطفأت شاشته — فالشاشة تبقى مضاءة ما دام البرنامج مفتوحاً "
+                     "(لإطفائها أغلق الغطاء)")
         add(ok_, "الجهاز لا ينام (غطاء اللابتوب)",
             ("عند توصيل الشاحن: إغلاق الغطاء لا يفعل شيئاً، ولا نوم ولا إسبات — أغلق الغطاء والرابط يعمل" if ok_ else
              "إغلاق الغطاء (أو ترك الجهاز) ينيمه فيتوقف الرابط — اضغط «💤 امنع النوم» مرة واحدة (قد يطلب ويندوز إذنك: "

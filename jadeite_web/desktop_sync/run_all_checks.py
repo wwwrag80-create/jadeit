@@ -110,6 +110,7 @@ CHECKS = [
     ("هوية المصنع: الشعار والترويسة — 1.98", [PY, "test_brand_identity_198.py", TARGET]),
     ("رابط المدير ← جهاز المصنع — 1.99", [PY, "test_link_device_199.py", TARGET]),
     ("الرابط تلقائياً بالكامل — 2.00", [PY, "test_link_auto_200.py", TARGET]),
+    ("الرابط والشاشة مطفأة (السكون الحديث) — 2.00.1", [PY, "test_link_awake_2001.py", TARGET]),
     ("فتح الشاشات فوراً",        [PY, "test_instant_screens.py", TARGET]),
     ("زر تحديث البرنامج",        [PY, "test_app_update.py", TARGET]),
     ("التحديث السريع .jup",      [PY, "test_hot_update.py", TARGET]),

@@ -627,7 +627,7 @@ def fake_powercfg(cmd, timeout=30, env=None):
 
 
 pw = {"re": re, "time": time, "sys": types.SimpleNamespace(platform="win32"), "live_run_capture": fake_powercfg}
-for fn in ("_PWR_SETTINGS", "_PWR_DC_SETTINGS", "_PWR_HEX_RE", "live_power_read", "live_power_ok", "live_power_fix", "live_on_battery",
+for fn in ("_PWR_SETTINGS", "_PWR_DC_SETTINGS", "_PWR_WIFI", "_PWR_HEX_RE", "live_power_read", "live_power_ok", "live_power_fix", "live_on_battery",
            "live_keep_awake"):
     exec(module_src(fn), pw)
 vals = pw["live_power_read"]()
@@ -636,9 +636,11 @@ assert vals == {"LIDACTION": 1, "LIDACTION_DC": 8, "STANDBYIDLE": 1800, "HIBERNA
 assert not pw["live_power_ok"](vals) and not pw["live_power_ok"](None)
 assert pw["live_power_fix"](wait=1) == (True, "") and pw["live_power_ok"](pw["live_power_read"]()), "الضبط بلا إذن"
 sets = [c for c in PW_CALLS if c[1] == "/setacvalueindex"]
-assert {(c[3], c[4], c[5]) for c in sets} == {("SUB_BUTTONS", "LIDACTION", "0"), ("SUB_SLEEP", "STANDBYIDLE", "0"),
-                                             ("SUB_SLEEP", "HIBERNATEIDLE", "0")}, "الغطاء «لا شيء» والنوم والإسبات «أبداً»"
-dc = [c for c in PW_CALLS if c[1] == "/setdcvalueindex"]
+WIFI = tuple(pw["_PWR_WIFI"]) if "_PWR_WIFI" in pw else ()
+assert {(c[3], c[4], c[5]) for c in sets} - {WIFI + ("0",)} == {
+    ("SUB_BUTTONS", "LIDACTION", "0"), ("SUB_SLEEP", "STANDBYIDLE", "0"), ("SUB_SLEEP", "HIBERNATEIDLE", "0")}, \
+    "الغطاء «لا شيء» والنوم والإسبات «أبداً» (والواي فاي «أقصى أداء» أفضل جهد — 2.00.1)"
+dc = [c for c in PW_CALLS if c[1] == "/setdcvalueindex" and (c[3], c[4]) != WIFI]
 assert ["powercfg", "/setactive", "SCHEME_CURRENT"] in PW_CALLS and [(c[3], c[4], c[5]) for c in dc] == [
     ("SUB_BUTTONS", "LIDACTION", "0")], "(2.00) والغطاء «لا شيء» على البطارية أيضاً — ونوم البطارية كما هو"
 PW.update(LIDACTION=1)

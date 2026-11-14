@@ -29,7 +29,9 @@ def make(names, extra="", env=None):
 
 
 # ═══ ١) الرابط يعمل دائماً لحساب العميل ═══
-env = {"time": _time, "sys": sys, "datetime": __import__("datetime"), "log_cloud_error": lambda *a: None}
+AWAKE = []
+env = {"time": _time, "sys": sys, "datetime": __import__("datetime"), "log_cloud_error": lambda *a: None,
+       "live_keep_awake": lambda on, display=False: AWAKE.append((on, display))}     # (2.00.1) يُؤكَّد كل دقيقة
 A, _ = make(("live_always_on", "live_pinned", "live_enabled_pref"), extra='''
 admin_mode = True
 view_only = False
@@ -87,6 +89,7 @@ assert t.calls == ["start", "start", "power"], "يعمل: لا تشغيل ولا
 t._live["auto_check_at"] = _time.time() - 601
 t.live_auto_tick()
 assert t.calls[-1] == "check" and len(t.scheduled) == 4, "حان وقت الفحص (١٠ دقائق)"
+assert AWAKE and all(a == (True, False) for a in AWAKE), "ومنع السكون يُؤكَّد في كل دورةٍ والرابط يعمل"
 t.on = False
 t.live_auto_tick()
 assert len(t.scheduled) == 4, "ليس حساب عميل: تتوقف الدورة"
