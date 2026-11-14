@@ -207,7 +207,8 @@ print("✔ كل عملية تُعدَّل وتُحذف من الرابط: مرا
       "المكائن، وفاتورة المبيعات بسطورها — وإشعارٌ على الجهاز")
 
 # ═══ ٧) العمليات: الفترة والاسم والبحث والصفحات ═══
-R, _ = make(("LIVE_RECENT_LIMIT", "live_recent_group", "live_recent", "live_recent_page", "TRACE_STATUSES",
+R, _ = make(("LIVE_RECENT_LIMIT", "live_recent_group", "live_recent_match", "live_recent", "live_recent_page",
+             "TRACE_STATUSES",
              "_SET_DIGITS", "normalize_set_number"), extra='''
 LOSSES_ALL = "__all__"
 SALE_TYPES = ("مبيعات ذهب",)
@@ -215,6 +216,12 @@ JOURNAL_TYPES = ("قيد يومي مدين", "قيد يومي دائن")
 
 def inv_period(self, inv):
     return inv["period"]
+
+def _stage_type_map(self):
+    return {}
+
+def movement_section(self, inv, type_map=None):
+    return ("المصنعين", "المصنعين") if inv["الاسم"] in ("خالد", "أحمد") else ("مبيعات", "المبيعات")
 
 def sale_key_of(self, inv):
     return (inv.get("رقم الفاتورة اليدوي", ""), inv["التاريخ"], inv["الاسم"], "")

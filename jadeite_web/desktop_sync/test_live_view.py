@@ -606,6 +606,7 @@ assert "📋 نسخ رابط التفعيل" in olc and 'if text != state["sent_
 # 1.96.3: لابتوب المصنع لا ينام عند إغلاق الغطاء (إعدادات الطاقة عند توصيل الشاحن) — والنوم يُكشف ويُبلَّغ
 import types
 PW = {"LIDACTION": 1, "STANDBYIDLE": 1800, "HIBERNATEIDLE": 10800}
+PW_DC = {}
 PW_CALLS = []
 
 
@@ -617,31 +618,37 @@ def fake_powercfg(cmd, timeout=30, env=None):
                  "      الحد الأدنى: 0x00000000\n      الحد الأقصى: 0xffffffff\n      الزيادة: 0x00000001\n")
         return 0, (f"معرّف GUID لنظام الطاقة: 381b4222-f694-41f0-9685-ff5bb260df2e  (متوازن)\n  {cmd[3]}\n    {key}\n"
                    f"      Possible Setting Index: 000\n{extra}"
-                   f"    Current AC Power Setting Index: 0x{PW[key]:08x}\n    Current DC Power Setting Index: 0x{PW[key] + 7:08x}\n")
+                   f"    Current AC Power Setting Index: 0x{PW[key]:08x}\n    Current DC Power Setting Index: 0x{PW_DC.get(key, PW[key] + 7):08x}\n")
     if cmd[1] == "/setacvalueindex":
         PW[cmd[4]] = int(cmd[5])
+    if cmd[1] == "/setdcvalueindex":
+        PW_DC[cmd[4]] = int(cmd[5])
     return 0, ""
 
 
 pw = {"re": re, "time": time, "sys": types.SimpleNamespace(platform="win32"), "live_run_capture": fake_powercfg}
-for fn in ("_PWR_SETTINGS", "_PWR_HEX_RE", "live_power_read", "live_power_ok", "live_power_fix", "live_on_battery",
+for fn in ("_PWR_SETTINGS", "_PWR_DC_SETTINGS", "_PWR_HEX_RE", "live_power_read", "live_power_ok", "live_power_fix", "live_on_battery",
            "live_keep_awake"):
     exec(module_src(fn), pw)
 vals = pw["live_power_read"]()
-assert vals == {"LIDACTION": 1, "STANDBYIDLE": 1800, "HIBERNATEIDLE": 10800}, f"قيمة الشاحن (لا البطارية) بأي لغة: {vals}"
+assert vals == {"LIDACTION": 1, "LIDACTION_DC": 8, "STANDBYIDLE": 1800, "HIBERNATEIDLE": 10800}, \
+    f"قيمة الشاحن، والغطاء على البطارية (2.00)، بأي لغة: {vals}"
 assert not pw["live_power_ok"](vals) and not pw["live_power_ok"](None)
 assert pw["live_power_fix"](wait=1) == (True, "") and pw["live_power_ok"](pw["live_power_read"]()), "الضبط بلا إذن"
 sets = [c for c in PW_CALLS if c[1] == "/setacvalueindex"]
 assert {(c[3], c[4], c[5]) for c in sets} == {("SUB_BUTTONS", "LIDACTION", "0"), ("SUB_SLEEP", "STANDBYIDLE", "0"),
                                              ("SUB_SLEEP", "HIBERNATEIDLE", "0")}, "الغطاء «لا شيء» والنوم والإسبات «أبداً»"
-assert ["powercfg", "/setactive", "SCHEME_CURRENT"] in PW_CALLS and not any("/setdcvalueindex" in c for c in PW_CALLS), \
-    "عند توصيل الشاحن وحده — البطارية كما هي"
+dc = [c for c in PW_CALLS if c[1] == "/setdcvalueindex"]
+assert ["powercfg", "/setactive", "SCHEME_CURRENT"] in PW_CALLS and [(c[3], c[4], c[5]) for c in dc] == [
+    ("SUB_BUTTONS", "LIDACTION", "0")], "(2.00) والغطاء «لا شيء» على البطارية أيضاً — ونوم البطارية كما هو"
+PW.update(LIDACTION=1)
+assert pw["live_power_fix"](wait=1, elevate=False) == (True, "") and PW["LIDACTION"] == 0
 PW.update(LIDACTION=1)
 pw["live_run_capture"] = lambda cmd, timeout=30, env=None: (fake_powercfg(cmd) if cmd[1] == "/q" else (1, "Access denied"))
 done_, why = pw["live_power_fix"](wait=1)
 assert done_ is False and why, "رُفض بلا صلاحية ولا إذن ويندوز (UAC): فشلٌ بسببه لا انهيار"
 assert pw["live_on_battery"]() is None and pw["live_keep_awake"](True) is False, "خارج ويندوز الحقيقي: لا شيء"
-linux_pw = {"sys": sys, "re": re, "_PWR_SETTINGS": pw["_PWR_SETTINGS"]}
+linux_pw = {"sys": sys, "re": re, "_PWR_SETTINGS": pw["_PWR_SETTINGS"], "_PWR_DC_SETTINGS": pw["_PWR_DC_SETTINGS"]}
 exec(module_src("live_power_read"), linux_pw)
 assert sys.platform.startswith("win") or linux_pw["live_power_read"]() is None, "غير ويندوز: لا خطوة طاقة"
 start2 = member("start_live_view")

@@ -122,7 +122,8 @@ assert '"الاسم": self.TREE_RETURN_NAME' in cast and '"النوع": "قبض 
 assert "skipped.append(\"مسترجع الأشجار\")" in cast
 print("✔ الترحيل: مسترجع الأشجار قبضٌ للكاستنج برقم الصف، وخانته مرة واحدة لكل صف")
 rst = seg("render_stage_ops_table")
-assert '("صرف", "قبض") + rec_col + ("الخياس",)' in rst and "الصافي" not in rst
+assert '("صرف", "قبض") + rec_col + (kh_col,)' in rst and "الصافي" not in rst
+assert 'kh_col = "الرصيد" if running_col else "الخياس"' in rst      # (2.00) «الرصيد» في الرابط وحده
 assert 'khayas = round(g["مدين"] - g["دائن"] + extra_sign * g["مسترجع"], 2)' in rst
 assert 'extra_sign = extra[2] if extra else -1' in rst
 print("✔ عمود «مسترجع الأشجار» بعد القبض ويُخصم من الخياس (أثره −1، لا عمود صافي منفصل)")

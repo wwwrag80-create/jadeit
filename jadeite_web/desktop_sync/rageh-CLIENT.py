@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "1.99.0"
+APP_VERSION = "2.00.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -4953,6 +4953,9 @@ def find_tailscale():
 # ── (1.96.3) جهاز المصنع لا ينام: إغلاق غطاء اللابتوب ينيمه في ويندوز افتراضياً — والجهاز النائم لا يشغّل شيئاً
 #    فيتوقف الرابط. الحل في إعدادات الطاقة نفسها (عند توصيل الشاحن): الغطاء «لا شيء»، والنوم والإسبات «أبداً». ──
 _PWR_SETTINGS = (("SUB_BUTTONS", "LIDACTION"), ("SUB_SLEEP", "STANDBYIDLE"), ("SUB_SLEEP", "HIBERNATEIDLE"))
+# (2.00) والغطاء «لا شيء» على البطارية أيضاً: إغلاقه لا يوقف الرابط أبداً (نوم الخمول على البطارية يمنعه البرنامج نفسه
+# ما دام الرابط يعمل — live_keep_awake — ويعود لطبيعته حين يُغلق)
+_PWR_DC_SETTINGS = (("SUB_BUTTONS", "LIDACTION"),)
 _PWR_HEX_RE = re.compile(r"0x([0-9a-fA-F]{8})")
 
 
@@ -4969,25 +4972,31 @@ def live_power_read():
         if len(found) < 2:
             return None
         values[key] = int(found[-2], 16)
+        if (sub, key) in _PWR_DC_SETTINGS:
+            values[key + "_DC"] = int(found[-1], 16)
     return values
 
 
 def live_power_ok(values):
-    """عند توصيل الشاحن: إغلاق الغطاء لا يفعل شيئاً، ولا نوم ولا إسبات من الخمول"""
-    return bool(values) and all(values.get(key) == 0 for _sub, key in _PWR_SETTINGS)
+    """عند توصيل الشاحن: إغلاق الغطاء لا يفعل شيئاً، ولا نوم ولا إسبات من الخمول — وعلى البطارية: الغطاء لا شيء"""
+    return (bool(values) and all(values.get(key) == 0 for _sub, key in _PWR_SETTINGS)
+            and all(values.get(key + "_DC") == 0 for _sub, key in _PWR_DC_SETTINGS))
 
 
-def live_power_fix(wait=60):
-    """(ويندوز — خيط خلفي) يضبط الطاقة عند توصيل الشاحن: الغطاء «لا شيء» والنوم والإسبات «أبداً» — (نجح؟، السبب).
-    إن رُفض بلا صلاحية يُطلب إذن ويندوز (UAC) مرة ويُنتظر حتى يُطبَّق. البطارية تبقى كما هي (حمايةً لها)"""
+def live_power_fix(wait=60, elevate=True):
+    """(ويندوز — خيط خلفي) يضبط الطاقة: عند توصيل الشاحن الغطاء «لا شيء» والنوم والإسبات «أبداً»، وعلى البطارية الغطاء
+    «لا شيء» (2.00) — (نجح؟، السبب). بلا إذنٍ أولاً (يكفي عادةً)؛ وإن رُفض وelevate يُطلب إذن ويندوز (UAC) مرة ويُنتظر"""
     if not sys.platform.startswith("win"):
         return False, "على ويندوز فقط"
     cmds = [["powercfg", "/setacvalueindex", "SCHEME_CURRENT", sub, key, "0"] for sub, key in _PWR_SETTINGS]
+    cmds += [["powercfg", "/setdcvalueindex", "SCHEME_CURRENT", sub, key, "0"] for sub, key in _PWR_DC_SETTINGS]
     cmds.append(["powercfg", "/setactive", "SCHEME_CURRENT"])
     for cmd in cmds:
         live_run_capture(cmd, timeout=15)
     if live_power_ok(live_power_read()):
         return True, ""
+    if not elevate:
+        return False, "يحتاج إذن ويندوز"
     try:
         import ctypes
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe",
@@ -5141,15 +5150,26 @@ class LiveViewServer:
             raise
         sock.settimeout(1.0)
         self.sock, self.port = sock, sock.getsockname()[1]
-        threading.Thread(target=self._serve, name="JadeiteLiveView", daemon=True).start()
+        self._thread = threading.Thread(target=self._serve, name="JadeiteLiveView", daemon=True)
+        self._thread.start()
         return self.port
 
     def stop(self):
+        """(2.00) يوقف الخادم ويحرّر المنفذ فوراً: يُقطع انتظار accept وينتظر خيطه لحظة — فإعادة التشغيل مباشرةً (مفتاح
+        جديد، أو التشغيل التلقائي بعد توقف) لا تجد المنفذ مشغولاً"""
+        import socket
         self._stop.set()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
         try:
             self.sock.close()
         except Exception:
             pass
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.5)
 
     def _serve(self):
         import socket
@@ -11588,10 +11608,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         an_cols = ("التاريخ",) if analysis_view and not date_first else ()
         raw_cols = ("الوزن", "العيار") if analysis_view else ()
         lead = lead_cols + first_col + an_cols + op_col + name_col + raw_cols
+        # (2.00) الرابط (live_running_balance): في الكاستنج «الرصيد» بعد كل عملية (مجموع خياس الصفوف حتى صفّها) مكان
+        # «الخياس» — وصف الإجمالي بالرصيد الأخير
+        running_col = bool(recover_name) and bool(getattr(self, "live_running_balance", False))
+        kh_col = "الرصيد" if running_col else "الخياس"
+        running = 0.0
         if with_trees:
-            cols = lead + ("صرف", "قبض") + rec_col + ("الخياس",) + ("عدد الأشجار", "خياس كل شجرة", "البيان")
+            cols = lead + ("صرف", "قبض") + rec_col + (kh_col,) + ("عدد الأشجار", "خياس كل شجرة", "البيان")
         else:
-            cols = lead + ("صرف", "قبض") + rec_col + ("الخياس", "البيان")
+            cols = lead + ("صرف", "قبض") + rec_col + (kh_col, "البيان")
 
         tree, total_tree, _reused = self.reuse_or_create_tree(
             table_frame, cols, height=height, sticky_total=True)
@@ -11655,7 +11680,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                      f"{g['دائن']:.2f}" if g["دائن"] else "-"]
             if shown_extra:
                 vals.append(f"{g['مسترجع']:.2f}" if g["مسترجع"] else "-")
-            vals.append(f"{khayas:.2f}")
+            running = round(running + khayas, 2)
+            vals.append(f"{running:.2f}" if running_col else f"{khayas:.2f}")
             if with_trees:
                 trees = g["أشجار"]
                 vals += [f"{trees:g}" if trees else "-",
@@ -11670,7 +11696,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             tvals = (["-"] if date_first else []) + ["إجمالي الشهر"] + (["-"] if analysis_view and not date_first else []) + (
                 ["-"] if (op_column or show_name) else []) + (["-", "-"] if analysis_view else []) + [
                      f"{tot_madin:.2f}", f"{tot_daen:.2f}"] + (
-                     [f"{tot_rec:.2f}"] if shown_extra else []) + [f"{tot_khayas:.2f}"]
+                     [f"{tot_rec:.2f}"] if shown_extra else []) + [f"{running if running_col else tot_khayas:.2f}"]
             if with_trees:
                 tvals += [f"{tot_trees:g}" if tot_trees else "-",
                           f"{round(tot_khayas / tot_trees, 2):.2f}" if tot_trees > 0 else "-"]
@@ -12802,7 +12828,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         self.after(2500, self.notify_saved_drafts)     # ما حُفظ تلقائياً ولم يُرحَّل (1.93)
         if self.remote_flag("suspended"):
             self.after(400, self.apply_remote_flags)      # أوقفه المدير من رابطه: يبقى موقوفاً بعد إعادة التشغيل (1.95)
-        if self.live_enabled_pref() and not getattr(self, "view_only", False):
+        if self.live_always_on():
+            self.after(3000, self.live_auto_tick)         # (2.00) حساب عميل: الرابط يعمل وحده دائماً ويفحص نفسه
+        elif self.live_enabled_pref() and not getattr(self, "view_only", False):
             self.after(3000, self.start_live_view)        # الرابط يعود مع البرنامج إن كان مشغّلاً أو ثبّته المدير
         self.update_period_warning()
         self.watch_system_month()
@@ -25797,6 +25825,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     # ═══ الرابط المباشر (1.94 — ثابتٌ ويكتب منذ 1.95): رابط المدير الخاص إلى هذا الجهاز — انظر LiveViewServer ═══
     LIVE_TICK_MS = 120
     live_date_first = False           # (1.96.4) الرابط وحده يقدّم تاريخ الصف في جدول الكاستنج (نسخته الظلّية)
+    live_running_balance = False      # (2.00) والرابط وحده: عمود «الرصيد» (بعد كل عملية) مكان «الخياس» في الكاستنج
     LIVE_SLEEP_GAP = 90               # (1.96.3) فجوةٌ أطول من هذا بين دورتين = الجهاز كان نائماً
     LIVE_SCREENS = (("stages", "مراحل التصنيع", "🏭"), ("khayas", "صناديق الخياس", "⚖️"), ("sales", "المبيعات", "🧾"),
                     ("inbound", "الوارد", "📥"), ("factory", "صناديق المصنع", "🏦"), ("losses", "شاشة الخسائر", "📉"))
@@ -25852,9 +25881,15 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 self.toast("▶️ أعاد المدير تشغيل البرنامج على هذا الجهاز", "success")
         self.update_live_button()
 
+    def live_always_on(self):
+        """(2.00) حساب عميل على جهاز المصنع: الرابط يعمل وحده دائماً — مع البرنامج وبعد كل تحديث، بلا زرٍّ ولا فحصٍ يدوي،
+        ولا يُوقف من الجهاز؛ ويفحص نفسه ويُصلح ما يُصلح وحده (live_auto_tick)"""
+        return self.live_admin_mode() and not getattr(self, "view_only", False)
+
     def live_pinned(self):
-        """الرابط لا يُوقف ولا يُغيَّر مفتاحه من الجهاز: ثبّته المدير، أو أقفل التعديل أو أوقف البرنامج من رابطه"""
-        return any(self.remote_flag(n) for n in ("pinned", "edit_locked", "suspended"))
+        """الرابط لا يُوقف ولا يُغيَّر مفتاحه من الجهاز: يعمل دائماً (حساب عميل)، أو ثبّته المدير، أو أقفل التعديل أو أوقف
+        البرنامج من رابطه"""
+        return self.live_always_on() or any(self.remote_flag(n) for n in ("pinned", "edit_locked", "suspended"))
 
     def live_enabled_pref(self):
         return bool(load_ui_prefs().get(LIVE_ENABLED_PREF)) or self.live_pinned()
@@ -26007,7 +26042,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                                        f"مرتين؟) — أغلق النسخة الأخرى ثم أعد المحاولة.\n\n{e}")
             return False
         self._live = {"server": server, "pending": pending, "msgs": {}, "nonces": collections.deque(maxlen=500),
-                      "tick_at": time.time()}
+                      "tick_at": time.time(),
+                      "auto_check_at": time.time() - self.LIVE_AUTO_CHECK_SECS + self.LIVE_AUTO_FIRST_SECS}
         live_keep_awake(True)
         self.live_start_relay()
         save_ui_pref(LIVE_ENABLED_PREF, True)
@@ -26049,8 +26085,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
     def stop_live_view(self, user=True):
         """يوقف الخادم والوسيط — وبطلب المستخدم لا يعود مع البرنامج. لا يُوقف من الجهاز ما دام المدير ثبّته"""
         if user and self.live_pinned():
-            messagebox.showwarning("الرابط المباشر", "ثبّت المدير الرابط (أو أقفل الحساب) من رابطه — فلا يُوقف من هذا "
-                                                     "الجهاز. يبقى يعمل ما دام البرنامج مفتوحاً.")
+            messagebox.showwarning("الرابط المباشر", "رابط المدير يعمل تلقائياً دائماً على هذا الجهاز — لا يُوقف من هنا. "
+                                                     "يبقى يعمل ما دام البرنامج مفتوحاً." if self.live_always_on() else
+                                   "ثبّت المدير الرابط (أو أقفل الحساب) من رابطه — فلا يُوقف من هذا "
+                                   "الجهاز. يبقى يعمل ما دام البرنامج مفتوحاً.")
             return False
         if user:
             self.live_report_state("أوقف المستخدم الرابط على جهاز المصنع")
@@ -26093,6 +26131,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             # الجهاز نام (غطاء اللابتوب أو الخمول) ثم استيقظ: الوسيط يُعاد ويُبلَّغ المدير بوقت النوم
             live["slept"] = (last, now)
             live["synced_at"] = 0
+            live["auto_check_at"] = 0                     # (2.00) وفحصٌ تلقائي فور الاستيقاظ
             self.live_start_relay()
         pending = live["pending"]
         for _ in range(4):
@@ -26119,6 +26158,98 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.after(self.LIVE_TICK_MS, self._live_tick)
         except Exception:
             pass
+
+    # ── (2.00) الرابط تلقائياً بالكامل على جهاز المصنع: يعمل، ويفحص نفسه، ويُصلح ما يُصلح، ويضبط الطاقة — وحده ──
+    LIVE_AUTO_EVERY_MS = 60_000           # كل دقيقة: الرابط يعمل؟ وإلا يُشغَّل (المنفذ مشغول مؤقتاً، أو توقف لأي سبب)
+    LIVE_AUTO_CHECK_SECS = 600            # فحصٌ كامل في الخلفية كل ١٠ دقائق (وبعد التشغيل والاستيقاظ)
+    LIVE_AUTO_FIRST_SECS = 75             # أول فحصٍ بعد التشغيل: بعد أن يجهّز الوسيط
+    LIVE_AUTO_LOGIN_GAP = 6 * 3600        # صفحة تسجيل الدخول في Tailscale تُفتح وحدها مرةً كل ٦ ساعات على الأكثر
+
+    def live_auto_tick(self):
+        """(خيط الواجهة) يُعاد كل دقيقة ما دام الحساب حساب عميل: يشغّل الرابط إن لم يكن يعمل، ويضبط الطاقة مرة، ويفحص"""
+        if not self.live_always_on():
+            return
+        try:
+            live = self.__dict__.get("_live")
+            if not live or live.get("server") is None:
+                self.start_live_view()
+            live = self.__dict__.get("_live")
+            if live and live.get("server") is not None:
+                auto = self.__dict__.setdefault("_live_auto", {})
+                if not auto.get("power_done"):
+                    auto["power_done"] = True
+                    self.live_power_auto()
+                if (not live.get("auto_busy")
+                        and time.time() - live.get("auto_check_at", 0) > self.LIVE_AUTO_CHECK_SECS):
+                    self.live_auto_check()
+        except Exception as e:
+            log_cloud_error("تعذّر الفحص التلقائي للرابط", e)
+        finally:
+            try:
+                self.after(self.LIVE_AUTO_EVERY_MS, self.live_auto_tick)
+            except Exception:
+                pass
+
+    def live_power_auto(self):
+        """الطاقة وحدها: بلا إذنٍ أولاً، وإن احتاج إذن ويندوز طُلب مرة (نعم واحدة) — والنتيجة للمدير"""
+        def work():
+            if live_power_ok(live_power_read()):
+                return True, ""
+            return live_power_fix(elevate=True)
+
+        def done(res):
+            ok_ = bool(res[0]) if isinstance(res, tuple) else False
+            live = self.__dict__.get("_live")
+            if live is not None and sys.platform.startswith("win"):
+                live["power_ok"] = ok_
+        tk_background(self, work, done)
+
+    def live_auto_check(self):
+        """الفحص نفسه (live_check_compute) في الخلفية بلا نافذة: نتيجته للمدير، وأول خطوةٍ لم تكتمل تُصلح وحدها إن أمكن"""
+        live = self.__dict__.get("_live")
+        if not live or live.get("server") is None:
+            return
+        live["auto_busy"], live["auto_check_at"] = True, time.time()
+        snap = self.live_state()
+        provider = snap["provider"]
+        exe = find_cloudflared() if provider == "cloudflare" else find_tailscale()
+        relay = live.get("relay")
+
+        def done(steps):
+            live["auto_busy"] = False
+            if self.__dict__.get("_live") is not live:
+                return
+            bad = next((st for st in steps or [] if st["ok"] is False), None)
+            text = "✔ كل الخطوات مكتملة" if bad is None else f"✘ توقف عند: {bad['title']}"
+            live["check_text"] = f"فحص تلقائي {datetime.datetime.now():%H:%M}: {text}"
+            if bad is not None:
+                self.live_auto_fix(bad.get("action"))
+            self.live_sync_async(self.live_state()["url"])
+        tk_background(self, lambda: self.live_check_compute(snap, provider, exe, relay), done)
+
+    def live_auto_fix(self, action):
+        """ما يُصلح وحده من خطوات الفحص: تشغيل الرابط، وإعادة الوسيط، والإرسال للمدير، والطاقة، وتثبيت أداة الوسيط
+        (مرة)، وصفحة تسجيل الدخول في Tailscale (كل ٦ ساعات). تفعيل Funnel يفعّله المدير من جهازه (يرى رابطه في «🩺 فحص»)"""
+        auto = self.__dict__.setdefault("_live_auto", {})
+        if action == "start":
+            self.start_live_view()
+        elif action == "relay":
+            self.live_start_relay()
+        elif action == "sync":
+            self.live_sync_async(self.live_state()["url"])
+        elif action == "power":
+            self.live_power_auto()
+        elif action == "install" and not auto.get("installing") and not auto.get("installed_once"):
+            auto["installing"] = auto["installed_once"] = True
+
+            def installed(_ok, _msg):
+                auto["installing"] = False
+                self.live_start_relay()
+            self.install_live_tool(self.live_provider(), installed)
+        elif action == "login" and time.time() - auto.get("login_at", 0) > self.LIVE_AUTO_LOGIN_GAP:
+            auto["login_at"] = time.time()
+            self.live_tailscale_login()
+        return action
 
     # ── 🩺 فحص الرابط على جهاز المصنع: كل خطوة ✔ أو ✘ وما يُصلحها ──
     LIVE_CHECK_WAIT = 75              # الفحص ينتظر الوسيط ما دام «يجهّز» (تشغيله أو إعادة تشغيله) — بدل أن يعدّه ✘
@@ -26647,11 +26778,18 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                                                "login": "سجّل الدخول في Tailscale", "enable": "فعّل الميزة من الرابط"
                                                }.get(relay, "جارٍ تجهيز الرابط…")
                 status.configure(text=f"🟡 يعمل على هذا الجهاز — {why}", text_color=("#B7791F", "#F0CF6A"))
-            btn_toggle.configure(text="⏹️ إيقاف" if state["running"] else "▶️ تشغيل",
-                                 **BUTTON_STYLES["danger" if state["running"] else "primary"],
-                                 state="disabled" if state["running"] and state["pinned"] else "normal")
+            always = self.live_always_on()
+            if always and state["running"]:
+                btn_toggle.configure(text="🟢 يعمل تلقائياً", state="disabled", **BUTTON_STYLES["primary"])
+            else:
+                btn_toggle.configure(text="⏹️ إيقاف" if state["running"] else "▶️ تشغيل",
+                                     **BUTTON_STYLES["danger" if state["running"] else "primary"],
+                                     state="disabled" if state["running"] and state["pinned"] else "normal")
             btn_renew.configure(state="disabled" if state["pinned"] else "normal")
-            pin_note.configure(text="📌 ثبّت المدير الرابط (أو أقفل الحساب) من لوحته: لا يُوقف ولا يتغير مفتاحه من هنا"
+            check = (self.__dict__.get("_live") or {}).get("check_text") or ""
+            pin_note.configure(text=("🟢 الرابط يعمل تلقائياً دائماً على هذا الجهاز: يعود مع البرنامج وبعد كل تحديث، ويفحص "
+                                     "نفسه كل ١٠ دقائق ويُصلح ما يُصلح وحده" + (f"\n{check}" if check else ""))
+                               if always else "📌 ثبّت المدير الرابط (أو أقفل الحساب) من لوحته: لا يُوقف ولا يتغير مفتاحه من هنا"
                                if state["pinned"] else "")
             link = state["link"] or ""
             if link != shown["link"]:
@@ -26758,7 +26896,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             op = str(params.get("w", "") or "")
             op = op if op in self.CAST_OPERATIONS else self.CAST_OPERATIONS[0]
             sub = ("w", op, [(o, o) for o in self.CAST_OPERATIONS])
-            overrides.update(cast_op=_LiveSink(value=op), live_date_first=True)     # التاريخ قبل رقم الصف
+            # التاريخ قبل رقم الصف، و«الرصيد» بعد كل عملية مكان «الخياس» (2.00)
+            overrides.update(cast_op=_LiveSink(value=op), live_date_first=True, live_running_balance=True)
         if stage == self.SET_TRACK_KEY:
             overrides.update(set_track_search=_LiveSink(value=""), set_track_scope=_LiveSink(value="الفترة"))
 
@@ -27486,13 +27625,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         out.append("</svg>")
         return "".join(out)
 
-    def live_move_html(self, params, inv, label):
+    def live_move_html(self, params, inv, label, section=None):
         """بطاقة عملية: تُعدَّل خاناتها في مكانها وتُحذف — والوارد بعياره والقيد بطرفيه يُعدَّلان هنا أيضاً، وفاتورة المبيعات
         تُحذف كاملة (وتُعدَّل سطورها من شاشة المبيعات على الجهاز). كل حذفٍ إلى «المحذوفات»"""
         esc = live_escape
         inv_id = inv.get("رقم الفاتورة")
         t = inv.get("النوع")
-        head = (f'<div class="mv"><div class="mvh"><b>#{esc(inv_id)}</b> {esc(label)} · {esc(inv.get("الاسم", ""))}'
+        badge = f'<span class="secb">{esc(section)}</span> ' if section else ""
+        head = (f'<div class="mv"><div class="mvh">{badge}<b>#{esc(inv_id)}</b> {esc(label)} · {esc(inv.get("الاسم", ""))}'
                 f' · {esc(str(inv.get("التاريخ", "") or "")[:16])} · فترة {esc(self.inv_period(inv))}</div>')
         vals = {"date": str(inv.get("التاريخ", "") or "")[:10], "weight": f"{inv.get('الوزن', 0.0) or 0.0:g}",
                 "row": str(inv.get("row_number", "") or ""), "set": str(inv.get("set_number", "") or ""),
@@ -27892,8 +28032,6 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         return p if p in self.live_periods() else self.current_display_month
 
     # ── 🗂️ العمليات (1.99): كل عمليةٍ موجودة أو مضافة — الأحدث أولاً، بالفترة والشاشة والاسم والبحث — تُعدَّل أو تُحذف ──
-    LIVE_RECENT_GROUPS = (("all", "الكل"), ("stages", "مراحل التصنيع"), ("inbound", "الوارد"),
-                          ("sales", "الصادر (المبيعات)"), ("journal", "القيود"))
     LIVE_RECENT_LIMIT = 40
 
     def live_recent_group(self, inv):
@@ -27908,6 +28046,24 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return "journal"
         return "stages"
 
+    def live_recent_sections(self):
+        """(2.00) شرائح «العمليات»: الكل، ومراحل التصنيع كلها، ثم كل قسمٍ وحده (الكاستنج، المصنعين، المركبين، التلميع،
+        البف، والأقسام المضافة)، ثم الوارد والصادر والقيود وغيرها — [(المفتاح، العنوان)]"""
+        out = [("all", "الكل"), ("stages", "مراحل التصنيع كلها")]
+        for cat in ["المصنعين", "المركبين"] + list(self.get_all_stage_categories()):
+            if cat not in [k for k, _l in out]:
+                out.append((cat, self.get_display_label(cat)))
+        return out + [("inbound", "الوارد"), ("sales", "الصادر (المبيعات)"), ("journal", "القيود"), ("other", "أخرى")]
+
+    def live_recent_match(self, inv, group, type_map):
+        """هل العملية من الشريحة المختارة؟ (مجموعات 1.96 بمفاتيحها، والقسم بـ movement_section نفسه)"""
+        if group == "all":
+            return True
+        if group in ("stages", "inbound", "sales", "journal"):
+            return self.live_recent_group(inv) == group
+        key = self.movement_section(inv, type_map)[0]
+        return key == "أخرى" if group == "other" else key == group
+
     def live_recent(self, group="all", limit=None):
         """آخر العمليات المسجّلة (الأحدث إضافةً أولاً): فاتورة المبيعات مرة واحدة والقيد مرة واحدة"""
         return self.live_recent_page(group, limit)[0]
@@ -27920,13 +28076,14 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         text = str(text or "").strip()
         low = text.lower()
         set_key = self.normalize_set_number(text) if text else ""
+        type_map = self._stage_type_map()
         out, seen, skipped = [], set(), 0
         for inv_id in sorted((i for i in self.invoices if isinstance(i, int)), reverse=True):
             inv = self.invoices[inv_id]
             if inv.get("settled_status") not in self.TRACE_STATUSES:
                 continue
             g = self.live_recent_group(inv)
-            if g is None or (group != "all" and g != group):
+            if g is None or not self.live_recent_match(inv, group, type_map):
                 continue
             if period and period != self.LOSSES_ALL and self.inv_period(inv) != period:
                 continue
@@ -27959,9 +28116,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def live_view_recent(self, period, params):
         esc = live_escape
+        sections = self.live_recent_sections()
         group = str(params.get("c") or "")
-        group = group if group in dict(self.LIVE_RECENT_GROUPS) else "all"
-        chips = [("c", group, list(self.LIVE_RECENT_GROUPS))]
+        group = group if group in dict(sections) else "all"
+        chips = [("c", group, sections)]
         name = str(params.get("w") or "").strip()
         text = str(params.get("s") or "").strip()
         try:
@@ -27983,7 +28141,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if name or text:
             search.append(f'<a class="btn ghost" href="{esc(self.live_url(params, w="", s="", o=""))}">✖ مسح</a>')
         search.append("</form>")
-        cards = "".join(self.live_move_html(params, inv, f"{self.movement_label(inv)} · {self.set_move_label(inv)}")
+        cards = "".join(self.live_move_html(params, inv, self.set_move_label(inv), section=self.movement_label(inv))
                         for inv in invs)
         pager = []
         if offset:
@@ -27995,7 +28153,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         pages = f'<div class="pager">{"".join(pager)}</div>' if pager else ""
         scope = "كل الفترات" if period == self.LOSSES_ALL else f"فترة {period}"
         first = offset + 1 if invs else 0
-        summary = [f"🗂️ العمليات — {scope}: {first}–{offset + len(invs)}" + (" (والمزيد)" if more else "")]
+        sec = "" if group == "all" else f" — {dict(sections)[group]}"
+        summary = [f"🗂️ العمليات{sec} — {scope}: {first}–{offset + len(invs)}" + (" (والمزيد)" if more else "")]
         blocks = [("html", "".join(search))]
         if cards:
             blocks.append(("html", cards + pages))
@@ -28261,6 +28420,8 @@ background:#FFFBEA}.krow span{font-weight:700}.krow i{font-style:normal;font-siz
 .krow b{font-size:16px;direction:ltr;text-align:left}
 @media (max-width:560px){.krow{grid-template-columns:1fr auto}.krow i{display:none}.bal a b{font-size:17px}}.pager{display:flex;gap:8px;margin:0 12px 16px}
 .mv .btn{margin:6px 0 0;padding:7px 16px}
+.secb{display:inline-block;background:#1F3B73;color:#fff;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:700;
+margin-left:4px}
 """
 
     LIVE_URL_KEYS = ("k", "v", "p", "c", "w", "kind", "f", "op", "q", "id", "s", "o")
