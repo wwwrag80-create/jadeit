@@ -143,7 +143,7 @@ ADMIN_USERNAME = "admin"
 # كلمة مرور لوحة المدير المحلية: غيّرها بمتغيّر البيئة JADEITE_ADMIN_PASSWORD
 # (القيمة الافتراضية admin معروفة لكل من يقرأ هذا الكود)
 ADMIN_PASSWORD = os.environ.get("JADEITE_ADMIN_PASSWORD", "").strip() or "admin"
-APP_VERSION = "2.00.1"
+APP_VERSION = "2.01.0"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  نوع النسخة — يضبطه make_client_build.py تلقائياً
@@ -23105,6 +23105,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             gems_v = rd(self.sale_gems, "فصوص")
             stones_v = rd(self.sale_stones, "أحجار")
             stones_disc_v = rd(self.sale_stones_discount, "أحجار بعد الخصم")
+            if "أحجار بعد الخصم" in self.sale_kind_derived():
+                stones_disc_v = stones_v                # الماس (2.01): الأحجار كاملة بلا خصم
             diamond_v = rd(self.sale_diamond, "الماس")
             # الماس للعرض فقط (1.93): خارج القائم والمقيد
             weight_standing = sale_standing_weight(gold_v, gems_v, stones_v)
@@ -23401,12 +23403,28 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     # خانات سطر البيع المخفية لكل نوع عملية (1.93) — بمفاتيح السطر نفسه (SALE_EDIT_FIELDS):
     #   ذهب   : كل الخانات ما عدا الماس (الماس ضمن عملية الماس)
-    #   الماس : رقم التشغيل والذهب والماس فقط
+    #   الماس (2.01): خانات الذهب كلها والماس والبيان — إلا «الأحجار بعد الخصم» (لا خصم في الماس: SALE_KIND_DERIVED)
     # الخانة المخفية لا تُقرأ عند «إضافة» (صفر)، ولا يُتنقّل إليها، وعمودها خارج جدول السطور ما لم يحمل قيمة
     SALE_KIND_HIDDEN_KEYS = {
         SALE_KIND_GOLD: ("الماس",),
-        SALE_KIND_DIAMOND: ("فصوص", "أحجار", "أحجار بعد الخصم", "خياس", "خياس البوليش", "خياس المركب", "البيان"),
+        SALE_KIND_DIAMOND: ("أحجار بعد الخصم",),
     }
+    # (2.01) ما يُحسب ولا يُكتب في نوع العملية: في الماس «الأحجار بعد الخصم» = «الأحجار» نفسها (لا خصم) — فالمقيد والصافي
+    # والترحيل والفاتورة والتذاكر بالأحجار كاملة. خانتها وعمودها لا يظهران أبداً في الماس (ولو حملت قيمة)
+    SALE_KIND_DERIVED = {SALE_KIND_DIAMOND: {"أحجار بعد الخصم": "أحجار"}}
+
+    def sale_kind_derived(self, kind=None):
+        """{الخانة المحسوبة: مصدرها} في نوع العملية kind (الحالي افتراضياً)"""
+        return dict(self.SALE_KIND_DERIVED.get(kind or self.current_sale_kind(), {}))
+
+    def sale_row_kind_apply(self, row, kind):
+        """يكمل سطر البيع بما يُحسب في نوعه (الماس: الأحجار بعد الخصم = الأحجار) — يرجع السطر نفسه"""
+        for key, src in self.SALE_KIND_DERIVED.get(kind, {}).items():
+            try:
+                row[key] = round(float(row.get(src) or 0.0), 2)
+            except (TypeError, ValueError):
+                row[key] = 0.0
+        return row
 
     def sale_hidden_keys(self, kind=None):
         """مفاتيح خانات السطر المخفية في نوع العملية kind (الحالي افتراضياً)"""
@@ -23423,8 +23441,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             return bool(str(value or "").strip())
 
     def sale_rows_hidden_values(self, rows, kind):
-        """سطور فيها قيمة في خانة لا تظهر في النوع kind: [(رقم الصف، [عناوين الخانات])]"""
-        hidden = self.sale_hidden_keys(kind)
+        """سطور فيها قيمة في خانة لا تظهر في النوع kind: [(رقم الصف، [عناوين الخانات])] — والمحسوب في النوع (2.01:
+        الأحجار بعد الخصم في الماس) لا يمنع: يُحسب من مصدره"""
+        hidden = self.sale_hidden_keys(kind) - set(self.SALE_KIND_DERIVED.get(kind, {}))
         out = []
         for i, row in enumerate(rows or []):
             names = [label for label, key in self.SALE_EDIT_FIELDS
@@ -23439,16 +23458,16 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def apply_sale_kind_fields(self):
         """يرصّ خانات سطر البيع لنوع العملية الحالي من اليمين بلا فراغات بينها: الظاهرة متتالية، ثم نسبة
-        الخصم (ما دامت الأحجار ظاهرة)، ثم زر «إضافة» بعد آخر خانة. وفي الذهب (خانات كثيرة) تملأ الصف كله،
-        وفي الماس (ثلاث خانات) تبقى بعرضها المعتاد يميناً"""
+        الخصم (حيث «الأحجار بعد الخصم» ظاهرة — لا في الماس)، ثم زر «إضافة» بعد آخر خانة؛ والخانات الكثيرة
+        تملأ الصف كله، والقليلة تبقى بعرضها المعتاد يميناً"""
         cells = getattr(self, "_sale_field_cells", None)
         if not cells:
             return
         hidden = self.sale_hidden_keys()
         row_w, n_cols = self._sale_fields_row, self._sale_fields_ncols
         items = [(lbl, ent) for key, lbl, ent in cells if key not in hidden]
-        if "أحجار" not in hidden:
-            items.append(self._sale_pct_cells)
+        if "أحجار" not in hidden and "أحجار بعد الخصم" not in hidden:
+            items.append(self._sale_pct_cells)           # نسبة الخصم حيث «الأحجار بعد الخصم» (لا في الماس — 2.01)
         items.append((None, self._sale_add_btn))
         for _key, lbl, ent in cells:
             lbl.grid_remove()
@@ -23479,7 +23498,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
     def request_sale_kind(self, kind):
         """زرّا نوع العملية: لا يتحوّل النوع وفي سطور الفاتورة الحالية قيمٌ في خانات لا تظهر في النوع الجديد
-        (ماسٌ في فاتورة ذهب، أو فصوص/أحجار/خياس/بيان في فاتورة الماس) — فلا تُرحَّل قيمة لا تُرى"""
+        (ماسٌ في فاتورة ذهب) — فلا تُرحَّل قيمة لا تُرى"""
         if kind != self.current_sale_kind():
             bad = self.sale_rows_hidden_values(getattr(self, "pending_sale_rows", None), kind)
             if bad:
@@ -23502,6 +23521,33 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         buttons = getattr(self, "sale_kind_buttons", None)
         if buttons:
             self.style_segment_buttons(buttons, kind)
+        if prev != kind and not initial:
+            # (2.01) سطور الفاتورة الحالية بما يُحسب في النوع الجديد (الماس: الأحجار بعد الخصم = الأحجار)، والعودة
+            # إلى الذهب تعيد لكل سطرٍ خصمه الذي كان له — ما لم تتغيّر أحجاره بعد التحويل
+            derived = self.SALE_KIND_DERIVED.get(kind, {})
+            stash = getattr(self, "_sale_kind_stash", None) or []
+            changed = restored = 0
+            for row in getattr(self, "pending_sale_rows", None) or []:
+                before = row.get("أحجار بعد الخصم")
+                if derived:
+                    self.sale_row_kind_apply(row, kind)
+                    try:
+                        same = round(float(before or 0.0), 2) == row.get("أحجار بعد الخصم")
+                    except (TypeError, ValueError):
+                        same = False
+                    if not same:
+                        stash.append((row, row.get("أحجار"), row.get("أحجار بعد الخصم"), before))
+                        changed += 1
+                    continue
+                keep = next((k for k in stash if k[0] is row), None)
+                if keep and (keep[1], keep[2]) == (row.get("أحجار"), before):
+                    row["أحجار بعد الخصم"] = keep[3]
+                    restored += 1
+            self._sale_kind_stash = stash if derived else []
+            if changed:
+                self.toast(f"💎 الماس بلا خصم أحجار: «الأحجار بعد الخصم» = «الأحجار» في {changed} سطر", "info")
+            elif restored:
+                self.toast(f"🟡 عاد خصم الأحجار كما كان في {restored} سطر", "info")
         if prev != kind or initial:
             self.apply_sale_kind_fields()
         if initial or prev == kind:
@@ -23678,8 +23724,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         if kind not in self.SALE_KINDS:
             kind = self.sales_ops_kind = self.SALE_KIND_GOLD
 
-        # البيان بعد الاسم (بيان الفاتورة كما سُجّل في شاشة المبيعات)
-        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", "الأحجار بعد الخصم",
+        # البيان بعد الاسم (بيان الفاتورة كما سُجّل في شاشة المبيعات) — وفي الماس «الأحجار» كاملة بلا خصم (2.01)
+        stones_col = "الأحجار" if "أحجار بعد الخصم" in self.sale_kind_derived(kind) else "الأحجار بعد الخصم"
+        cols = ("رقم الفاتورة", "التاريخ", "الاسم", "البيان", "الذهب", "الفصوص", stones_col,
                 "الماس", "خياس", "عدد الأسطر")
         self.sales_ops_tree, _t, reused = self.reuse_or_create_tree(self.sales_ops_table_frame, cols, height=13)
         tree = self.sales_ops_tree
@@ -23730,7 +23777,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.lbl_sales_ops_totals.configure(
                 text=(f"إجماليات مبيعات {kind} للفترة ({self.current_display_month}) — {len(groups)} فاتورة — "
                       f"الذهب: {tot['ذهب']:.2f}  |  "
-                      f"الفصوص: {tot['فصوص']:.2f}  |  الأحجار بعد الخصم: {tot['أحجار بعد الخصم']:.2f}  |  "
+                      f"الفصوص: {tot['فصوص']:.2f}  |  {stones_col}: {tot['أحجار بعد الخصم']:.2f}  |  "
                       f"الماس: {tot['الماس']:.2f}  |  الخياس: {tot['خياس']:.2f} جم"))
 
     def get_selected_sale_invoice_key(self, action="تعديل"):
@@ -23847,6 +23894,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             self.invoices[record["رقم الفاتورة"]] = record
             self.save_invoice_to_db(record["رقم الفاتورة"], record)
         for row in rows:
+            # (2.01) ما يُحسب في نوع الفاتورة (الماس: الأحجار بعد الخصم = الأحجار) — من أي طريقٍ جاء السطر
+            row = self.sale_row_kind_apply(dict(row), kind)
             # بيان الطقم المكتوب في سطره (يدوياً عند «إضافة سطر») — وإلا بيان الفاتورة
             row_note = str(row.get("البيان") or "").strip() or note
             gold_v = row.get("ذهب", 0.0)
@@ -24054,6 +24103,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         def pick_kind(k):
             kind_state["kind"] = k
             self.style_segment_buttons(kind_buttons, k)
+            if kind_state.get("layout"):
+                kind_state["layout"]()           # (2.01) خانات النوع وأعمدته (الماس بلا «الأحجار بعد الخصم»)
         for k, text in ((self.SALE_KIND_GOLD, "🟡 ذهب"), (self.SALE_KIND_DIAMOND, "💎 الماس")):
             kind_buttons[k] = ctk.CTkButton(kind_box, text=text, font=(UI_FONT, 13, "bold"), width=78, height=32,
                                             command=lambda k=k: pick_kind(k))
@@ -24093,16 +24144,37 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       ("الأحجار بعد الخصم", "أحجار بعد الخصم"), ("خياس بوليش 2", "خياس"),
                       ("خياس البوليش", "خياس البوليش"), ("خياس المركب", "خياس المركب"), ("البيان", "البيان")]
         n_fields = len(field_defs)
-        for c in range(n_fields):
-            fields_row.grid_columnconfigure(c, weight=1, uniform="inv_edit_fields")
-        for i, (label_text, key_name) in enumerate(field_defs):
-            col = n_fields - 1 - i                  # من اليمين لليسار
-            ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=110).grid(
-                row=0, column=col, padx=4, pady=(8, 3), sticky="s")
+        field_widgets = []
+        for label_text, key_name in field_defs:
+            lbl_w = ctk.CTkLabel(fields_row, text=label_text, font=(UI_FONT, 13, "bold"), wraplength=110)
             ent = ctk.CTkEntry(fields_row, justify="right" if key_name == "البيان" else "center",
                                font=(UI_FONT, 14), width=60, height=32)
-            ent.grid(row=1, column=col, padx=4, pady=(0, 10), sticky="ew")
             entries[key_name] = ent
+            field_widgets.append((key_name, lbl_w, ent))
+
+        def layout_fields():
+            """(2.01) خانات نوع الفاتورة من اليمين بلا فراغ: الماس كالذهب (والبيان) بلا «الأحجار بعد الخصم» المحسوبة"""
+            derived = self.sale_kind_derived(kind_state["kind"])
+            shown = [w for w in field_widgets if w[0] not in derived]
+            for _k, lbl_w, ent in field_widgets:
+                lbl_w.grid_remove()
+                ent.grid_remove()
+            for c in range(n_fields):
+                fields_row.grid_columnconfigure(c, weight=1 if c < len(shown) else 0,
+                                                uniform="inv_edit_fields" if c < len(shown) else "")
+            for i, (_k, lbl_w, ent) in enumerate(shown):
+                col = len(shown) - 1 - i            # من اليمين لليسار
+                lbl_w.grid(row=0, column=col, padx=4, pady=(8, 3), sticky="s")
+                ent.grid(row=1, column=col, padx=4, pady=(0, 10), sticky="ew")
+            lbl = kind_state.get("disc_label")
+            if lbl is not None:
+                if "أحجار بعد الخصم" in derived:
+                    lbl.grid_remove()
+                else:
+                    lbl.grid()
+            refresh = kind_state.get("refresh_rows")
+            if refresh is not None:
+                refresh()
 
         lbl_state = ctk.CTkLabel(win, text="", font=(UI_FONT, 13, "bold"), text_color="#f1c40f")
         lbl_state.pack(pady=(0, 2))
@@ -24173,6 +24245,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         disc_state = {"ratio": 0.30, "last": ""}
         lbl_disc = ctk.CTkLabel(fields_row, text="", font=(UI_FONT, 11), text_color=(UI["muted"], "#9AA4B2"))
         lbl_disc.grid(row=2, column=0, columnspan=n_fields, sticky="e", padx=8, pady=(0, 4))
+        kind_state["disc_label"] = lbl_disc
 
         def set_disc_ratio(row=None):
             disc_state["ratio"] = self.sale_discount_ratio(row)
@@ -24246,6 +24319,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     messagebox.showerror("خطأ", "لا يمكن إدخال أوزان بالسالب.", parent=win)
                     return None
                 vals[k] = v
+            self.sale_row_kind_apply(vals, kind_state["kind"])      # الماس (2.01): الأحجار كاملة بلا خصم
             if (vals["ذهب"] <= 0 and vals["فصوص"] <= 0 and vals["أحجار بعد الخصم"] <= 0
                     and vals["الماس"] <= 0 and vals["خياس"] <= 0 and vals["خياس البوليش"] <= 0):
                 messagebox.showwarning("تنبيه", "لا بد من قيمة واحدة على الأقل (ذهب/فصوص/أحجار/ماس/خياس).", parent=win)
@@ -24291,6 +24365,13 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                     "الإجمالي", "-", f"{tot['ذهب']:.2f}", f"{tot['فصوص']:.2f}", f"{tot['أحجار']:.2f}",
                     f"{tot['أحجار بعد الخصم']:.2f}", f"{tot['الماس']:.2f}", f"{tot['خياس']:.2f}",
                     f"{tot['خياس البوليش']:.2f}", f"{tot_net:.2f}", "-"), tags=("total_tag",))
+            # (2.01) الماس بلا عمود «الأحجار بعد الخصم» (الأحجار كاملة بلا خصم)
+            derived = self.sale_kind_derived(kind_state["kind"])
+            try:
+                rows_tree.configure(displaycolumns=[c for c in cols if not (
+                    c == "الأحجار بعد الخصم" and "أحجار بعد الخصم" in derived)])
+            except Exception:
+                pass
             # أعمدة الجدول بعرض النافذة تماماً (لا تجاوز ولا فراغ)
             self.fit_columns_to_content(rows_tree, "sale_invoice_editor", min_width=50, max_width=170)
 
@@ -24366,7 +24447,9 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                       fg_color="#555555", hover_color="#333333", command=clear_fields).pack(side="right", padx=5)
 
         rows_tree.bind("<Double-1>", lambda e: load_row_to_fields())
-        refresh_rows_tree()
+        kind_state["refresh_rows"] = refresh_rows_tree
+        kind_state["layout"] = layout_fields
+        layout_fields()                              # (2.01) خانات نوع الفاتورة وأعمدته — ثم الجدول
         clear_fields()
 
         # التنقل: Enter للخانة التالية (وفي آخر خانة يُحفظ السطر ويعود التركيز لأول
@@ -24495,6 +24578,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
                 row[k] = v
             if row["أحجار"] and not row["أحجار بعد الخصم"] and "أحجار بعد الخصم" not in hidden:
                 row["أحجار بعد الخصم"] = round(row["أحجار"] * ratio, 2)
+            self.sale_row_kind_apply(row, kind)          # الماس (2.01): الأحجار كاملة بلا خصم
             if (row["ذهب"] <= 0 and row["فصوص"] <= 0 and row["أحجار بعد الخصم"] <= 0 and row["الماس"] <= 0
                     and row["خياس"] <= 0 and row["خياس البوليش"] <= 0):
                 return None, f"السطر ({n}): لا بد من قيمة واحدة على الأقل (ذهب/فصوص/أحجار/ماس/خياس)"
@@ -25270,6 +25354,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         gems_v = safe_val(self.sale_gems, "فصوص")
         stones_v = safe_val(self.sale_stones, "أحجار")
         stones_discount_v = safe_val(self.sale_stones_discount, "أحجار بعد الخصم")
+        if "أحجار بعد الخصم" in self.sale_kind_derived():
+            stones_discount_v = stones_v                 # الماس (2.01): الأحجار كاملة بلا خصم
         diamond_v = safe_val(self.sale_diamond, "الماس")
         khayas_v = safe_val(self.sale_khayas, "خياس")
         khayas_polish_v = safe_val(self.sale_khayas_polish, "خياس البوليش")
@@ -25369,9 +25455,10 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         # أعمدة نوع العملية (1.93): عمود خانةٍ مخفية في النوع الحالي لا يظهر — إلا وفي سطرٍ قيمةٌ له
         # (سطور فاتورة معلّقة أو مسودة سُجّلت قبل ذلك) فلا تختفي قيمة تُرحَّل
         hidden = self.sale_hidden_keys()
+        derived = self.sale_kind_derived()              # (2.01) المحسوب في النوع لا عمود له ولو حمل قيمة
         col_keys = dict(self.SALE_TABLE_COL_KEYS)
-        shown = [c for c in cols if col_keys.get(c) not in hidden or any(
-            self.sale_value_present(col_keys[c], r.get(col_keys[c])) for r in self.pending_sale_rows)]
+        shown = [c for c in cols if col_keys.get(c) not in derived and (col_keys.get(c) not in hidden or any(
+            self.sale_value_present(col_keys[c], r.get(col_keys[c])) for r in self.pending_sale_rows))]
         try:
             tree.configure(displaycolumns=shown)
         except Exception:
@@ -25553,7 +25640,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
         fields = self.SALE_EDIT_FIELDS
         # خانات نوع العملية (1.93): المخفية في النوع الحالي لا تظهر — إلا وفي السطر قيمة لها فتُرى وتُعدَّل؛
         # والمخفية تُحفظ صفراً (ولو ملأها جلب خياس المركب لرقم تشغيل جديد)
-        hidden_keys = {k for k in self.sale_hidden_keys() if not self.sale_value_present(k, row.get(k))}
+        hidden_keys = {k for k in self.sale_hidden_keys() if not self.sale_value_present(k, row.get(k))} \
+            | set(self.sale_kind_derived())              # (2.01) المحسوب في النوع لا خانة له
         shown_fields = [(label, key) for label, key in fields if key not in hidden_keys]
         n = len(shown_fields)
         for c in range(n):
@@ -25597,7 +25685,8 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
 
         def update_live(event=None):
             standing = sale_standing_weight(read("ذهب"), read("فصوص"), read("أحجار"))
-            bound = sale_bound_weight(read("ذهب"), read("فصوص"), read("أحجار بعد الخصم"))
+            disc = read("أحجار") if "أحجار بعد الخصم" in self.sale_kind_derived() else read("أحجار بعد الخصم")
+            bound = sale_bound_weight(read("ذهب"), read("فصوص"), disc)
             lbl_live.configure(text=f"الوزن القائم: {standing:.2f}   ·   الوزن المقيد: {bound:.2f}")
 
         def on_stones(event=None):
@@ -25655,6 +25744,7 @@ class GoldSystemApp(StableWindowMixin, ctk.CTk):
             if self.check_sale_row_duplicate(self.pending_sale_rows, new_row.get("row_number", ""),
                                              new_row["set_number"], skip_index=idx, parent=win):
                 return "break"
+            self.sale_row_kind_apply(new_row, self.current_sale_kind())     # الماس (2.01): الأحجار بلا خصم
             self.pending_sale_rows[idx] = new_row
             self.refresh_pending_sales_table()
             try:
@@ -33315,6 +33405,14 @@ margin-left:4px}
     SALES_SUMMARY_COLS = ("#", "رقم التشغيل", "الذهب", "الفصوص", "الأحجار", "الأحجار بعد الخصم", "الماس",
                           "خياس بوليش 2", "الخياس", "الوزن القائم", "الوزن المقيد", "البيان")
     SALES_SUMMARY_TEXT_COLS = ("البيان",)     # نص لا رقم: لا يدخل صف الإجمالي
+    SALES_SUMMARY_RATIOS = (0.35, 0.95, 0.9, 0.8, 0.8, 0.9, 0.75, 0.9, 0.8, 0.95, 0.95, 1.5)
+
+    def sales_summary_columns(self, kind=None):
+        """(2.01) أعمدة فاتورة المبيعات ونِسَب عرضها لنوعها: في الماس بلا «الأحجار بعد الخصم» (لا خصم) — والبيان في
+        النوعين"""
+        drop = {"الأحجار بعد الخصم"} if "أحجار بعد الخصم" in self.SALE_KIND_DERIVED.get(kind, {}) else set()
+        pairs = [(c, r) for c, r in zip(self.SALES_SUMMARY_COLS, self.SALES_SUMMARY_RATIOS) if c not in drop]
+        return tuple(c for c, _r in pairs), tuple(r for _c, r in pairs)
 
     def sales_summary_rows(self, rows_data):
         """قيم جدول فاتورة المبيعات (أرقام) لكل رقم تشغيل، وصف الإجمالي = مجموع كل عمود"""
@@ -33412,8 +33510,7 @@ margin-left:4px}
         date_part = str(date_str or "")[:10]
         time_part = str(date_str or "")[11:16]
 
-        cols = self.SALES_SUMMARY_COLS
-        ratios = (0.35, 0.95, 0.9, 0.8, 0.8, 0.9, 0.75, 0.9, 0.8, 0.95, 0.95, 1.5)
+        cols, ratios = self.sales_summary_columns(next((d.get("kind") for d in rows_data if d.get("kind")), None))
         table_w = PW - 2 * M
         col_ws = [table_w * r / sum(ratios) for r in ratios]
         lefts = [PW - M - sum(col_ws[:i + 1]) for i in range(len(cols))]   # الحافة اليسرى لكل عمود
@@ -33596,6 +33693,7 @@ margin-left:4px}
                 "stones_after": round(stones_after, 2), "diamond": round(diamond, 2),
                 "standing": sale_standing_weight(gold, gems, stones), "bound": bound,
                 "qr": self.sale_ticket_qr(sn, bound), "barcode": self.sale_ticket_barcode(sn, bound),
+                "kind": d.get("kind") or "",
             })
         return out
 
@@ -33691,10 +33789,16 @@ margin-left:4px}
             pair(right, top - 29 * mm, "الفاتورة", t["invoice"] or "—")
             pair(right - 30 * mm, top - 29 * mm, "التاريخ", t["date"])
 
-            # الأوزان: الصف الأول أربع خانات، والثاني الماس والقائم ثم المقيد عريضاً
-            rows = ([("الذهب", t["gold"], 1), ("الفصوص", t["gems"], 1), ("الأحجار", t["stones"], 1),
-                     ("بعد الخصم", t["stones_after"], 1)],
-                    [("الماس", t["diamond"], 1), ("الوزن القائم", t["standing"], 1), ("الوزن المقيد", t["bound"], 2)])
+            # الأوزان: الصف الأول أربع خانات، والثاني الماس والقائم ثم المقيد عريضاً — وفي الماس (2.01) لا خصم:
+            # الأحجار كاملة والماس في الصف الأول، والقائم والمقيد عريضين في الثاني
+            if "أحجار بعد الخصم" in self.SALE_KIND_DERIVED.get(t.get("kind"), {}):
+                rows = ([("الذهب", t["gold"], 1), ("الفصوص", t["gems"], 1), ("الأحجار", t["stones"], 1),
+                         ("الماس", t["diamond"], 1)],
+                        [("الوزن القائم", t["standing"], 2), ("الوزن المقيد", t["bound"], 2)])
+            else:
+                rows = ([("الذهب", t["gold"], 1), ("الفصوص", t["gems"], 1), ("الأحجار", t["stones"], 1),
+                         ("بعد الخصم", t["stones_after"], 1)],
+                        [("الماس", t["diamond"], 1), ("الوزن القائم", t["standing"], 1), ("الوزن المقيد", t["bound"], 2)])
             gw = (right - left) / 4
             gh = 11 * mm
             c.setLineWidth(0.4)

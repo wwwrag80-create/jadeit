@@ -78,7 +78,7 @@ t = app.sale_ticket_data(groups)
 assert [x["set_number"] for x in t] == ["88001", "88002"], "السطر بلا رقم لا تذكرة له، والأرقام الهندية توحَّد"
 a, b = t
 assert set(a) == {"set_number", "invoice", "date", "gold", "gems", "stones", "stones_after", "diamond",
-                  "standing", "bound", "qr", "barcode"}, "محتوى التذكرة كما طلبه المستخدم فقط"
+                  "standing", "bound", "qr", "barcode", "kind"}, "محتوى التذكرة كما طلبه المستخدم فقط (ونوعها لترتيبها)"
 assert a["invoice"] == "S-7001" and a["date"] == "2026-09-20"
 assert (a["gold"], a["gems"], a["stones"], a["stones_after"], a["diamond"]) == (35.25, 2.5, 3.0, 2.1, 0.4)
 assert a["standing"] == round(35.25 + 2.5 + 3.0, 2) == 40.75, "الماس للعرض فقط (1.93): خارج القائم"
@@ -153,6 +153,11 @@ assert "code128.Code128(code" in draw and 'qr.QrCodeWidget(t["qr"])' in draw and
 assert 'code = t.get("barcode") or t["set_number"]' in draw and "max(0.6, room / bar.width)" in draw
 for label in ("الذهب", "الفصوص", "الأحجار", "بعد الخصم", "الماس", "الوزن القائم", "الوزن المقيد", "الفاتورة", "التاريخ"):
     assert f'"{label}"' in draw, label
+# الماس (2.01): لا «بعد الخصم» في تذكرته — الأحجار كاملة والماس في الصف الأول، والقائم والمقيد عريضين
+dia = draw[draw.index('if "أحجار بعد الخصم" in self.SALE_KIND_DERIVED.get(t.get("kind"), {}):'):draw.index("else:")]
+assert '"بعد الخصم"' not in dia and '("الماس", t["diamond"], 1)]' in dia
+assert '[("الوزن القائم", t["standing"], 2), ("الوزن المقيد", t["bound"], 2)]' in dia
+assert '"kind": d.get("kind") or ""' in body("sale_ticket_data")
 for gone in ("صافي الطقم", "خياس التلميع", "البوليش", "المركب", "العميل", "الصانع", '"الصف"'):
     assert gone not in draw and gone not in body("sale_ticket_data"), gone
 for fn in ("open_set_number_trace", "on_stage_set_number_entered", "global_search"):

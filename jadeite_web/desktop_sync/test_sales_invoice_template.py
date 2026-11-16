@@ -36,7 +36,8 @@ marks = {n.targets[0].id: n.value.value for n in tree.body
 MEMBERS = ("SALES_SUMMARY_COLS", "SALES_SUMMARY_TEXT_COLS", "LETTERHEAD_AR", "LETTERHEAD_EN", "LETTERHEAD_H", "SALES_SUMMARY_MIN_ROWS",
            "SALES_SUMMARY_SIGNATURES", "SALE_NOTE_SEP", "sale_note_of",
            "sale_khayas_total", "sales_summary_rows", "get_invoice_group_data", "BRAND_FIELDS", "BRAND_DEFAULT", "_brand_setting", "brand_identity", "letterhead_ar", "letterhead_en", "default_brand_logo", "brand_logo_image", "pdf_logo", "draw_pdf_letterhead",
-           "sales_summary_layout", "draw_sales_summary_pages")
+           "sales_summary_layout", "draw_sales_summary_pages", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND",
+           "SALE_KIND_DERIVED", "SALES_SUMMARY_RATIOS", "sales_summary_columns")
 ns = dict(marks, REPORTLAB_AVAILABLE=False, SALE_READ_STATUSES=("ACTIVE", "SETTLED_INOUT", "MEMO"))
 BRAND_GLOBALS = {"BRAND_KEY": "brand_identity", "BRAND_LOGO_KEY": "brand_logo_png", "json": __import__("json"),
                  "sqlite3": __import__("sqlite3"), "log_cloud_error": lambda *a: None}     # هوية المصنع (1.98)

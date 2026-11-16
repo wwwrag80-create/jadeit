@@ -167,7 +167,8 @@ assert '"seq": self.__dict__.get("_live_seq", 0)' in member("push_undo")
 print("✔ Ctrl+Z على الجهاز لا يعيد صور حركاتٍ عدّلها المدير بعد الخطوة — تُزال الخطوة برسالة")
 
 # ═══ ٥) فاتورة المبيعات من الرابط ═══
-S, _ = make(("SALE_ROW_NUM_KEYS", "sale_rows_from_form", "_SET_DIGITS", "normalize_set_number",
+S, _ = make(("SALE_KIND_DIAMOND", "SALE_KIND_DERIVED", "sale_row_kind_apply", "SALE_ROW_NUM_KEYS",
+             "sale_rows_from_form", "_SET_DIGITS", "normalize_set_number",
              "next_free_sale_row_number", "sale_invoice_note_split"), extra='''
 def sale_hidden_keys(self, kind=None):
     return ("الماس",) if kind == "ذهب" else ()

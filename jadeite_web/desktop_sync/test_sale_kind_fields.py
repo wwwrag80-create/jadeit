@@ -3,7 +3,8 @@
 
   • الوزن القائم = الذهب + الفصوص + الأحجار، والمقيد = الذهب + الفصوص + الأحجار بعد الخصم — بلا الماس في كل
     موضع (الخانات، جدول السطور، نافذة التعديل، الفاتورة، التذاكر، قالب رقم التشغيل وسنده).
-  • عملية «ذهب»: كل الخانات ما عدا الماس؛ عملية «الماس»: رقم التشغيل والذهب والماس فقط.
+  • عملية «ذهب»: كل الخانات ما عدا الماس؛ عملية «الماس» (2.01): خانات الذهب كلها والماس والبيان — بلا «الأحجار بعد
+    الخصم» (الأحجار كاملة)، والعودة إلى الذهب تعيد لكل سطرٍ خصمه.
   • الخانة المخفية لا تُقرأ عند «إضافة»، ولا يُتنقّل إليها، وعمودها خارج الجدول ما لم يحمل قيمة؛ وتبديل النوع لا يمرّ
     وفي السطور قيمة في خانة لا تظهر في النوع الجديد.
   • بيع طقمٍ بنوعٍ تخفى فيه خانة لا يمسح قيمتها من قالب رقم التشغيل."""
@@ -45,7 +46,8 @@ box = Box()
 ns = {"messagebox": box, "save_ui_pref": lambda *a: None, "datetime": datetime}
 for fn in ("sale_standing_weight", "sale_bound_weight"):
     exec(module_src(fn), ns)
-MEMBERS = ("SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "SALE_EDIT_FIELDS",
+MEMBERS = ("SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "SALE_KIND_DERIVED",
+           "sale_kind_derived", "sale_row_kind_apply", "SALE_EDIT_FIELDS",
            "SALE_TABLE_COL_KEYS", "current_sale_kind", "sale_hidden_keys", "sale_value_present",
            "sale_rows_hidden_values", "sale_field_hidden", "request_sale_kind", "sb_apply_sale")
 exec("class App:\n" + "\n".join(textwrap.indent(member(m), "    ") for m in MEMBERS), ns)
@@ -61,7 +63,7 @@ sites = {
     "refresh_pending_sales_table": ('standing = sale_standing_weight(num(row, "ذهب"), num(row, "فصوص"), num(row, "أحجار"))',
                                     'bound = sale_bound_weight(num(row, "ذهب"), num(row, "فصوص"), num(row, "أحجار بعد الخصم"))'),
     "edit_pending_sale_row": ('standing = sale_standing_weight(read("ذهب"), read("فصوص"), read("أحجار"))',
-                              'bound = sale_bound_weight(read("ذهب"), read("فصوص"), read("أحجار بعد الخصم"))'),
+                              'bound = sale_bound_weight(read("ذهب"), read("فصوص"), disc)'),
     "sales_summary_rows": ('"الوزن القائم": sale_standing_weight(gold, gems, stones)',
                            '"الوزن المقيد": sale_bound_weight(gold, gems, stones_disc)'),
     "sale_ticket_data": ("bound = sale_bound_weight(gold, gems, stones_after)",
@@ -82,32 +84,69 @@ print("✔ الوزن القائم والمقيد بلا الماس من مصد�
 a = ns["App"]()
 a._sale_kind = G
 assert a.sale_hidden_keys() == {"الماس"} and a.sale_hidden_keys(G) == {"الماس"}
-assert a.sale_hidden_keys(D) == {"فصوص", "أحجار", "أحجار بعد الخصم", "خياس", "خياس البوليش", "خياس المركب", "البيان"}
+assert a.sale_hidden_keys(D) == {"أحجار بعد الخصم"}, "(2.01) الماس: خانات الذهب كلها والبيان — بلا الأحجار بعد الخصم"
 shown_d = [k for _l, k in a.SALE_EDIT_FIELDS if k not in a.sale_hidden_keys(D)]
 shown_g = [k for _l, k in a.SALE_EDIT_FIELDS if k not in a.sale_hidden_keys(G)]
-assert shown_d == ["set_number", "ذهب", "الماس"], shown_d
+assert shown_d == ["set_number", "ذهب", "فصوص", "أحجار", "الماس", "خياس", "خياس البوليش", "خياس المركب", "البيان"], shown_d
+assert a.sale_kind_derived(D) == {"أحجار بعد الخصم": "أحجار"} and a.sale_kind_derived(G) == {}
+row = a.sale_row_kind_apply({"أحجار": 3.0, "أحجار بعد الخصم": 2.1}, D)
+assert row["أحجار بعد الخصم"] == 3.0, "الماس: الأحجار كاملة بلا خصم"
+assert a.sale_row_kind_apply({"أحجار": 3.0, "أحجار بعد الخصم": 2.1}, G)["أحجار بعد الخصم"] == 2.1
 assert "الماس" not in shown_g and len(shown_g) == len(a.SALE_EDIT_FIELDS) - 1
 assert set(dict(a.SALE_TABLE_COL_KEYS).values()) >= a.sale_hidden_keys(D) | a.sale_hidden_keys(G)
 assert a.sale_value_present("البيان", " ") is False and a.sale_value_present("فصوص", "0") is False
 assert a.sale_value_present("الماس", 0.4) and a.sale_value_present("set_number", "88001")
-print("✔ عملية الذهب: كل الخانات ما عدا الماس؛ عملية الماس: رقم التشغيل والذهب والماس فقط")
+print("✔ عملية الذهب: كل الخانات ما عدا الماس؛ عملية الماس (2.01): خانات الذهب كلها والماس والبيان — بلا الأحجار "
+      "بعد الخصم (الأحجار كاملة)")
 
 # ═══ ٣) تبديل النوع لا يُخفي قيمة في سطور الفاتورة ═══
 calls = []
 a.set_sale_kind = lambda k, initial=False: (calls.append(k), setattr(a, "_sale_kind", k))
-a.pending_sale_rows = [{"row_number": "1", "set_number": "88001", "ذهب": 30.0, "فصوص": 2.0},
+a.pending_sale_rows = [{"row_number": "1", "set_number": "88001", "ذهب": 30.0, "فصوص": 2.0, "أحجار": 3.0,
+                        "أحجار بعد الخصم": 2.1},
                        {"row_number": "2", "set_number": "88002", "ذهب": 20.0, "البيان": "خاص"}]
-assert a.request_sale_kind(D) is False and calls == [] and a.current_sale_kind() == G
-title, msg = box.log[-1]
-assert "السطر 1: الفصوص" in msg and "السطر 2: البيان" in msg, msg
+assert a.request_sale_kind(D) is True and calls == [D], \
+    "(2.01) الفصوص والبيان ظاهرة في الماس، والأحجار بعد الخصم تُحسب فيه — فلا يُمنع التحويل"
+a._sale_kind = G
 a.pending_sale_rows = [{"row_number": "1", "set_number": "88001", "ذهب": 30.0, "الماس": 0}]
-assert a.request_sale_kind(D) is True and calls == [D]
+assert a.request_sale_kind(D) is True and calls == [D, D]
 a.pending_sale_rows = [{"row_number": "1", "set_number": "88001", "ذهب": 30.0, "الماس": 1.5}]
 assert a.request_sale_kind(G) is False and "السطر 1: الماس" in box.log[-1][1]
 assert a.request_sale_kind(D) is True                  # النوع نفسه: لا فحص
 a.pending_sale_rows = []
 assert a.request_sale_kind(G) is True and a.current_sale_kind() == G
-print("✔ تبديل نوع العملية يُرفض (برسالة تسمّي السطر والخانة) وفي السطور قيمة لا تظهر في النوع الجديد")
+print("✔ تبديل نوع العملية يُرفض (برسالة تسمّي السطر والخانة) وفي السطور قيمة لا تظهر في النوع الجديد — والمحسوب لا يمنع")
+
+# ═══ ٣ب) (2.01) التحويل إلى الماس: الأحجار كاملة؛ والعودة إلى الذهب تعيد خصم كل سطر ما لم تتغيّر أحجاره ═══
+toasts = []
+kns = dict(ns)
+exec("class K(App):\n" + textwrap.indent(member("set_sale_kind"), "    "), kns)
+k = kns["K"]()
+k._sale_kind = G
+k.style_segment_buttons = lambda *a: None
+k.apply_sale_kind_fields = lambda: None
+k.schedule_draft_save = lambda *a: None
+k.toast = lambda msg, *a: toasts.append(msg)
+r1 = {"set_number": "88001", "أحجار": 3.0, "أحجار بعد الخصم": 2.1}
+r2 = {"set_number": "88002", "أحجار": 5.0, "أحجار بعد الخصم": 1.5}
+r3 = {"set_number": "88003", "ذهب": 10.0}
+k.pending_sale_rows = [r1, r2, r3]
+k.set_sale_kind(D)
+assert (r1["أحجار بعد الخصم"], r2["أحجار بعد الخصم"], r3["أحجار بعد الخصم"]) == (3.0, 5.0, 0.0)
+assert "في 2 سطر" in toasts[-1], toasts
+r2["أحجار"] = r2["أحجار بعد الخصم"] = 6.0          # عُدّل في الماس
+k.set_sale_kind(G)
+assert r1["أحجار بعد الخصم"] == 2.1 and r2["أحجار بعد الخصم"] == 6.0, "يعود خصم r1؛ وr2 تغيّرت أحجاره فيبقى"
+assert "عاد خصم الأحجار كما كان في 1 سطر" in toasts[-1] and k._sale_kind_stash == []
+k.set_sale_kind(G)
+assert len(toasts) == 2, "النوع نفسه: لا شيء"
+k.pending_sale_rows = [dict(r1)]                     # سطرٌ آخر بالقيم نفسها: لا يُستعاد له خصم غيره
+k.set_sale_kind(D); k.pending_sale_rows[0]["أحجار بعد الخصم"] = 3.0
+k.pending_sale_rows = [dict(k.pending_sale_rows[0])]
+k.set_sale_kind(G)
+assert k.pending_sale_rows[0]["أحجار بعد الخصم"] == 3.0, "المطابقة بالسطر نفسه لا بقيمه"
+print("✔ التحويل إلى الماس يجعل «الأحجار بعد الخصم» = «الأحجار» (بتنبيه)، والعودة إلى الذهب تعيد لكل سطرٍ خصمه "
+      "ما لم تتغيّر أحجاره")
 
 # ═══ ٤) الخانة المخفية لا تُقرأ، ولا يُتنقّل إليها، وعمودها خارج الجدول ═══
 stage = member("stage_sale_row")
@@ -119,7 +158,7 @@ assert "self.bind_enter_navigation(nav_fields, on_last=self.stage_sale_row, skip
 assert "self.apply_sale_kind_fields()" in build and "command=lambda k=kind: self.request_sale_kind(k)" in build
 assert "return 0.0 if key in hidden else safe_read(entry)" in build
 apply_fn = member("apply_sale_kind_fields")
-assert 'if "أحجار" not in hidden: items.append(self._sale_pct_cells)' in flat(apply_fn)
+assert 'if "أحجار" not in hidden and "أحجار بعد الخصم" not in hidden: items.append(self._sale_pct_cells)' in flat(apply_fn)
 assert "items.append((None, self._sale_add_btn))" in apply_fn and "self.refresh_pending_sales_table()" in apply_fn
 assert "self.apply_sale_kind_fields()" in member("set_sale_kind")
 table = member("refresh_pending_sales_table")
@@ -140,7 +179,11 @@ a.sb_apply_sale(rec, 2.0, 3.0, 2.1, 0.0, "عميل", "2026-10-15 10:00:00", G)
 assert (rec["gems"], rec["stones"], rec["diamond"], rec["kind"]) == (2.0, 3.0, 0.5, G), rec
 rec = {"gems": 2.0, "stones": 3.0, "stones_pct": 70.0, "diamond": 0.5, "status": "draft"}
 a.sb_apply_sale(rec, 0.0, 0.0, 0.0, 0.8, "عميل", "2026-10-15 10:00:00", D)
-assert (rec["gems"], rec["stones"], rec["stones_pct"], rec["diamond"]) == (2.0, 3.0, 70.0, 0.8), rec
+# (2.01) الفصوص والأحجار ظاهرة في الماس كالذهب: ما بيع فعلاً يُكتب في القالب
+assert (rec["gems"], rec["stones"], rec["stones_pct"], rec["diamond"]) == (None, None, 70.0, 0.8), rec
+rec = {"status": "draft"}
+a.sb_apply_sale(rec, 1.0, 3.0, 3.0, 0.8, "عميل", "2026-10-15 10:00:00", D)
+assert (rec["gems"], rec["stones"], rec["stones_pct"]) == (1.0, 3.0, 100.0), "الماس: الأحجار بلا خصم (١٠٠٪)"
 rec = {"diamond": 0.5, "status": "draft"}
 a.sb_apply_sale(rec, 1.0, 0.0, 0.0, 0.7, "عميل", "2026-10-15 10:00:00", G)       # فاتورة أقدم بماسٍ في عملية ذهب
 assert rec["diamond"] == 0.7 and rec["gems"] == 1.0 and rec["stones"] is None
@@ -150,6 +193,6 @@ assert rec["diamond"] is None
 values = member("sb_values")
 assert 'hidden = self.sale_hidden_keys(sale.get("kind")) if sale.get("kind") in self.SALE_KINDS else set()' in values
 assert 'pieces_w = round(sale["gold"] + sale["gems"] + sale["stones"] + sale["diamond"] + rest, 2)' in values
-print("✔ بيع طقمٍ بالذهب لا يمسح ماسه من القالب، وبالماس لا يمسح فصوصه وأحجاره (والفاتورة الأقدم تُكتب كما كانت)")
+print("✔ بيع طقمٍ بالذهب لا يمسح ماسه من القالب، وبالماس يكتب ما بيع (والأحجار بلا خصم) — والفاتورة الأقدم كما كانت")
 
 print("\n✅ 1.93: الماس للعرض في المبيعات، وخانات كل نوع عملية سليمة")

@@ -127,7 +127,9 @@ class Rec:
 
 ns2 = {"sale_net_weight": lambda r: 1.0, "MEMO_STATUS": "MEMO", "KHAYAS_MARK_POLISH": 7.0,
        "KHAYAS_MARK_ASSEMBLER": 5.0, "KHAYAS_MARK_NET": 9.0, "KHAYAS_MARK_FINAL": 0.0}
-exec("class P(Rec):\n" + textwrap.indent(member_src("post_sale_rows"), "    "), dict(ns2, Rec=Rec), ns2)
+exec("class P(Rec):\n" + textwrap.indent(member_src("SALE_KIND_DERIVED") + "\n" + member_src("sale_row_kind_apply")
+                                        + "\n" + member_src("post_sale_rows"), "    "),
+     dict(ns2, Rec=Rec, SALE_KIND_DIAMOND="الماس"), ns2)
 p = ns2["P"]()
 p.post_sale_rows([{"ذهب": 10.0, "فصوص": 1.0, "خياس": 0.5, "خياس البوليش": 0.2, "خياس المركب": 0.1,
                    "set_number": "7", "row_number": "1"}], "زبون", "2026-07-10 10:00:00", "S-1", period="2026-07")

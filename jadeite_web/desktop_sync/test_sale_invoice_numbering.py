@@ -20,7 +20,7 @@ def member(name):
     return textwrap.dedent("\n".join(lines[start - 1:node.end_lineno]))
 
 
-MEMBERS = ("SALE_TYPES", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "sale_hidden_keys",
+MEMBERS = ("SALE_TYPES", "SALE_KIND_GOLD", "SALE_KIND_DIAMOND", "SALE_KINDS", "SALE_KIND_HIDDEN_KEYS", "SALE_KIND_DERIVED", "sale_row_kind_apply", "sale_hidden_keys",
            "apply_sale_kind_fields", "SALE_DIAMOND_TYPES",
            "SALE_NO_START_KEY", "SALE_NO_START_KEYS", "SALE_NO_DEFAULT_START", "sale_kind_inferred", "sale_key_of",
            "current_sale_kind", "set_sale_kind", "split_invoice_number", "sale_invoice_start_saved",
